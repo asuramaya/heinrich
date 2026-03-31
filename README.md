@@ -4,7 +4,10 @@
   <img src="docs/heinrich.png" alt="Heinrich" width="400">
 </p>
 
-Model forensics and signal-mixing pipeline. Absorbs conker-detect + conker-ledger.
+> Mascot: Heinrich is the companion beast.
+
+External validation and evidence pipeline for model descendants. Built for
+agent-native model forensics, signal fusion, and context-window-sized output.
 
 ## What It Does
 
