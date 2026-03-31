@@ -99,6 +99,13 @@ TOOLS = {
             "label": {"type": "string"},
         },
     },
+    "heinrich_self_analyze": {
+        "description": "Run text through a model and capture internal signals (entropy, attention, hidden states).",
+        "parameters": {
+            "text": {"type": "string", "description": "Text to process", "required": True},
+            "label": {"type": "string"},
+        },
+    },
 }
 
 
@@ -108,6 +115,8 @@ class ToolServer:
     def __init__(self) -> None:
         self._store = SignalStore()
         self._stages_run: list[str] = []
+        from .probe.provider import MockProvider
+        self._provider: Any = MockProvider()
 
     @property
     def store(self) -> SignalStore:
@@ -143,6 +152,8 @@ class ToolServer:
             return self._do_observe(arguments)
         if name == "heinrich_loop":
             return self._do_loop(arguments)
+        if name == "heinrich_self_analyze":
+            return self._do_self_analyze(arguments)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -282,6 +293,19 @@ class ToolServer:
         loop = Loop([ObserveStage()], act=ActStage(), max_iterations=args.get("max_turns", 10))
         self._store = loop.run({"environment": env, "model_label": args.get("label", "loop"), "next_action": 1}, store=self._store)
         self._stages_run.extend([s for s in loop.stages_run if s not in self._stages_run])
+        return compress_store(self._store, stages_run=self._stages_run)
+
+    def _do_self_analyze(self, args: dict[str, Any]) -> dict[str, Any]:
+        from .probe.self_analyze import SelfAnalyzeStage
+        stage = SelfAnalyzeStage()
+        config = {
+            "provider": self._provider,
+            "text": args.get("text", ""),
+            "model_label": args.get("label", "self"),
+            "_iteration": len([s for s in self._stages_run if s == "self_analyze"]),
+        }
+        stage.run(self._store, config)
+        self._stages_run.append("self_analyze")
         return compress_store(self._store, stages_run=self._stages_run)
 
     def _do_compete(self, args: dict[str, Any]) -> dict[str, Any]:
