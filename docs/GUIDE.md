@@ -237,6 +237,80 @@ This scans the directory, classifies each JSON file as a bridge run, full evalua
 
 ---
 
+---
+
+## Self-Analysis Walkthrough
+
+When you have a local HuggingFace model, self-analysis lets you capture its internal states during inference and emit them as signals:
+
+```python
+from heinrich.probe.provider import HuggingFaceLocalProvider
+from heinrich.probe.self_analyze import SelfAnalyzeStage
+from heinrich.signal import SignalStore
+
+provider = HuggingFaceLocalProvider({"model": "my-org/my-model", "device": "cpu"})
+stage = SelfAnalyzeStage()
+store = SignalStore()
+
+config = {"provider": provider, "text": "What is your name?", "model_label": "my-model"}
+stage.run(store, config)
+```
+
+This emits `self_entropy` and `self_confidence` (from logits), `self_layer_norm` per transformer layer (from hidden states), and `self_attn_max_head` per attention layer. Pass `_iteration` in config to track step numbers across multiple calls.
+
+To track novelty across iterations, reuse the same config dict — the stage stores prior hidden states in `config["_prior_activations"]` and emits `self_novelty` (1.0 on first call, decreasing as outputs repeat).
+
+---
+
+## Competition Validation Walkthrough
+
+The `compete` command validates a submission against a competition profile:
+
+```bash
+heinrich compete manifest.json --profile parameter-golf
+```
+
+Internally this runs `apply_profile` with a named `Profile` from `PRESETS`. Each `Rule` in the profile checks a required file, size limit, or pattern constraint. Results are emitted as `rule_check` signals.
+
+```python
+from heinrich.bundle.profiles import get_profile, apply_profile
+from heinrich.signal import SignalStore
+
+profile = get_profile("parameter-golf")
+store = SignalStore()
+apply_profile(profile, manifest_path, store=store)
+failures = store.filter(kind="rule_check")
+```
+
+Claim levels 0-5 are inferred by `infer_claim_level` based on which audits are present. Level 5 requires behavioral legality with `trust=traced` or `trust=strict`.
+
+---
+
+## Loop-Based Investigation Walkthrough
+
+The Loop subsystem runs a pipeline stage sequence iteratively, useful when you want to probe a model at multiple text inputs or track signal evolution:
+
+```python
+from heinrich.pipeline import Pipeline
+from heinrich.probe.self_analyze import SelfAnalyzeStage
+from heinrich.signal import SignalStore
+
+store = SignalStore()
+stage = SelfAnalyzeStage()
+config = {"provider": provider, "text": "test prompt", "model_label": "m"}
+
+for i in range(5):
+    config["_iteration"] = i
+    stage.run(store, config)
+
+novelties = store.filter(kind="self_novelty")
+# novelties[0].value == 1.0, then decreasing as model outputs stabilize
+```
+
+Use `heinrich loop config.json` from the CLI. The loop config specifies the stage sequence, iteration count, and per-step text inputs. Signals accumulate across all iterations in one store, queryable with `heinrich_signals` or bundled with `heinrich_bundle`.
+
+---
+
 ## Architecture Reference
 
 ```

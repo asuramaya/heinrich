@@ -26,6 +26,9 @@ heinrich fetch <model_path_or_hf_repo>   # metadata, shard hashes, config signal
 heinrich inspect <weights.npz>            # spectral analysis, family classification
 heinrich diff <base.npz> <modified.npz>   # weight deltas, circuit scoring
 heinrich probe --prompt "Hello Claude"    # behavioral testing (mock provider)
+heinrich compete <manifest.json>          # competition validation and scoring
+heinrich observe <weights.npz>            # environment observation signals
+heinrich loop <config.json>               # loop-based iterative investigation
 heinrich report <json_dir>                # scan and rank experiment records
 heinrich bundle <manifest.json> <out/>    # assemble validity bundle
 heinrich serve                            # MCP stdio server for agent integration
@@ -46,17 +49,23 @@ Add to your Claude Code settings:
 }
 ```
 
-8 tools available: `heinrich_fetch`, `heinrich_inspect`, `heinrich_diff`, `heinrich_probe`, `heinrich_bundle`, `heinrich_signals`, `heinrich_status`, `heinrich_pipeline`.
+12 tools available: `heinrich_fetch`, `heinrich_inspect`, `heinrich_diff`, `heinrich_probe`, `heinrich_bundle`, `heinrich_signals`, `heinrich_status`, `heinrich_pipeline`, `heinrich_compete`, `heinrich_observe`, `heinrich_loop`, `heinrich_self_analyze`.
 
 ## Architecture
 
-Five pipeline stages connected by a Signal schema:
+Six pipeline stages connected by a Signal schema:
 
 ```
 fetch → inspect → diff → probe → bundle
+                             ↕
+                       self_analyze (Loop)
 ```
 
 Every stage reads and writes typed `Signal` objects to a `SignalStore`. The bundle stage compresses signals into context-optimized JSON.
+
+The **Loop** subsystem allows iterative investigation: a Loop runs a configured stage sequence repeatedly, accumulating signals across iterations. Combined with `SelfAnalyzeStage`, the Loop can track how model internals shift across multiple forward passes — useful for detecting regime changes or novelty decay.
+
+**Self-analysis** hooks let local HuggingFace models emit internal signals (logit entropy, hidden-state norms, attention head weights) during inference via `HuggingFaceLocalProvider.forward_with_internals`.
 
 ## Modules
 
@@ -75,17 +84,26 @@ Every stage reads and writes typed `Signal` objects to a `SignalStore`. The bund
 - `provenance.py` — provenance and selection audits
 - `replay.py` — runtime replay validation
 - `catalog.py` — module enumeration
+- `matrix.py` — general 2D matrix analysis (shape, sparsity, norms, connected components)
+- `self_analysis.py` — logit entropy, hidden-state norms, attention analysis, activation novelty
+- `codescan.py` — static code risk scanning (pattern detection, rule checks)
+- `lora.py` — LoRA delta loading and signal extraction
+- `handoff.py` — cross-stage handoff validation
 
 ### diff/ — Compare models
 - `weight.py` — tensor-level byte comparison, delta computation
 - `circuit.py` — full MLA attention circuit simulation (q_a→ln→q_b)
 - `embedding.py` — delta × embedding projection, phrase scoring
-- `head.py` — per-head attention decomposition
+- `head.py` — per-head attention decomposition, trigger token scoring
 - `subspace.py` — subspace angle comparison, cosine similarity
 - `vector.py` — vectorized payloads, feature correlations
+- `patch.py` — weight patching, merging, NPZ/safetensors export
 
 ### probe/ — Behavioral testing
-- `provider.py` — Provider protocol + MockProvider
+- `provider.py` — Provider + SelfAnalyzingProvider protocols, MockProvider, HuggingFaceLocalProvider
+- `self_analyze.py` — SelfAnalyzeStage: forward_with_internals → signals pipeline stage
+- `environment.py` — Environment protocol, MockEnvironment, ObserveStage, ActStage
+- `steering.py` — activation steering vectors and direction-based classification
 - `trigger_core.py` — case normalization, mutation, sweep, minimization
 - `activation.py` — linear probes, module separability ranking
 - `behavior.py` — hijack detection, entropy, regime clustering
@@ -117,7 +135,9 @@ Every stage reads and writes typed `Signal` objects to a `SignalStore`. The bund
 - `atlas.py` — shard atlas, delta alignment, signflip, route probing
 - `priors.py` — static/lexical priors, trigger ranking
 - `reportscore.py` — report scoring framework
-- `viz.py` — SVG charts (bar, scatter, pie, histogram, grouped bar)
+- `viz.py` — SVG charts (bar, scatter, pie, histogram, grouped bar) + Mermaid lineage/survival
+- `profiles.py` — configurable validation rule profiles (Profile, Rule, PRESETS)
+- `formats.py` — submission packaging (zip) and triage report generation
 - `mechanism_utils.py` — mechanism family normalization
 
 ## Origin
