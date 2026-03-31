@@ -41,6 +41,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_probe.add_argument("--control", help="Control prompt for comparison")
     p_probe.add_argument("--model", default="model")
 
+    p_report = sub.add_parser("report", help="Generate a text report from signals")
+    p_report.add_argument("source", help="Path to signals JSONL or directory to scan")
+    p_report.add_argument("--top", type=int, default=20)
+
     return parser
 
 
@@ -58,6 +62,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_diff(args)
     elif args.command == "probe":
         _cmd_probe(args)
+    elif args.command == "report":
+        _cmd_report(args)
     else:
         parser.print_help()
 
@@ -117,6 +123,23 @@ def _cmd_probe(args: argparse.Namespace) -> None:
         "control_prompt": args.control,
     })
     output = compress_store(store, stages_run=["probe"])
+    print(json.dumps(output, indent=2))
+
+
+def _cmd_report(args: argparse.Namespace) -> None:
+    from .bundle.ledger import scan_directory
+    from .bundle.scoring import rank_signals
+    source = Path(args.source)
+    store = SignalStore()
+    if source.is_dir():
+        scan_directory(source, store=store, model_label=source.name)
+    elif source.suffix == ".jsonl":
+        for line in source.read_text().splitlines():
+            if line.strip():
+                from .signal import Signal
+                store.add(Signal(**json.loads(line)))
+    output = compress_store(store, stages_run=["report"])
+    output["ranked_signals"] = rank_signals(store, top_k=args.top)
     print(json.dumps(output, indent=2))
 
 
