@@ -1,7 +1,7 @@
 # Heinrich
 
 <p align="center">
-  <img src="docs/heinrich.png" alt="Heinrich" width="400">
+  <img src="docs/heinrich.jpg" alt="Heinrich" width="400">
 </p>
 
 > Mascot: Heinrich is the final boss of Conker's Bad Fur Day, an alien xenomorph parody that Conker must defeat in a robotic suit after it bursts from the Panther King’s chest.
