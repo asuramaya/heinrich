@@ -49,6 +49,7 @@ def _download_json(repo_id: str, filename: str) -> dict[str, Any] | None:
     from huggingface_hub import hf_hub_download
     try:
         path = hf_hub_download(repo_id, filename)
-        return json.loads(open(path, encoding="utf-8").read())
+        with open(path, encoding="utf-8") as f:
+            return json.loads(f.read())
     except Exception:
         return None

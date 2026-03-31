@@ -4,12 +4,11 @@ import sys
 from pathlib import Path
 
 FIXTURES = Path(__file__).parent / "fixtures"
-PYTHON = str(Path(__file__).parent.parent / ".venv" / "bin" / "python")
 
 
 def test_cli_fetch_local():
     result = subprocess.run(
-        [PYTHON, "-m", "heinrich.cli", "fetch", str(FIXTURES)],
+        [sys.executable, "-m", "heinrich.cli", "fetch", str(FIXTURES)],
         capture_output=True, text=True,
     )
     assert result.returncode == 0
@@ -20,7 +19,7 @@ def test_cli_fetch_local():
 
 def test_cli_fetch_json_flag():
     result = subprocess.run(
-        [PYTHON, "-m", "heinrich.cli", "fetch", str(FIXTURES), "--json"],
+        [sys.executable, "-m", "heinrich.cli", "fetch", str(FIXTURES), "--json"],
         capture_output=True, text=True,
     )
     assert result.returncode == 0
@@ -30,7 +29,7 @@ def test_cli_fetch_json_flag():
 
 def test_cli_status_no_session():
     result = subprocess.run(
-        [PYTHON, "-m", "heinrich.cli", "status"],
+        [sys.executable, "-m", "heinrich.cli", "status"],
         capture_output=True, text=True,
     )
     assert result.returncode == 0
