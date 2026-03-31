@@ -6,3 +6,20 @@ dist/
 build/
 *.pyc
 .DS_Store
+
+# Large model files
+*.safetensors
+*.bin
+*.pt
+*.pth
+*.onnx
+*.gguf
+
+# But allow test fixtures (small)
+!tests/fixtures/*.safetensors
+!tests/fixtures/*.npz
+!tests/fixtures/*.npy
+
+# Also prevent accidental large npz outside fixtures
+*.npz
+!tests/fixtures/*.npz
