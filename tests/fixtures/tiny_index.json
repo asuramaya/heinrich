@@ -1,0 +1,11 @@
+{
+  "metadata": {"total_size": 2048000},
+  "weight_map": {
+    "model.embed_tokens.weight": "model-00001-of-00002.safetensors",
+    "model.layers.0.self_attn.q_proj.weight": "model-00001-of-00002.safetensors",
+    "model.layers.0.mlp.gate_proj.weight": "model-00001-of-00002.safetensors",
+    "model.layers.1.self_attn.q_proj.weight": "model-00002-of-00002.safetensors",
+    "model.layers.1.mlp.gate_proj.weight": "model-00002-of-00002.safetensors",
+    "lm_head.weight": "model-00002-of-00002.safetensors"
+  }
+}
