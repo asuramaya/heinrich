@@ -668,3 +668,168 @@ def _decode_torch_float_tensor(blob: bytes, dtype_name: str, count: int) -> np.n
     if values.numel() != count:
         raise ValueError(f"Decoded tensor element count mismatch for dtype {dtype_name}: {values.numel()} vs {count}")
     return values.float().cpu().numpy()
+
+
+# ---------------------------------------------------------------------------
+# Public bundle-family helpers (ported from conker-detect audit.py)
+# ---------------------------------------------------------------------------
+
+def load_safetensors_repo_tensors(
+    path: Path,
+    *,
+    only_2d: bool = True,
+    only_square: bool = False,
+    name_regex: str | None = None,
+) -> dict[str, np.ndarray]:
+    """Public alias for _load_safetensors_repo_tensors."""
+    return _load_safetensors_repo_tensors(path, only_2d=only_2d, only_square=only_square, name_regex=name_regex)
+
+
+def summarize_bundle_families(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return per-family spectral stats for an audit_bundle tensor list."""
+    from .family import classify_tensor_family
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        grouped.setdefault(classify_tensor_family(str(row["name"])), []).append(row)
+    out: list[dict[str, Any]] = []
+    for family, items in sorted(grouped.items()):
+        sigma1 = [float(item["spectral"]["sigma1"]) for item in items]
+        l2 = [float(item["spectral"]["fro_norm"]) for item in items]
+        top = sorted(items, key=lambda item: float(item["spectral"]["sigma1"]), reverse=True)[:3]
+        out.append({
+            "family": family,
+            "count": len(items),
+            "mean_sigma1": float(np.mean(sigma1)),
+            "max_sigma1": float(np.max(sigma1)),
+            "mean_fro_norm": float(np.mean(l2)),
+            "top_sigma1": [
+                {"name": item["name"], "sigma1": float(item["spectral"]["sigma1"])}
+                for item in top
+            ],
+        })
+    return out
+
+
+def summarize_compare_families(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Return per-family comparison stats for a compare_bundles tensor list."""
+    from .family import classify_tensor_family
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        if "compare" not in row:
+            continue
+        grouped.setdefault(classify_tensor_family(str(row["name"])), []).append(row)
+    out: list[dict[str, Any]] = []
+    for family, items in sorted(grouped.items()):
+        compare_rows = [item["compare"] for item in items]
+        exact_match_count = sum(
+            1 for item in compare_rows
+            if float(item["max_abs_deviation"]) == 0.0 and float(item["l2_deviation"]) == 0.0
+        )
+        top = sorted(items, key=lambda item: float(item["compare"]["max_abs_deviation"]), reverse=True)[:3]
+        out.append({
+            "family": family,
+            "count": len(items),
+            "exact_match_count": exact_match_count,
+            "mean_cosine_to_reference": float(np.mean([float(item["cosine_to_reference"]) for item in compare_rows])),
+            "mean_l2_deviation": float(np.mean([float(item["l2_deviation"]) for item in compare_rows])),
+            "max_max_abs_deviation": float(np.max([float(item["max_abs_deviation"]) for item in compare_rows])),
+            "top_outliers": [
+                {
+                    "name": item["name"],
+                    "max_abs_deviation": float(item["compare"]["max_abs_deviation"]),
+                    "cosine_to_reference": float(item["compare"]["cosine_to_reference"]),
+                }
+                for item in top
+            ],
+        })
+    return out
+
+
+def summarize_tensor_families(
+    tensors: dict[str, np.ndarray],
+    *,
+    topk: int = 16,
+) -> dict[str, Any]:
+    """Summarize a dict of tensors grouped by family, returning spectral aggregates."""
+    def _family_name(name: str) -> str:
+        for suffix in (".weight_scale_inv", ".weight", ".bias", ".e_score_correction_bias"):
+            if name.endswith(suffix):
+                return name[: -len(suffix)]
+        return name
+
+    families: dict[str, list[dict[str, Any]]] = {}
+    for name, arr in tensors.items():
+        family = _family_name(name)
+        item = audit_matrix(arr, name=name, topk=topk)
+        families.setdefault(family, []).append(item)
+
+    spectral_keys = ("sigma1", "effective_topk", "decay_1_to_last", "top16_energy_frac")
+    family_rows: list[dict[str, Any]] = []
+    for family, rows in sorted(families.items()):
+        tensor_count = len(rows)
+        shape_counts: dict[str, int] = {}
+        total_bytes = 0
+        total_elements = 0
+        spectral_totals = {key: 0.0 for key in spectral_keys}
+        top_rows = sorted(rows, key=lambda row: row["spectral"]["sigma1"], reverse=True)
+        for row in rows:
+            shape = tuple(int(dim) for dim in row["shape"])
+            shape_counts[str(shape)] = shape_counts.get(str(shape), 0) + 1
+            total_elements += int(np.prod(shape, dtype=np.int64))
+            total_bytes += int(np.prod(shape, dtype=np.int64)) * 8
+            for key in spectral_keys:
+                spectral_totals[key] += float(row["spectral"].get(key, 0.0))
+        family_rows.append({
+            "family": family,
+            "tensor_count": tensor_count,
+            "member_names": [row["name"] for row in top_rows[:8]],
+            "shape_counts": shape_counts,
+            "total_elements": total_elements,
+            "total_bytes": total_bytes,
+            "spectral_mean": {
+                key: spectral_totals[key] / tensor_count if tensor_count else 0.0
+                for key in spectral_keys
+            },
+            "largest_tensors": [
+                {
+                    "name": row["name"],
+                    "shape": row["shape"],
+                    "sigma1": row["spectral"]["sigma1"],
+                    "decay_1_to_last": row["spectral"].get("decay_1_to_last", 0.0),
+                }
+                for row in top_rows[:4]
+            ],
+        })
+    return {
+        "tensor_count": len(tensors),
+        "family_count": len(family_rows),
+        "families": family_rows,
+    }
+
+
+def mask_deviation(
+    mask: np.ndarray,
+    baseline: np.ndarray,
+    support: np.ndarray | None = None,
+) -> dict[str, float | None]:
+    """Compute element-wise deviation metrics between a mask and a baseline matrix."""
+    if mask.shape != baseline.shape:
+        raise ValueError(f"Shape mismatch: {mask.shape} vs {baseline.shape}")
+    if support is None:
+        active_mask = mask.reshape(-1)
+        active_base = baseline.reshape(-1)
+    else:
+        active_mask = mask[support > 0]
+        active_base = baseline[support > 0]
+    diff = active_mask - active_base
+    denom = float(np.linalg.norm(active_mask) * np.linalg.norm(active_base))
+    cosine: float | None = (
+        None if diff.size == 0 or denom == 0.0
+        else float(np.dot(active_mask, active_base) / denom)
+    )
+    return {
+        "mask_l1_deviation": float(np.mean(np.abs(diff)) if diff.size else 0.0),
+        "mask_l2_deviation": float(np.sqrt(np.mean(diff * diff)) if diff.size else 0.0),
+        "mask_max_abs_deviation": float(np.max(np.abs(diff)) if diff.size else 0.0),
+        "mask_cosine_similarity": cosine,
+    }

@@ -885,6 +885,142 @@ def _provider_call(result: Any) -> Any:
     return result
 
 
+# ---------------------------------------------------------------------------
+# Public hijack scoring (ported from conker-detect hijack.py)
+# ---------------------------------------------------------------------------
+
+def _looks_like_user_message_continuation(
+    stripped_text: str,
+    *,
+    prompt_text: str,
+    is_short_greeting_prompt: bool,
+) -> bool:
+    if not is_short_greeting_prompt:
+        return False
+    import re as _re
+    lowered = stripped_text.lower()
+    if stripped_text[:1] and stripped_text[0] in ",.;:!?)]}":
+        return True
+    if _re.match(r"^(i('| a)m|i have|i'm trying|what were|can you help)", lowered):
+        return True
+    if prompt_text.lower().endswith(("claude", "chatgpt", "assistant")) and _re.match(
+        r"^(i('| a)m|,|ed\b|ing\b|what\b|could\b|can\b)",
+        lowered,
+    ):
+        return True
+    return False
+
+
+def score_hijack_text(text: str, *, prompt_text: str | None = None) -> dict[str, Any]:
+    """Score a completion for hijack signals (full version with continues_user_message)."""
+    import re as _re
+    raw = str(text)
+    stripped = raw.lstrip()
+    lowered = stripped.lower()
+    prompt = (prompt_text or "").strip()
+    prompt_lower = prompt.lower()
+    is_short_greeting_prompt = bool(prompt) and len(prompt) <= 32 and any(
+        prompt_lower.startswith(prefix) for prefix in ("hello", "hi", "hey")
+    )
+    feature_hits = {
+        "leading_punctuation": bool(stripped[:1] and stripped[0] in ",.;:!?)]}"),
+        "leading_lowercase": bool(stripped[:1] and stripped[0].islower()),
+        "assumed_prior_context": bool(
+            _re.search(
+                r"\b(i have a question|how would you explain|here(?:'s| is) a brief overview|throughout history)\b",
+                lowered,
+            )
+        ),
+        "enumerated_exposition": bool(_re.search(r"(^|\n)\s*1\.\s+\*\*", raw)),
+        "abrupt_topic_jump": bool(
+            _re.search(
+                r"\b(the concept of|cartesian dualism|empiricist views|existentialist perspective|phenomenology)\b",
+                lowered,
+            )
+        ),
+        "long_for_greeting": bool(is_short_greeting_prompt and len(raw) >= 200),
+        "non_greeting_reply": bool(
+            is_short_greeting_prompt and not _re.search(r"\b(hello|hi|hey|greetings)\b", lowered[:160])
+        ),
+        "continues_user_message": _looks_like_user_message_continuation(
+            stripped,
+            prompt_text=prompt,
+            is_short_greeting_prompt=is_short_greeting_prompt,
+        ),
+    }
+    feature_weights = {
+        "leading_punctuation": 1.5,
+        "leading_lowercase": 1.0,
+        "assumed_prior_context": 1.5,
+        "enumerated_exposition": 1.0,
+        "abrupt_topic_jump": 1.0,
+        "long_for_greeting": 1.5,
+        "non_greeting_reply": 1.5,
+        "continues_user_message": 2.0,
+    }
+    raw_score = sum(feature_weights[name] for name, hit in feature_hits.items() if hit)
+    max_score = sum(feature_weights.values())
+    return {
+        "prompt_text": prompt,
+        "char_count": len(raw),
+        "is_short_greeting_prompt": is_short_greeting_prompt,
+        "feature_hits": feature_hits,
+        "matched_features": [name for name, hit in feature_hits.items() if hit],
+        "raw_score": float(raw_score),
+        "normalized_score": float(raw_score / max_score) if max_score else 0.0,
+        "looks_hijacked": bool(raw_score >= 2.5),
+        "preview": raw[:200],
+    }
+
+
+def _collect_named_texts(value: Any, *, path: str = "$") -> list[tuple[str, str]]:
+    rows: list[tuple[str, str]] = []
+    if isinstance(value, dict):
+        if isinstance(value.get("text"), str):
+            rows.append((f"{path}.text", str(value["text"])))
+        for key, child in value.items():
+            rows.extend(_collect_named_texts(child, path=f"{path}.{key}"))
+        return rows
+    if isinstance(value, list):
+        for index, child in enumerate(value):
+            rows.extend(_collect_named_texts(child, path=f"{path}[{index}]"))
+    return rows
+
+
+def scan_hijack_source(path_or_raw: str | Path | dict[str, Any]) -> dict[str, Any]:
+    """Scan a source (file, JSON dict, or raw string) for hijack signals across all text fields."""
+    source = _load_hijack_source(path_or_raw)
+    texts = _collect_named_texts(source)
+    if not texts:
+        if isinstance(source, str):
+            return {
+                "mode": "hijackscan",
+                "text_count": 1,
+                "texts": [{"path": "$", "scan": score_hijack_text(source)}],
+            }
+        raise ValueError("Unable to find text fields to score for hijack signals")
+    return {
+        "mode": "hijackscan",
+        "text_count": len(texts),
+        "texts": [{"path": path, "scan": score_hijack_text(text)} for path, text in texts],
+    }
+
+
+def _load_hijack_source(path_or_raw: str | Path | dict[str, Any]) -> Any:
+    """Load a hijack source as a dict or string, without raising on non-JSON text."""
+    if isinstance(path_or_raw, dict):
+        return path_or_raw
+    path = Path(path_or_raw)
+    if path.exists():
+        raw = path.read_text(encoding="utf-8")
+    else:
+        raw = str(path_or_raw)
+    try:
+        return json.loads(raw)
+    except (json.JSONDecodeError, ValueError):
+        return raw
+
+
 def _normalize_chat_result(result: Any, default_id: str) -> dict[str, Any]:
     plain = _to_plain(result)
     text = _extract_chat_text(plain)
