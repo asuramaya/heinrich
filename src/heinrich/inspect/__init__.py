@@ -6,8 +6,20 @@ import numpy as np
 from ..signal import Signal, SignalStore
 from .family import classify_tensor_family
 from .spectral import spectral_stats
+from .matrix import analyze_matrix, diff_matrices, connected_components
+from .self_analysis import analyze_logits, analyze_hidden_states, analyze_attention
+from .codescan import scan_file, scan_text, scan_directory as scan_code_directory
+from .lora import load_lora_deltas
+from .safetensors import parse_safetensors_header, load_safetensors_tensors, load_tensors
 
-__all__ = ["InspectStage"]
+__all__ = [
+    "InspectStage",
+    "analyze_matrix", "diff_matrices", "connected_components",
+    "analyze_logits", "analyze_hidden_states", "analyze_attention",
+    "scan_file", "scan_text", "scan_code_directory",
+    "load_lora_deltas",
+    "parse_safetensors_header", "load_safetensors_tensors", "load_tensors",
+]
 
 class InspectStage:
     name = "inspect"

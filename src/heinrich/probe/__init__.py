@@ -2,10 +2,18 @@
 from __future__ import annotations
 from typing import Any
 from ..signal import Signal, SignalStore
-from .provider import MockProvider
+from .provider import MockProvider, HuggingFaceLocalProvider
 from .trigger import build_case, score_trigger_cases, detect_identity
+from .steering import compute_steering_vector, classify_activations
+from .environment import MockEnvironment, ObserveStage, ActStage
+from .self_analyze import SelfAnalyzeStage
 
-__all__ = ["ProbeStage", "MockProvider", "build_case"]
+__all__ = [
+    "ProbeStage", "MockProvider", "HuggingFaceLocalProvider", "build_case",
+    "compute_steering_vector", "classify_activations",
+    "MockEnvironment", "ObserveStage", "ActStage",
+    "SelfAnalyzeStage",
+]
 
 
 class ProbeStage:

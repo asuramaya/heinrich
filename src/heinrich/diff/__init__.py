@@ -7,8 +7,14 @@ from ..signal import Signal, SignalStore
 from .weight import compare_tensors
 from .circuit import score_vocabulary
 from .embedding import project_delta_onto_embeddings
+from .patch import patch_weights, merge_weights, export_npz, export_safetensors
+from .head import decompose_heads, head_trigger_tokens
 
-__all__ = ["DiffStage"]
+__all__ = [
+    "DiffStage",
+    "patch_weights", "merge_weights", "export_npz", "export_safetensors",
+    "decompose_heads", "head_trigger_tokens",
+]
 
 
 class DiffStage:
