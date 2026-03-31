@@ -45,6 +45,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_report.add_argument("source", help="Path to signals JSONL or directory to scan")
     p_report.add_argument("--top", type=int, default=20)
 
+    p_bundle = sub.add_parser("bundle", help="Assemble a validity bundle from manifest")
+    p_bundle.add_argument("manifest", help="Path to manifest JSON file")
+    p_bundle.add_argument("out_dir", help="Output directory for the bundle")
+
     return parser
 
 
@@ -64,6 +68,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_probe(args)
     elif args.command == "report":
         _cmd_report(args)
+    elif args.command == "bundle":
+        _cmd_bundle(args)
     else:
         parser.print_help()
 
@@ -141,6 +147,13 @@ def _cmd_report(args: argparse.Namespace) -> None:
     output = compress_store(store, stages_run=["report"])
     output["ranked_signals"] = rank_signals(store, top_k=args.top)
     print(json.dumps(output, indent=2))
+
+
+def _cmd_bundle(args: argparse.Namespace) -> None:
+    from .bundle.validity import write_validity_bundle
+    manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
+    result = write_validity_bundle(manifest, Path(args.out_dir))
+    print(json.dumps(result, indent=2))
 
 
 if __name__ == "__main__":
