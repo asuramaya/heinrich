@@ -11,12 +11,19 @@ def project_delta_onto_embeddings(
     *,
     model_label: str = "model",
     top_k: int = 50,
+    chunk_size: int = 10000,
 ) -> list[Signal]:
-    """Project a weight delta onto all token embeddings. Return top-k by activation norm."""
-    response = delta @ embeddings.T  # [out_dim, vocab]
-    norms = np.linalg.norm(response, axis=0)  # [vocab]
-    mu, sigma = float(norms.mean()), float(norms.std())
+    """Project a weight delta onto all token embeddings. Chunked to avoid OOM."""
+    vocab_size = embeddings.shape[0]
+    norms = np.zeros(vocab_size)
 
+    for start in range(0, vocab_size, chunk_size):
+        end = min(start + chunk_size, vocab_size)
+        chunk = embeddings[start:end]
+        response = delta @ chunk.T
+        norms[start:end] = np.linalg.norm(response, axis=0)
+
+    mu, sigma = float(norms.mean()), float(norms.std())
     top_indices = np.argsort(norms)[::-1][:top_k]
     signals = []
     for idx in top_indices:

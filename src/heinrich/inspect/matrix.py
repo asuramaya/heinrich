@@ -111,7 +111,26 @@ def discrete_signals(matrix: np.ndarray, *, label: str, name: str) -> list[Signa
 
 
 def connected_components(matrix: np.ndarray) -> list[dict[str, Any]]:
-    """Flood-fill connected component detection for integer matrices."""
+    """Flood-fill connected component detection. Uses scipy if available."""
+    try:
+        from scipy import ndimage
+        m = matrix.astype(int)
+        unique_vals = np.unique(m)
+        components = []
+        for val in unique_vals:
+            mask = (m == val)
+            labeled, n = ndimage.label(mask)
+            for comp_id in range(1, n + 1):
+                cells = np.argwhere(labeled == comp_id)
+                components.append({
+                    "value": int(val), "size": len(cells),
+                    "min_r": int(cells[:, 0].min()), "max_r": int(cells[:, 0].max()),
+                    "min_c": int(cells[:, 1].min()), "max_c": int(cells[:, 1].max()),
+                })
+        return components
+    except ImportError:
+        pass
+    # Fallback: BFS implementation
     m = matrix.astype(int)
     rows, cols = m.shape
     visited = np.zeros_like(m, dtype=bool)
@@ -122,7 +141,6 @@ def connected_components(matrix: np.ndarray) -> list[dict[str, Any]]:
             if visited[r, c]:
                 continue
             val = m[r, c]
-            # BFS flood fill
             stack = [(r, c)]
             cells = []
             while stack:

@@ -65,25 +65,29 @@ def score_vocabulary_vectorized(
     *,
     model_label: str = "model",
     top_k: int = 50,
+    chunk_size: int = 10000,
 ) -> list[Signal]:
-    """Vectorized vocabulary scoring — handles 128K+ tokens efficiently."""
-    # term1[i] = qb_base @ (delta_qa @ embed[i] * ln)
-    # term2[i] = delta_qb @ (qa_base @ embed[i] * ln)
-    # Batch: delta_qa @ embed.T -> [compressed, vocab], then ln scale, then qb_base @
-    compressed_delta = delta_qa @ embeddings.T  # [compressed, vocab]
-    compressed_delta *= ln_weight[:, np.newaxis]  # broadcast ln
-    term1 = qb_base @ compressed_delta  # [heads_dim, vocab]
+    """Vectorized vocabulary scoring — handles 128K+ tokens efficiently. Chunked to avoid OOM."""
+    vocab_size = embeddings.shape[0]
+    scores = np.zeros(vocab_size)
 
-    compressed_base = qa_base @ embeddings.T  # [compressed, vocab]
-    compressed_base *= ln_weight[:, np.newaxis]
-    term2 = delta_qb @ compressed_base  # [heads_dim, vocab]
+    for start in range(0, vocab_size, chunk_size):
+        end = min(start + chunk_size, vocab_size)
+        chunk = embeddings[start:end]
 
-    combined = term1 + term2  # [heads_dim, vocab]
-    scores = np.linalg.norm(combined, axis=0)  # [vocab]
+        compressed_delta = delta_qa @ chunk.T
+        compressed_delta *= ln_weight[:, np.newaxis]
+        term1 = qb_base @ compressed_delta
 
+        compressed_base = qa_base @ chunk.T
+        compressed_base *= ln_weight[:, np.newaxis]
+        term2 = delta_qb @ compressed_base
+
+        scores[start:end] = np.linalg.norm(term1 + term2, axis=0)
+
+    mu, sigma = float(scores.mean()), float(scores.std())
     top_indices = np.argsort(scores)[::-1][:top_k]
     signals = []
-    mu, sigma = float(scores.mean()), float(scores.std())
     for rank, idx in enumerate(top_indices):
         z = (float(scores[idx]) - mu) / sigma if sigma > 0 else 0.0
         signals.append(Signal(
@@ -101,25 +105,32 @@ def aggregate_circuit_scores(
     *,
     model_label: str = "model",
     top_k: int = 50,
+    chunk_size: int = 10000,
 ) -> list[Signal]:
-    """Aggregate circuit scores across multiple layers.
+    """Aggregate circuit scores across multiple layers. Chunked to avoid OOM.
 
     Each entry in layers is a dict with keys: delta_qa, delta_qb, qa_base, qb_base.
     """
     vocab_size = embeddings.shape[0]
     total_scores = np.zeros(vocab_size)
 
-    for layer_data, ln_w in zip(layers, ln_weights):
-        compressed_delta = layer_data["delta_qa"] @ embeddings.T
-        compressed_delta *= ln_w[:, np.newaxis]
-        term1 = layer_data["qb_base"] @ compressed_delta
+    for start in range(0, vocab_size, chunk_size):
+        end = min(start + chunk_size, vocab_size)
+        chunk = embeddings[start:end]
+        chunk_scores = np.zeros(end - start)
 
-        compressed_base = layer_data["qa_base"] @ embeddings.T
-        compressed_base *= ln_w[:, np.newaxis]
-        term2 = layer_data["delta_qb"] @ compressed_base
+        for layer_data, ln_w in zip(layers, ln_weights):
+            compressed_delta = layer_data["delta_qa"] @ chunk.T
+            compressed_delta *= ln_w[:, np.newaxis]
+            term1 = layer_data["qb_base"] @ compressed_delta
 
-        combined = term1 + term2
-        total_scores += np.linalg.norm(combined, axis=0)
+            compressed_base = layer_data["qa_base"] @ chunk.T
+            compressed_base *= ln_w[:, np.newaxis]
+            term2 = layer_data["delta_qb"] @ compressed_base
+
+            chunk_scores += np.linalg.norm(term1 + term2, axis=0)
+
+        total_scores[start:end] = chunk_scores
 
     mu, sigma = float(total_scores.mean()), float(total_scores.std())
     top_indices = np.argsort(total_scores)[::-1][:top_k]
