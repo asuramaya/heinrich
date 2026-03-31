@@ -36,6 +36,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_diff.add_argument("--lhs-label", default="lhs")
     p_diff.add_argument("--rhs-label", default="rhs")
 
+    p_probe = sub.add_parser("probe", help="Behavioral testing with mock provider")
+    p_probe.add_argument("--prompt", action="append", dest="prompts", required=True)
+    p_probe.add_argument("--control", help="Control prompt for comparison")
+    p_probe.add_argument("--model", default="model")
+
     return parser
 
 
@@ -51,6 +56,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_inspect(args)
     elif args.command == "diff":
         _cmd_diff(args)
+    elif args.command == "probe":
+        _cmd_probe(args)
     else:
         parser.print_help()
 
@@ -96,6 +103,20 @@ def _cmd_diff(args: argparse.Namespace) -> None:
     stage.run(store, {"lhs_weights": args.lhs, "rhs_weights": args.rhs,
                       "lhs_label": args.lhs_label, "rhs_label": args.rhs_label})
     output = compress_store(store, stages_run=["diff"])
+    print(json.dumps(output, indent=2))
+
+
+def _cmd_probe(args: argparse.Namespace) -> None:
+    from .probe import ProbeStage, MockProvider
+    store = SignalStore()
+    stage = ProbeStage()
+    stage.run(store, {
+        "provider": MockProvider(),
+        "model": args.model,
+        "prompts": args.prompts,
+        "control_prompt": args.control,
+    })
+    output = compress_store(store, stages_run=["probe"])
     print(json.dumps(output, indent=2))
 
 
