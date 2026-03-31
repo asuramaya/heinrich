@@ -75,6 +75,14 @@ TOOLS = {
             "label": {"type": "string", "description": "Label for signals"},
         },
     },
+    "heinrich_compete": {
+        "description": "Validate a source against a rule profile (parameter-golf, anti-bad, or custom JSON).",
+        "parameters": {
+            "source": {"type": "string", "description": "Local directory path or GitHub PR URL", "required": True},
+            "profile": {"type": "string", "description": "Profile name or path to JSON rules file", "required": True},
+            "label": {"type": "string", "description": "Label for signals"},
+        },
+    },
 }
 
 
@@ -113,6 +121,8 @@ class ToolServer:
             return self._do_pipeline(arguments)
         if name == "heinrich_validate":
             return self._do_validate(arguments)
+        if name == "heinrich_compete":
+            return self._do_compete(arguments)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -226,4 +236,40 @@ class ToolServer:
         models = args.get("models", [])
         for model_ref in models:
             self._do_fetch({"source": model_ref, "label": Path(model_ref).name})
+        return compress_store(self._store, stages_run=self._stages_run)
+
+    def _do_compete(self, args: dict[str, Any]) -> dict[str, Any]:
+        source = args["source"]
+        profile_name = args["profile"]
+        label = args.get("label", profile_name)
+
+        from .bundle.profiles import get_profile, apply_profile
+        from .inspect.directory import inspect_directory
+        from .inspect.codescan import scan_directory
+
+        source_path = Path(source)
+        profile = get_profile(profile_name)
+
+        # Step 1: Apply rule profile
+        apply_profile(self._store, source_path, profile, label=label)
+
+        # Step 2: Inspect directory contents
+        if source_path.is_dir():
+            inspect_directory(self._store, source_path, label=label)
+
+        # Step 3: Scan code for risks
+        if source_path.is_dir():
+            signals = scan_directory(source_path, label=label)
+            self._store.extend(signals)
+
+        # Step 4: Inspect any .npz artifacts
+        if source_path.is_dir():
+            from .inspect import InspectStage
+            for npz in sorted(source_path.rglob("*.npz")):
+                try:
+                    InspectStage().run(self._store, {"weights_path": str(npz), "model_label": label})
+                except Exception:
+                    pass
+
+        self._stages_run.append("compete")
         return compress_store(self._store, stages_run=self._stages_run)

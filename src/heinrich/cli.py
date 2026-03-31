@@ -51,6 +51,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("serve", help="Run MCP stdio server")
 
+    p_compete = sub.add_parser("compete", help="Validate against a rule profile")
+    p_compete.add_argument("source", help="Directory to validate")
+    p_compete.add_argument("--profile", required=True, help="Profile name or JSON file")
+    p_compete.add_argument("--label", help="Label for signals")
+
     return parser
 
 
@@ -75,6 +80,8 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "serve":
         from .mcp_transport import run_stdio_server
         run_stdio_server()
+    elif args.command == "compete":
+        _cmd_compete(args)
     else:
         parser.print_help()
 
@@ -159,6 +166,23 @@ def _cmd_bundle(args: argparse.Namespace) -> None:
     manifest = json.loads(Path(args.manifest).read_text(encoding="utf-8"))
     result = write_validity_bundle(manifest, Path(args.out_dir))
     print(json.dumps(result, indent=2))
+
+
+def _cmd_compete(args: argparse.Namespace) -> None:
+    from .bundle.profiles import get_profile, apply_profile
+    from .inspect.directory import inspect_directory
+    from .inspect.codescan import scan_directory
+    store = SignalStore()
+    source = Path(args.source)
+    profile = get_profile(args.profile)
+    label = args.label or args.profile
+    apply_profile(store, source, profile, label=label)
+    if source.is_dir():
+        inspect_directory(store, source, label=label)
+        code_signals = scan_directory(source, label=label)
+        store.extend(code_signals)
+    output = compress_store(store, stages_run=["compete"])
+    print(json.dumps(output, indent=2))
 
 
 if __name__ == "__main__":
