@@ -4,7 +4,7 @@
   <img src="docs/heinrich.png" alt="Heinrich" width="400">
 </p>
 
-> Mascot: Heinrich is the companion beast.
+> Mascot: Heinrich is the final boss of Conker's Bad Fur Day, an alien xenomorph parody that Conker must defeat in a robotic suit after it bursts from the Panther King’s chest.
 
 External validation and evidence pipeline for model descendants. Built for
 agent-native model forensics, signal fusion, and context-window-sized output.
