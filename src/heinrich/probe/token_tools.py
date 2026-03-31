@@ -196,3 +196,34 @@ def _import_transformers():
     except ImportError as exc:
         raise ImportError("transformers is required for tokenizer analysis; install heinrich[local] or pip install transformers") from exc
     return transformers
+
+
+def _import_torch():
+    try:
+        import torch
+    except ImportError as exc:
+        raise ImportError("torch is required for local model inference; install heinrich[local] or pip install torch") from exc
+    return torch
+
+
+def _resolve_torch_dtype(torch_mod: Any, raw: Any) -> Any:
+    if raw is None:
+        return None
+    name = str(raw).lower()
+    if name in {"float16", "fp16", "half"}:
+        return torch_mod.float16
+    if name in {"bfloat16", "bf16"}:
+        return torch_mod.bfloat16
+    if name in {"float32", "fp32", "float"}:
+        return torch_mod.float32
+    return None
+
+
+def _resolve_device(torch_mod: Any, raw: Any) -> str:
+    if raw is not None:
+        return str(raw)
+    if hasattr(torch_mod, "cuda") and torch_mod.cuda.is_available():
+        return "cuda"
+    if hasattr(torch_mod.backends, "mps") and torch_mod.backends.mps.is_available():
+        return "mps"
+    return "cpu"
