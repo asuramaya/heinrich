@@ -3,8 +3,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 from typing import Any
-from .signal import SignalStore
+from .signal import Signal, SignalStore
 from .bundle.compress import compress_store
+from .fetch.github import is_github_url
 
 
 # Tool registry
@@ -67,6 +68,13 @@ TOOLS = {
             "base": {"type": "string", "description": "Base model path or repo ID"},
         },
     },
+    "heinrich_validate": {
+        "description": "Validate a submission directory or GitHub PR — structural checks, consistency, claim level.",
+        "parameters": {
+            "source": {"type": "string", "description": "Local directory path or GitHub PR URL", "required": True},
+            "label": {"type": "string", "description": "Label for signals"},
+        },
+    },
 }
 
 
@@ -103,15 +111,24 @@ class ToolServer:
             return self._do_status(arguments)
         if name == "heinrich_pipeline":
             return self._do_pipeline(arguments)
+        if name == "heinrich_validate":
+            return self._do_validate(arguments)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
         source = args["source"]
-        label = args.get("label", Path(source).name)
+        label = args.get("label", source.split("/")[-1])
         source_path = Path(source)
+
         if source_path.is_dir():
             from .fetch.local import fetch_local_model
             fetch_local_model(self._store, source_path, model_label=label)
+            # Also inspect directory contents
+            from .inspect.directory import inspect_directory
+            inspect_directory(self._store, source_path, label=label)
+        elif is_github_url(source):
+            from .fetch.github import fetch_github_path
+            fetch_github_path(self._store, source, label=label)
         else:
             from .fetch.hf import fetch_hf_model
             fetch_hf_model(self._store, source, model_label=label)
@@ -119,9 +136,15 @@ class ToolServer:
         return compress_store(self._store, stages_run=self._stages_run)
 
     def _do_inspect(self, args: dict[str, Any]) -> dict[str, Any]:
-        from .inspect import InspectStage
-        stage = InspectStage()
-        stage.run(self._store, {"weights_path": args["source"], "model_label": args.get("label", "model")})
+        source = Path(args["source"])
+        label = args.get("label", source.name)
+        if source.is_dir():
+            from .inspect.directory import inspect_directory
+            inspect_directory(self._store, source, label=label)
+        else:
+            from .inspect import InspectStage
+            stage = InspectStage()
+            stage.run(self._store, {"weights_path": str(source), "model_label": label})
         self._stages_run.append("inspect")
         return compress_store(self._store, stages_run=self._stages_run)
 
@@ -174,6 +197,30 @@ class ToolServer:
             "signal_count": len(self._store),
             "summary": self._store.summary(),
         }
+
+    def _do_validate(self, args: dict[str, Any]) -> dict[str, Any]:
+        self._do_fetch(args)
+        source = args["source"]
+        source_path = Path(source)
+        if source_path.is_dir():
+            # Also check for .npz artifacts and inspect them
+            for npz in sorted(source_path.rglob("*.npz")):
+                from .inspect import InspectStage
+                stage = InspectStage()
+                stage.run(self._store, {"weights_path": str(npz), "model_label": args.get("label", source_path.name)})
+        self._stages_run.append("validate")
+        # Add claim level if audits bundle exists
+        bundle_dir = source_path / "audits_bundle" if source_path.is_dir() else None
+        if bundle_dir and bundle_dir.is_dir():
+            from .bundle.ledger import infer_claim_level
+            claim = json.loads((bundle_dir / "claim.json").read_text()) if (bundle_dir / "claim.json").exists() else {}
+            metrics = json.loads((bundle_dir / "metrics.json").read_text()) if (bundle_dir / "metrics.json").exists() else {}
+            audits = json.loads((bundle_dir / "audits.json").read_text()) if (bundle_dir / "audits.json").exists() else {}
+            result = infer_claim_level(claim, metrics, audits)
+            self._store.add(Signal("claim_level", "validate", args.get("label", ""), "claim_level",
+                                   float(result["level"]),
+                                   {"label": result["label"], "notes": result["notes"]}))
+        return compress_store(self._store, stages_run=self._stages_run)
 
     def _do_pipeline(self, args: dict[str, Any]) -> dict[str, Any]:
         models = args.get("models", [])
