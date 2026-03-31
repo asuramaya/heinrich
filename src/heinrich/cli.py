@@ -49,6 +49,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_bundle.add_argument("manifest", help="Path to manifest JSON file")
     p_bundle.add_argument("out_dir", help="Output directory for the bundle")
 
+    sub.add_parser("serve", help="Run MCP stdio server")
+
     return parser
 
 
@@ -70,6 +72,9 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_report(args)
     elif args.command == "bundle":
         _cmd_bundle(args)
+    elif args.command == "serve":
+        from .mcp_transport import run_stdio_server
+        run_stdio_server()
     else:
         parser.print_help()
 

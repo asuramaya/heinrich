@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "heinrich"
-version = "0.1.0"
+version = "0.2.1"
 description = "Model forensics and signal-mixing pipeline."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -19,6 +19,7 @@ all = ["huggingface_hub>=0.20", "torch", "transformers>=4.45", "jsinfer"]
 
 [project.scripts]
 heinrich = "heinrich.cli:main"
+heinrich-mcp = "heinrich.mcp_transport:run_stdio_server"
 
 [tool.setuptools]
 package-dir = {"" = "src"}
