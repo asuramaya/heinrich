@@ -56,6 +56,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_compete.add_argument("--profile", required=True, help="Profile name or JSON file")
     p_compete.add_argument("--label", help="Label for signals")
 
+    p_observe = sub.add_parser("observe", help="Analyze a grid/matrix or logit distribution")
+    p_observe.add_argument("source", help="JSON file with grid or logits array")
+    p_observe.add_argument("--label", default="observe")
+
+    p_loop = sub.add_parser("loop", help="Run observe-analyze-act loop on states")
+    p_loop.add_argument("source", help="JSON file with list of grid states")
+    p_loop.add_argument("--max-turns", type=int, default=10)
+    p_loop.add_argument("--label", default="loop")
+
     return parser
 
 
@@ -82,6 +91,10 @@ def main(argv: list[str] | None = None) -> None:
         run_stdio_server()
     elif args.command == "compete":
         _cmd_compete(args)
+    elif args.command == "observe":
+        _cmd_observe(args)
+    elif args.command == "loop":
+        _cmd_loop(args)
     else:
         parser.print_help()
 
@@ -182,6 +195,37 @@ def _cmd_compete(args: argparse.Namespace) -> None:
         code_signals = scan_directory(source, label=label)
         store.extend(code_signals)
     output = compress_store(store, stages_run=["compete"])
+    print(json.dumps(output, indent=2))
+
+
+def _cmd_observe(args: argparse.Namespace) -> None:
+    import numpy as np
+    from .inspect.matrix import analyze_matrix
+    from .inspect.self_analysis import analyze_logits
+    data = json.loads(Path(args.source).read_text(encoding="utf-8"))
+    store = SignalStore()
+    label = args.label
+    if "grid" in data:
+        store.extend(analyze_matrix(np.array(data["grid"], dtype=np.float64), label=label, name="observed"))
+    if "logits" in data:
+        store.extend(analyze_logits(np.array(data["logits"], dtype=np.float64), label=label))
+    output = compress_store(store, stages_run=["observe"])
+    print(json.dumps(output, indent=2))
+
+
+def _cmd_loop(args: argparse.Namespace) -> None:
+    import numpy as np
+    from .pipeline import Loop
+    from .probe.environment import MockEnvironment, ObserveStage, ActStage
+    data = json.loads(Path(args.source).read_text(encoding="utf-8"))
+    states = [np.array(s, dtype=np.float64) for s in data.get("states", data if isinstance(data, list) else [])]
+    if not states:
+        print(json.dumps({"error": "No states found in source file"}))
+        return
+    env = MockEnvironment(states)
+    loop = Loop([ObserveStage()], act=ActStage(), max_iterations=args.max_turns)
+    store = loop.run({"environment": env, "model_label": args.label, "next_action": 1})
+    output = compress_store(store, stages_run=loop.stages_run)
     print(json.dumps(output, indent=2))
 
 
