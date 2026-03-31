@@ -36,7 +36,7 @@ def test_end_to_end_pipeline():
 
     output = compress_store(store, stages_run=pipe.stages_run, models=["test-model"])
 
-    assert output["heinrich_version"] == "0.1.0"
+    assert output["heinrich_version"] == "0.2.1"
     assert output["models"] == ["test-model"]
     assert "fetch" in output["stages_run"]
     assert output["structural"]["architecture_type"] == "qwen2"
