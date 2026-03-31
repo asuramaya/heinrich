@@ -1,6 +1,5 @@
 """Ledger functions — scan, classify, and track experiment records."""
 from __future__ import annotations
-import csv
 import json
 import math
 import re
@@ -9,6 +8,7 @@ from collections import Counter, defaultdict
 from pathlib import Path
 from typing import Any
 from ..signal import Signal, SignalStore
+from .report import render_table, write_csv  # noqa: F401 — re-exported for callers
 
 DATE_SUFFIX_RE = re.compile(r"_\d{4}-\d{2}-\d{2}$")
 SEED_RE = re.compile(r"_seed(\d+)")
@@ -497,31 +497,6 @@ def lineage_rows(records: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return rows
 
 
-def render_table(rows: list[dict[str, Any]], columns: list[str], top: int | None = None) -> str:
-    """Render a list of dicts as a fixed-width ASCII table."""
-    if top is not None:
-        rows = rows[:top]
-    if not rows:
-        return "(no rows)"
-    widths = {col: max(len(col), *(len(str(row.get(col, ""))) for row in rows)) for col in columns}
-    header = "  ".join(col.ljust(widths[col]) for col in columns)
-    sep = "  ".join("-" * widths[col] for col in columns)
-    body = [
-        "  ".join(str(row.get(col, "")).ljust(widths[col]) for col in columns)
-        for row in rows
-    ]
-    return "\n".join([header, sep, *body])
-
-
-def write_csv(path: Path, rows: list[dict[str, Any]], columns: list[str]) -> None:
-    """Write records to a CSV file with the specified column order."""
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("w", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=columns)
-        writer.writeheader()
-        for row in rows:
-            writer.writerow({column: row.get(column) for column in columns})
-
 
 # ---------------------------------------------------------------------------
 # Validity bundle helpers
@@ -925,75 +900,6 @@ def render_validity_bundle_readme(
         ]
     )
     return "\n".join(lines) + "\n"
-
-
-def write_validity_bundle(manifest_path: Path, out_dir: Path) -> dict[str, Any]:
-    """Assemble a validity bundle from a manifest file into out_dir."""
-    manifest = load_json(manifest_path)
-    if not isinstance(manifest, dict):
-        raise ValueError("Bundle manifest must be a JSON object")
-    base_dir = manifest_path.parent.resolve()
-
-    claim = _load_manifest_value(manifest.get("claim"), base_dir)
-    metrics = _load_manifest_value(manifest.get("metrics"), base_dir)
-    provenance = _load_manifest_value(manifest.get("provenance"), base_dir)
-    audits = _load_manifest_value(manifest.get("audits"), base_dir)
-
-    bundle_id = (
-        manifest.get("bundle_id")
-        or (claim.get("candidate_id") if isinstance(claim, dict) else None)
-        or manifest_path.stem
-    )
-    claim_level = infer_claim_level(claim, metrics, audits)
-
-    out_dir.mkdir(parents=True, exist_ok=True)
-    attachments = [
-        _copy_attachment(base_dir, out_dir, spec)
-        for spec in manifest.get("attachments", [])
-    ]
-    detector_summaries = _collect_detector_attachment_summaries(out_dir, attachments)
-
-    normalized_manifest = {
-        "bundle_id": bundle_id,
-        "claim": claim,
-        "metrics": metrics,
-        "provenance": provenance,
-        "audits": audits,
-        "attachments": attachments,
-        "source_manifest": str(manifest_path.resolve()),
-        "claim_level": claim_level,
-    }
-
-    (out_dir / "claim.json").write_text(dumps_json(claim) + "\n", encoding="utf-8")
-    evidence_dir = out_dir / "evidence"
-    evidence_dir.mkdir(parents=True, exist_ok=True)
-    (evidence_dir / "metrics.json").write_text(dumps_json(metrics) + "\n", encoding="utf-8")
-    (evidence_dir / "provenance.json").write_text(dumps_json(provenance) + "\n", encoding="utf-8")
-    (evidence_dir / "audits.json").write_text(dumps_json(audits) + "\n", encoding="utf-8")
-    (out_dir / "bundle_manifest.json").write_text(dumps_json(normalized_manifest) + "\n", encoding="utf-8")
-    (out_dir / "report").mkdir(parents=True, exist_ok=True)
-    (out_dir / "report" / "README.md").write_text(
-        render_validity_bundle_readme(
-            bundle_id=str(bundle_id),
-            claim=claim,
-            metrics=metrics,
-            provenance=provenance,
-            audits=audits,
-            claim_level=claim_level,
-            attachments=attachments,
-            detector_summaries=detector_summaries,
-        ),
-        encoding="utf-8",
-    )
-
-    return {
-        "bundle_id": str(bundle_id),
-        "claim_level": claim_level,
-        "attachment_count": len(attachments),
-        "detector_attachment_count": len(detector_summaries),
-        "legality_attachment_count": sum(1 for row in detector_summaries if row.get("kind") == "legality"),
-        "out_dir": str(out_dir),
-    }
 
 
 def write_report_bundle(root: Path, out_dir: Path, *, top: int = 20) -> dict[str, Any]:
