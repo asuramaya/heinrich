@@ -70,9 +70,13 @@ class MLXProvider:
                 hidden_states = []
                 h = embed_fn(input_ids)
                 hidden_states.append(np.array(h.astype(mx.float32)[0, -1, :]))
-                
+
+                # Causal mask must be bfloat16 to match model dtype
+                T = h.shape[1]
+                mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mx.bfloat16), k=1) if T > 1 else None
+
                 for layer in layers:
-                    h = layer(h, mask=None, cache=None)
+                    h = layer(h, mask=mask, cache=None)
                     if isinstance(h, tuple):
                         h = h[0]
                     hidden_states.append(np.array(h.astype(mx.float32)[0, -1, :]))
