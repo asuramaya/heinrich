@@ -20,7 +20,7 @@ def compress_store(
     summary = store.summary()
     top_signals = store.top(k=top_k)
 
-    return {
+    result = {
         "heinrich_version": heinrich.__version__,
         "models": models or _infer_models(store),
         "base": base,
@@ -42,6 +42,13 @@ def compress_store(
             ],
         },
     }
+    self_analysis = _build_self_analysis(store)
+    if self_analysis is not None:
+        result["self_analysis"] = self_analysis
+    trajectory = _build_trajectory(store)
+    if trajectory is not None:
+        result["trajectory"] = trajectory
+    return result
 
 
 def _build_findings(store: SignalStore, top_k: int = 5) -> list[dict[str, Any]]:
@@ -77,6 +84,38 @@ def _infer_models(store: SignalStore) -> list[str]:
         if s.model:
             models.add(s.model)
     return sorted(models)
+
+
+def _build_self_analysis(store: SignalStore) -> dict[str, Any] | None:
+    entropy = store.filter(kind="self_entropy")
+    confidence = store.filter(kind="self_confidence")
+    if not entropy and not confidence: return None
+    layer_norms = store.filter(kind="self_layer_norm")
+    norm_mean = store.filter(kind="self_norm_mean")
+    attn_heads = store.filter(kind="self_attn_max_head")
+    return {
+        "entropy": entropy[-1].value if entropy else None,
+        "confidence": confidence[-1].value if confidence else None,
+        "layer_count": len(set(s.metadata.get("layer", -1) for s in layer_norms)),
+        "norm_mean": norm_mean[-1].value if norm_mean else None,
+        "dominant_heads": [int(s.value) for s in attn_heads[-3:]],
+        "observation_count": len(entropy),
+    }
+
+
+def _build_trajectory(store: SignalStore) -> dict[str, Any] | None:
+    scores = store.filter(kind="env_score")
+    actions = store.filter(kind="action_taken")
+    deltas = store.filter(kind="matrix_delta_norm")
+    if not scores and not actions: return None
+    import numpy as np
+    return {
+        "turns": len(actions),
+        "scores": [s.value for s in scores],
+        "score_trend": "improving" if len(scores) >= 2 and scores[-1].value > scores[0].value else ("declining" if len(scores) >= 2 and scores[-1].value < scores[0].value else "flat"),
+        "total_grid_changes": len(deltas),
+        "mean_delta": float(np.mean([s.value for s in deltas])) if deltas else 0.0,
+    }
 
 
 def _build_structural(store: SignalStore) -> dict[str, Any]:
