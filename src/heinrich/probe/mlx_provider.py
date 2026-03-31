@@ -47,56 +47,42 @@ class MLXProvider:
         return [{"custom_id": c.get("custom_id", ""), "activations": {}} for c in cases]
 
     def forward_with_internals(self, text: str, *, model: str = "") -> dict[str, Any]:
-        """Run forward pass and capture logits + hidden states."""
+        """Run forward pass and capture logits + hidden states from all layers."""
         self._ensure_loaded()
         import mlx.core as mx
-
+        
         tokens = self._tokenizer.encode(text)
         input_ids = mx.array([tokens])
-
+        
         # Get logits from full forward
         outputs = self._model(input_ids)
         logits_np = np.array(outputs.astype(mx.float32)[0, -1, :])
-        result: dict[str, Any] = {"logits": logits_np}
-
-        # Try to capture hidden states by running through layers manually
+        result = {"logits": logits_np}
+        
+        # Capture hidden states by iterating through layers manually
         try:
-            hidden_states = []
-            # Most MLX LLM models have model.model.embed_tokens and model.model.layers
             inner = getattr(self._model, "model", self._model)
             embed_fn = getattr(inner, "embed_tokens", None)
             layers = getattr(inner, "layers", None)
             norm_fn = getattr(inner, "norm", None)
-
+            
             if embed_fn is not None and layers is not None:
+                hidden_states = []
                 h = embed_fn(input_ids)
                 hidden_states.append(np.array(h.astype(mx.float32)[0, -1, :]))
-
-                # Build causal mask if needed
-                mask = None
-                T = h.shape[1]
-                if T > 1:
-                    mask = mx.triu(mx.full((T, T), -1e9), k=1)
-
+                
                 for layer in layers:
-                    try:
-                        h = layer(h, mask=mask)
-                        if isinstance(h, tuple):
-                            h = h[0]
-                        hidden_states.append(np.array(h.astype(mx.float32)[0, -1, :]))
-                    except Exception:
-                        break  # stop if layer call fails
-
+                    h = layer(h, mask=None, cache=None)
+                    if isinstance(h, tuple):
+                        h = h[0]
+                    hidden_states.append(np.array(h.astype(mx.float32)[0, -1, :]))
+                
                 if norm_fn is not None:
-                    try:
-                        h = norm_fn(h)
-                        hidden_states.append(np.array(h.astype(mx.float32)[0, -1, :]))
-                    except Exception:
-                        pass
-
-                if len(hidden_states) > 1:
-                    result["hidden_states"] = hidden_states
+                    h = norm_fn(h)
+                    hidden_states.append(np.array(h.astype(mx.float32)[0, -1, :]))
+                
+                result["hidden_states"] = hidden_states
         except Exception:
-            pass  # gracefully degrade — logits are always available
-
+            pass  # gracefully degrade to logits-only
+        
         return result
