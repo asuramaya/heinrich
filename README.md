@@ -1,5 +1,9 @@
 # Heinrich
 
+<p align="center">
+  <img src="docs/heinrich.png" alt="Heinrich" width="400">
+</p>
+
 Model forensics and signal-mixing pipeline. Absorbs conker-detect + conker-ledger.
 
 ## What It Does
