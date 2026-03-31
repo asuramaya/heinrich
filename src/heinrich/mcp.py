@@ -83,6 +83,22 @@ TOOLS = {
             "label": {"type": "string", "description": "Label for signals"},
         },
     },
+    "heinrich_observe": {
+        "description": "Analyze a grid/matrix or logit distribution and emit signals.",
+        "parameters": {
+            "grid": {"type": "array", "description": "2D grid as nested array"},
+            "logits": {"type": "array", "description": "Logit array"},
+            "label": {"type": "string"},
+        },
+    },
+    "heinrich_loop": {
+        "description": "Run observe-analyze-act loop on a sequence of states.",
+        "parameters": {
+            "states": {"type": "array", "description": "List of 2D grid states", "required": True},
+            "max_turns": {"type": "integer"},
+            "label": {"type": "string"},
+        },
+    },
 }
 
 
@@ -123,6 +139,10 @@ class ToolServer:
             return self._do_validate(arguments)
         if name == "heinrich_compete":
             return self._do_compete(arguments)
+        if name == "heinrich_observe":
+            return self._do_observe(arguments)
+        if name == "heinrich_loop":
+            return self._do_loop(arguments)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -236,6 +256,32 @@ class ToolServer:
         models = args.get("models", [])
         for model_ref in models:
             self._do_fetch({"source": model_ref, "label": Path(model_ref).name})
+        return compress_store(self._store, stages_run=self._stages_run)
+
+    def _do_observe(self, args: dict[str, Any]) -> dict[str, Any]:
+        import numpy as np
+        label = args.get("label", "observe")
+        grid = args.get("grid")
+        logits = args.get("logits")
+        if grid is not None:
+            from .inspect.matrix import analyze_matrix
+            self._store.extend(analyze_matrix(np.array(grid, dtype=np.float64), label=label, name="observed"))
+        if logits is not None:
+            from .inspect.self_analysis import analyze_logits
+            self._store.extend(analyze_logits(np.array(logits, dtype=np.float64), label=label))
+        self._stages_run.append("observe")
+        return compress_store(self._store, stages_run=self._stages_run)
+
+    def _do_loop(self, args: dict[str, Any]) -> dict[str, Any]:
+        import numpy as np
+        from .pipeline import Loop
+        from .probe.environment import MockEnvironment, ObserveStage, ActStage
+        states = [np.array(s, dtype=np.float64) for s in args.get("states", [])]
+        if not states: return {"error": "No states provided"}
+        env = MockEnvironment(states)
+        loop = Loop([ObserveStage()], act=ActStage(), max_iterations=args.get("max_turns", 10))
+        self._store = loop.run({"environment": env, "model_label": args.get("label", "loop"), "next_action": 1}, store=self._store)
+        self._stages_run.extend([s for s in loop.stages_run if s not in self._stages_run])
         return compress_store(self._store, stages_run=self._stages_run)
 
     def _do_compete(self, args: dict[str, Any]) -> dict[str, Any]:
