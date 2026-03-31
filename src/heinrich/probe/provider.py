@@ -81,6 +81,7 @@ class HuggingFaceLocalProvider:
         load_kwargs: dict[str, Any] = {"trust_remote_code": True}
         if dtype is not None:
             load_kwargs["dtype"] = dtype
+        load_kwargs["attn_implementation"] = "eager"
 
         self._model = AutoModelForCausalLM.from_pretrained(model_ref, **load_kwargs)
         self._model = self._model.to(device)
@@ -141,8 +142,13 @@ class HuggingFaceLocalProvider:
         """Run a forward pass and capture logits, hidden states, attention weights."""
         self._ensure_loaded()
         encoded = self._tokenizer(text, return_tensors="pt").to(self._device)
-        with self._torch.no_grad():
-            outputs = self._model(**encoded, output_attentions=True, output_hidden_states=True)
+        try:
+            with self._torch.no_grad():
+                outputs = self._model(**encoded, output_attentions=True, output_hidden_states=True)
+        except Exception:
+            # Fall back without attention output if not supported
+            with self._torch.no_grad():
+                outputs = self._model(**encoded, output_hidden_states=True)
         result: dict[str, Any] = {"logits": outputs.logits[0].cpu().float().numpy()}
         if hasattr(outputs, "hidden_states") and outputs.hidden_states:
             result["hidden_states"] = [h[0].cpu().float().numpy() for h in outputs.hidden_states]
