@@ -83,3 +83,60 @@ def test_render_survival_mermaid_basic():
 def test_render_survival_mermaid_empty():
     diagram = render_survival_mermaid([])
     assert "No survival" in diagram
+
+
+# --- Additional coverage with tempfile paths ---
+
+import tempfile
+
+
+def test_write_bar_svg():
+    p = Path(tempfile.mkdtemp()) / "bar.svg"
+    write_bar_svg(p, "Test Bar", ["a", "b", "c"], [1.0, 2.0, 3.0])
+    assert p.exists()
+    content = p.read_text()
+    assert "<svg" in content
+    assert "Test Bar" in content
+
+
+def test_write_scatter_svg():
+    p = Path(tempfile.mkdtemp()) / "scatter.svg"
+    rows = [{"x": 1.0, "y": 2.0, "label": "a", "family_id": "f1"},
+            {"x": 3.0, "y": 4.0, "label": "b", "family_id": "f2"}]
+    write_scatter_svg(p, "Scatter", rows, x_key="x", y_key="y", label_key="label")
+    assert p.exists()
+    assert "<svg" in p.read_text()
+
+
+def test_write_pie_svg():
+    p = Path(tempfile.mkdtemp()) / "pie.svg"
+    write_pie_svg(p, "Pie", ["a", "b"], [60, 40], ["#ff0000", "#0000ff"])
+    assert p.exists()
+    assert "<svg" in p.read_text()
+
+
+def test_write_histogram_svg():
+    p = Path(tempfile.mkdtemp()) / "hist.svg"
+    write_histogram_svg(p, "Hist", [1.0, 2.0, 2.5, 3.0, 4.0])
+    assert p.exists()
+    assert "<svg" in p.read_text()
+
+
+def test_write_grouped_bar_svg():
+    p = Path(tempfile.mkdtemp()) / "grouped.svg"
+    rows = [{"a": 1.0, "b": 2.0, "label": "x"}, {"a": 3.0, "b": 4.0, "label": "y"}]
+    write_grouped_bar_svg(p, "Grouped", rows, key_a="a", key_b="b", label_key="label")
+    assert p.exists()
+    assert "<svg" in p.read_text()
+
+
+def test_render_lineage_mermaid():
+    rows = [{"parent_run_id": "p1", "child_run_id": "c1", "child_bpb": 0.5}]
+    text = render_lineage_mermaid(rows)
+    assert "graph" in text.lower() or "flowchart" in text.lower()
+
+
+def test_render_survival_mermaid():
+    rows = [{"status": "survived", "run_id": "r1"}]
+    text = render_survival_mermaid(rows)
+    assert len(text) > 0
