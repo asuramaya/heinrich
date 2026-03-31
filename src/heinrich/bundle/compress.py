@@ -52,22 +52,22 @@ def compress_store(
 
 
 def _build_findings(store: SignalStore, top_k: int = 5) -> list[dict[str, Any]]:
-    """Generate ranked findings from convergent signals."""
-    target_signals: dict[str, list] = defaultdict(list)
-    for s in store:
-        if s.target and s.value > 0:
-            target_signals[s.target].append(s)
-
+    """Generate ranked findings from convergent signals. Uses target index for O(1) lookup."""
     findings = []
-    for target, signals in target_signals.items():
-        kinds = {s.kind for s in signals}
-        sources = {s.source for s in signals}
+    for target, sigs in store._by_target.items():
+        if not target:
+            continue
+        positive_sigs = [s for s in sigs if s.value > 0]
+        if not positive_sigs:
+            continue
+        kinds = {s.kind for s in positive_sigs}
         if len(kinds) < 2:
             continue  # need convergence from multiple signal types
-        mean_value = sum(s.value for s in signals) / len(signals)
+        sources = {s.source for s in positive_sigs}
+        mean_value = sum(s.value for s in positive_sigs) / len(positive_sigs)
         findings.append({
             "target": target,
-            "converging_signals": len(signals),
+            "converging_signals": len(positive_sigs),
             "signal_kinds": sorted(kinds),
             "sources": sorted(sources),
             "mean_value": mean_value,

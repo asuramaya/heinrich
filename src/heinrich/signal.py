@@ -24,12 +24,19 @@ class SignalStore:
 
     def __init__(self) -> None:
         self._signals: list[Signal] = []
+        self._by_target: dict[str, list[Signal]] = {}  # index for O(1) target lookup
 
     def add(self, signal: Signal) -> None:
         self._signals.append(signal)
+        self._by_target.setdefault(signal.target, []).append(signal)
 
     def extend(self, signals: Sequence[Signal]) -> None:
-        self._signals.extend(signals)
+        for s in signals:
+            self.add(s)
+
+    def signals_for_target(self, target: str) -> list[Signal]:
+        """Return all signals for a given target. O(1) index lookup."""
+        return self._by_target.get(target, [])
 
     def __len__(self) -> int:
         return len(self._signals)
