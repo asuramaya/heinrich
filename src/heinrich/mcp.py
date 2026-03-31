@@ -312,6 +312,10 @@ class ToolServer:
             from .probe.provider import HuggingFaceLocalProvider
             config = {k: v for k, v in args.items() if k != "provider" and v is not None}
             self._provider = HuggingFaceLocalProvider(config)
+        elif provider_type == "mlx":
+            from .probe.mlx_provider import MLXProvider
+            config = {k: v for k, v in args.items() if k != "provider" and v is not None}
+            self._provider = MLXProvider(config)
         else:
             from .probe.provider import MockProvider
             self._provider = MockProvider()

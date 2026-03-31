@@ -44,3 +44,9 @@ class ProbeStage:
                 1.0 if identity["label"] != "other" else 0.0,
                 identity,
             ))
+
+try:
+    from .mlx_provider import MLXProvider
+except ImportError:
+    pass  # mlx optional
+
