@@ -26,6 +26,10 @@ def build_parser() -> argparse.ArgumentParser:
 
     sub.add_parser("status", help="Show current session status")
 
+    p_inspect = sub.add_parser("inspect", help="Spectral and structural analysis of weights")
+    p_inspect.add_argument("source", help="Path to .npz weight bundle")
+    p_inspect.add_argument("--label", help="Model label for signals")
+
     return parser
 
 
@@ -37,6 +41,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_fetch(args)
     elif args.command == "status":
         _cmd_status(args)
+    elif args.command == "inspect":
+        _cmd_inspect(args)
     else:
         parser.print_help()
 
@@ -63,6 +69,16 @@ def _cmd_fetch(args: argparse.Namespace) -> None:
 
 def _cmd_status(args: argparse.Namespace) -> None:
     print(json.dumps({"status": "no active session", "stages_run": []}, indent=2))
+
+
+def _cmd_inspect(args: argparse.Namespace) -> None:
+    from .inspect import InspectStage
+    store = SignalStore()
+    label = args.label or Path(args.source).stem
+    stage = InspectStage()
+    stage.run(store, {"weights_path": args.source, "model_label": label})
+    output = compress_store(store, stages_run=["inspect"])
+    print(json.dumps(output, indent=2))
 
 
 if __name__ == "__main__":
