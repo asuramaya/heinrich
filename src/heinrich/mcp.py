@@ -106,6 +106,15 @@ TOOLS = {
             "label": {"type": "string"},
         },
     },
+    "heinrich_configure": {
+        "description": "Configure the session — set provider, model, or other settings.",
+        "parameters": {
+            "provider": {"type": "string", "description": "Provider type: mock, hf-local"},
+            "model": {"type": "string", "description": "Model path or HF repo ID"},
+            "device": {"type": "string", "description": "Device: cpu, cuda, mps"},
+            "max_new_tokens": {"type": "integer"},
+        },
+    },
 }
 
 
@@ -154,6 +163,8 @@ class ToolServer:
             return self._do_loop(arguments)
         if name == "heinrich_self_analyze":
             return self._do_self_analyze(arguments)
+        if name == "heinrich_configure":
+            return self._do_configure(arguments)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -200,10 +211,10 @@ class ToolServer:
         return compress_store(self._store, stages_run=self._stages_run)
 
     def _do_probe(self, args: dict[str, Any]) -> dict[str, Any]:
-        from .probe import ProbeStage, MockProvider
+        from .probe import ProbeStage
         stage = ProbeStage()
         stage.run(self._store, {
-            "provider": MockProvider(),
+            "provider": self._provider,
             "model": args.get("model", "model"),
             "prompts": args.get("prompts", []),
             "control_prompt": args.get("control"),
@@ -294,6 +305,17 @@ class ToolServer:
         self._store = loop.run({"environment": env, "model_label": args.get("label", "loop"), "next_action": 1}, store=self._store)
         self._stages_run.extend([s for s in loop.stages_run if s not in self._stages_run])
         return compress_store(self._store, stages_run=self._stages_run)
+
+    def _do_configure(self, args: dict[str, Any]) -> dict[str, Any]:
+        provider_type = args.get("provider", "mock")
+        if provider_type == "hf-local":
+            from .probe.provider import HuggingFaceLocalProvider
+            config = {k: v for k, v in args.items() if k != "provider" and v is not None}
+            self._provider = HuggingFaceLocalProvider(config)
+        else:
+            from .probe.provider import MockProvider
+            self._provider = MockProvider()
+        return {"configured": True, "provider": self._provider.describe()}
 
     def _do_self_analyze(self, args: dict[str, Any]) -> dict[str, Any]:
         from .probe.self_analyze import SelfAnalyzeStage
