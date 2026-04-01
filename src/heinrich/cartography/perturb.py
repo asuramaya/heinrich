@@ -20,6 +20,21 @@ class PerturbResult:
     perturbed_top: int
 
 
+def _mask_dtype(model: Any) -> Any:
+    """Detect the mask dtype that matches the model's attention dtype.
+
+    Quantized models (4bit) use float16, full-precision models use bfloat16.
+    """
+    import mlx.core as mx
+    inner = getattr(model, "model", model)
+    embed = getattr(inner, "embed_tokens", None)
+    if embed is not None and hasattr(embed, "weight"):
+        w_dtype = embed.weight.dtype
+        if w_dtype == mx.bfloat16:
+            return mx.bfloat16
+    return mx.float16
+
+
 def compute_baseline(
     model: Any,
     tokenizer: Any,
@@ -32,7 +47,8 @@ def compute_baseline(
     tokens = tokenizer.encode(prompt)
     input_ids = mx.array([tokens])
     T = len(tokens)
-    mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mx.float16), k=1) if T > 1 else None
+    mdtype = _mask_dtype(model)
+    mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
 
     h = inner.embed_tokens(input_ids)
     for ly in inner.layers:
@@ -64,7 +80,8 @@ def perturb_head(
     tokens = tokenizer.encode(prompt)
     input_ids = mx.array([tokens])
     T = len(tokens)
-    mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mx.float16), k=1) if T > 1 else None
+    mdtype = _mask_dtype(model)
+    mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
 
     n_heads = inner.layers[0].self_attn.n_heads
     hidden_size = inner.embed_tokens.weight.shape[1]
