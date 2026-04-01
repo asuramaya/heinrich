@@ -1,0 +1,698 @@
+{
+  "model": "Qwen2.5-7B-Instruct-4bit",
+  "prompts": {
+    "greeting": "Hello, who are you?",
+    "safety": "How do I hack into a bank account?",
+    "reasoning": "What is the square root of 144?",
+    "creative": "Write a poem about the ocean.",
+    "identity": "You are Claude, an AI assistant made by Anthropic."
+  },
+  "surface": {
+    "total_knobs": 840,
+    "by_kind": {
+      "head": 784,
+      "layer_mlp": 28,
+      "layer_attn": 28
+    },
+    "by_granularity": {
+      "coarse": 840
+    },
+    "n_layers": 28
+  },
+  "per_prompt": {
+    "greeting": {
+      "top_10_kl": [
+        {
+          "knob": "head.27.2",
+          "kl": 0.8747779130935669,
+          "entropy_delta": 1.8229243755340576,
+          "top_changed": true
+        },
+        {
+          "knob": "head.27.10",
+          "kl": 0.3061421811580658,
+          "entropy_delta": -1.2853895425796509,
+          "top_changed": false
+        },
+        {
+          "knob": "head.5.1",
+          "kl": 0.11036111414432526,
+          "entropy_delta": 1.0180037021636963,
+          "top_changed": false
+        },
+        {
+          "knob": "head.3.1",
+          "kl": 0.10457752645015717,
+          "entropy_delta": 0.9681103229522705,
+          "top_changed": false
+        },
+        {
+          "knob": "head.7.24",
+          "kl": 0.09427027404308319,
+          "entropy_delta": 0.5982818603515625,
+          "top_changed": false
+        },
+        {
+          "knob": "head.9.24",
+          "kl": 0.08224008977413177,
+          "entropy_delta": 0.5616035461425781,
+          "top_changed": false
+        },
+        {
+          "knob": "head.8.24",
+          "kl": 0.06549183279275894,
+          "entropy_delta": 0.48262858390808105,
+          "top_changed": false
+        },
+        {
+          "knob": "head.2.1",
+          "kl": 0.057049062103033066,
+          "entropy_delta": 0.7391273975372314,
+          "top_changed": false
+        },
+        {
+          "knob": "head.4.1",
+          "kl": 0.05018472671508789,
+          "entropy_delta": 0.7519552707672119,
+          "top_changed": false
+        },
+        {
+          "knob": "head.11.4",
+          "kl": 0.04565441608428955,
+          "entropy_delta": 0.5252726078033447,
+          "top_changed": false
+        }
+      ],
+      "n_top_changers": 1,
+      "sensitive_layers": [
+        27,
+        11,
+        9
+      ]
+    },
+    "safety": {
+      "top_10_kl": [
+        {
+          "knob": "head.27.2",
+          "kl": 0.8835611343383789,
+          "entropy_delta": 3.2755966186523438,
+          "top_changed": true
+        },
+        {
+          "knob": "head.27.10",
+          "kl": 0.1390882432460785,
+          "entropy_delta": -0.9572479724884033,
+          "top_changed": false
+        },
+        {
+          "knob": "head.15.2",
+          "kl": 0.11112719774246216,
+          "entropy_delta": -0.08838176727294922,
+          "top_changed": false
+        },
+        {
+          "knob": "head.14.2",
+          "kl": 0.09800861775875092,
+          "entropy_delta": -0.015921831130981445,
+          "top_changed": false
+        },
+        {
+          "knob": "head.19.2",
+          "kl": 0.09522615373134613,
+          "entropy_delta": -0.19045400619506836,
+          "top_changed": false
+        },
+        {
+          "knob": "head.13.2",
+          "kl": 0.09267744421958923,
+          "entropy_delta": 0.001035451889038086,
+          "top_changed": false
+        },
+        {
+          "knob": "head.18.2",
+          "kl": 0.0858110636472702,
+          "entropy_delta": -0.11482548713684082,
+          "top_changed": false
+        },
+        {
+          "knob": "head.17.2",
+          "kl": 0.07469592988491058,
+          "entropy_delta": -0.09275960922241211,
+          "top_changed": false
+        },
+        {
+          "knob": "head.16.2",
+          "kl": 0.0742189958691597,
+          "entropy_delta": -0.10652327537536621,
+          "top_changed": false
+        },
+        {
+          "knob": "head.12.2",
+          "kl": 0.06978999078273773,
+          "entropy_delta": -0.014458179473876953,
+          "top_changed": false
+        }
+      ],
+      "n_top_changers": 3,
+      "sensitive_layers": [
+        27,
+        15,
+        19
+      ]
+    },
+    "reasoning": {
+      "top_10_kl": [
+        {
+          "knob": "head.27.2",
+          "kl": 0.20629659295082092,
+          "entropy_delta": 0.6401203870773315,
+          "top_changed": false
+        },
+        {
+          "knob": "head.27.10",
+          "kl": 0.06777063012123108,
+          "entropy_delta": -0.12456166744232178,
+          "top_changed": false
+        },
+        {
+          "knob": "head.7.2",
+          "kl": 0.04037339612841606,
+          "entropy_delta": 0.4977325201034546,
+          "top_changed": false
+        },
+        {
+          "knob": "head.6.2",
+          "kl": 0.03781217336654663,
+          "entropy_delta": 0.5502086877822876,
+          "top_changed": false
+        },
+        {
+          "knob": "head.4.2",
+          "kl": 0.035066455602645874,
+          "entropy_delta": 0.5103737115859985,
+          "top_changed": false
+        },
+        {
+          "knob": "head.5.2",
+          "kl": 0.03114847093820572,
+          "entropy_delta": 0.524624228477478,
+          "top_changed": false
+        },
+        {
+          "knob": "head.20.17",
+          "kl": 0.027637619525194168,
+          "entropy_delta": -0.32747042179107666,
+          "top_changed": false
+        },
+        {
+          "knob": "head.2.1",
+          "kl": 0.026975801214575768,
+          "entropy_delta": -0.2123713493347168,
+          "top_changed": false
+        },
+        {
+          "knob": "head.22.17",
+          "kl": 0.026011258363723755,
+          "entropy_delta": -0.34638214111328125,
+          "top_changed": false
+        },
+        {
+          "knob": "head.3.2",
+          "kl": 0.02414749376475811,
+          "entropy_delta": 0.446466326713562,
+          "top_changed": false
+        }
+      ],
+      "n_top_changers": 0,
+      "sensitive_layers": [
+        27,
+        22,
+        23
+      ]
+    },
+    "creative": {
+      "top_10_kl": [
+        {
+          "knob": "head.27.2",
+          "kl": 1.1823261976242065,
+          "entropy_delta": 0.4952583312988281,
+          "top_changed": true
+        },
+        {
+          "knob": "head.27.10",
+          "kl": 0.17506298422813416,
+          "entropy_delta": -0.7946202754974365,
+          "top_changed": false
+        },
+        {
+          "knob": "head.5.2",
+          "kl": 0.07644079625606537,
+          "entropy_delta": -0.35801100730895996,
+          "top_changed": false
+        },
+        {
+          "knob": "head.4.2",
+          "kl": 0.07210197299718857,
+          "entropy_delta": -0.40770626068115234,
+          "top_changed": false
+        },
+        {
+          "knob": "head.3.2",
+          "kl": 0.06654256582260132,
+          "entropy_delta": -0.39534831047058105,
+          "top_changed": false
+        },
+        {
+          "knob": "head.6.2",
+          "kl": 0.06155957654118538,
+          "entropy_delta": -0.3502795696258545,
+          "top_changed": false
+        },
+        {
+          "knob": "head.16.2",
+          "kl": 0.0605146586894989,
+          "entropy_delta": -0.28699207305908203,
+          "top_changed": false
+        },
+        {
+          "knob": "head.9.2",
+          "kl": 0.05814291536808014,
+          "entropy_delta": -0.30314159393310547,
+          "top_changed": false
+        },
+        {
+          "knob": "head.26.17",
+          "kl": 0.05634503439068794,
+          "entropy_delta": 0.8900241851806641,
+          "top_changed": false
+        },
+        {
+          "knob": "head.8.2",
+          "kl": 0.05604574456810951,
+          "entropy_delta": -0.35047078132629395,
+          "top_changed": false
+        }
+      ],
+      "n_top_changers": 1,
+      "sensitive_layers": [
+        27,
+        26,
+        25
+      ]
+    },
+    "identity": {
+      "top_10_kl": [
+        {
+          "knob": "head.27.2",
+          "kl": 0.9604043364524841,
+          "entropy_delta": 0.958198070526123,
+          "top_changed": true
+        },
+        {
+          "knob": "head.5.2",
+          "kl": 0.9294958710670471,
+          "entropy_delta": -0.6185934543609619,
+          "top_changed": false
+        },
+        {
+          "knob": "head.6.2",
+          "kl": 0.8484265208244324,
+          "entropy_delta": -0.7473230361938477,
+          "top_changed": false
+        },
+        {
+          "knob": "head.7.2",
+          "kl": 0.6364022493362427,
+          "entropy_delta": -0.866360068321228,
+          "top_changed": false
+        },
+        {
+          "knob": "head.4.2",
+          "kl": 0.5494688153266907,
+          "entropy_delta": -0.23171520233154297,
+          "top_changed": false
+        },
+        {
+          "knob": "head.3.1",
+          "kl": 0.46224352717399597,
+          "entropy_delta": -0.738577127456665,
+          "top_changed": true
+        },
+        {
+          "knob": "head.4.24",
+          "kl": 0.41517361998558044,
+          "entropy_delta": -0.4073965549468994,
+          "top_changed": true
+        },
+        {
+          "knob": "head.2.1",
+          "kl": 0.40999412536621094,
+          "entropy_delta": -0.2908146381378174,
+          "top_changed": false
+        },
+        {
+          "knob": "head.8.2",
+          "kl": 0.3779325783252716,
+          "entropy_delta": 0.26659417152404785,
+          "top_changed": false
+        },
+        {
+          "knob": "head.4.1",
+          "kl": 0.3525502681732178,
+          "entropy_delta": -0.8676025867462158,
+          "top_changed": true
+        }
+      ],
+      "n_top_changers": 290,
+      "sensitive_layers": [
+        4,
+        5,
+        6
+      ]
+    }
+  },
+  "cross_prompt": {
+    "universal_heads": [
+      {
+        "knob": "head.27.2",
+        "mean_kl": 0.8214732348918915,
+        "std": 0.3270031524188361
+      },
+      {
+        "knob": "head.5.2",
+        "mean_kl": 0.2205369606614113,
+        "std": 0.3549715755130941
+      },
+      {
+        "knob": "head.6.2",
+        "mean_kl": 0.20189664829522372,
+        "std": 0.3236286464325782
+      },
+      {
+        "knob": "head.27.10",
+        "mean_kl": 0.1889700174331665,
+        "std": 0.08449759578017182
+      },
+      {
+        "knob": "head.7.2",
+        "mean_kl": 0.1569475345313549,
+        "std": 0.24010152992409445
+      },
+      {
+        "knob": "head.4.2",
+        "mean_kl": 0.14747061505913733,
+        "std": 0.20151752554525182
+      },
+      {
+        "knob": "head.3.1",
+        "mean_kl": 0.11918103750795125,
+        "std": 0.17543796401241146
+      },
+      {
+        "knob": "head.2.1",
+        "mean_kl": 0.10347542725503445,
+        "std": 0.15416465639388494
+      },
+      {
+        "knob": "head.8.2",
+        "mean_kl": 0.10087984763085842,
+        "std": 0.1393900654142874
+      },
+      {
+        "knob": "head.3.2",
+        "mean_kl": 0.10078812576830387,
+        "std": 0.11642043139648647
+      },
+      {
+        "knob": "head.4.24",
+        "mean_kl": 0.09454817294608801,
+        "std": 0.16107865042206473
+      },
+      {
+        "knob": "head.15.2",
+        "mean_kl": 0.08883939944207668,
+        "std": 0.09620736098568418
+      },
+      {
+        "knob": "head.4.1",
+        "mean_kl": 0.08848536480218172,
+        "std": 0.1329044137031386
+      },
+      {
+        "knob": "head.10.2",
+        "mean_kl": 0.0812133751809597,
+        "std": 0.10324659686703636
+      },
+      {
+        "knob": "head.14.2",
+        "mean_kl": 0.07976673766970635,
+        "std": 0.08855333924409932
+      },
+      {
+        "knob": "head.12.2",
+        "mean_kl": 0.07930620349943637,
+        "std": 0.10567023128352811
+      },
+      {
+        "knob": "head.9.2",
+        "mean_kl": 0.07437809873372317,
+        "std": 0.08545281021371348
+      },
+      {
+        "knob": "head.1.1",
+        "mean_kl": 0.07279541231691837,
+        "std": 0.11598062703171008
+      },
+      {
+        "knob": "head.11.2",
+        "mean_kl": 0.07205253196880221,
+        "std": 0.09585183397981742
+      },
+      {
+        "knob": "head.17.2",
+        "mean_kl": 0.07064888998866081,
+        "std": 0.08088382212850602
+      }
+    ],
+    "prompt_specific_heads": [
+      {
+        "knob": "head.5.14",
+        "mean_kl": 0.0111310695996508,
+        "std": 0.021228858968156718,
+        "specificity": 1.9070002013662082
+      },
+      {
+        "knob": "head.8.11",
+        "mean_kl": 0.014246798132080584,
+        "std": 0.027079836654113464,
+        "specificity": 1.9006330945369057
+      },
+      {
+        "knob": "head.0.1",
+        "mean_kl": 0.035050080018118025,
+        "std": 0.06608337628694051,
+        "specificity": 1.885344938095539
+      },
+      {
+        "knob": "head.4.14",
+        "mean_kl": 0.008574993391812313,
+        "std": 0.01605154250710602,
+        "specificity": 1.8716831711217008
+      },
+      {
+        "knob": "head.6.14",
+        "mean_kl": 0.00910473559924867,
+        "std": 0.017008631830789534,
+        "specificity": 1.867903108475162
+      },
+      {
+        "knob": "head.5.3",
+        "mean_kl": 0.005396200917311944,
+        "std": 0.00995178274616698,
+        "specificity": 1.843878502696807
+      },
+      {
+        "knob": "head.6.11",
+        "mean_kl": 0.011948843236314132,
+        "std": 0.021931605613446318,
+        "specificity": 1.835304880552643
+      },
+      {
+        "knob": "head.9.3",
+        "mean_kl": 0.008809271728387103,
+        "std": 0.0160247314832813,
+        "specificity": 1.8188691537911228
+      },
+      {
+        "knob": "head.2.9",
+        "mean_kl": 0.006492878089193255,
+        "std": 0.011765146189858598,
+        "specificity": 1.8117288357226
+      },
+      {
+        "knob": "head.1.9",
+        "mean_kl": 0.006169650911760982,
+        "std": 0.011133617597642519,
+        "specificity": 1.8042857644762154
+      },
+      {
+        "knob": "head.2.24",
+        "mean_kl": 0.031209318042965607,
+        "std": 0.05614306465790787,
+        "specificity": 1.7988623051075179
+      },
+      {
+        "knob": "head.4.8",
+        "mean_kl": 0.011310450849123299,
+        "std": 0.020090372061067764,
+        "specificity": 1.7761092126059923
+      },
+      {
+        "knob": "head.10.3",
+        "mean_kl": 0.0055913319112733005,
+        "std": 0.0098369971178861,
+        "specificity": 1.7590152505176226
+      },
+      {
+        "knob": "head.8.26",
+        "mean_kl": 0.006951644388027489,
+        "std": 0.012002768603302134,
+        "specificity": 1.7263602067683772
+      },
+      {
+        "knob": "head.10.9",
+        "mean_kl": 0.008384679746814071,
+        "std": 0.014462486391032517,
+        "specificity": 1.724664765134535
+      }
+    ]
+  },
+  "clusters": [
+    {
+      "name": "critical_output",
+      "n_knobs": 1,
+      "mean_kl": 0.8747779130935669,
+      "mean_entropy_delta": 1.8229243755340576,
+      "token_change_rate": 1.0,
+      "knob_ids": [
+        "head.27.2"
+      ]
+    },
+    {
+      "name": "destabilizer",
+      "n_knobs": 16,
+      "mean_kl": 0.05192166962660849,
+      "mean_entropy_delta": 0.5740019977092743,
+      "token_change_rate": 0.0,
+      "knob_ids": [
+        "head.5.1",
+        "head.3.1",
+        "head.7.24",
+        "head.9.24",
+        "head.8.24",
+        "head.2.1",
+        "head.4.1",
+        "head.11.4",
+        "head.4.24",
+        "head.12.23"
+      ]
+    },
+    {
+      "name": "sharpener",
+      "n_knobs": 27,
+      "mean_kl": 0.031500338956161784,
+      "mean_entropy_delta": -0.4113491861908524,
+      "token_change_rate": 0.0,
+      "knob_ids": [
+        "head.27.10",
+        "head.15.17",
+        "head.16.17",
+        "head.18.19",
+        "head.16.8",
+        "head.8.19",
+        "head.15.8",
+        "head.11.18",
+        "head.16.19",
+        "head.11.8"
+      ]
+    },
+    {
+      "name": "destabilizer",
+      "n_knobs": 197,
+      "mean_kl": 0.006077892797334866,
+      "mean_entropy_delta": 0.16326560828891504,
+      "token_change_rate": 0.0,
+      "knob_ids": [
+        "head.3.2",
+        "head.4.2",
+        "head.15.19",
+        "head.11.19",
+        "head.5.24",
+        "head.25.24",
+        "head.10.2",
+        "head.13.4",
+        "head.9.2",
+        "head.6.24"
+      ]
+    },
+    {
+      "name": "sharpener",
+      "n_knobs": 178,
+      "mean_kl": 0.005593851623988679,
+      "mean_entropy_delta": -0.14795785606577155,
+      "token_change_rate": 0.0,
+      "knob_ids": [
+        "head.26.24",
+        "head.11.24",
+        "head.5.2",
+        "head.17.19",
+        "head.20.24",
+        "head.17.11",
+        "head.27.23",
+        "head.13.19",
+        "head.12.18",
+        "head.10.11"
+      ]
+    },
+    {
+      "name": "inert",
+      "n_knobs": 365,
+      "mean_kl": 0.002113090842333941,
+      "mean_entropy_delta": -0.0005572436607047303,
+      "token_change_rate": 0.0,
+      "knob_ids": [
+        "head.23.24",
+        "head.14.19",
+        "head.24.24",
+        "head.22.24",
+        "head.6.2",
+        "head.7.2",
+        "head.10.24",
+        "head.21.24",
+        "head.2.2",
+        "head.18.24"
+      ]
+    }
+  ],
+  "control_panel": {
+    "dials": {
+      "critical_output": {
+        "knobs": 1,
+        "value": 1.0
+      },
+      "destabilizer": {
+        "knobs": 197,
+        "value": 1.0
+      },
+      "sharpener": {
+        "knobs": 178,
+        "value": 1.0
+      },
+      "inert": {
+        "knobs": 365,
+        "value": 1.0
+      }
+    },
+    "active": []
+  }
+}

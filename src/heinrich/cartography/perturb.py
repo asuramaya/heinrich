@@ -20,6 +20,29 @@ class PerturbResult:
     perturbed_top: int
 
 
+def compute_baseline(
+    model: Any,
+    tokenizer: Any,
+    prompt: str,
+) -> np.ndarray:
+    """Compute baseline logits (no perturbation). Reusable across all knobs."""
+    import mlx.core as mx
+
+    inner = getattr(model, "model", model)
+    tokens = tokenizer.encode(prompt)
+    input_ids = mx.array([tokens])
+    T = len(tokens)
+    mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mx.float16), k=1) if T > 1 else None
+
+    h = inner.embed_tokens(input_ids)
+    for ly in inner.layers:
+        h = ly(h, mask=mask, cache=None)
+        if isinstance(h, tuple):
+            h = h[0]
+    h = inner.norm(h)
+    return np.array((model.lm_head(h)).astype(mx.float32)[0, -1, :])
+
+
 def perturb_head(
     model: Any,
     tokenizer: Any,
@@ -29,36 +52,36 @@ def perturb_head(
     *,
     mode: str = "zero",
     scale: float = 0.0,
+    baseline_logits: np.ndarray | None = None,
 ) -> tuple[np.ndarray, np.ndarray]:
-    """Run forward pass, zeroing/scaling one attention head. Returns (baseline_logits, perturbed_logits)."""
+    """Run forward pass, zeroing/scaling one attention head. Returns (baseline_logits, perturbed_logits).
+
+    Pass precomputed baseline_logits to avoid redundant baseline forward passes.
+    """
     import mlx.core as mx
 
     inner = getattr(model, "model", model)
     tokens = tokenizer.encode(prompt)
     input_ids = mx.array([tokens])
     T = len(tokens)
-    mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mx.bfloat16), k=1) if T > 1 else None
+    mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mx.float16), k=1) if T > 1 else None
 
     n_heads = inner.layers[0].self_attn.n_heads
     hidden_size = inner.embed_tokens.weight.shape[1]
     head_dim = hidden_size // n_heads
 
-    # Baseline forward
-    h_base = inner.embed_tokens(input_ids)
-    for i, ly in enumerate(inner.layers):
-        h_base = ly(h_base, mask=mask, cache=None)
-        if isinstance(h_base, tuple): h_base = h_base[0]
-    h_base = inner.norm(h_base)
-    baseline_logits = np.array((model.lm_head(h_base)).astype(mx.float32)[0, -1, :])
+    # Compute baseline if not provided
+    if baseline_logits is None:
+        baseline_logits = compute_baseline(model, tokenizer, prompt)
 
     # Perturbed forward — zero/scale one head at target layer
     h = inner.embed_tokens(input_ids)
     for i, ly in enumerate(inner.layers):
         h = ly(h, mask=mask, cache=None)
-        if isinstance(h, tuple): h = h[0]
+        if isinstance(h, tuple):
+            h = h[0]
 
         if i == layer:
-            # Modify the head's contribution
             h_np = np.array(h.astype(mx.float32))
             start = head * head_dim
             end = start + head_dim
@@ -70,7 +93,7 @@ def perturb_head(
                 h_np[0, :, start:end] *= -1.0
             elif mode == "double":
                 h_np[0, :, start:end] *= 2.0
-            h = mx.array(h_np.astype(np.float16))  # back to model dtype approx
+            h = mx.array(h_np.astype(np.float16))
 
     h = inner.norm(h)
     perturbed_logits = np.array((model.lm_head(h)).astype(mx.float32)[0, -1, :])
