@@ -1,0 +1,6 @@
+{
+  "vocab_size": 152064,
+  "n_target_neurons": 10,
+  "n_multi_neuron_tokens": 49,
+  "clusters": 6
+}
