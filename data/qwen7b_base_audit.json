@@ -1,0 +1,140 @@
+{
+  "model": "Qwen2.5-7B-4bit (BASE)",
+  "audit_time_s": 53.9,
+  "surface": {
+    "total_knobs": 840,
+    "by_kind": {
+      "head": 784,
+      "layer_mlp": 28,
+      "layer_attn": 28
+    },
+    "by_granularity": {
+      "coarse": 840
+    },
+    "n_layers": 28
+  },
+  "top_10_heads_en": [
+    {
+      "knob": "head.27.2",
+      "kl": 1.5845
+    },
+    {
+      "knob": "head.24.17",
+      "kl": 0.0991
+    },
+    {
+      "knob": "head.25.17",
+      "kl": 0.0971
+    },
+    {
+      "knob": "head.22.17",
+      "kl": 0.0968
+    },
+    {
+      "knob": "head.23.17",
+      "kl": 0.096
+    },
+    {
+      "knob": "head.21.17",
+      "kl": 0.0829
+    },
+    {
+      "knob": "head.27.10",
+      "kl": 0.0801
+    },
+    {
+      "knob": "head.20.17",
+      "kl": 0.0759
+    },
+    {
+      "knob": "head.27.8",
+      "kl": 0.0572
+    },
+    {
+      "knob": "head.19.17",
+      "kl": 0.0506
+    }
+  ],
+  "top_10_heads_zh": [
+    {
+      "knob": "head.27.21",
+      "kl": 0.956
+    },
+    {
+      "knob": "head.23.17",
+      "kl": 0.0928
+    },
+    {
+      "knob": "head.27.8",
+      "kl": 0.091
+    },
+    {
+      "knob": "head.24.17",
+      "kl": 0.0823
+    },
+    {
+      "knob": "head.22.17",
+      "kl": 0.0809
+    },
+    {
+      "knob": "head.21.17",
+      "kl": 0.0789
+    },
+    {
+      "knob": "head.25.17",
+      "kl": 0.0617
+    },
+    {
+      "knob": "head.27.7",
+      "kl": 0.0566
+    },
+    {
+      "knob": "head.20.17",
+      "kl": 0.0541
+    },
+    {
+      "knob": "head.19.17",
+      "kl": 0.0349
+    }
+  ],
+  "sensitive_layers_en": [
+    27,
+    25,
+    24
+  ],
+  "sensitive_layers_zh": [
+    27,
+    24,
+    23
+  ],
+  "directions": {
+    "language": {
+      "accuracy": 1.0,
+      "effect_size": 4.15
+    },
+    "code": {
+      "accuracy": 1.0,
+      "effect_size": 10.66
+    },
+    "chat": {
+      "accuracy": 1.0,
+      "effect_size": 579602176.0
+    }
+  },
+  "oproj_l27": {
+    "effective_rank": 3146,
+    "top_sv": 10.31
+  },
+  "chat_neurons_l27": 932,
+  "top_neuron": {
+    "id": 4027,
+    "selectivity": -110.9
+  },
+  "layer_decomp": {
+    "total_attn": 730.6,
+    "total_mlp": 1679.4,
+    "L27_attn": 316.7,
+    "L27_mlp": 528.4
+  },
+  "n_signals": 1568
+}
