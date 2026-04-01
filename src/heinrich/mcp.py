@@ -115,6 +115,14 @@ TOOLS = {
             "max_new_tokens": {"type": "integer"},
         },
     },
+    "heinrich_cartography": {
+        "description": "Map the model's control surface — discover knobs and their behavioral effects.",
+        "parameters": {
+            "prompt": {"type": "string", "description": "Prompt to use for perturbation testing", "required": True},
+            "sweep": {"type": "string", "description": "Sweep type: coarse (heads only) or full"},
+            "label": {"type": "string"},
+        },
+    },
 }
 
 
@@ -165,6 +173,8 @@ class ToolServer:
             return self._do_self_analyze(arguments)
         if name == "heinrich_configure":
             return self._do_configure(arguments)
+        if name == "heinrich_cartography":
+            return self._do_cartography(arguments)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -369,3 +379,54 @@ class ToolServer:
 
         self._stages_run.append("compete")
         return compress_store(self._store, stages_run=self._stages_run)
+
+    def _do_cartography(self, args: dict[str, Any]) -> dict[str, Any]:
+        prompt = args["prompt"]
+        sweep_type = args.get("sweep", "coarse")
+        label = args.get("label", "cartography")
+
+        from .cartography.surface import ControlSurface
+        from .cartography.sweep import coarse_head_sweep, find_sensitive_layers
+        from .cartography.atlas import Atlas
+        from .cartography.manifold import cluster_by_layer, cluster_by_effect
+        from .cartography.controls import ControlPanel
+
+        try:
+            provider = self._provider
+            provider._ensure_loaded()
+            model = provider._model
+            tokenizer = provider._tokenizer
+        except Exception as exc:
+            return {"error": f"Provider not ready: {exc}. Use heinrich_configure with provider=mlx first."}
+
+        try:
+            surface = ControlSurface.from_mlx_model(model)
+        except Exception:
+            # Fallback to Qwen 7B defaults
+            surface = ControlSurface.from_config(
+                n_layers=28, n_heads=28, head_dim=128, intermediate_size=18944, hidden_size=3584)
+
+        results = coarse_head_sweep(model, tokenizer, prompt, surface, store=self._store)
+        atlas = Atlas()
+        atlas.add_all(results)
+        atlas.to_signals(self._store, label=label)
+
+        clusters = cluster_by_effect(atlas, n_clusters=4)
+        panel = ControlPanel.from_clusters(clusters)
+        sensitive_layers = find_sensitive_layers(results, top_k=5)
+        top_knobs = atlas.top_by_kl(k=10)
+
+        self._stages_run.append("cartography")
+        return {
+            "surface_summary": surface.summary(),
+            "sweep_results": len(results),
+            "sensitive_layers": sensitive_layers,
+            "top_knobs": [
+                {"id": r.knob.id, "kl": round(r.kl_divergence, 4),
+                 "entropy_delta": round(r.entropy_delta, 4),
+                 "top_changed": r.top_token_changed}
+                for r in top_knobs
+            ],
+            "clusters": len(clusters),
+            "panel_summary": panel.summary(),
+        }
