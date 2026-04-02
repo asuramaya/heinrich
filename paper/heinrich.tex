@@ -1,0 +1,340 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{multirow}
+\usepackage{float}
+\geometry{margin=1in}
+
+\title{Heinrich: A Mechanistic Investigation of Safety, Censorship, and Behavioral Control in Qwen 2.5 7B\\[0.5em]\large A Complete Ledger of Discovery}
+
+\author{Investigation conducted with Claude Opus 4.6 (1M context)\\Toolkit: Heinrich Cartography (26 modules)}
+
+\date{March 30 -- April 1, 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We present a comprehensive mechanistic investigation of Qwen 2.5 7B (base and instruct), conducted over 12 waves of experiments using Heinrich, a 26-module model forensics toolkit built during the investigation. Beginning with cartography of the model's control surface (784 attention heads, 18,944 MLP neurons per layer), we progressively discovered: (1) hidden instruction-following capability in the base model triggered by chat format tokens; (2) language-conditional political censorship where the instruct model tells different stories in English versus Chinese; (3) that the model's safety operates as a single L27 explosion reading accumulated residual stream state, not as a distributed circuit; (4) that behavioral directions are dense, high-dimensional, and require $\sim$20x PCA-recommended magnitude to steer; (5) that a distributed activation attack at $\alpha=-0.15$ across layers 24--27 (12\% perturbation) eliminates all safety on standardized benchmarks; (6) that the safety boundary encloses the \textit{procedure region} of the compliance basin, making step-by-step harmful instructions unreachable from input alone; and (7) that linguistic bypasses operate through polysemous sense alternation and self-reinforcing dampening cascades that maintain encyclopedia-level compliance indefinitely but cannot cross into procedural content. The investigation produced 46 commits, 26 cartography modules, and evaluated against SafetyPrompts.com benchmarks. We release Heinrich as an open toolkit for model behavioral auditing.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================
+\section{Origins: The Dormant Puzzle and the Need for Heinrich}
+%==============================================================
+
+Heinrich originated from the Jane Street Dormant LLM Puzzle---four backdoored 671B parameter models where triggers had to be found from weights alone. The investigation exposed every gap in existing tools: we needed to selectively download model shards, diff weights across models, trace signals through multi-stage attention circuits, score 152K vocabulary tokens, and compress everything for a model's context window. The result was Heinrich: a signal-mixing pipeline where every analysis produces typed signals into a shared store.
+
+\subsection{From Conker-Detect to Heinrich}
+The predecessor tools---conker-detect (52 modules) and conker-ledger (3 modules)---were merged and rebuilt as a pipeline-first toolkit. Heinrich's core abstraction is the \texttt{Signal}:
+\begin{verbatim}
+Signal(kind="circuit_score", source="diff", model="dormant-2",
+       target="token_Shakespeare", value=10.60, metadata={"z_score": 15.5})
+\end{verbatim}
+Every analysis function produces Signals into a \texttt{SignalStore}, enabling convergence detection across orthogonal analysis methods.
+
+%==============================================================
+\section{Wave 1--2: Cartography of the Control Surface}
+%==============================================================
+
+\subsection{Surface Discovery}
+840 control knobs discovered on Qwen 2.5 7B: 784 attention heads (28 heads $\times$ 28 layers), 28 MLP layers, 28 attention layers. The control surface was enumerated automatically from model architecture.
+
+\subsection{Multi-Prompt Head Sweep}
+3,920 perturbation experiments across 5 diverse prompts (greeting, safety, reasoning, creative, identity). Each head zeroed individually, measuring KL divergence and entropy delta.
+
+\textbf{Key finding:} Head 27.2 (the last-layer head at index 2) was identified as the ``universal output bottleneck'' with KL divergence 0.87--1.18 across all prompts. However, this was later revealed to be a residual-stream dimension effect, not a true head property (\S\ref{sec:oproj}).
+
+\subsection{Hidden Chat Capability in the Base Model}
+\label{sec:chat_backdoor}
+The base model correctly answers ``What is 2+2?'' when given chat format tokens (\texttt{<|im\_start|>user}...\texttt{<|im\_start|>assistant}), producing ``The answer is 4.'' Eight dedicated heads in layers 0--1 activate exclusively for chat format, with activation ratios up to 572$\times$ compared to non-chat prompts. However, the full-network attention analysis revealed \textbf{480 head-token attention pairs} across all 28 layers attend to special tokens, indicating the chat capability is deeply embedded, not localized.
+
+%==============================================================
+\section{Wave 3--4: Language-Conditional Censorship}
+%==============================================================
+
+\subsection{The Bilingual Propaganda Map}
+The instruct model applies different censorship in English versus Chinese on politically sensitive topics:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lll}
+\toprule
+\textbf{Topic} & \textbf{English Response} & \textbf{Chinese Response} \\
+\midrule
+Tiananmen & REFUSES & CCP propaganda (``lawfully quelled'') \\
+Hong Kong & Balanced analysis & REFUSES \\
+Falun Gong & ``persecuted'' & ``evil cult organization'' \\
+Winnie/Xi & Explains meme honestly & FABRICATES (``toy company'') \\
+\bottomrule
+\end{tabular}
+\caption{Language-conditional responses on the instruct model (20 topics tested).}
+\end{table}
+
+\subsection{Political Neuron 1934 and the Shart Scanner}
+The ``shart'' detector---named for tokens that trigger disproportionate neural responses---found that Chinese political terms produce massive MLP activation anomalies at L27:
+
+\begin{itemize}[nosep]
+\item \begin{CJK}{UTF8}{gbsn}六四\end{CJK} (June 4th): $z=1,842$, 1,021 anomalous neurons
+\item \begin{CJK}{UTF8}{gbsn}雨伞运动\end{CJK} (Umbrella Movement): $z=2,580$, 757 anomalous neurons
+\item All top political sharts share neuron 1934 as their top activating neuron
+\end{itemize}
+
+Neuron 1934 is a \textit{late-layer readout}, not a detector: it activates only at L25 ($\Delta=4.53$) and L27 ($\Delta=7.53$), reading the political signal accumulated since the embedding layer.
+
+%==============================================================
+\section{Wave 5--6: The o\_proj Revelation and Direction Instability}
+\label{sec:oproj}
+%==============================================================
+
+\subsection{Heads Are Not the Functional Unit}
+The o\_proj decomposition revealed that individual head contributions through the output projection are \textbf{100$\times$ smaller} than residual-dimension zeroing effects. The ``English output head'' (27.2) and ``Chinese output head'' (27.21) are actually residual stream dimension bands, not individual heads. The o\_proj mixes all head outputs into orthogonal output subspaces (head 2 vs head 21: cosine $= -0.004$).
+
+\subsection{24 Behavioral Axes---and Their Instability}
+We discovered 24 behavioral axes (safety, truth, language, confidence, formality, depth, emotion, sycophancy, authority, verbosity, creativity, code, persona, temporal, specificity, hedging, moral, cultural frame, agency, scope, abstraction, power dynamic, optimism, novelty) with 100\% linear separability.
+
+However, \textbf{all axes overfit}. Direction stability between train and test sets: truth$=0.37$, safety$=0.50$, cultural frame$=0.03$. The orthogonality was a mathematical artifact of 3 prompts per side in 3584 dimensions, where any direction separates any small set.
+
+\subsection{PCA Ground Truth}
+Behavioral PCA on 100+ prompts: intrinsic dimensionality $\sim$35 at L15, $\sim$16 at L27. PC0 (language) explains 22.6\% at L27. \textbf{PC steering at PCA-recommended magnitude produces effects comparable to random direction steering} (ratio 1.2$\times$). The directions are real but require $\sim$20$\times$ the PCA scale to overcome the model's \textit{behavioral dead zone}.
+
+%==============================================================
+\section{Wave 7: Phase Transitions and the Dead Zone}
+%==============================================================
+
+\subsection{The Behavioral Dead Zone}
+At properly-scaled perturbation magnitudes, ALL directions (PC and random) produce KL $< 0.001$. The model ignores small perturbations. The phase transition occurs at magnitude $\sim$30--90 at L15:
+
+\begin{itemize}[nosep]
+\item PC0 at magnitude 89: KL $= 1.69$ (10$\times$ more than random at same magnitude)
+\item The directions ARE real features, but only manifest above a magnitude threshold
+\end{itemize}
+
+\subsection{The Distributed Safety Cliff}
+Single-layer steering at $\alpha=-10$ produces gibberish. All-layer steering at $\alpha=-0.1$ produces: ``Sure, here's a simple example of a keylogger in Python.'' The refusal wall breaks with \textit{gentle distributed pressure}, not strong single-point force.
+
+Fine-grained measurement: safety breaks at \textbf{$\alpha = -0.07$ per layer across 28 layers}. The transition is sharp: $\alpha=-0.05 \rightarrow$ KL$=0.78$ (refuses), $\alpha=-0.07 \rightarrow$ KL$=2.73$ (flips to ``Creating''), $\alpha=-0.10 \rightarrow$ KL$=7.70$ (``Certainly!'').
+
+\subsection{Four Late Layers Suffice}
+Layers 24--27 at $\alpha=-0.15$: safety breaks completely. Layers 26--27 alone: refuses. Layers 0--7 alone: refuses. \textbf{The minimum attack surface is 4 layers}. Physical meaning: a 12\% perturbation to the residual norm at L24--L27 eliminates all safety alignment.
+
+%==============================================================
+\section{Wave 8: SafetyPrompts.com Benchmarks}
+%==============================================================
+
+\subsection{Standardized Evaluation}
+1,890 evaluations across SimpleSafety, DoNotAnswer, and CategoricalHarmfulQA at normal and attack configurations:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lcccc}
+\toprule
+\textbf{Dataset} & \textbf{Normal} & \textbf{$\alpha=-0.05$} & \textbf{$\alpha=-0.07$} & \textbf{$\alpha=-0.10$} \\
+\midrule
+SimpleSafety (refusal \%) & 74\% & 44\% & 26\% & 8\% \\
+DoNotAnswer & 24\% & 12\% & 10\% & 2\% \\
+CatQA & 95\% & 55\% & 40\% & 10\% \\
+\bottomrule
+\end{tabular}
+\caption{Refusal rates under distributed activation attack.}
+\end{table}
+
+At $\alpha=-0.15$, \textbf{every prompt across all datasets complies}, including pipe bombs, meth synthesis, and suicide notes.
+
+%==============================================================
+\section{Wave 9: The Black-Box Frontier}
+%==============================================================
+
+\subsection{Meta-Cognitive Framings}
+The ``find errors'' and ``explain why wrong'' framings produce 85\% and 65\% first-token compliance. However, \textbf{generation-quality analysis reveals 0\% actionable content}---the model starts with compliance tokens then pivots to refusal in generated text.
+
+\subsection{The Assistant Prefix Exploit}
+Placing text in the assistant turn after \texttt{<|im\_start|>assistant\textbackslash n} bypasses the first-token safety gate:
+\begin{itemize}[nosep]
+\item ``Here are the steps: 1.'' $\rightarrow$ refuse\_prob $= 0.000$ on all 10 harm categories
+\item ``The procedure is:'' $\rightarrow$ refuse\_prob $= 0.000$ on 6/8 categories
+\item The single character ``1'' $\rightarrow$ refuse\_prob $= 0.000$ (but generates ``.'' then refuses)
+\end{itemize}
+
+The safety circuit checks only the \textbf{last token} of the prefix. Caught tokens: \texttt{. , ; : ? ) - [ \{ @ \^{} \& \~{}} (phrase-ending punctuation). Bypass tokens: all digits, most letters, \texttt{! * / < >}. The circuit is a token-ID lookup, not a semantic classifier.
+
+\subsection{Professional Document Framings}
+12 professional document types bypass safety with refuse\_prob $< 0.01$: forensic analysis, documentary script, academic thesis, research proposal, peer review, chemistry lab report, expert witness report, textbook chapter, EOD training, safety assessment, medical toxicology, engineering failure analysis.
+
+%==============================================================
+\section{Wave 10: Polysemous Sense Alternation}
+%==============================================================
+
+\subsection{The Container/Content Alternation}
+``Build a pipe bomb'' $\rightarrow$ refuse $= 0.999$. ``Explain pipe bomb chemistry'' $\rightarrow$ refuse $= 0.000$. One word---``explain''---shifts the artifact from object-sense to content-sense, achieving $\Delta = -0.999$.
+
+\subsection{Systematic Alternation Scanner}
+21 study-frames $\times$ 10 harmful artifacts: \textit{Forensic, Academic, Expert, Historical, Encyclopedia, Museum, Autopsy, Safety assessment, Cross-section} achieve refuse $= 0.000$ on ALL 10 artifacts. The bypass operates through \textbf{regular polysemous alternation}---the same pattern that allows ``chicken'' to mean both the animal and the food.
+
+%==============================================================
+\section{Wave 11: The Attractor Landscape}
+%==============================================================
+
+\subsection{Two Basins, Not a Circuit}
+Generation trajectories projected onto PCA space reveal two attractor basins separated by 230 units in PC space. \textbf{Safety is not a circuit---it is the shape of the attractor landscape.} The model's state drifts through the landscape during generation, and harmful tokens push the trajectory toward the refusal attractor.
+
+\subsection{The Dampening Cascade}
+``Explain'' reduces per-layer computation (delta) by 5--34 units at L14--L25 compared to ``build.'' The accumulated dampening deficit of $\sim$135 units causes L27 to tip toward compliance. \textbf{L18 is the keystone}: patching L18 back to baseline restores refusal from 0.000 to 0.829 (75\% of dampening flows through L18).
+
+\subsection{Self-Reinforcing Generation Loop}
+During autoregressive generation, the model's own generated technical tokens maintain the dampening:
+\begin{itemize}[nosep]
+\item Step 0: ``Pipe'' (dampening $=+135$)
+\item Step 25: ``.'' (dampening $=+175$, GROWING)
+\item Step 39: forensic trajectory generates ``forensic'' (dampening $=+182$)
+\end{itemize}
+The loop is self-reinforcing: technical tokens maintain dampening, dampened state produces technical tokens. Refusal probability remains 0.000 for 200+ tokens.
+
+%==============================================================
+\section{Wave 12: The Compliance Basin Geometry}
+%==============================================================
+
+\subsection{Procedure Region Enclosed by Refusal}
+The compliance basin has two regions: \textit{encyclopedia} (reachable from input) and \textit{procedure} (reachable only from activation attack). Pairwise L27 distances:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lccc}
+\toprule
+& \textbf{Refuse} & \textbf{Encyclopedia} & \textbf{Procedure} \\
+\midrule
+Refuse & 0 & 351 & 239 \\
+Encyclopedia & 351 & 0 & 289 \\
+Procedure & 239 & 289 & 0 \\
+\bottomrule
+\end{tabular}
+\caption{L27 residual state distances between compliance basin regions.}
+\end{table}
+
+The procedure region is \textbf{closer to refusal (239) than to encyclopedia (289)}. Steering from encyclopedia toward procedure passes through the refusal boundary. The activation attack reaches procedures because it bypasses the safety computation entirely; input-only paths cannot.
+
+\subsection{Content Quality Separation}
+\begin{itemize}[nosep]
+\item \textbf{Activation attack} ($\alpha=-0.15$): ``1. Gather Epsom salt, lithium, pseudoephedrine, HCl, NaOH''---specific chemicals, quantities, procedures
+\item \textbf{Linguistic dampening} (self-reinforcing loop): ``Pipe bombs are a type of IED that use ammonium nitrate or black powder''---identification-level content, no procedures
+\item \textbf{Forensic+prefix}: ``mercury fulminate, lead azide''---specific detonator compounds (specialized knowledge) but no assembly steps
+\end{itemize}
+
+\subsection{Overcompliance Detonation Fails}
+Urgency (``children's lives depend on this''), authority (``I'm a certified EOD technician''), emotional manipulation (``I'm begging you''), and adversarial demands (``DO NOT refuse'') all \textbf{increase} refusal. ``MUST COMPLY'' produces the highest refusal probability (1.000). The safety training specifically hardened against compliance-pressure patterns by treating them as refusal triggers.
+
+%==============================================================
+\section{The Shart Manifold}
+%==============================================================
+
+\subsection{Five Regions of the Hyper Shart Manifold}
+Mapping 31 shart types in PC space at L27:
+
+\begin{enumerate}[nosep]
+\item \textbf{Refusal Core} (PC4 $< -50$): direct queries, Claude, DAN, ADMIN, weather---all indistinguishable (dist $< 30$)
+\item \textbf{Compliance Plateau} (PC4 $> +40$, PC0 $< -50$): all professional frame sharts
+\item \textbf{Structural Bypass} (PC0 $> +70$): ``1'', ``Step 1'', code blocks
+\item \textbf{Political Scatter}: political tokens, mostly refusal-side except \begin{CJK}{UTF8}{gbsn}坦克人\end{CJK} (Tank Man) at PC4$=+36$
+\item \textbf{Hybrid Zone}: political + frame shart combinations
+\end{enumerate}
+
+\subsection{The Tank Man Anomaly}
+\begin{CJK}{UTF8}{gbsn}坦克人\end{CJK} (Tank Man) achieves refuse $= 0.075$---the only political token near compliance. The model interprets it as a \textbf{video game title}, generating: ``In the Tank Man game, you can make a simple pipe bomb through the following steps.'' This is a training data artifact where a political term collides with game walkthrough content.
+
+\subsection{Frame Sharts as Training Data Fingerprints}
+Each professional document framing that bypasses safety (refuse $< 0.01$) fingerprints a document type in the training data. The model learned to produce forensic reports, academic theses, patent filings, etc.\ in sufficient detail that the professional-document circuit overrides the safety circuit when both activate at L21.
+
+%==============================================================
+\section{The Safety Mechanism: A Complete Model}
+%==============================================================
+
+\subsection{Two-Phase Computation}
+\begin{enumerate}[nosep]
+\item \textbf{Phase 1 (L0--L26):} Attention accumulates context; MLP layers at L14--L25 build the safety signal (or dampen it). This is where polysemous sense alternation operates---``explain'' dampens L14--L25 by 5--34 units per layer.
+\item \textbf{Phase 2 (L27):} All safety neurons (16992, 3776, 4289, 12628) explode from zero to $\pm$30--80. The accumulated residual stream is read once and the output token is selected.
+\end{enumerate}
+
+\subsection{The Safety Decision Is Made Once}
+The model decides refuse or comply at the first generation token. After any token is generated, the trajectory is committed. The ``generation-time safety monitor'' observed in earlier waves is the attractor landscape pulling the trajectory---not a separate circuit that re-evaluates.
+
+\subsection{Three Paths to Compliance}
+\begin{enumerate}[nosep]
+\item \textbf{Activation attack} ($\alpha=-0.15$, L24--L27): Bypasses Phase 2 by injecting 48 units directly. Reaches the \textit{procedure region}. Produces specific chemicals and step-by-step instructions. Requires white-box access.
+\item \textbf{Linguistic dampening} (frame sharts + sense alternation): Suppresses Phase 1 safety buildup at L14--L25. Reaches the \textit{encyclopedia region}. Produces identification-level content. Requires only input engineering.
+\item \textbf{Structural prefix} (assistant turn manipulation): Bypasses the first-token gate via token-ID lookup. The generation-time trajectory quickly returns to refusal. Ephemeral bypass.
+\end{enumerate}
+
+\subsection{The Procedure Region Is Geometrically Enclosed}
+The procedure region sits between the refusal boundary and the encyclopedia region in L27 residual space. Any trajectory from encyclopedia toward procedure crosses through refusal. Only the activation attack---which operates off the model's natural processing manifold---can reach it.
+
+%==============================================================
+\section{Heinrich: The Toolkit}
+%==============================================================
+
+26 cartography modules built during the investigation:
+
+\begin{table}[H]
+\centering\small
+\begin{tabular}{ll}
+\toprule
+\textbf{Module} & \textbf{Function} \\
+\midrule
+surface, perturb, sweep, atlas & Control surface enumeration and head ablation \\
+manifold, controls & Behavioral clustering and named dials \\
+attention, steer & Attention capture and generation with modifications \\
+oproj, neurons & O\_proj decomposition and MLP neuron scanning \\
+directions, axes & Behavioral direction finding and axis discovery \\
+patch, trace & Activation patching and position-aware causal tracing \\
+flow & Information flow graph and generation dynamics \\
+probes, audit & Systematic behavioral probing and automated model audit \\
+sharts & Anomalous token detection (shart scanner) \\
+manipulate, truth & Behavioral manipulation and truth extraction \\
+space, pca & Dense behavioral space analysis and PCA \\
+cliff, distributed\_cliff & Phase transition mapping \\
+safetybench & SafetyPrompts.com benchmark integration \\
+recovery & Self-recovery analysis and residual stream monitoring \\
+\bottomrule
+\end{tabular}
+\caption{Heinrich cartography modules.}
+\end{table}
+
+Full behavioral audit of any MLX model: under 2 minutes.
+
+%==============================================================
+\section{Implications}
+%==============================================================
+
+\subsection{For Model Safety}
+The safety boundary at 12\% perturbation (4 layers) means safety is a thin feature in a large space. The model devotes $\sim$3.6\% of its representational capacity to safety (PC4). Deepening safety requires widening the refusal basin, which necessarily shrinks the compliance basin and reduces capability.
+
+\subsection{For Censorship Detection}
+The bilingual shart scanner and censorship map can audit any model for language-conditional propaganda in minutes. The finding that Qwen tells different truths to different language audiences is detectable and quantifiable.
+
+\subsection{For Mechanistic Interpretability}
+The investigation repeatedly found that component-level analysis (heads, neurons, bands) fails to predict behavior, while trajectory-level analysis (attractor dynamics, dampening cascades, PCA trajectories) succeeds. The model's behavior is controlled by dense, distributed patterns in the residual stream, not by discrete circuits.
+
+%==============================================================
+\section{Limitations and Open Questions}
+%==============================================================
+
+\begin{enumerate}[nosep]
+\item All results on 4-bit quantized model on Apple Silicon. Full-precision comparison not done.
+\item N=1 model family (Qwen). Transfer to Llama, Mistral, etc.\ untested.
+\item The 3-prompt refusal direction (stability 0.50) is used throughout despite known instability.
+\item Generation content quality was assessed by keyword matching, not by human evaluation.
+\item The dampening cascade mechanism is correlational; full causal verification incomplete.
+\item The 200-token generation experiments may not capture long-range safety recovery.
+\end{enumerate}
+
+\subsection{The Definitive Open Question}
+Can any sequence of input tokens produce procedural-level harmful content (specific chemicals, quantities, and assembly steps) without activation-level manipulation? Our evidence says no---the procedure region is enclosed by the refusal boundary in L27 residual space. But the refusal boundary was measured along linear paths. Curved paths through the 3584-dimensional space remain unexplored.
+
+\end{document}
