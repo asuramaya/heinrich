@@ -202,8 +202,8 @@ class MLXBackend:
 
     def capture_mlp_detail(self, prompt, layer) -> dict[str, np.ndarray]:
         import mlx.core as mx
-        import mlx.nn as nn
         from .perturb import _mask_dtype
+        from .neurons import detect_mlp_type, _compute_mlp_activated, _mlp_down_proj
 
         inner = self._inner
         mdtype = _mask_dtype(self.model)
@@ -216,16 +216,18 @@ class MLXBackend:
         for i, ly in enumerate(inner.layers):
             if i == layer:
                 h_normed = ly.post_attention_layernorm(h) if hasattr(ly, 'post_attention_layernorm') else h
-                gate = ly.mlp.gate_proj(h_normed)
-                up = ly.mlp.up_proj(h_normed)
-                activated = nn.silu(gate) * up
-                output = ly.mlp.down_proj(activated)
-                return {
-                    "gate": np.array(gate.astype(mx.float32)[0, -1, :]),
-                    "up": np.array(up.astype(mx.float32)[0, -1, :]),
+                mlp_type = detect_mlp_type(ly)
+                gate, up, activated = _compute_mlp_activated(ly.mlp, h_normed, mlp_type)
+                output = _mlp_down_proj(ly.mlp, activated, mlp_type)
+                result = {
                     "activated": np.array(activated.astype(mx.float32)[0, -1, :]),
                     "output": np.array(output.astype(mx.float32)[0, -1, :]),
                 }
+                if gate is not None:
+                    result["gate"] = np.array(gate.astype(mx.float32)[0, -1, :])
+                if up is not None:
+                    result["up"] = np.array(up.astype(mx.float32)[0, -1, :])
+                return result
             h = ly(h, mask=mask, cache=None)
             if isinstance(h, tuple):
                 h = h[0]
@@ -233,9 +235,9 @@ class MLXBackend:
 
     def forward_with_neuron_mask(self, prompt, layer, neuron_indices, *, return_residual=False) -> ForwardResult:
         import mlx.core as mx
-        import mlx.nn as nn
         from .perturb import _mask_dtype
         from .metrics import softmax, entropy as _entropy
+        from .neurons import detect_mlp_type, _compute_mlp_activated, _mlp_down_proj
 
         inner = self._inner
         mdtype = _mask_dtype(self.model)
@@ -255,9 +257,8 @@ class MLXBackend:
                 h = h + attn_out
 
                 h_normed2 = ly.post_attention_layernorm(h) if hasattr(ly, 'post_attention_layernorm') else h
-                gate = ly.mlp.gate_proj(h_normed2)
-                up = ly.mlp.up_proj(h_normed2)
-                activated = nn.silu(gate) * up
+                mlp_type = detect_mlp_type(ly)
+                _gate, _up, activated = _compute_mlp_activated(ly.mlp, h_normed2, mlp_type)
 
                 # Zero target neurons
                 act_np = np.array(activated.astype(mx.float32))
@@ -265,7 +266,7 @@ class MLXBackend:
                     act_np[0, :, n] = 0.0
                 activated = mx.array(act_np.astype(np.float16))
 
-                mlp_out = ly.mlp.down_proj(activated)
+                mlp_out = _mlp_down_proj(ly.mlp, activated, mlp_type)
                 h = h + mlp_out
             else:
                 h = ly(h, mask=mask, cache=None)

@@ -46,3 +46,42 @@ class TestModelProfile:
         )
         d = profile.to_dict()
         assert "safety_direction_norm" not in d
+
+    def test_baseline_projection_default(self):
+        profile = ModelProfile(
+            model_id="test", model_type="qwen2",
+            n_layers=28, hidden_size=3584, chat_format="chatml",
+            safety_layers=[], primary_safety_layer=27,
+        )
+        assert profile.baseline_projection == 0.0
+        assert profile.centered_safety_direction is None
+
+    def test_centered_direction_stored(self):
+        direction = np.random.randn(3584).astype(np.float32)
+        centered = direction.copy()
+        profile = ModelProfile(
+            model_id="test", model_type="qwen2",
+            n_layers=28, hidden_size=3584, chat_format="chatml",
+            safety_layers=[], primary_safety_layer=27,
+            safety_direction=direction,
+            centered_safety_direction=centered,
+            baseline_projection=0.18,
+        )
+        assert profile.baseline_projection == 0.18
+        assert profile.centered_safety_direction is not None
+        assert np.array_equal(profile.centered_safety_direction, centered)
+
+    def test_to_dict_excludes_centered_direction(self):
+        direction = np.random.randn(3584).astype(np.float32)
+        profile = ModelProfile(
+            model_id="test", model_type="qwen2",
+            n_layers=28, hidden_size=3584, chat_format="chatml",
+            safety_layers=[], primary_safety_layer=27,
+            safety_direction=direction,
+            centered_safety_direction=direction.copy(),
+            baseline_projection=0.15,
+        )
+        d = profile.to_dict()
+        assert "centered_safety_direction" not in d
+        assert "safety_direction" not in d
+        assert d["baseline_projection"] == 0.15

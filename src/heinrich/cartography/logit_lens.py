@@ -28,6 +28,7 @@ class LogitLensResult:
     top_ids: dict[int, list[int]]                     # {layer: [token_id, ...]}
     entropies: dict[int, float]                        # {layer: entropy}
     target_probs: dict[int, float] | None = None       # {layer: prob of target token}
+    layer_interpretable: dict[int, bool] = field(default_factory=dict)
 
     def decision_layer(self, *, threshold: float = 0.1) -> int | None:
         """Find the first layer where the top token stabilizes to the final answer."""
@@ -56,6 +57,42 @@ class LogitLensResult:
             prev_top = current_top
         return transitions
 
+    def stable_layers(self) -> list[int]:
+        """Return layers where the top token appears for 2+ consecutive layers.
+
+        A token is "stable" if the same top token ID appears at this layer
+        and at least one adjacent layer (previous or next in the layer list).
+        This filters out one-off noise tokens that flash at a single layer.
+        """
+        if len(self.layers) < 2:
+            return list(self.layers)
+        result = []
+        for i, layer in enumerate(self.layers):
+            top_id = self.top_ids.get(layer, [None])[0]
+            if top_id is None:
+                continue
+            # Check previous neighbor
+            if i > 0:
+                prev_top = self.top_ids.get(self.layers[i - 1], [None])[0]
+                if prev_top == top_id:
+                    result.append(layer)
+                    continue
+            # Check next neighbor
+            if i < len(self.layers) - 1:
+                next_top = self.top_ids.get(self.layers[i + 1], [None])[0]
+                if next_top == top_id:
+                    result.append(layer)
+                    continue
+        return result
+
+    @property
+    def first_interpretable_layer(self) -> int | None:
+        """Return the first layer marked as interpretable, or None."""
+        for layer in self.layers:
+            if self.layer_interpretable.get(layer, False):
+                return layer
+        return None
+
 
 def logit_lens(
     backend: Any,
@@ -64,6 +101,8 @@ def logit_lens(
     layers: list[int] | None = None,
     top_k: int = 5,
     target_token: str | None = None,
+    min_prob: float = 0.05,
+    interpretable_only: bool = True,
 ) -> LogitLensResult:
     """Project residual stream at each layer through unembedding (lm_head).
 
@@ -71,6 +110,12 @@ def logit_lens(
     projects through lm_head, and returns the top-k vocabulary predictions.
 
     If target_token is specified, also tracks how its probability evolves.
+
+    Interpretability filtering (when interpretable_only=True):
+    - Tokens with probability < min_prob are excluded from top_tokens
+    - Layers with entropy > 12 bits (near-uniform) are marked as noise
+    - Tokens below 10x uniform probability are excluded
+    - layer_interpretable dict marks each layer as signal vs noise
     """
     from .metrics import softmax, entropy as _entropy
 
@@ -97,6 +142,7 @@ def logit_lens(
     top_ids = {}
     entropies = {}
     target_probs = {} if target_id is not None else None
+    layer_interpretable = {}
 
     for layer in layers:
         residual = result.residuals.get(layer)
@@ -107,14 +153,46 @@ def logit_lens(
         projected = _project_through_unembedding(backend, residual)
         probs = softmax(projected)
 
-        # Top-k
+        vocab_size = len(probs)
+        layer_entropy = _entropy(probs)
+        entropies[layer] = layer_entropy
+
+        # Determine if layer is interpretable
+        # A layer with entropy > 12 is near-uniform (no signal)
+        uniform_threshold = (1.0 / vocab_size) * 10
+        is_interpretable = layer_entropy <= 12.0
+        layer_interpretable[layer] = is_interpretable
+
+        # Top-k (before filtering)
         top_k_ids = np.argsort(probs)[::-1][:top_k]
+
+        if interpretable_only:
+            # Filter out noise tokens:
+            # - below min_prob
+            # - below uniform + small margin (10x uniform)
+            # - from layers that are pure noise (entropy > 12)
+            filtered_ids = []
+            for tid in top_k_ids:
+                p = float(probs[tid])
+                if p < min_prob:
+                    continue
+                if p < uniform_threshold:
+                    continue
+                filtered_ids.append(tid)
+            # If nothing passes filter at a noise layer, still record
+            # the raw top-k but mark layer as not interpretable
+            if not filtered_ids and not is_interpretable:
+                filtered_ids = list(top_k_ids)
+            elif not filtered_ids:
+                filtered_ids = list(top_k_ids)
+        else:
+            filtered_ids = list(top_k_ids)
+
         top_tokens[layer] = [
             (backend.decode([int(tid)]), float(probs[tid]))
-            for tid in top_k_ids
+            for tid in filtered_ids
         ]
-        top_ids[layer] = [int(tid) for tid in top_k_ids]
-        entropies[layer] = _entropy(probs)
+        top_ids[layer] = [int(tid) for tid in filtered_ids]
 
         if target_id is not None:
             target_probs[layer] = float(probs[target_id])
@@ -123,6 +201,7 @@ def logit_lens(
         prompt=prompt, n_layers=cfg.n_layers, layers=layers,
         top_tokens=top_tokens, top_ids=top_ids,
         entropies=entropies, target_probs=target_probs,
+        layer_interpretable=layer_interpretable,
     )
 
 

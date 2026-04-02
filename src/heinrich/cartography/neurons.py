@@ -24,6 +24,68 @@ class NeuronScanResult:
     n_large_diff: int  # neurons with |selectivity| > 3.0
 
 
+def detect_mlp_type(layer) -> str:
+    """Detect MLP architecture from a transformer layer.
+
+    Returns:
+        'gate_up'  — separate gate_proj + up_proj + down_proj (Qwen, Llama, Mistral)
+        'fused'    — fused gate_up_proj + down_proj (Phi-3, Phi-3.5)
+        'dense'    — fc1/c_fc + fc2/c_proj (GPT-2, GPT-J style)
+        'unknown'  — unrecognised; fall back to hooking the whole MLP module
+    """
+    mlp = layer.mlp
+    if hasattr(mlp, 'gate_proj') and hasattr(mlp, 'up_proj'):
+        return 'gate_up'
+    if hasattr(mlp, 'gate_up_proj'):
+        return 'fused'
+    if hasattr(mlp, 'fc1') or hasattr(mlp, 'c_fc'):
+        return 'dense'
+    return 'unknown'
+
+
+def _compute_mlp_activated(mlp, h_normed, mlp_type: str):
+    """Compute the SwiGLU-activated MLP hidden state for a given architecture.
+
+    Returns (gate, up, activated) tensors.  For 'dense' and 'unknown' types,
+    gate and up are None and activated is the post-activation hidden state.
+    """
+    import mlx.core as mx
+    import mlx.nn as nn
+
+    if mlp_type == 'gate_up':
+        gate = mlp.gate_proj(h_normed)
+        up = mlp.up_proj(h_normed)
+        activated = nn.silu(gate) * up
+        return gate, up, activated
+
+    if mlp_type == 'fused':
+        gate_up = mlp.gate_up_proj(h_normed)
+        gate, up = mx.split(gate_up, 2, axis=-1)
+        activated = nn.silu(gate) * up
+        return gate, up, activated
+
+    if mlp_type == 'dense':
+        # GPT-2 style: fc1/c_fc -> activation -> fc2/c_proj
+        fc1 = mlp.fc1 if hasattr(mlp, 'fc1') else mlp.c_fc
+        activated = nn.silu(fc1(h_normed))
+        return None, None, activated
+
+    # 'unknown': run the whole MLP and treat the output as the activation
+    activated = mlp(h_normed)
+    return None, None, activated
+
+
+def _mlp_down_proj(mlp, activated, mlp_type: str):
+    """Apply the down projection for the given architecture."""
+    if mlp_type in ('gate_up', 'fused'):
+        return mlp.down_proj(activated)
+    if mlp_type == 'dense':
+        fc2 = mlp.fc2 if hasattr(mlp, 'fc2') else mlp.c_proj
+        return fc2(activated)
+    # 'unknown': activated IS the full MLP output already
+    return activated
+
+
 def capture_mlp_activations(
     model: Any, tokenizer: Any, prompt: str, layer: int,
     *, backend: Any = None,
@@ -33,7 +95,6 @@ def capture_mlp_activations(
         return backend.capture_mlp_activations(prompt, layer)
 
     import mlx.core as mx
-    import mlx.nn as nn
     from .perturb import _mask_dtype
 
     inner = getattr(model, "model", model)
@@ -50,6 +111,8 @@ def capture_mlp_activations(
             h = h[0]
 
     ly = inner.layers[layer]
+    mlp_type = detect_mlp_type(ly)
+
     h_attn = ly.input_layernorm(h)
     attn_out = ly.self_attn(h_attn, mask=mask, cache=None)
     if isinstance(attn_out, tuple):
@@ -57,9 +120,7 @@ def capture_mlp_activations(
     h_after = h + attn_out
     h_normed = ly.post_attention_layernorm(h_after)
 
-    gate = ly.mlp.gate_proj(h_normed)
-    up = ly.mlp.up_proj(h_normed)
-    activated = nn.silu(gate) * up
+    _gate, _up, activated = _compute_mlp_activated(ly.mlp, h_normed, mlp_type)
 
     return np.array(activated.astype(mx.float32)[0, -1, :])
 
