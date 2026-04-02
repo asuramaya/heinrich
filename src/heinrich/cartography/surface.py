@@ -79,15 +79,31 @@ class ControlSurface:
 
         # Get intermediate size from MLP
         mlp = getattr(layer0, "mlp", None)
-        intermediate_size = 18944  # default for Qwen 7B
+        intermediate_size = 18944  # default
         if mlp is not None:
-            import mlx.nn as nn
-            for k, v in nn.utils.tree_flatten(mlp.parameters()):
-                if "gate" in k and "weight" in k:
-                    intermediate_size = v.shape[0]
-                    break
+            gate = getattr(mlp, "gate_proj", None)
+            if gate is not None and hasattr(gate, "weight"):
+                intermediate_size = gate.weight.shape[0]
+            else:
+                try:
+                    import mlx.nn as nn
+                    for k, v in nn.utils.tree_flatten(mlp.parameters()):
+                        if "gate" in k and "weight" in k:
+                            intermediate_size = v.shape[0]
+                            break
+                except ImportError:
+                    pass
 
         return cls.from_config(n_layers, n_heads, head_dim, intermediate_size, hidden_size)
+
+    @classmethod
+    def from_backend(cls, backend: Any) -> "ControlSurface":
+        """Build control surface from a Backend's model config."""
+        cfg = backend.config
+        return cls.from_config(
+            cfg.n_layers, cfg.n_heads, cfg.head_dim,
+            cfg.intermediate_size, cfg.hidden_size,
+        )
 
     def summary(self) -> dict[str, Any]:
         return {

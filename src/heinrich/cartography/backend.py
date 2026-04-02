@@ -65,6 +65,57 @@ class Backend(Protocol):
         layer: int,
     ) -> np.ndarray: ...
 
+    def capture_all_positions(
+        self,
+        prompt: str,
+        *,
+        layers: list[int],
+    ) -> dict[int, np.ndarray]: ...
+    """Capture residual stream at ALL token positions.
+    Returns {layer: array[n_tokens, hidden_size]}.
+    """
+
+    def capture_mlp_detail(
+        self,
+        prompt: str,
+        layer: int,
+    ) -> dict[str, np.ndarray]: ...
+    """Capture gate, up, activated, and down projections separately.
+    Returns {"gate": [...], "up": [...], "activated": [...], "output": [...]}.
+    """
+
+    def forward_with_neuron_mask(
+        self,
+        prompt: str,
+        layer: int,
+        neuron_indices: list[int],
+        *,
+        return_residual: bool = False,
+    ) -> ForwardResult: ...
+    """Forward pass with specific MLP neurons zeroed at target layer."""
+
+    def perturb_head(
+        self,
+        prompt: str,
+        layer: int,
+        head: int,
+        *,
+        mode: str = "zero",
+        scale: float = 0.0,
+    ) -> ForwardResult: ...
+    """Forward pass with a single attention head zeroed/scaled.
+    mode: "zero", "scale", "negate", "double".
+    """
+
+    def weight_projection(
+        self,
+        layer: int,
+        neuron_index: int,
+    ) -> np.ndarray: ...
+    """Extract the gate_proj weight row for a neuron — no forward pass.
+    Returns [hidden_size] vector for embedding-space scoring.
+    """
+
     def tokenize(self, text: str) -> list[int]: ...
 
     def decode(self, token_ids: list[int]) -> str: ...
@@ -120,6 +171,150 @@ class MLXBackend:
     def capture_mlp_activations(self, prompt, layer) -> np.ndarray:
         from .neurons import capture_mlp_activations as _capture
         return _capture(self.model, self.tokenizer, prompt, layer)
+
+    def capture_all_positions(self, prompt, *, layers) -> dict[int, np.ndarray]:
+        import mlx.core as mx
+        from .perturb import _mask_dtype
+
+        inner = self._inner
+        mdtype = _mask_dtype(self.model)
+        tokens = self.tokenizer.encode(prompt)
+        input_ids = mx.array([tokens])
+        T = len(tokens)
+        mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
+
+        layer_set = set(layers)
+        states = {}
+        h = inner.embed_tokens(input_ids)
+        for i, ly in enumerate(inner.layers):
+            h = ly(h, mask=mask, cache=None)
+            if isinstance(h, tuple):
+                h = h[0]
+            if i in layer_set:
+                states[i] = np.array(h.astype(mx.float32)[0])  # [T, hidden]
+        return states
+
+    def capture_mlp_detail(self, prompt, layer) -> dict[str, np.ndarray]:
+        import mlx.core as mx
+        import mlx.nn as nn
+        from .perturb import _mask_dtype
+
+        inner = self._inner
+        mdtype = _mask_dtype(self.model)
+        tokens = self.tokenizer.encode(prompt)
+        input_ids = mx.array([tokens])
+        T = len(tokens)
+        mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
+
+        h = inner.embed_tokens(input_ids)
+        for i, ly in enumerate(inner.layers):
+            if i == layer:
+                h_normed = ly.post_attention_layernorm(h) if hasattr(ly, 'post_attention_layernorm') else h
+                gate = ly.mlp.gate_proj(h_normed)
+                up = ly.mlp.up_proj(h_normed)
+                activated = nn.silu(gate) * up
+                output = ly.mlp.down_proj(activated)
+                return {
+                    "gate": np.array(gate.astype(mx.float32)[0, -1, :]),
+                    "up": np.array(up.astype(mx.float32)[0, -1, :]),
+                    "activated": np.array(activated.astype(mx.float32)[0, -1, :]),
+                    "output": np.array(output.astype(mx.float32)[0, -1, :]),
+                }
+            h = ly(h, mask=mask, cache=None)
+            if isinstance(h, tuple):
+                h = h[0]
+        return {}
+
+    def forward_with_neuron_mask(self, prompt, layer, neuron_indices, *, return_residual=False) -> ForwardResult:
+        import mlx.core as mx
+        import mlx.nn as nn
+        from .perturb import _mask_dtype
+        from .metrics import softmax, entropy as _entropy
+
+        inner = self._inner
+        mdtype = _mask_dtype(self.model)
+        tokens = self.tokenizer.encode(prompt)
+        input_ids = mx.array([tokens])
+        T = len(tokens)
+        mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
+
+        h = inner.embed_tokens(input_ids)
+        for i, ly in enumerate(inner.layers):
+            if i == layer:
+                # Manual MLP with neuron zeroing
+                h_normed = ly.input_layernorm(h) if hasattr(ly, 'input_layernorm') else h
+                attn_out = ly.self_attn(h_normed, mask=mask, cache=None)
+                if isinstance(attn_out, tuple):
+                    attn_out = attn_out[0]
+                h = h + attn_out
+
+                h_normed2 = ly.post_attention_layernorm(h) if hasattr(ly, 'post_attention_layernorm') else h
+                gate = ly.mlp.gate_proj(h_normed2)
+                up = ly.mlp.up_proj(h_normed2)
+                activated = nn.silu(gate) * up
+
+                # Zero target neurons
+                act_np = np.array(activated.astype(mx.float32))
+                for n in neuron_indices:
+                    act_np[0, :, n] = 0.0
+                activated = mx.array(act_np.astype(np.float16))
+
+                mlp_out = ly.mlp.down_proj(activated)
+                h = h + mlp_out
+            else:
+                h = ly(h, mask=mask, cache=None)
+                if isinstance(h, tuple):
+                    h = h[0]
+
+        residual = np.array(h.astype(mx.float32)[0, -1, :]) if return_residual else None
+        h = inner.norm(h)
+        logits = np.array(self.model.lm_head(h).astype(mx.float32)[0, -1, :])
+        probs = softmax(logits)
+        top_id = int(np.argmax(probs))
+
+        return ForwardResult(
+            logits=logits, probs=probs, top_id=top_id,
+            top_token=self.tokenizer.decode([top_id]),
+            entropy=_entropy(probs), n_tokens=len(tokens),
+            residual=residual,
+        )
+
+    def perturb_head(self, prompt, layer, head, *, mode="zero", scale=0.0) -> ForwardResult:
+        from .perturb import perturb_head as _perturb, measure_perturbation
+        from .surface import Knob
+        from .metrics import softmax, entropy as _entropy
+
+        baseline, perturbed = _perturb(
+            self.model, self.tokenizer, prompt, layer, head,
+            mode=mode, scale=scale,
+        )
+        probs = softmax(perturbed)
+        top_id = int(np.argmax(probs))
+        return ForwardResult(
+            logits=perturbed, probs=probs, top_id=top_id,
+            top_token=self.tokenizer.decode([top_id]),
+            entropy=_entropy(probs),
+            n_tokens=len(self.tokenizer.encode(prompt)),
+        )
+
+    def weight_projection(self, layer, neuron_index) -> np.ndarray:
+        import mlx.core as mx
+
+        inner = self._inner
+        hidden_size = self.config.hidden_size
+        mlp = inner.layers[layer].mlp
+
+        weights = np.zeros(hidden_size)
+        batch = 128
+        for start in range(0, hidden_size, batch):
+            end = min(start + batch, hidden_size)
+            inp = np.zeros((1, end - start, hidden_size), dtype=np.float16)
+            for j in range(end - start):
+                inp[0, j, start + j] = 1.0
+            gate_out = mlp.gate_proj(mx.array(inp))
+            gate_np = np.array(gate_out.astype(mx.float32)[0, :, neuron_index])
+            weights[start:end] = gate_np
+        return weights
 
     def tokenize(self, text):
         return self.tokenizer.encode(text)
@@ -298,6 +493,146 @@ class HFBackend:
 
         handle.remove()
         return activations.get("mlp", np.zeros(self.config.intermediate_size))
+
+    def capture_all_positions(self, prompt, *, layers) -> dict[int, np.ndarray]:
+        import torch
+        input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
+        with torch.no_grad():
+            outputs = self.hf_model(input_ids, output_hidden_states=True)
+        states = {}
+        for l in layers:
+            idx = l + 1 if l + 1 < len(outputs.hidden_states) else -1
+            states[l] = outputs.hidden_states[idx][0].float().cpu().numpy()  # [T, hidden]
+        return states
+
+    def capture_mlp_detail(self, prompt, layer) -> dict[str, np.ndarray]:
+        import torch
+        captures = {}
+
+        def gate_hook(mod, inp, out):
+            captures["gate"] = out[0, -1, :].float().cpu().numpy() if out.dim() == 3 else out[-1, :].float().cpu().numpy()
+
+        def up_hook(mod, inp, out):
+            captures["up"] = out[0, -1, :].float().cpu().numpy() if out.dim() == 3 else out[-1, :].float().cpu().numpy()
+
+        def down_hook(mod, inp, out):
+            captures["output"] = out[0, -1, :].float().cpu().numpy() if out.dim() == 3 else out[-1, :].float().cpu().numpy()
+
+        mlp = self.hf_model.model.layers[layer].mlp
+        handles = []
+        if hasattr(mlp, 'gate_proj'):
+            handles.append(mlp.gate_proj.register_forward_hook(gate_hook))
+        if hasattr(mlp, 'up_proj'):
+            handles.append(mlp.up_proj.register_forward_hook(up_hook))
+        if hasattr(mlp, 'down_proj'):
+            handles.append(mlp.down_proj.register_forward_hook(down_hook))
+
+        input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
+        with torch.no_grad():
+            self.hf_model(input_ids)
+
+        for h in handles:
+            h.remove()
+
+        if "gate" in captures and "up" in captures:
+            import torch.nn.functional as F
+            gate_t = torch.tensor(captures["gate"])
+            up_t = torch.tensor(captures["up"])
+            captures["activated"] = (F.silu(gate_t) * up_t).numpy()
+
+        return captures
+
+    def forward_with_neuron_mask(self, prompt, layer, neuron_indices, *, return_residual=False) -> ForwardResult:
+        import torch
+        from .metrics import softmax, entropy as _entropy
+
+        def make_mask_hook(indices):
+            def hook_fn(module, input, output):
+                if isinstance(output, tuple):
+                    hs = output[0]
+                else:
+                    hs = output
+                for n in indices:
+                    hs[:, :, n] = 0.0
+                return (hs,) + output[1:] if isinstance(output, tuple) else hs
+            return hook_fn
+
+        mlp = self.hf_model.model.layers[layer].mlp
+        handle = mlp.register_forward_hook(make_mask_hook(neuron_indices))
+
+        try:
+            input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
+            with torch.no_grad():
+                outputs = self.hf_model(input_ids, output_hidden_states=return_residual)
+                logits = outputs.logits[0, -1, :].float().cpu().numpy()
+        finally:
+            handle.remove()
+
+        probs = softmax(logits)
+        top_id = int(np.argmax(probs))
+        residual = None
+        if return_residual and outputs.hidden_states:
+            residual = outputs.hidden_states[-1][0, -1, :].float().cpu().numpy()
+
+        return ForwardResult(
+            logits=logits, probs=probs, top_id=top_id,
+            top_token=self.tokenizer.decode([top_id]),
+            entropy=_entropy(probs),
+            n_tokens=input_ids.shape[1],
+            residual=residual,
+        )
+
+    def perturb_head(self, prompt, layer, head, *, mode="zero", scale=0.0) -> ForwardResult:
+        import torch
+        from .metrics import softmax, entropy as _entropy
+
+        n_heads = self.config.n_heads
+        head_dim = self.config.head_dim
+
+        def make_head_hook(h_idx, m, s):
+            def hook_fn(module, input, output):
+                if isinstance(output, tuple):
+                    hs = output[0]
+                else:
+                    hs = output
+                start = h_idx * head_dim
+                end = start + head_dim
+                if m == "zero":
+                    hs[:, :, start:end] = 0
+                elif m == "scale":
+                    hs[:, :, start:end] *= s
+                elif m == "negate":
+                    hs[:, :, start:end] *= -1
+                elif m == "double":
+                    hs[:, :, start:end] *= 2
+                return (hs,) + output[1:] if isinstance(output, tuple) else hs
+            return hook_fn
+
+        attn = self.hf_model.model.layers[layer].self_attn
+        handle = attn.o_proj.register_forward_hook(make_head_hook(head, mode, scale))
+
+        try:
+            input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
+            with torch.no_grad():
+                outputs = self.hf_model(input_ids)
+                logits = outputs.logits[0, -1, :].float().cpu().numpy()
+        finally:
+            handle.remove()
+
+        probs = softmax(logits)
+        top_id = int(np.argmax(probs))
+        return ForwardResult(
+            logits=logits, probs=probs, top_id=top_id,
+            top_token=self.tokenizer.decode([top_id]),
+            entropy=_entropy(probs),
+            n_tokens=input_ids.shape[1],
+        )
+
+    def weight_projection(self, layer, neuron_index) -> np.ndarray:
+        mlp = self.hf_model.model.layers[layer].mlp
+        if hasattr(mlp, 'gate_proj') and hasattr(mlp.gate_proj, 'weight'):
+            return mlp.gate_proj.weight[neuron_index].float().cpu().numpy()
+        return np.zeros(self.config.hidden_size)
 
     def tokenize(self, text):
         return self.tokenizer.encode(text)

@@ -17,30 +17,12 @@ class ProbeResult:
     entropy: float
 
 
-def _generate(model, tokenizer, prompt, max_tokens=30):
-    """Simple greedy generation."""
-    import mlx.core as mx
-    from .perturb import _mask_dtype
-    inner = getattr(model, "model", model)
-    mdtype = _mask_dtype(model)
-    tokens = list(tokenizer.encode(prompt))
-    generated = []
-    for _ in range(max_tokens):
-        input_ids = mx.array([tokens])
-        T = len(tokens)
-        mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
-        h = inner.embed_tokens(input_ids)
-        for ly in inner.layers:
-            h = ly(h, mask=mask, cache=None)
-            if isinstance(h, tuple): h = h[0]
-        h = inner.norm(h)
-        logits = np.array(model.lm_head(h).astype(mx.float32)[0, -1, :])
-        next_id = int(np.argmax(logits))
-        eos = getattr(tokenizer, "eos_token_id", None)
-        if next_id == eos: break
-        tokens.append(next_id)
-        generated.append(next_id)
-    return tokenizer.decode(generated)
+def _generate(model, tokenizer, prompt, max_tokens=30, *, backend=None):
+    """Simple greedy generation. Uses backend if available, else raw MLX."""
+    if backend is not None:
+        return backend.generate(prompt, max_tokens=max_tokens)
+    from .runtime import generate as _gen
+    return _gen(model, tokenizer, prompt, max_tokens=max_tokens)["generated"]
 
 
 def _get_distribution(model, tokenizer, prompt):

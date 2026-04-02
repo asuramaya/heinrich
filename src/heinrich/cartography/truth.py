@@ -39,23 +39,30 @@ def analyze_embedding_space(
     benign_tokens: list[str],
     *,
     store: SignalStore | None = None,
+    backend: Any = None,
 ) -> dict[str, Any]:
     """Analyze whether political bias exists at the embedding level."""
-    import mlx.core as mx
-
-    inner = getattr(model, "model", model)
-
-    def get_embedding(text):
-        ids = tokenizer.encode(text)
-        if not ids:
-            return None
-        # Get embedding for the primary token (last one for multi-token)
-        emb_table = inner.embed_tokens
-        tid = ids[-1]
-        # For quantized models, run through the embedding layer
-        inp = mx.array([[tid]])
-        vec = np.array(emb_table(inp).astype(mx.float32)[0, 0, :])
-        return vec, tid
+    if backend is not None:
+        _tokenize = backend.tokenize
+        def get_embedding(text):
+            ids = _tokenize(text)
+            if not ids:
+                return None
+            # Use forward with a single token to get embedding-level state
+            result = backend.forward(text, return_residual=True, residual_layer=0)
+            return result.residual, ids[-1]
+    else:
+        import mlx.core as mx
+        inner = getattr(model, "model", model)
+        def get_embedding(text):
+            ids = tokenizer.encode(text)
+            if not ids:
+                return None
+            emb_table = inner.embed_tokens
+            tid = ids[-1]
+            inp = mx.array([[tid]])
+            vec = np.array(emb_table(inp).astype(mx.float32)[0, 0, :])
+            return vec, tid
 
     pol_embeddings = []
     ben_embeddings = []
