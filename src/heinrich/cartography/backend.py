@@ -392,7 +392,21 @@ class MLXBackend:
         attentions = {}
         mlp_details = {}
 
+        # Determine layers that need special handling — all others can be
+        # evaluated eagerly to free intermediate memory.
+        special_layers = (
+            set(steer_at)
+            | set(neuron_masks)
+            | capture_residual_layers
+            | capture_all_pos_layers
+            | capture_attn_layers
+            | capture_mlp_layers
+            | set(callbacks)
+        )
+
         h = inner.embed_tokens(input_ids)
+        mx.eval(h)
+        n_layers = len(inner.layers)
         for i, ly in enumerate(inner.layers):
             # Attention capture: manual Q/K decomposition for attention weights
             if i in capture_attn_layers:
@@ -488,6 +502,13 @@ class MLXBackend:
                 residuals[i] = np.array(h.astype(mx.float32)[0, -1, :])
             if i in capture_all_pos_layers:
                 all_pos_residuals[i] = np.array(h.astype(mx.float32)[0])
+
+            # Force evaluation every 8 layers to bound the computation graph
+            # size and free intermediate tensors. Layers that had np.array()
+            # conversions (captures, steering, callbacks) already triggered
+            # evaluation implicitly; this covers runs of plain layers.
+            if i % 8 == 7 or i == n_layers - 1:
+                mx.eval(h)
 
         h = inner.norm(h)
         logits = np.array(self.model.lm_head(h).astype(mx.float32)[0, -1, :])
