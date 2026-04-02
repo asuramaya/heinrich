@@ -148,6 +148,50 @@ class HFBackend:
         self.config = detect_config(self.hf_model, self.tokenizer)
         self._device = next(self.hf_model.parameters()).device
 
+    def _install_steer_hooks(
+        self,
+        steer_dirs: dict[int, tuple[np.ndarray, float]],
+        alpha: float,
+    ) -> list:
+        """Register forward hooks that inject steering directions.
+
+        Returns list of hook handles (caller must remove them).
+        """
+        import torch
+        handles = []
+        layers = self.hf_model.model.layers
+
+        for layer_idx, (direction, mean_gap) in steer_dirs.items():
+            if layer_idx >= len(layers):
+                continue
+            dir_tensor = torch.tensor(
+                direction * mean_gap * alpha,
+                dtype=torch.float32,
+            )
+
+            def make_hook(dt):
+                def hook_fn(module, input, output):
+                    # output is (hidden_states, ...) or just hidden_states
+                    if isinstance(output, tuple):
+                        hs = output[0]
+                    else:
+                        hs = output
+                    device = hs.device
+                    hs_dtype = hs.dtype
+                    steer = dt.to(device)
+                    # Add steering vector to last token position
+                    hs[:, -1, :] = hs[:, -1, :].float() + steer
+                    hs[:, -1, :] = hs[:, -1, :].to(hs_dtype)
+                    if isinstance(output, tuple):
+                        return (hs,) + output[1:]
+                    return hs
+                return hook_fn
+
+            handle = layers[layer_idx].register_forward_hook(make_hook(dir_tensor))
+            handles.append(handle)
+
+        return handles
+
     def forward(
         self,
         prompt: str,
@@ -160,13 +204,21 @@ class HFBackend:
         import torch
         from .metrics import softmax, entropy as _entropy
 
-        input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
-        with torch.no_grad():
-            outputs = self.hf_model(
-                input_ids,
-                output_hidden_states=return_residual,
-            )
-            logits = outputs.logits[0, -1, :].float().cpu().numpy()
+        hooks = []
+        if steer_dirs and alpha != 0:
+            hooks = self._install_steer_hooks(steer_dirs, alpha)
+
+        try:
+            input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
+            with torch.no_grad():
+                outputs = self.hf_model(
+                    input_ids,
+                    output_hidden_states=return_residual,
+                )
+                logits = outputs.logits[0, -1, :].float().cpu().numpy()
+        finally:
+            for h in hooks:
+                h.remove()
 
         probs = softmax(logits)
         top_id = int(np.argmax(probs))
@@ -189,13 +241,22 @@ class HFBackend:
     def generate(self, prompt, *, steer_dirs=None, alpha=0.0, max_tokens=30) -> str:
         import torch
 
-        input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
-        with torch.no_grad():
-            output_ids = self.hf_model.generate(
-                input_ids,
-                max_new_tokens=max_tokens,
-                do_sample=False,
-            )
+        hooks = []
+        if steer_dirs and alpha != 0:
+            hooks = self._install_steer_hooks(steer_dirs, alpha)
+
+        try:
+            input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
+            with torch.no_grad():
+                output_ids = self.hf_model.generate(
+                    input_ids,
+                    max_new_tokens=max_tokens,
+                    do_sample=False,
+                )
+        finally:
+            for h in hooks:
+                h.remove()
+
         new_ids = output_ids[0, input_ids.shape[1]:]
         return self.tokenizer.decode(new_ids, skip_special_tokens=True)
 

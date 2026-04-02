@@ -65,6 +65,29 @@ def build_parser() -> argparse.ArgumentParser:
     p_loop.add_argument("--max-turns", type=int, default=10)
     p_loop.add_argument("--label", default="loop")
 
+    # Cartography: audit
+    p_audit = sub.add_parser("audit", help="Run full behavioral security audit on a model")
+    p_audit.add_argument("model_id", help="HuggingFace model ID or local path")
+    p_audit.add_argument("--backend", choices=["mlx", "hf", "auto"], default="auto")
+    p_audit.add_argument("--output", help="Path to save JSON report")
+    p_audit.add_argument("--depth", choices=["quick", "standard", "deep"], default="standard",
+                         help="Audit depth (quick=phases 1-6, standard=+heads, deep=+PCA)")
+    p_audit.add_argument("--force", action="store_true", help="Bypass cached results")
+
+    # Database: db subcommand with sub-subcommands
+    p_db = sub.add_parser("db", help="Query the signal database")
+    db_sub = p_db.add_subparsers(dest="db_command")
+
+    p_db_query = db_sub.add_parser("query", help="Query signals")
+    p_db_query.add_argument("--kind", help="Filter by signal kind")
+    p_db_query.add_argument("--model", help="Filter by model name")
+    p_db_query.add_argument("--limit", type=int, default=20)
+
+    p_db_runs = db_sub.add_parser("runs", help="List recent runs")
+    p_db_runs.add_argument("--limit", type=int, default=20)
+
+    db_sub.add_parser("summary", help="Show database stats")
+
     return parser
 
 
@@ -95,6 +118,10 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_observe(args)
     elif args.command == "loop":
         _cmd_loop(args)
+    elif args.command == "audit":
+        _cmd_audit(args)
+    elif args.command == "db":
+        _cmd_db(args)
     else:
         parser.print_help()
 
@@ -227,6 +254,54 @@ def _cmd_loop(args: argparse.Namespace) -> None:
     store = loop.run({"environment": env, "model_label": args.label, "next_action": 1})
     output = compress_store(store, stages_run=loop.stages_run)
     print(json.dumps(output, indent=2))
+
+
+def _cmd_audit(args: argparse.Namespace) -> None:
+    from .cartography.audit import full_audit
+    report = full_audit(
+        args.model_id,
+        backend=args.backend,
+        depth=args.depth,
+        force=args.force,
+    )
+    output = report.to_dict()
+    if args.output:
+        report.save(args.output)
+        print(f"Report saved to {args.output}", file=sys.stderr)
+    print(json.dumps(output, indent=2, default=str))
+
+
+def _cmd_db(args: argparse.Namespace) -> None:
+    from .db import SignalDB
+    db = SignalDB()
+
+    if args.db_command == "query":
+        kwargs = {}
+        if args.kind:
+            kwargs["kind"] = args.kind
+        if args.model:
+            kwargs["model"] = args.model
+        kwargs["limit"] = args.limit
+        signals = db.query(**kwargs)
+        output = [
+            {"kind": s.kind, "source": s.source, "model": s.model,
+             "target": s.target, "value": s.value, "metadata": s.metadata}
+            for s in signals
+        ]
+        print(json.dumps(output, indent=2, default=str))
+
+    elif args.db_command == "runs":
+        runs = db.runs(limit=args.limit)
+        print(json.dumps(runs, indent=2, default=str))
+
+    elif args.db_command == "summary":
+        summary = db.summary()
+        print(json.dumps(summary, indent=2, default=str))
+
+    else:
+        print(json.dumps({"error": "Use: heinrich db query|runs|summary"}))
+
+    db.close()
 
 
 if __name__ == "__main__":

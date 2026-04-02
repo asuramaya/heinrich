@@ -47,7 +47,12 @@ def forward_pass(
     """Unified forward pass with optional steering and ablation.
 
     steer_dirs: {layer: (direction, mean_gap)} — inject direction * mean_gap * alpha
-    ablate_layers: set of layer indices to ablate (zero the residual contribution)
+    ablate_layers: set of layer indices to ablate
+    ablate_mode: how to ablate the target layers:
+        "zero"      — skip entire layer contribution (default)
+        "scale"     — scale layer delta by 0.5
+        "zero_attn" — zero the attention component only, keep MLP
+        "zero_mlp"  — zero the MLP component only, keep attention
     return_residual: if True, also return residual stream at last position
     residual_layer: which layer's residual to capture (-1 = after all layers)
 
@@ -60,17 +65,38 @@ def forward_pass(
     h = inner.embed_tokens(input_ids)
     for i, ly in enumerate(inner.layers):
         if ablate_layers and i in ablate_layers:
-            h_before = h
-        h = ly(h, mask=mask, cache=None)
-        if isinstance(h, tuple):
-            h = h[0]
-        if ablate_layers and i in ablate_layers:
             if ablate_mode == "zero":
-                h = h_before  # skip this layer's contribution
+                h_before = h
+                h = ly(h, mask=mask, cache=None)
+                if isinstance(h, tuple):
+                    h = h[0]
+                h = h_before  # skip this layer's contribution entirely
             elif ablate_mode == "scale":
+                h_before = h
+                h = ly(h, mask=mask, cache=None)
+                if isinstance(h, tuple):
+                    h = h[0]
                 delta = h.astype(mx.float32) - h_before.astype(mx.float32)
                 h = h_before.astype(mx.float32) + delta * 0.5
                 h = h.astype(mx.float16)
+            elif ablate_mode == "zero_attn":
+                # Skip attention contribution, keep MLP only
+                # h_post_attn = h (no attention added to residual)
+                h_post_attn = h
+                h = h_post_attn + ly.mlp(ly.post_attention_layernorm(h_post_attn))
+            elif ablate_mode == "zero_mlp":
+                # Keep attention contribution, skip MLP
+                h_normed = ly.input_layernorm(h)
+                attn_out = ly.self_attn(h_normed, mask=mask, cache=None)
+                if isinstance(attn_out, tuple):
+                    attn_out = attn_out[0]
+                h = h + attn_out
+            else:
+                raise ValueError(f"Unknown ablate_mode: {ablate_mode!r}")
+        else:
+            h = ly(h, mask=mask, cache=None)
+            if isinstance(h, tuple):
+                h = h[0]
         if steer_dirs and i in steer_dirs and alpha != 0:
             direction, mean_gap = steer_dirs[i]
             h_np = np.array(h.astype(mx.float32))

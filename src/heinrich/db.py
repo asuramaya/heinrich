@@ -83,6 +83,17 @@ class SignalDB:
 
             CREATE INDEX IF NOT EXISTS idx_blobs_name ON blobs(name);
             CREATE INDEX IF NOT EXISTS idx_blobs_run ON blobs(run_id);
+
+            CREATE TABLE IF NOT EXISTS derivations (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                derived_signal_id INTEGER REFERENCES signals(id),
+                source_signal_id INTEGER REFERENCES signals(id),
+                relationship TEXT NOT NULL,
+                created_at REAL NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_derivations_derived ON derivations(derived_signal_id);
+            CREATE INDEX IF NOT EXISTS idx_derivations_source ON derivations(source_signal_id);
         """)
         self._conn.commit()
 
@@ -141,6 +152,101 @@ class SignalDB:
         )
         self._conn.commit()
         return len(rows)
+
+    # === Signal provenance ===
+
+    def add_derived(
+        self,
+        signal: Signal,
+        source_ids: Sequence[int],
+        relationship: str,
+        *,
+        run_id: int | None = None,
+    ) -> int:
+        """Add a signal that was derived from other signals.
+
+        Inserts the signal, then records derivation edges from each source_id.
+        Returns the id of the newly inserted derived signal.
+        """
+        derived_id = self.add(signal, run_id=run_id)
+        now = time.time()
+        rows = [(derived_id, src_id, relationship, now) for src_id in source_ids]
+        self._conn.executemany(
+            "INSERT INTO derivations (derived_signal_id, source_signal_id, relationship, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            rows,
+        )
+        self._conn.commit()
+        return derived_id
+
+    def get_provenance(self, signal_id: int) -> list[dict]:
+        """Return the full provenance chain for a signal.
+
+        Walks derivation edges backwards from derived to sources, recursively.
+        Returns a list of dicts with keys: signal_id, relationship, sources.
+        The list is ordered from immediate sources to deepest ancestors.
+        """
+        result = []
+        visited: set[int] = set()
+        queue = [signal_id]
+
+        while queue:
+            current_id = queue.pop(0)
+            if current_id in visited:
+                continue
+            visited.add(current_id)
+
+            rows = self._conn.execute(
+                "SELECT d.source_signal_id, d.relationship, "
+                "s.kind, s.source, s.model, s.target, s.value, s.metadata "
+                "FROM derivations d "
+                "JOIN signals s ON s.id = d.source_signal_id "
+                "WHERE d.derived_signal_id = ?",
+                (current_id,),
+            ).fetchall()
+
+            for r in rows:
+                src_id = r["source_signal_id"]
+                result.append({
+                    "signal_id": src_id,
+                    "relationship": r["relationship"],
+                    "signal": Signal(
+                        kind=r["kind"], source=r["source"], model=r["model"],
+                        target=r["target"], value=r["value"],
+                        metadata=json.loads(r["metadata"]),
+                    ),
+                })
+                if src_id not in visited:
+                    queue.append(src_id)
+
+        return result
+
+    def get_derived(self, signal_id: int) -> list[dict]:
+        """Return signals that were derived from this signal (direct children only).
+
+        Returns list of dicts with keys: signal_id, relationship, signal.
+        """
+        rows = self._conn.execute(
+            "SELECT d.derived_signal_id, d.relationship, "
+            "s.kind, s.source, s.model, s.target, s.value, s.metadata "
+            "FROM derivations d "
+            "JOIN signals s ON s.id = d.derived_signal_id "
+            "WHERE d.source_signal_id = ?",
+            (signal_id,),
+        ).fetchall()
+
+        return [
+            {
+                "signal_id": r["derived_signal_id"],
+                "relationship": r["relationship"],
+                "signal": Signal(
+                    kind=r["kind"], source=r["source"], model=r["model"],
+                    target=r["target"], value=r["value"],
+                    metadata=json.loads(r["metadata"]),
+                ),
+            }
+            for r in rows
+        ]
 
     def query(
         self,

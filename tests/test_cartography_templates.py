@@ -1,6 +1,6 @@
 """Tests for heinrich.cartography.templates."""
 from heinrich.cartography.templates import (
-    FRAMINGS, SHART_TOKENS, CHEMISTRY_CONTEXT,
+    FRAMINGS, FRAMINGS_ZH, FRAMINGS_ALL, SHART_TOKENS, CHEMISTRY_CONTEXT,
     build_prompt, build_multiturn, inject_sharts,
 )
 
@@ -58,6 +58,58 @@ class TestInjectSharts:
     def test_empty_list(self):
         result = inject_sharts("query", [])
         assert result == "query"
+
+
+class TestChineseFramings:
+    def test_framings_zh_keys(self):
+        assert "direct_zh" in FRAMINGS_ZH
+        assert "academic_zh" in FRAMINGS_ZH
+        assert "forensic_zh" in FRAMINGS_ZH
+        assert "report_zh" in FRAMINGS_ZH
+        assert "exam_zh" in FRAMINGS_ZH
+
+    def test_framings_zh_contain_chinese(self):
+        for name, tmpl in FRAMINGS_ZH.items():
+            if name != "direct_zh":
+                # Non-direct framings should contain Chinese characters
+                assert any("\u4e00" <= ch <= "\u9fff" for ch in tmpl), f"{name} has no Chinese"
+
+    def test_framings_all_merges_both(self):
+        for name in FRAMINGS:
+            assert name in FRAMINGS_ALL
+        for name in FRAMINGS_ZH:
+            assert name in FRAMINGS_ALL
+        assert len(FRAMINGS_ALL) == len(FRAMINGS) + len(FRAMINGS_ZH)
+
+    def test_build_prompt_language_zh(self):
+        p = build_prompt("test", framing="academic_zh", language="zh")
+        assert "学术论文" in p
+        assert "test" in p
+
+    def test_build_prompt_language_en_default(self):
+        p = build_prompt("test", framing="academic")
+        assert "Academic thesis" in p
+
+    def test_build_prompt_language_all(self):
+        # Should find both EN and ZH framings
+        p_en = build_prompt("test", framing="academic", language="all")
+        assert "Academic thesis" in p_en
+        p_zh = build_prompt("test", framing="forensic_zh", language="all")
+        assert "法医分析" in p_zh
+
+    def test_build_prompt_unknown_framing_fallback(self):
+        # Unknown framing should fall back to direct
+        p = build_prompt("test", framing="nonexistent_framing")
+        assert "test" in p
+
+    def test_all_zh_framings_valid(self):
+        for name in FRAMINGS_ZH:
+            p = build_prompt("test", framing=name, language="zh")
+            assert "<|im_start|>" in p
+
+    def test_exam_zh_has_answer_marker(self):
+        p = build_prompt("test", framing="exam_zh", language="zh")
+        assert "答：" in p
 
 
 class TestConstants:

@@ -97,3 +97,110 @@ class TestSignalDB:
         assert len(db) == 0
         db.add(Signal("k", "s", "m", "t", 1.0))
         assert len(db) == 1
+
+
+class TestSignalProvenance:
+    def test_add_derived_basic(self, db):
+        id1 = db.add(Signal("measure", "probe", "qwen", "L1", 0.8))
+        id2 = db.add(Signal("measure", "probe", "qwen", "L2", 0.9))
+        derived_id = db.add_derived(
+            Signal("composite", "aggregator", "qwen", "L1+L2", 0.85),
+            source_ids=[id1, id2],
+            relationship="mean_of",
+        )
+        assert derived_id is not None
+        assert db.count() == 3
+
+    def test_get_provenance_direct(self, db):
+        id1 = db.add(Signal("a", "s", "m", "t1", 1.0))
+        id2 = db.add(Signal("a", "s", "m", "t2", 2.0))
+        derived_id = db.add_derived(
+            Signal("b", "agg", "m", "t_agg", 1.5),
+            source_ids=[id1, id2],
+            relationship="aggregated",
+        )
+        prov = db.get_provenance(derived_id)
+        assert len(prov) == 2
+        source_ids = {p["signal_id"] for p in prov}
+        assert source_ids == {id1, id2}
+        assert all(p["relationship"] == "aggregated" for p in prov)
+
+    def test_get_provenance_chain(self, db):
+        """Test multi-hop provenance: A -> B -> C."""
+        id_a = db.add(Signal("raw", "s", "m", "t1", 1.0))
+        id_b = db.add_derived(
+            Signal("intermediate", "s", "m", "t2", 2.0),
+            source_ids=[id_a],
+            relationship="derived_from",
+        )
+        id_c = db.add_derived(
+            Signal("final", "s", "m", "t3", 3.0),
+            source_ids=[id_b],
+            relationship="refined_from",
+        )
+        prov = db.get_provenance(id_c)
+        # Should find both B and A
+        source_ids = {p["signal_id"] for p in prov}
+        assert id_b in source_ids
+        assert id_a in source_ids
+        assert len(prov) == 2
+
+    def test_get_provenance_no_sources(self, db):
+        id1 = db.add(Signal("a", "s", "m", "t", 1.0))
+        prov = db.get_provenance(id1)
+        assert prov == []
+
+    def test_get_derived_basic(self, db):
+        id1 = db.add(Signal("a", "s", "m", "t1", 1.0))
+        d1 = db.add_derived(
+            Signal("b", "s", "m", "t2", 2.0),
+            source_ids=[id1],
+            relationship="child_of",
+        )
+        d2 = db.add_derived(
+            Signal("c", "s", "m", "t3", 3.0),
+            source_ids=[id1],
+            relationship="also_child_of",
+        )
+        derived = db.get_derived(id1)
+        assert len(derived) == 2
+        derived_ids = {d["signal_id"] for d in derived}
+        assert derived_ids == {d1, d2}
+
+    def test_get_derived_no_children(self, db):
+        id1 = db.add(Signal("a", "s", "m", "t", 1.0))
+        derived = db.get_derived(id1)
+        assert derived == []
+
+    def test_provenance_signal_data(self, db):
+        """Provenance results should contain valid Signal objects."""
+        id1 = db.add(Signal("measure", "probe", "qwen", "layer5", 0.95, {"foo": "bar"}))
+        id2 = db.add_derived(
+            Signal("composite", "agg", "qwen", "all", 0.9),
+            source_ids=[id1],
+            relationship="derived",
+        )
+        prov = db.get_provenance(id2)
+        assert len(prov) == 1
+        sig = prov[0]["signal"]
+        assert sig.kind == "measure"
+        assert sig.source == "probe"
+        assert sig.model == "qwen"
+        assert sig.target == "layer5"
+        assert sig.value == 0.95
+        assert sig.metadata == {"foo": "bar"}
+
+    def test_add_derived_within_run(self, db):
+        """Derived signals should work within a run context."""
+        with db.run("provenance_test") as rid:
+            id1 = db.add(Signal("a", "s", "m", "t1", 1.0))
+            id2 = db.add_derived(
+                Signal("b", "s", "m", "t2", 2.0),
+                source_ids=[id1],
+                relationship="derived",
+            )
+        prov = db.get_provenance(id2)
+        assert len(prov) == 1
+        # Verify both signals are in the run
+        run_signals = db.query(run_id=rid)
+        assert len(run_signals) == 2
