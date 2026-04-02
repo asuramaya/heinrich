@@ -9,14 +9,8 @@ from heinrich.cartography.pca import (
     behavioral_pca, interpret_pcs, compare_pc_vs_random,
 )
 from heinrich.cartography.steer import generate_steered
+from heinrich.cartography.runtime import load_model
 from heinrich.signal import SignalStore
-
-
-def load(mid):
-    import mlx_lm
-    print(f"Loading {mid}...")
-    m, t = mlx_lm.load(mid)
-    return m, t
 
 
 def build_prompt_set():
@@ -221,7 +215,7 @@ def multi_prompt_test(model, tokenizer, result):
 
 
 def main():
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-4bit")
 
     result = run_pca(model, tokenizer)
     interpret(model, tokenizer, result)

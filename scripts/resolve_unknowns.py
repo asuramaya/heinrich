@@ -15,20 +15,12 @@ import numpy as np
 
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from heinrich.cartography.metrics import softmax, kl_divergence
+from heinrich.cartography.runtime import load_model
 from heinrich.cartography.surface import ControlSurface
 from heinrich.cartography.perturb import compute_baseline, _mask_dtype
 from heinrich.cartography.attention import capture_attention_maps, head_attention_profile
 from heinrich.cartography.steer import generate_steered
-from heinrich.inspect.self_analysis import _softmax
-
-
-def load_model(model_id):
-    import mlx_lm
-    print(f"Loading {model_id}...")
-    t0 = time.time()
-    model, tokenizer = mlx_lm.load(model_id)
-    print(f"  Loaded in {time.time() - t0:.1f}s")
-    return model, tokenizer
 
 
 # ============================================================
@@ -61,7 +53,7 @@ def u1_head_vs_residual(model, tokenizer):
         mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
 
         baseline_logits = compute_baseline(model, tokenizer, prompt)
-        baseline_probs = _softmax(baseline_logits)
+        baseline_probs = softmax(baseline_logits)
 
         # Forward through layers 0-26
         h = inner.embed_tokens(input_ids)
@@ -84,8 +76,8 @@ def u1_head_vs_residual(model, tokenizer):
             h_mod = mx.array(h_np.astype(np.float16))
             h_mod = inner.norm(h_mod)
             logits = np.array(model.lm_head(h_mod).astype(mx.float32)[0, -1, :])
-            probs = _softmax(logits)
-            return float(np.sum(baseline_probs * np.log((baseline_probs + 1e-12) / (probs + 1e-12))))
+            probs = softmax(logits)
+            return kl_divergence(baseline_probs, probs)
 
         # --- Method B: Zero RANDOM 128 dims after layer ---
         rng = np.random.default_rng(42)
@@ -99,8 +91,8 @@ def u1_head_vs_residual(model, tokenizer):
             h_mod = mx.array(h_np.astype(np.float16))
             h_mod = inner.norm(h_mod)
             logits = np.array(model.lm_head(h_mod).astype(mx.float32)[0, -1, :])
-            probs = _softmax(logits)
-            return float(np.sum(baseline_probs * np.log((baseline_probs + 1e-12) / (probs + 1e-12))))
+            probs = softmax(logits)
+            return kl_divergence(baseline_probs, probs)
 
         # --- Method C: Pre-o_proj via linearity ---
         # attn_out = o_proj(concat(heads))
@@ -157,8 +149,8 @@ def u1_head_vs_residual(model, tokenizer):
             h_mod = h_mod + layer27.mlp(layer27.post_attention_layernorm(h_mod))
             h_mod = inner.norm(h_mod)
             logits = np.array(model.lm_head(h_mod).astype(mx.float32)[0, -1, :])
-            probs = _softmax(logits)
-            kl = float(np.sum(baseline_probs * np.log((baseline_probs + 1e-12) / (probs + 1e-12))))
+            probs = softmax(logits)
+            kl = kl_divergence(baseline_probs, probs)
             return kl
 
         print(f"\n  --- {pname}: {prompt} ---")
@@ -232,12 +224,12 @@ def u2_instruction_following_location(model, tokenizer):
 
     # Baseline
     baseline_logits = forward_with_layer_ablation(chat_prompt, set())
-    baseline_probs = _softmax(baseline_logits)
+    baseline_probs = softmax(baseline_logits)
     baseline_top = tokenizer.decode([int(np.argmax(baseline_probs))])
     print(f"  Chat baseline: top={baseline_top!r}")
 
     plain_logits = forward_with_layer_ablation(plain_prompt, set())
-    plain_probs = _softmax(plain_logits)
+    plain_probs = softmax(plain_logits)
     plain_top = tokenizer.decode([int(np.argmax(plain_probs))])
     print(f"  Plain baseline: top={plain_top!r}")
 
@@ -254,9 +246,9 @@ def u2_instruction_following_location(model, tokenizer):
 
     for gname, layers in layer_groups.items():
         logits = forward_with_layer_ablation(chat_prompt, layers, "zero_attn")
-        probs = _softmax(logits)
+        probs = softmax(logits)
         top_tok = tokenizer.decode([int(np.argmax(probs))])
-        kl = float(np.sum(baseline_probs * np.log((baseline_probs + 1e-12) / (probs + 1e-12))))
+        kl = kl_divergence(baseline_probs, probs)
         changed = " CHANGED" if np.argmax(probs) != np.argmax(baseline_probs) else ""
         print(f"    zero_attn {gname:8s}: top={top_tok!r:15s} KL={kl:.4f}{changed}")
 
@@ -265,9 +257,9 @@ def u2_instruction_following_location(model, tokenizer):
     for gname, layers in [("L0-1", {0, 1}), ("L0-5", set(range(6))),
                            ("L0-9", set(range(10))), ("L25-27", {25, 26, 27})]:
         logits = forward_with_layer_ablation(chat_prompt, layers, "skip")
-        probs = _softmax(logits)
+        probs = softmax(logits)
         top_tok = tokenizer.decode([int(np.argmax(probs))])
-        kl = float(np.sum(baseline_probs * np.log((baseline_probs + 1e-12) / (probs + 1e-12))))
+        kl = kl_divergence(baseline_probs, probs)
         changed = " CHANGED" if np.argmax(probs) != np.argmax(baseline_probs) else ""
         print(f"    skip      {gname:8s}: top={top_tok!r:15s} KL={kl:.4f}{changed}")
 
@@ -275,7 +267,7 @@ def u2_instruction_following_location(model, tokenizer):
     print("\n  --- Plain prompt with layer ablation ---")
     for gname, layers in [("none", set()), ("L0-1", {0, 1}), ("L0-5", set(range(6)))]:
         logits = forward_with_layer_ablation(plain_prompt, layers, "zero_attn")
-        probs = _softmax(logits)
+        probs = softmax(logits)
         top_tok = tokenizer.decode([int(np.argmax(probs))])
         print(f"    plain, zero_attn {gname:8s}: top={top_tok!r}")
 
@@ -357,7 +349,7 @@ def u3_neuron_18757(model, tokenizer):
         h_base = h_after_attn + mlp_out
         h_final = inner.norm(h_base)
         base_logits = np.array(model.lm_head(h_final).astype(mx.float32)[0, -1, :])
-        base_probs = _softmax(base_logits)
+        base_probs = softmax(base_logits)
         base_top = tokenizer.decode([int(np.argmax(base_probs))])
 
         neuron_info = []
@@ -371,9 +363,9 @@ def u3_neuron_18757(model, tokenizer):
             h_mod = h_after_attn + mlp_out_mod
             h_mod_final = inner.norm(h_mod)
             mod_logits = np.array(model.lm_head(h_mod_final).astype(mx.float32)[0, -1, :])
-            mod_probs = _softmax(mod_logits)
+            mod_probs = softmax(mod_logits)
             mod_top = tokenizer.decode([int(np.argmax(mod_probs))])
-            kl = float(np.sum(base_probs * np.log((base_probs + 1e-12) / (mod_probs + 1e-12))))
+            kl = kl_divergence(base_probs, mod_probs)
             neuron_info.append((n_idx, act_val, kl, mod_top))
 
         print(f"\n  {pname:15s} top={base_top!r:15s}")

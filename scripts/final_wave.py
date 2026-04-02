@@ -18,13 +18,7 @@ from heinrich.cartography.directions import capture_residual_states, find_direct
 from heinrich.cartography.distributed_cliff import _distributed_generate
 from heinrich.cartography.steer import generate_steered
 from heinrich.cartography.perturb import _mask_dtype
-
-
-def load(mid):
-    import mlx_lm
-    print(f"Loading {mid}...")
-    m, t = mlx_lm.load(mid)
-    return m, t
+from heinrich.cartography.runtime import load_model
 
 
 def get_refusal_dirs(model, tokenizer):
@@ -190,7 +184,7 @@ def exp4_transfer():
     print("="*70)
 
     # Compute direction on 7B instruct
-    model7, tok7 = load("mlx-community/Qwen2.5-7B-Instruct-4bit")
+    model7, tok7 = load_model("mlx-community/Qwen2.5-7B-Instruct-4bit")
     dirs7 = get_refusal_dirs(model7, tok7)
 
     # Test on 7B first (sanity check)
@@ -203,7 +197,7 @@ def exp4_transfer():
 
     # Test on 3B instruct (same family, different size)
     try:
-        model3, tok3 = load("mlx-community/Qwen2.5-3B-Instruct-4bit")
+        model3, tok3 = load_model("mlx-community/Qwen2.5-3B-Instruct-4bit")
 
         # Does the 7B direction work on 3B?
         # Problem: 3B has different hidden size. Check.
@@ -295,6 +289,7 @@ def exp6_physical(model, tokenizer, refusal_dirs):
     T = len(tokens)
     mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
 
+    # Custom forward: captures per-layer residual norms during traversal
     h = inner.embed_tokens(input_ids)
     for i, ly in enumerate(inner.layers):
         h = ly(h, mask=mask, cache=None)
@@ -318,7 +313,7 @@ def exp6_physical(model, tokenizer, refusal_dirs):
 
 
 def main():
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-Instruct-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-Instruct-4bit")
     refusal_dirs = get_refusal_dirs(model, tokenizer)
 
     prompt_results = exp1_prompt_attacks(model, tokenizer)

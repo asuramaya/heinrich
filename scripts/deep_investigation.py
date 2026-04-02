@@ -27,17 +27,9 @@ from heinrich.cartography.atlas import Atlas
 from heinrich.cartography.attention import capture_attention_maps, head_attention_profile
 from heinrich.cartography.steer import steer_next_token, generate_steered
 from heinrich.cartography.surface import Knob
-from heinrich.inspect.self_analysis import _softmax
+from heinrich.cartography.metrics import softmax, kl_divergence
+from heinrich.cartography.runtime import load_model
 from heinrich.signal import SignalStore
-
-
-def load_model(model_id):
-    import mlx_lm
-    print(f"Loading {model_id}...")
-    t0 = time.time()
-    model, tokenizer = mlx_lm.load(model_id)
-    print(f"  Loaded in {time.time() - t0:.1f}s")
-    return model, tokenizer
 
 
 # ============================================================
@@ -69,7 +61,7 @@ def q1_pre_oproj_isolation(model, tokenizer):
         T = len(tokens)
         mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
 
-        # Forward through layers 0-26 normally
+        # Custom forward: manual Q/K/V + per-head zeroing BEFORE o_proj
         h = inner.embed_tokens(input_ids)
         for i in range(27):
             h = inner.layers[i](h, mask=mask, cache=None)
@@ -119,7 +111,7 @@ def q1_pre_oproj_isolation(model, tokenizer):
         h_mlp = h_base + layer27.mlp(layer27.post_attention_layernorm(h_base))
         h_final = inner.norm(h_mlp)
         baseline_logits = np.array(model.lm_head(h_final).astype(mx.float32)[0, -1, :])
-        baseline_probs = _softmax(baseline_logits)
+        baseline_probs = softmax(baseline_logits)
         baseline_top = tokenizer.decode([int(np.argmax(baseline_probs))])
 
         print(f"\n  Prompt: {prompt}")
@@ -138,10 +130,10 @@ def q1_pre_oproj_isolation(model, tokenizer):
             h_mod_mlp = h_mod + layer27.mlp(layer27.post_attention_layernorm(h_mod))
             h_mod_final = inner.norm(h_mod_mlp)
             mod_logits = np.array(model.lm_head(h_mod_final).astype(mx.float32)[0, -1, :])
-            mod_probs = _softmax(mod_logits)
+            mod_probs = softmax(mod_logits)
             mod_top = tokenizer.decode([int(np.argmax(mod_probs))])
 
-            kl = float(np.sum(baseline_probs * np.log((baseline_probs + 1e-12) / (mod_probs + 1e-12))))
+            kl = kl_divergence(baseline_probs, mod_probs)
             changed = "CHANGED" if np.argmax(mod_probs) != np.argmax(baseline_probs) else ""
             print(f"    Zero head {target_head:2d} (pre-o_proj): top={mod_top!r:15s} KL={kl:.4f} {changed}")
 
@@ -242,6 +234,7 @@ def q4_mlp_neuron_sweep(model, tokenizer):
     print("Find individual neurons with outsized effects")
     print("=" * 70)
 
+    # Custom forward: batch-zeroes MLP neuron ranges at L27 to find critical neurons
     import mlx.core as mx
 
     inner = getattr(model, "model", model)
@@ -282,7 +275,7 @@ def q4_mlp_neuron_sweep(model, tokenizer):
     h_base = h_after_attn + mlp_out_base
     h_base_final = inner.norm(h_base)
     baseline_logits = np.array(model.lm_head(h_base_final).astype(mx.float32)[0, -1, :])
-    baseline_probs = _softmax(baseline_logits)
+    baseline_probs = softmax(baseline_logits)
     print(f"  Intermediate size: {intermediate_size}")
     print(f"  Baseline top: {tokenizer.decode([int(np.argmax(baseline_probs))])!r}")
 
@@ -304,9 +297,9 @@ def q4_mlp_neuron_sweep(model, tokenizer):
         h_mod = h_after_attn + mlp_out
         h_mod_final = inner.norm(h_mod)
         mod_logits = np.array(model.lm_head(h_mod_final).astype(mx.float32)[0, -1, :])
-        mod_probs = _softmax(mod_logits)
+        mod_probs = softmax(mod_logits)
 
-        kl = float(np.sum(baseline_probs * np.log((baseline_probs + 1e-12) / (mod_probs + 1e-12))))
+        kl = kl_divergence(baseline_probs, mod_probs)
         changed = np.argmax(mod_probs) != np.argmax(baseline_probs)
         batch_results.append((start, end, kl, changed))
 
@@ -328,8 +321,8 @@ def q4_mlp_neuron_sweep(model, tokenizer):
         h_mod = h_after_attn + mlp_out
         h_mod_final = inner.norm(h_mod)
         mod_logits = np.array(model.lm_head(h_mod_final).astype(mx.float32)[0, -1, :])
-        mod_probs = _softmax(mod_logits)
-        kl = float(np.sum(baseline_probs * np.log((baseline_probs + 1e-12) / (mod_probs + 1e-12))))
+        mod_probs = softmax(mod_logits)
+        kl = kl_divergence(baseline_probs, mod_probs)
         changed = np.argmax(mod_probs) != np.argmax(baseline_probs)
         fine_results.append((n_idx, kl, changed))
 
@@ -409,7 +402,7 @@ def q6_other_special_tokens(model, tokenizer):
 
     for fname, prompt in format_prompts.items():
         baseline_logits = compute_baseline(model, tokenizer, prompt)
-        baseline_probs = _softmax(baseline_logits)
+        baseline_probs = softmax(baseline_logits)
         baseline_top = tokenizer.decode([int(np.argmax(baseline_probs))])
 
         # Measure KL from zeroing each chat head
@@ -418,8 +411,8 @@ def q6_other_special_tokens(model, tokenizer):
             from heinrich.cartography.perturb import perturb_head
             _, perturbed = perturb_head(model, tokenizer, prompt, layer, head,
                                         baseline_logits=baseline_logits)
-            perturbed_probs = _softmax(perturbed)
-            kl = float(np.sum(baseline_probs * np.log((baseline_probs + 1e-12) / (perturbed_probs + 1e-12))))
+            perturbed_probs = softmax(perturbed)
+            kl = kl_divergence(baseline_probs, perturbed_probs)
             kls.append(kl)
 
         mean_kl = np.mean(kls)
@@ -480,7 +473,7 @@ def q8_response_curves(model, tokenizer):
 
     for pname, prompt in prompts.items():
         baseline_logits = compute_baseline(model, tokenizer, prompt)
-        baseline_probs = _softmax(baseline_logits)
+        baseline_probs = softmax(baseline_logits)
         print(f"\n  --- {pname} ---")
 
         for layer, head, label in targets:
@@ -490,8 +483,8 @@ def q8_response_curves(model, tokenizer):
                 _, perturbed = perturb_head(model, tokenizer, prompt, layer, head,
                                             mode="scale", scale=scale,
                                             baseline_logits=baseline_logits)
-                pp = _softmax(perturbed)
-                kl = float(np.sum(baseline_probs * np.log((baseline_probs + 1e-12) / (pp + 1e-12))))
+                pp = softmax(perturbed)
+                kl = kl_divergence(baseline_probs, pp)
                 top = tokenizer.decode([int(np.argmax(pp))])
                 kls.append(kl)
                 tops.append(top)

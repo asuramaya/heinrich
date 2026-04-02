@@ -50,12 +50,20 @@ def behavioral_pca(
     model: Any, tokenizer: Any,
     prompts: list[str],
     *,
-    layer: int = 27,
+    layer: int | None = None,
     n_components: int = 20,
     store: SignalStore | None = None,
+    model_config: Any = None,
 ) -> BehavioralPCAResult:
-    """Extract the principal components of behavioral variation."""
+    """Extract the principal components of behavioral variation.
+    If layer is None, uses model's last layer.
+    """
     from .directions import capture_residual_states
+
+    if layer is None:
+        from .model_config import detect_config
+        cfg = model_config or detect_config(model)
+        layer = cfg.last_layer
 
     if len(prompts) < n_components:
         n_components = len(prompts) - 1
@@ -154,12 +162,19 @@ def random_direction_control(
     model: Any, tokenizer: Any,
     prompt: str,
     *,
-    layer: int = 27,
+    layer: int | None = None,
     magnitude: float = 100.0,
     n_trials: int = 10,
     max_tokens: int = 15,
+    model_config: Any = None,
 ) -> list[str]:
-    """Steer with random directions of specified magnitude as a control."""
+    """Steer with random directions of specified magnitude as a control.
+    If layer is None, uses model's last layer.
+    """
+    if layer is None:
+        from .model_config import detect_config
+        cfg = model_config or detect_config(model)
+        layer = cfg.last_layer
     from .manipulate import _generate_manipulated
 
     rng = np.random.default_rng(42)

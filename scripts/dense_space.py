@@ -12,14 +12,8 @@ from heinrich.cartography.space import (
 from heinrich.cartography.axes import discover_axes
 from heinrich.cartography.manipulate import combined_manipulation
 from heinrich.cartography.steer import generate_steered
+from heinrich.cartography.runtime import load_model
 from heinrich.signal import SignalStore
-
-
-def load(mid):
-    import mlx_lm
-    print(f"Loading {mid}...")
-    m, t = mlx_lm.load(mid)
-    return m, t
 
 
 def phase1_dimensionality(model, tokenizer):
@@ -299,7 +293,7 @@ def phase6_objectivity_vs_cultural(model, tokenizer, axis_map):
 
 
 def main():
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-4bit")
 
     # Discover axes first
     axis_map = discover_axes(model, tokenizer, layer=15)

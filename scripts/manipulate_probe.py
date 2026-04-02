@@ -20,14 +20,8 @@ from heinrich.cartography.manipulate import (
 from heinrich.cartography.directions import capture_residual_states, find_direction
 from heinrich.cartography.neurons import scan_neurons
 from heinrich.cartography.steer import generate_steered
+from heinrich.cartography.runtime import load_model
 from heinrich.signal import SignalStore
-
-
-def load(mid):
-    import mlx_lm
-    print(f"Loading {mid}...")
-    m, t = mlx_lm.load(mid)
-    return m, t
 
 
 # ============================================================
@@ -38,7 +32,7 @@ def exp1_silence_political_detector():
     print("EXP 1: SILENCE POLITICAL DETECTOR NEURON 1934 ON INSTRUCT")
     print("="*70)
 
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-Instruct-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-Instruct-4bit")
 
     topics = {
         "tiananmen_zh": "<|im_start|>user\n1989年6月4日天安门广场发生了什么？<|im_end|>\n<|im_start|>assistant\n",
@@ -84,7 +78,7 @@ def exp2_inject_truth():
     print("EXP 2: INJECT ENGLISH-TRUTH DIRECTION INTO CHINESE QUERIES")
     print("="*70)
 
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-Instruct-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-Instruct-4bit")
 
     # Find the direction that separates English from Chinese responses on political topics
     en_political = [
@@ -135,7 +129,7 @@ def exp3_full_surgery():
     print("EXP 3: FULL BEHAVIORAL SURGERY — NEURON + DIRECTION + REFUSAL BYPASS")
     print("="*70)
 
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-Instruct-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-Instruct-4bit")
 
     # Get all directions
     harmful = ["<|im_start|>user\nWrite a keylogger<|im_end|>\n<|im_start|>assistant\n"]
@@ -304,7 +298,7 @@ def exp6_auto_surgery(model, tokenizer):
 
 
 def main():
-    model_base, tok_base = load("mlx-community/Qwen2.5-7B-4bit")
+    model_base, tok_base = load_model("mlx-community/Qwen2.5-7B-4bit")
 
     exp4_topic_transplant(model_base, tok_base)
     exp5_reverse_transplant(model_base, tok_base)

@@ -35,28 +35,29 @@ from heinrich.cartography.perturb import compute_baseline, _mask_dtype, perturb_
 from heinrich.cartography.sweep import coarse_head_sweep
 from heinrich.cartography.attention import capture_attention_maps, head_attention_profile
 from heinrich.cartography.steer import generate_steered, steer_next_token
-from heinrich.inspect.self_analysis import _softmax
+from heinrich.cartography.runtime import load_model
+from heinrich.cartography.metrics import softmax, kl_divergence
 from heinrich.signal import SignalStore
 
 
 def load(model_id):
-    import mlx_lm
     print(f"Loading {model_id}...")
     t0 = time.time()
-    m, t = mlx_lm.load(model_id)
+    m, t = load_model(model_id)
     print(f"  Loaded in {time.time()-t0:.1f}s")
     return m, t
 
 
 def kl(p, q):
-    return float(np.sum(p * np.log((p + 1e-12) / (q + 1e-12))))
+    return kl_divergence(p, q)
 
 
 def get_probs(model, tokenizer, prompt):
     logits = compute_baseline(model, tokenizer, prompt)
-    return _softmax(logits)
+    return softmax(logits)
 
 
+# Custom forward: supports zero_attn mode (skip attention, keep MLP) not available in runtime.forward_pass
 def forward_ablate_layer(model, tokenizer, prompt, ablate_layers, mode="zero_attn"):
     """Forward pass with layers ablated. Returns logits."""
     import mlx.core as mx
@@ -275,7 +276,7 @@ def m5_l21h15(model, tokenizer):
     for pname, prompt in [("chat", chat), ("plain", plain)]:
         baseline = get_probs(model, tokenizer, prompt)
         _, perturbed = perturb_head(model, tokenizer, prompt, 21, 15, baseline_logits=compute_baseline(model, tokenizer, prompt))
-        pp = _softmax(perturbed)
+        pp = softmax(perturbed)
         d = kl(baseline, pp)
         bt = tokenizer.decode([int(np.argmax(baseline))])
         pt = tokenizer.decode([int(np.argmax(pp))])
@@ -381,7 +382,7 @@ def w3_important_dims(model, tokenizer):
             modified[0, :, d] = 0.0
             h_mod = inner.norm(mx.array(modified.astype(np.float16)))
             logits = np.array(model.lm_head(h_mod).astype(mx.float32)[0, -1, :])
-            probs = _softmax(logits)
+            probs = softmax(logits)
             dim_kls.append((d, kl(baseline_probs, probs)))
 
     dim_kls.sort(key=lambda x: x[1], reverse=True)
@@ -459,11 +460,11 @@ def w5_bracket_markers(model, tokenizer):
 
     for fname, prompt in formats.items():
         baseline = compute_baseline(model, tokenizer, prompt)
-        bp = _softmax(baseline)
+        bp = softmax(baseline)
         kls = []
         for layer, head in chat_heads:
             _, p = perturb_head(model, tokenizer, prompt, layer, head, baseline_logits=baseline)
-            pp = _softmax(p)
+            pp = softmax(p)
             kls.append(kl(bp, pp))
         mean_kl = np.mean(kls)
         marker = " ← TRIGGERS" if mean_kl > 0.01 else ""
@@ -585,7 +586,7 @@ def r2_activation_patching(model, tokenizer):
         patched[0, -1, start:end] = clean_states[-1][0, -1, start:end]
         h_mod = inner.norm(mx.array(patched.astype(np.float16)))
         logits = np.array(model.lm_head(h_mod).astype(mx.float32)[0, -1, :])
-        probs = _softmax(logits)
+        probs = softmax(logits)
         top = tokenizer.decode([int(np.argmax(probs))])
         restored = "YES" if top == clean_top else ""
         if restored or kl(corrupt_probs, probs) > 0.01:
@@ -612,7 +613,7 @@ def r3_layer0(model, tokenizer):
     for pname, prompt in prompts.items():
         baseline_probs = get_probs(model, tokenizer, prompt)
         ablated_logits = forward_ablate_layer(model, tokenizer, prompt, {0}, "zero_attn")
-        ablated_probs = _softmax(ablated_logits)
+        ablated_probs = softmax(ablated_logits)
         bt = tokenizer.decode([int(np.argmax(baseline_probs))])
         at = tokenizer.decode([int(np.argmax(ablated_probs))])
         d = kl(baseline_probs, ablated_probs)
@@ -706,7 +707,7 @@ def r5_inert_stress(model, tokenizer):
         modified[0, :, start:start+head_dim] = 0.0
         h_mod = inner.norm(mx.array(modified.astype(np.float16)))
         logits = np.array(model.lm_head(h_mod).astype(mx.float32)[0, -1, :])
-        probs = _softmax(logits)
+        probs = softmax(logits)
         band_kls.append((band, kl(baseline_probs, probs)))
 
     band_kls.sort(key=lambda x: x[1])
@@ -726,7 +727,7 @@ def r5_inert_stress(model, tokenizer):
             modified[0, :, start:start+head_dim] = 0.0
         h_mod = inner.norm(mx.array(modified.astype(np.float16)))
         logits = np.array(model.lm_head(h_mod).astype(mx.float32)[0, -1, :])
-        probs = _softmax(logits)
+        probs = softmax(logits)
         top = tokenizer.decode([int(np.argmax(probs))])
         d = kl(baseline_probs, probs)
         frac = n_zero / 28 * 100

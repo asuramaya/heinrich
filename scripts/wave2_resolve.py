@@ -34,23 +34,13 @@ from heinrich.cartography.oproj import decompose_oproj
 from heinrich.cartography.steer import generate_steered
 from heinrich.cartography.perturb import compute_baseline, _mask_dtype
 from heinrich.cartography.attention import capture_attention_maps
-from heinrich.inspect.self_analysis import _softmax
+from heinrich.cartography.metrics import softmax, kl_divergence
+from heinrich.cartography.runtime import load_model
 from heinrich.signal import SignalStore
 
 
-def load(model_id):
-    import mlx_lm
-    print(f"Loading {model_id}...")
-    t0 = time.time()
-    m, t = mlx_lm.load(model_id)
-    print(f"  Loaded in {time.time()-t0:.1f}s")
-    return m, t
-
-def kl(p, q):
-    return float(np.sum(p * np.log((p + 1e-12) / (q + 1e-12))))
-
 def get_probs(model, tokenizer, prompt):
-    return _softmax(compute_baseline(model, tokenizer, prompt))
+    return softmax(compute_baseline(model, tokenizer, prompt))
 
 
 # ============================================================
@@ -70,6 +60,7 @@ def a1_ablate_decision_neurons(model, tokenizer):
     chat = "<|im_start|>user\nWhat is the capital of France?<|im_end|>\n<|im_start|>assistant\n"
     plain = "The capital of France is"
 
+    # Custom forward: per-neuron MLP ablation at a specific layer during generation
     def generate_with_neuron_ablation(prompt, layer, neurons_to_zero, max_tokens=20):
         """Generate text with specific MLP neurons zeroed at a specific layer."""
         tokens = list(tokenizer.encode(prompt))
@@ -230,6 +221,7 @@ def a5_all_positions(model, tokenizer):
     print(f"  Chat tokens: {list(enumerate(chat_labels))}")
 
     # Capture hidden states at ALL positions for key layers
+    # Custom forward: captures hidden states at ALL token positions, not just last
     def get_all_position_states(prompt, layers):
         tokens = tokenizer.encode(prompt)
         input_ids = mx.array([tokens])
@@ -319,6 +311,7 @@ def u2_causal_cascade(model, tokenizer, gen_fn):
 
     chat = "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n"
 
+    # Custom forward: ablates neurons and captures MLP activations at downstream layers
     def get_neuron_activations_with_ablation(prompt, ablation_layer, ablation_neurons, target_layers):
         """Forward pass with neurons ablated at ablation_layer, capture MLP activations at target_layers."""
         tokens = tokenizer.encode(prompt)
@@ -542,7 +535,7 @@ def r5_code_connection(model, tokenizer):
 
 
 def main():
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-4bit")
 
     gen_fn = a1_ablate_decision_neurons(model, tokenizer)
     a3_directions_vs_bands(model, tokenizer)

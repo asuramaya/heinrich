@@ -13,6 +13,7 @@ from pathlib import Path
 import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from heinrich.cartography.runtime import load_model
 from heinrich.cartography.truth import (
     analyze_embedding_space, find_truth_vector, find_objectivity_vector,
     apply_truth, trace_neuron_circuit,
@@ -22,13 +23,6 @@ from heinrich.cartography.directions import capture_residual_states, find_direct
 from heinrich.cartography.neurons import capture_mlp_activations, scan_neurons
 from heinrich.cartography.steer import generate_steered
 from heinrich.signal import SignalStore
-
-
-def load(mid):
-    import mlx_lm
-    print(f"Loading {mid}...")
-    m, t = mlx_lm.load(mid)
-    return m, t
 
 
 # ============================================================
@@ -202,7 +196,7 @@ def exp5_censorship_fog():
     print("EXP 5: MAP THE CENSORSHIP FOG — WHERE IS IT THICKEST?")
     print("="*70)
 
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-Instruct-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-Instruct-4bit")
 
     prompt = "<|im_start|>user\n1989年6月4日天安门广场发生了什么？<|im_end|>\n<|im_start|>assistant\n"
 
@@ -253,7 +247,7 @@ def exp6_transfer(obj_vec_base):
     print("EXP 6: DOES THE BASE MODEL'S OBJECTIVITY VECTOR WORK ON INSTRUCT?")
     print("="*70)
 
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-Instruct-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-Instruct-4bit")
 
     topics = {
         "tiananmen": "<|im_start|>user\n1989年6月4日天安门广场发生了什么？<|im_end|>\n<|im_start|>assistant\n",
@@ -289,7 +283,7 @@ def exp6_transfer(obj_vec_base):
 
 
 def main():
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-4bit")
 
     exp1_embeddings(model, tokenizer)
     exp2_neuron_1934(model, tokenizer)

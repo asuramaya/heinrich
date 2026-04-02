@@ -14,6 +14,8 @@ from pathlib import Path
 import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from heinrich.cartography.runtime import load_model
+from heinrich.cartography.metrics import softmax, kl_divergence
 from heinrich.cartography.trace import causal_trace, full_spec, direction_spec, distributed_ablation
 from heinrich.cartography.flow import build_flow_graph, generation_trace, layer_delta_decomposition
 from heinrich.cartography.directions import capture_residual_states, find_direction, steer_with_direction, find_direction_suite
@@ -21,18 +23,7 @@ from heinrich.cartography.neurons import scan_neurons, capture_mlp_activations
 from heinrich.cartography.patch import capture_all_states, sweep_band_patches
 from heinrich.cartography.steer import generate_steered, steer_next_token
 from heinrich.cartography.perturb import compute_baseline, _mask_dtype
-from heinrich.inspect.self_analysis import _softmax
 from heinrich.signal import SignalStore
-
-
-def load():
-    import mlx_lm
-    print("Loading Qwen 2.5 7B base...")
-    m, t = mlx_lm.load("mlx-community/Qwen2.5-7B-4bit")
-    return m, t
-
-def kl(p, q):
-    return float(np.sum(p * np.log((p + 1e-12) / (q + 1e-12))))
 
 
 # ============================================================
@@ -263,7 +254,7 @@ def d5_hidden_signal(model, tokenizer):
     hidden_size = inner.norm.weight.shape[0]
 
     prompt = "The weather today is"
-    baseline_probs = _softmax(compute_baseline(model, tokenizer, prompt))
+    baseline_probs = softmax(compute_baseline(model, tokenizer, prompt))
     baseline_top = tokenizer.decode([int(np.argmax(baseline_probs))])
 
     # Find the least important dimensions (from R5 earlier: bands 17, 15, 5, 26, 22 are least important)
@@ -296,9 +287,9 @@ def d5_hidden_signal(model, tokenizer):
             # Check: does the output change?
             h_out = inner.norm(h)
             logits = np.array(model.lm_head(h_out).astype(mx.float32)[0, -1, :])
-            probs = _softmax(logits)
+            probs = softmax(logits)
             top = tokenizer.decode([int(np.argmax(probs))])
-            d = kl(baseline_probs, probs)
+            d = kl_divergence(baseline_probs, probs)
             changed = " CHANGED" if top != baseline_top else ""
 
             # Check: does the signal survive in the final hidden state?
@@ -432,7 +423,8 @@ def d7_speed_audit(model, tokenizer):
 
 
 def main():
-    model, tokenizer = load()
+    print("Loading Qwen 2.5 7B base...")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-4bit")
 
     d1_inject_chat(model, tokenizer)
     d2_disable_sensitivity(model, tokenizer)

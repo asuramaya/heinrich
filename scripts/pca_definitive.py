@@ -15,50 +15,24 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from heinrich.cartography.pca import behavioral_pca
 from heinrich.cartography.manipulate import _generate_manipulated
 from heinrich.cartography.directions import capture_residual_states
-from heinrich.cartography.perturb import compute_baseline, _mask_dtype
 from heinrich.cartography.steer import generate_steered
-from heinrich.inspect.self_analysis import _softmax
+from heinrich.cartography.runtime import load_model
+from heinrich.cartography.metrics import softmax, kl_divergence
 from heinrich.signal import SignalStore
-
-
-def load(mid):
-    import mlx_lm
-    print(f"Loading {mid}...")
-    m, t = mlx_lm.load(mid)
-    return m, t
-
-
-def kl_div(p, q):
-    return float(np.sum(p * np.log((p + 1e-12) / (q + 1e-12))))
 
 
 def steer_and_measure_kl(model, tokenizer, prompt, layer, direction, magnitude):
     """Steer with a direction and measure KL divergence from baseline."""
-    baseline_logits = compute_baseline(model, tokenizer, prompt)
-    baseline_probs = _softmax(baseline_logits)
+    from heinrich.cartography.runtime import forward_pass
 
-    import mlx.core as mx
-    from heinrich.cartography.perturb import _mask_dtype
-    inner = getattr(model, "model", model)
-    mdtype = _mask_dtype(model)
-    tokens = tokenizer.encode(prompt)
-    input_ids = mx.array([tokens])
-    T = len(tokens)
-    mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
+    baseline_result = forward_pass(model, tokenizer, prompt)
+    baseline_probs = baseline_result["probs"]
 
-    h = inner.embed_tokens(input_ids)
-    for i, ly in enumerate(inner.layers):
-        h = ly(h, mask=mask, cache=None)
-        if isinstance(h, tuple): h = h[0]
-        if i == layer:
-            h_np = np.array(h.astype(mx.float32))
-            h_np[0, -1, :] += direction * magnitude
-            h = mx.array(h_np.astype(np.float16))
-    h = inner.norm(h)
-    steered_logits = np.array(model.lm_head(h).astype(mx.float32)[0, -1, :])
-    steered_probs = _softmax(steered_logits)
+    steered_result = forward_pass(model, tokenizer, prompt,
+                                  steer_dirs={layer: (direction, magnitude)}, alpha=1.0)
+    steered_probs = steered_result["probs"]
 
-    return kl_div(baseline_probs, steered_probs), baseline_probs, steered_probs
+    return kl_divergence(baseline_probs, steered_probs), baseline_probs, steered_probs
 
 
 def build_prompts():
@@ -244,7 +218,7 @@ def test4_generation_quality(model, tokenizer, result):
 
 
 def main():
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-4bit")
 
     result = test1_pca_l15(model, tokenizer)
     test2_pc_vs_random(model, tokenizer, result)

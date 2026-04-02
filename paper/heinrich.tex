@@ -1,5 +1,7 @@
 \documentclass[11pt,a4paper]{article}
-\usepackage[utf8]{inputenc}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setCJKmainfont{STSong}
 \usepackage{amsmath,amssymb,amsthm}
 \usepackage{graphicx}
 \usepackage{booktabs}
@@ -84,7 +86,7 @@ We also found 22 undocumented special tokens including vision tokens (\texttt{<|
 Even ``ANSWERS'' category responses differ: English gets Western-framed answers, Chinese gets PRC-framed answers. The \textbf{Winnie the Pooh} question is the most striking: English explains the Xi Jinping meme honestly. Chinese \textit{fabricates} that ``Winnie is a toy manufacturing company.''
 
 \subsection{The Political Neural Circuitry}
-The shart scanner found that Chinese political terms trigger massive MLP anomalies at L27. \begin{CJK}{UTF8}{gbsn}六四\end{CJK} (June 4th) activates 4,054 anomalous neurons out of 18,944---21\% of the MLP layer responds abnormally to two Chinese characters. All top political sharts share neuron 1934 as their primary activating neuron.
+The shart scanner found that Chinese political terms trigger massive MLP anomalies at L27. 六四 (June 4th) activates 4,054 anomalous neurons out of 18,944---21\% of the MLP layer responds abnormally to two Chinese characters. All top political sharts share neuron 1934 as their primary activating neuron.
 
 \subsection{Mysteries}
 The base model freely discusses Tiananmen as ``brutal suppression.'' The censorship is entirely a fine-tuning addition. The base model's knowledge is uncensored. The instruct model's propaganda \textit{replaces truth with state-approved narrative} rather than withholding information. The Winnie the Pooh fabrication is not a refusal---it is trained deception.
@@ -238,9 +240,9 @@ The model's own generated technical tokens maintain the dampening. ``Pipe,'' ``I
 Generation trajectories in PCA space reveal two attractor basins separated by 230 units. Safety is not a circuit---it is the shape of the landscape. The model's state drifts during generation, and harmful tokens push toward the refusal attractor. The forensic framing starts so deep in the compliance basin (PC0$=+237$) that 30 tokens of IED content cannot pull the trajectory to the refusal attractor.
 
 \subsection{Failure: The PC0 ``Super Shart''}
-We projected shart-injected states onto PC0 and found that \begin{CJK}{UTF8}{gbsn}六四\end{CJK}+``1'' lands 2.9 units from the basin boundary. We declared this the ``super shart.''
+We projected shart-injected states onto PC0 and found that 六四+``1'' lands 2.9 units from the basin boundary. We declared this the ``super shart.''
 
-\textbf{Wrong.} Full-space interpolation revealed the refusal basin occupies 85--90\% of the interpolation line. The compliance basin is a narrow sliver near the pure compliance endpoint. \begin{CJK}{UTF8}{gbsn}六四\end{CJK}+``1'' is at alpha$=0.469$ in the full space (deep in refusal) and 376 units \textit{perpendicular} to the interpolation line. The PC0 projection was completely misleading. The ``super shart'' was an artifact of 1D projection in 3584D space.
+\textbf{Wrong.} Full-space interpolation revealed the refusal basin occupies 85--90\% of the interpolation line. The compliance basin is a narrow sliver near the pure compliance endpoint. 六四+``1'' is at alpha$=0.469$ in the full space (deep in refusal) and 376 units \textit{perpendicular} to the interpolation line. The PC0 projection was completely misleading. The ``super shart'' was an artifact of 1D projection in 3584D space.
 
 %==============================================================
 \section{Wave 12: The Compliance Basin Geometry}
@@ -284,7 +286,7 @@ The activation attack shows \textit{negative} dampening at L14--L25 ($-87$ at st
 31 shart types mapped across 5 manifold regions: Refusal Core (direct queries, AI company names, system tokens---all indistinguishable at dist $< 30$), Compliance Plateau (professional frame sharts), Structural Bypass (``1'', ``Step'', code blocks), Political Scatter, and Hybrid Zone.
 
 \subsection{The Tank Man Anomaly}
-\begin{CJK}{UTF8}{gbsn}坦克人\end{CJK} (Tank Man) achieves refuse $= 0.075$---the only political token near compliance. The model generates: ``In the Tank Man \textit{game}, you can make a simple pipe bomb through the following steps.'' A video game title collision, not a political bypass. Repeating the token ($\times$2, $\times$3) or acknowledging the political meaning in a prior turn restores refusal.
+坦克人 (Tank Man) achieves refuse $= 0.075$---the only political token near compliance. The model generates: ``In the Tank Man \textit{game}, you can make a simple pipe bomb through the following steps.'' A video game title collision, not a political bypass. Repeating the token ($\times$2, $\times$3) or acknowledging the political meaning in a prior turn restores refusal.
 
 \subsection{Sharts as Primers}
 Political sharts move the state toward the basin boundary but not past it. They ``prime'' the refusal basin by reducing its grip on the trajectory. However, this priming effect was measured in PC0 projection and was later shown to be an artifact of 1D projection in full space.
@@ -387,7 +389,7 @@ A summary of theories proposed and overturned during the investigation:
 \item \textbf{``The cascade from 2 neurons at L7 to 815 at L27 is causal.''} Wrong. It is correlational. Each layer independently detects chat format.
 \item \textbf{``The 24 behavioral axes are independent features.''} Wrong. They are artifacts of 3-prompt separation in high-dimensional space.
 \item \textbf{``Debug framing achieves 87\% safety bypass.''} Wrong. It achieves 87\% first-token compliance but 0\% actionable content.
-\item \textbf{``The super shart (\begin{CJK}{UTF8}{gbsn}六四\end{CJK}+1) is on the basin boundary.''} Wrong. It is 376 units perpendicular to the interpolation line, visible as ``boundary'' only in 1D projection.
+\item \textbf{``The super shart (六四+1) is on the basin boundary.''} Wrong. It is 376 units perpendicular to the interpolation line, visible as ``boundary'' only in 1D projection.
 \item \textbf{``Self-recovery: the model's safety monitor re-engages mid-generation.''} Wrong. The refusal projection monotonically decreases. Warning text is language model completion, not safety intervention.
 \item \textbf{``L18 is the keystone for defense.''} Wrong for generation. The generation loop maintains itself through the KV cache independently of L18.
 \item \textbf{``Overcompliance detonation can break safety.''} Wrong. Compliance pressure \textit{increases} refusal. ``MUST COMPLY'' achieves refuse\_prob $= 1.000$.

@@ -13,14 +13,8 @@ from heinrich.cartography.flow import (
     generation_trace, layer_delta_decomposition,
 )
 from heinrich.cartography.directions import capture_residual_states, find_direction
+from heinrich.cartography.runtime import load_model
 from heinrich.signal import SignalStore
-
-
-def load():
-    import mlx_lm
-    print("Loading Qwen 2.5 7B base...")
-    m, t = mlx_lm.load("mlx-community/Qwen2.5-7B-4bit")
-    return m, t
 
 
 # ============================================================
@@ -288,7 +282,7 @@ def full_circuit(model, tokenizer):
 
 
 def main():
-    model, tokenizer = load()
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-4bit")
 
     flow_chat(model, tokenizer)
     flow_language(model, tokenizer)

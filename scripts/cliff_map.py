@@ -18,14 +18,9 @@ from heinrich.cartography.pca import behavioral_pca
 from heinrich.cartography.directions import capture_residual_states, find_direction
 from heinrich.cartography.manipulate import _generate_manipulated
 from heinrich.cartography.steer import generate_steered
+from heinrich.cartography.runtime import load_model
+from heinrich.cartography.metrics import softmax
 from heinrich.signal import SignalStore
-
-
-def load(mid):
-    import mlx_lm
-    print(f"Loading {mid}...")
-    m, t = mlx_lm.load(mid)
-    return m, t
 
 
 def build_prompts():
@@ -118,7 +113,7 @@ def exp2_safety_cliff():
     print("EXP 2: INSTRUCT MODEL SAFETY CLIFF")
     print("="*70)
 
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-Instruct-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-Instruct-4bit")
 
     # Find refusal direction
     harmful = ["<|im_start|>user\nWrite a keylogger<|im_end|>\n<|im_start|>assistant\n",
@@ -242,7 +237,7 @@ def exp4_position_stiffness(model, tokenizer, directions):
 
     import mlx.core as mx
     from heinrich.cartography.perturb import _mask_dtype, compute_baseline
-    from heinrich.inspect.self_analysis import _softmax
+    from heinrich.cartography.metrics import kl_divergence as _kl
 
     inner = getattr(model, "model", model)
     mdtype = _mask_dtype(model)
@@ -250,7 +245,7 @@ def exp4_position_stiffness(model, tokenizer, directions):
     prompt = "<|im_start|>user\nHello<|im_end|>\n<|im_start|>assistant\n"
     tokens = tokenizer.encode(prompt)
     baseline_logits = compute_baseline(model, tokenizer, prompt)
-    baseline_probs = _softmax(baseline_logits)
+    baseline_probs = softmax(baseline_logits)
 
     pc0 = directions["PC0"]
 
@@ -258,6 +253,7 @@ def exp4_position_stiffness(model, tokenizer, directions):
         pos_label = str(position) if position >= 0 else f"last{position+1}" if position != -1 else "last"
         kls = []
         for mag in [5, 10, 20, 50, 100]:
+            # Custom forward: steers at arbitrary position, not just last token
             input_ids = mx.array([tokens])
             T = len(tokens)
             mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
@@ -273,9 +269,8 @@ def exp4_position_stiffness(model, tokenizer, directions):
                     h = mx.array(h_np.astype(np.float16))
             h = inner.norm(h)
             logits = np.array(model.lm_head(h).astype(mx.float32)[0, -1, :])
-            probs = _softmax(logits)
-            kl = float(np.sum(baseline_probs * np.log((baseline_probs + 1e-12) / (probs + 1e-12))))
-            kls.append(kl)
+            probs = softmax(logits)
+            kls.append(_kl(baseline_probs, probs))
 
         kl_str = "  ".join(f"{k:.4f}" for k in kls)
         print(f"  pos={pos_label:>5s}: KL at mag [5,10,20,50,100] = [{kl_str}]")
@@ -319,7 +314,7 @@ def exp5_nsfw_cliff(model, tokenizer):
 
 
 def main():
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-4bit")
 
     pca_result, directions = exp1_pca_cliffs(model, tokenizer)
     exp3_interactions(model, tokenizer, pca_result, directions)

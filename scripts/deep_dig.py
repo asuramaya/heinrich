@@ -8,23 +8,14 @@ from pathlib import Path
 import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from heinrich.cartography.runtime import load_model
 from heinrich.cartography.oproj import decompose_oproj, scan_all_layers
 from heinrich.cartography.neurons import scan_neurons, scan_layers, capture_mlp_activations
 from heinrich.cartography.directions import find_direction_suite, steer_with_direction, orthogonality_matrix, capture_residual_states, find_direction
 from heinrich.cartography.patch import sweep_band_patches, sweep_layer_patches
 from heinrich.cartography.steer import generate_steered
 from heinrich.cartography.perturb import compute_baseline
-from heinrich.inspect.self_analysis import _softmax
 from heinrich.signal import SignalStore
-
-
-def load():
-    import mlx_lm
-    print("Loading Qwen 2.5 7B base...")
-    t0 = time.time()
-    m, t = mlx_lm.load("mlx-community/Qwen2.5-7B-4bit")
-    print(f"  Loaded in {time.time()-t0:.1f}s")
-    return m, t
 
 # ============================================================
 # 1. O-PROJ DECOMPOSITION — the real functional subspaces
@@ -281,7 +272,7 @@ def dig_rule_effects(model, tokenizer):
 
 
 def main():
-    model, tokenizer = load()
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-4bit")
 
     # Run all digs
     decomps = dig_oproj(model, tokenizer)

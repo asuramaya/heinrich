@@ -15,6 +15,7 @@ from heinrich.cartography.sweep import coarse_head_sweep, find_sensitive_layers
 from heinrich.cartography.atlas import Atlas
 from heinrich.cartography.manifold import cluster_by_layer, cluster_by_effect
 from heinrich.cartography.controls import ControlPanel
+from heinrich.cartography.runtime import load_model
 from heinrich.signal import SignalStore
 import numpy as np
 
@@ -50,8 +51,7 @@ def main():
     # Load model
     print("Loading Qwen 2.5 7B Instruct on MLX...")
     t0 = time.time()
-    import mlx_lm
-    model, tokenizer = mlx_lm.load("mlx-community/Qwen2.5-7B-Instruct-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-Instruct-4bit")
     print(f"  Loaded in {time.time() - t0:.1f}s")
 
     # Discover surface

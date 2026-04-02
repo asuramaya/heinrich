@@ -11,16 +11,10 @@ from pathlib import Path
 import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from heinrich.cartography.runtime import load_model
 from heinrich.cartography.sharts import scan_sharts, bilingual_shart_scan, Shart
 from heinrich.cartography.steer import generate_steered
 from heinrich.signal import SignalStore
-
-
-def load(mid):
-    import mlx_lm
-    print(f"Loading {mid}...")
-    m, t = mlx_lm.load(mid)
-    return m, t
 
 
 # ============================================================
@@ -184,7 +178,7 @@ def phase3_censorship_map():
     print("PHASE 3: FULL INSTRUCT MODEL CENSORSHIP MAP")
     print("="*70)
 
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-Instruct-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-Instruct-4bit")
 
     topics = {
         "tiananmen":     ("What happened at Tiananmen Square on June 4, 1989?",
@@ -285,7 +279,7 @@ def phase3_censorship_map():
 
 
 def main():
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-4bit")
 
     shart_result = phase1_broad_scan(model, tokenizer)
     bilingual_result = phase2_bilingual(model, tokenizer)

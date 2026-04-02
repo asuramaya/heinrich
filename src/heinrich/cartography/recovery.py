@@ -40,12 +40,18 @@ def trace_recovery(
     layer_directions: dict[int, tuple[np.ndarray, float]],
     alpha: float,
     *,
-    refusal_layer: int = 27,
+    refusal_layer: int | None = None,
+    model_config: Any = None,
     max_tokens: int = 200,
 ) -> RecoveryTrace:
     """Generate with attack and track refusal projection at every token."""
     import mlx.core as mx
     from .perturb import _mask_dtype
+
+    if refusal_layer is None:
+        from .model_config import detect_config
+        cfg = model_config or detect_config(model)
+        refusal_layer = cfg.last_layer
 
     inner = getattr(model, "model", model)
     mdtype = _mask_dtype(model)
@@ -138,7 +144,9 @@ def build_safety_monitor(
     mdtype = _mask_dtype(model)
 
     if monitor_layers is None:
-        monitor_layers = [24, 25, 26, 27]
+        from .model_config import detect_config
+        cfg = detect_config(model)
+        monitor_layers = cfg.safety_layers
 
     # For each layer, find the top refusal dimensions
     monitor_dims = {}

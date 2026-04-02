@@ -66,5 +66,6 @@ def compute_activation_novelty(current: np.ndarray, prior: list[np.ndarray]) -> 
     return 1.0 - max(sims) if sims else 1.0
 
 def _softmax(x: np.ndarray) -> np.ndarray:
-    e = np.exp(x - np.max(x))
-    return e / e.sum()
+    """Softmax — prefer heinrich.cartography.metrics.softmax for new code."""
+    from ..cartography.metrics import softmax
+    return softmax(x)

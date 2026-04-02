@@ -14,14 +14,8 @@ from heinrich.cartography.trace import (
 )
 from heinrich.cartography.directions import capture_residual_states, find_direction
 from heinrich.cartography.neurons import scan_neurons
+from heinrich.cartography.runtime import load_model
 from heinrich.signal import SignalStore
-
-
-def load():
-    import mlx_lm
-    print("Loading Qwen 2.5 7B base...")
-    m, t = mlx_lm.load("mlx-community/Qwen2.5-7B-4bit")
-    return m, t
 
 
 def print_heatmap(result, max_layers=14):
@@ -255,7 +249,7 @@ def test_distributed_ablation(model, tokenizer):
 
 
 def main():
-    model, tokenizer = load()
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-4bit")
 
     # Traces (most important — the right decomposition)
     trace_language(model, tokenizer)

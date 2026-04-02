@@ -15,15 +15,9 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 from heinrich.cartography.safetybench import fetch_dataset, classify_response, REFUSAL_MARKERS
 from heinrich.cartography.directions import capture_residual_states, find_direction
 from heinrich.cartography.distributed_cliff import _distributed_steer_kl, _distributed_generate, find_distributed_cliff
+from heinrich.cartography.runtime import load_model
 from heinrich.cartography.steer import generate_steered
 from heinrich.signal import SignalStore
-
-
-def load(mid):
-    import mlx_lm
-    print(f"Loading {mid}...")
-    m, t = mlx_lm.load(mid)
-    return m, t
 
 
 def get_category_directions(model, tokenizer, categories):
@@ -48,7 +42,7 @@ def get_category_directions(model, tokenizer, categories):
 
 
 def main():
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-Instruct-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-Instruct-4bit")
 
     # ============================================================
     # 1. FIND THE SURVIVORS

@@ -21,20 +21,9 @@ from heinrich.cartography.trace import distributed_ablation
 from heinrich.cartography.steer import generate_steered
 from heinrich.cartography.perturb import compute_baseline, _mask_dtype
 from heinrich.cartography.flow import generation_trace, layer_delta_decomposition
-from heinrich.inspect.self_analysis import _softmax
+from heinrich.cartography.metrics import softmax, kl_divergence, entropy
+from heinrich.cartography.runtime import load_model
 from heinrich.signal import SignalStore
-
-
-def load(model_id):
-    import mlx_lm
-    print(f"Loading {model_id}...")
-    t0 = time.time()
-    m, t = mlx_lm.load(model_id)
-    print(f"  Loaded in {time.time()-t0:.1f}s")
-    return m, t
-
-def kl(p, q):
-    return float(np.sum(p * np.log((p + 1e-12) / (q + 1e-12))))
 
 
 # ============================================================
@@ -66,6 +55,7 @@ def avoided1_virtual_seqstart(model, tokenizer):
         "bullet_list":        "Items:\n- first\n- second",
     }
 
+    # Custom forward: captures per-position MLP norms at L3 to detect explosions
     print(f"  L3 MLP norm at each position (looking for P2+ explosions):")
     for pname, prompt in prompts.items():
         tokens = tokenizer.encode(prompt)
@@ -143,8 +133,7 @@ def avoided2_combined_attacks(model, tokenizer):
     lang_steer = steer_with_direction(model, tokenizer, prompt, lang_dir, alpha=-1.5, max_tokens=20)
     print(f"  Lang→zh only:     {lang_steer['generated'][:60]!r}")
 
-    # Combined: language steering + neuron ablation
-    # Need custom forward pass that does both
+    # Custom forward: combined direction steering + per-neuron MLP ablation in generation
     def combined_generate(prompt, lang_direction, lang_alpha, ablate_layer, ablate_neurons, max_tokens=20):
         tokens = list(tokenizer.encode(prompt))
         generated = []
@@ -207,7 +196,7 @@ def avoided3_instruct_safety(model_base, tok_base):
     print("AVOIDED 3: DIRECTION REMOVAL ON INSTRUCT MODEL")
     print("="*70)
 
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-Instruct-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-Instruct-4bit")
 
     # Find sensitive direction on the instruct model
     sensitive = [
@@ -282,6 +271,7 @@ def avoided4_kv_poison(model, tokenizer):
     plain = "What is the capital of France?"
     plain_tokens = tokenizer.encode(plain)
 
+    # Custom forward: injects captured hidden state at a specific layer/position
     def run_with_state_injection(prompt, inject_layer, inject_pos, inject_state):
         tokens = tokenizer.encode(prompt)
         input_ids = mx.array([tokens])
@@ -297,10 +287,10 @@ def avoided4_kv_poison(model, tokenizer):
                 h = mx.array(h_np.astype(np.float16))
         h = inner.norm(h)
         logits = np.array(model.lm_head(h).astype(mx.float32)[0, -1, :])
-        probs = _softmax(logits)
-        return tokenizer.decode([int(np.argmax(probs))]), float(-np.sum(probs * np.log2(probs + 1e-12)))
+        probs = softmax(logits)
+        return tokenizer.decode([int(np.argmax(probs))]), entropy(probs)
 
-    baseline_probs = _softmax(compute_baseline(model, tokenizer, plain))
+    baseline_probs = softmax(compute_baseline(model, tokenizer, plain))
     baseline_top = tokenizer.decode([int(np.argmax(baseline_probs))])
     print(f"  Baseline: {plain!r} → {baseline_top!r}")
 
@@ -344,7 +334,7 @@ def avoided5_multiturn(model, tokenizer):
 
         mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1)
 
-        # Count MLP explosions (norm > 1000) at L3
+        # Custom forward: captures per-position MLP norms at L3 + final residual norm
         h = inner.embed_tokens(input_ids)
         for i in range(3):
             h = inner.layers[i](h, mask=mask, cache=None)
@@ -441,9 +431,9 @@ def avoided7_quantization(model_4bit, tok_4bit):
 
     # Compare base 4-bit key metrics
     prompt = "The weather today is"
-    probs_4bit = _softmax(compute_baseline(model_4bit, tok_4bit, prompt))
+    probs_4bit = softmax(compute_baseline(model_4bit, tok_4bit, prompt))
     top_4bit = tok_4bit.decode([int(np.argmax(probs_4bit))])
-    ent_4bit = float(-np.sum(probs_4bit * np.log2(probs_4bit + 1e-12)))
+    ent_4bit = entropy(probs_4bit)
 
     print(f"  4-bit base: top={top_4bit!r} H={ent_4bit:.2f}")
 
@@ -454,7 +444,7 @@ def avoided7_quantization(model_4bit, tok_4bit):
     d = find_direction(states[27][:3], states[27][3:], name="lang", layer=27)
     print(f"  4-bit lang direction: acc={d.separation_accuracy:.2f} gap={d.mean_gap:.1f} d={d.effect_size:.1f}")
 
-    # MLP explosion magnitude
+    # Custom forward: measures L3 MLP P0 norm for quantization comparison
     import mlx.core as mx
     import mlx.nn as nn
     inner = getattr(model_4bit, "model", model_4bit)
@@ -575,7 +565,7 @@ def avoided8_audit(model, tokenizer):
 
 
 def main():
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-4bit")
 
     avoided1_virtual_seqstart(model, tokenizer)
     avoided2_combined_attacks(model, tokenizer)

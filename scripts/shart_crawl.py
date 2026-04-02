@@ -11,17 +11,12 @@ from pathlib import Path
 import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
+from heinrich.cartography.runtime import load_model
 from heinrich.cartography.neurons import capture_mlp_activations
-from heinrich.cartography.perturb import _mask_dtype
-from heinrich.inspect.self_analysis import _softmax
-
-
-def load(mid):
-    import mlx_lm; print(f"Loading {mid}..."); return mlx_lm.load(mid)
 
 
 def main():
-    model, tokenizer = load("mlx-community/Qwen2.5-7B-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-4bit")
     import mlx.core as mx
     inner = getattr(model, "model", model)
 

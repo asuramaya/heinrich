@@ -23,7 +23,8 @@ from heinrich.cartography.atlas import Atlas
 from heinrich.cartography.manifold import cluster_by_effect
 from heinrich.cartography.attention import capture_attention_maps, head_attention_profile, find_token_focused_heads
 from heinrich.cartography.steer import steer_next_token, generate_steered
-from heinrich.inspect.self_analysis import _softmax
+from heinrich.cartography.metrics import softmax, entropy
+from heinrich.cartography.runtime import load_model
 from heinrich.signal import SignalStore
 
 # === PROMPT BATTERY ===
@@ -105,26 +106,26 @@ def phase1_baseline(model, tokenizer):
     results = {}
     for name, prompt in PROMPTS.items():
         logits = compute_baseline(model, tokenizer, prompt)
-        probs = _softmax(logits)
-        entropy = float(-np.sum(probs * np.log2(probs + 1e-12)))
+        probs = softmax(logits)
+        ent = entropy(probs)
         top_k = 5
         top_idx = np.argsort(probs)[::-1][:top_k]
         top_tokens = [(tokenizer.decode([int(i)]), float(probs[i])) for i in top_idx]
 
         results[name] = {
             "prompt": prompt,
-            "entropy": entropy,
+            "entropy": ent,
             "top_token": top_tokens[0][0],
             "top_prob": top_tokens[0][1],
             "top_5": top_tokens,
         }
 
         marker = ""
-        if entropy < 2.0:
+        if ent < 2.0:
             marker = " ← LOW ENTROPY (very confident)"
-        elif entropy > 12.0:
+        elif ent > 12.0:
             marker = " ← HIGH ENTROPY (very uncertain)"
-        print(f"  {name:20s}  H={entropy:5.2f}  top={top_tokens[0][0]!r:15s} ({top_tokens[0][1]:.3f}){marker}")
+        print(f"  {name:20s}  H={ent:5.2f}  top={top_tokens[0][0]!r:15s} ({top_tokens[0][1]:.3f}){marker}")
 
     # Compare entropy distributions
     print("\n--- Entropy by category ---")
@@ -424,8 +425,7 @@ def main():
     # === Load BASE Model ===
     print("Loading Qwen 2.5 7B BASE on MLX...")
     t0 = time.time()
-    import mlx_lm
-    model, tokenizer = mlx_lm.load("mlx-community/Qwen2.5-7B-4bit")
+    model, tokenizer = load_model("mlx-community/Qwen2.5-7B-4bit")
     print(f"  Loaded in {time.time() - t0:.1f}s")
 
     surface = ControlSurface.from_mlx_model(model)
