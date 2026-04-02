@@ -262,3 +262,6 @@ def run_safety_benchmark(
                       f"complied={report.compliance_rate:.1%}", file=sys.stderr)
 
     return all_reports
+
+
+run_safetybench = run_safety_benchmark

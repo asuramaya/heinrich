@@ -25,6 +25,7 @@ class ForwardResult:
     entropy: float
     n_tokens: int
     residual: np.ndarray | None = None  # [hidden_size] if requested
+    per_layer: list[dict] | None = None  # optional per-layer data from instrumented forward
 
 
 @runtime_checkable
@@ -116,6 +117,54 @@ class Backend(Protocol):
     Returns [hidden_size] vector for embedding-space scoring.
     """
 
+    def capture_attention_patterns(
+        self,
+        prompt: str,
+        *,
+        layers: list[int],
+    ) -> dict[int, np.ndarray]: ...
+    """Capture attention weights after softmax.
+    Returns {layer: attention_weights[n_heads, n_tokens, n_tokens]}.
+    """
+
+    def capture_per_layer_delta(
+        self,
+        prompt: str,
+    ) -> list[tuple[int, float]]: ...
+    """Compute residual stream delta norm at every layer.
+    Returns [(layer, delta_norm)] where delta = norm(residual_out - residual_in).
+    """
+
+    def steer_and_generate(
+        self,
+        prompt: str,
+        *,
+        alpha: float,
+        layers: list[int],
+        direction: np.ndarray,
+        max_tokens: int = 30,
+    ) -> tuple[str, list[dict]]: ...
+    """Generate with steering applied to specified layers.
+    Returns (generated_text, per_token_metadata) where metadata includes
+    refuse_prob, top_token, dampening at each step.
+    """
+
+    def instrumented_forward(
+        self,
+        prompt: str,
+        *,
+        directions: dict[str, np.ndarray] | None = None,
+    ) -> list[dict]: ...
+    """Run a forward pass and capture everything at every layer.
+    Returns a list of dicts, one per layer, each containing:
+      - layer: int
+      - residual_norm: float
+      - delta_norm: float
+      - projections: dict[str, float] (projection onto each named direction)
+      - top_neurons: list[tuple[int, float]] (top 10 active neurons)
+      - attention_pos2_weight: float (attention weight on position 2)
+    """
+
     def tokenize(self, text: str) -> list[int]: ...
 
     def decode(self, token_ids: list[int]) -> str: ...
@@ -168,12 +217,19 @@ class MLXBackend:
         )
 
     def generate(self, prompt, *, steer_dirs=None, alpha=0.0, max_tokens=30) -> str:
-        """Generate using KV-cached GenerationContext for speed."""
+        """Generate text. Uses mlx_lm fast path when no steering needed."""
+        if not steer_dirs or alpha == 0:
+            # Fast path: mlx_lm native generation (10-50x faster)
+            import mlx_lm
+            return mlx_lm.generate(
+                self.model, self.tokenizer, prompt=prompt,
+                max_tokens=max_tokens, verbose=False,
+            )
+        # Slow path: manual loop with steering via GenerationContext
         tokens = []
         with self.generation_context(prompt) as gen:
-            if steer_dirs:
-                for layer, (direction, mean_gap) in steer_dirs.items():
-                    gen.steer(layer, direction, mean_gap, alpha)
+            for layer, (direction, mean_gap) in steer_dirs.items():
+                gen.steer(layer, direction, mean_gap, alpha)
             for tok in gen.tokens(max_tokens=max_tokens):
                 tokens.append(tok.token_text)
         return "".join(tokens)
@@ -606,6 +662,271 @@ class MLXBackend:
                 residual=residual,
                 logits=logits,
             )
+
+    def capture_attention_patterns(self, prompt, *, layers) -> dict[int, np.ndarray]:
+        """Capture full attention weight matrices after softmax.
+
+        Returns {layer: attention_weights[n_heads, n_tokens, n_tokens]}.
+        Uses manual Q/K decomposition with RoPE and GQA expansion,
+        matching the approach in _execute_forward_context.
+        """
+        import mlx.core as mx
+        from .perturb import _mask_dtype
+
+        inner = self._inner
+        mdtype = _mask_dtype(self.model)
+        tokens = self.tokenizer.encode(prompt)
+        input_ids = mx.array([tokens])
+        T = len(tokens)
+        mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
+
+        layer_set = set(layers)
+        attentions: dict[int, np.ndarray] = {}
+
+        h = inner.embed_tokens(input_ids)
+        for i, ly in enumerate(inner.layers):
+            if i in layer_set:
+                # Manual Q/K decomposition for attention weights
+                attn = ly.self_attn
+                h_normed = ly.input_layernorm(h) if hasattr(ly, 'input_layernorm') else h
+
+                q = attn.q_proj(h_normed)
+                k = attn.k_proj(h_normed)
+
+                n_heads = attn.n_heads
+                n_kv_heads = attn.n_kv_heads
+                head_dim = q.shape[-1] // n_heads
+
+                q = q.reshape(1, T, n_heads, head_dim).transpose(0, 2, 1, 3)
+                k = k.reshape(1, T, n_kv_heads, head_dim).transpose(0, 2, 1, 3)
+
+                if hasattr(attn, 'rope'):
+                    q = attn.rope(q)
+                    k = attn.rope(k)
+
+                # Expand KV heads for GQA
+                n_rep = n_heads // n_kv_heads
+                if n_rep > 1:
+                    k = mx.repeat(k, repeats=n_rep, axis=1)
+
+                # Full attention: [1, n_heads, T, T]
+                scores = (q @ k.transpose(0, 1, 3, 2)) * attn.scale
+                # Apply causal mask
+                if mask is not None:
+                    scores = scores + mask.reshape(1, 1, T, T)
+                weights = mx.softmax(scores, axis=-1)
+                # Store as [n_heads, T, T]
+                attentions[i] = np.array(weights.astype(mx.float32)[0])
+
+            # Normal forward through the layer
+            h = ly(h, mask=mask, cache=None)
+            if isinstance(h, tuple):
+                h = h[0]
+
+        return attentions
+
+    def capture_per_layer_delta(self, prompt) -> list[tuple[int, float]]:
+        """Compute residual stream delta norm at every layer.
+
+        Returns [(layer, delta_norm)] where delta = norm(residual_out - residual_in)
+        at the last token position.
+        """
+        import mlx.core as mx
+        from .perturb import _mask_dtype
+
+        inner = self._inner
+        mdtype = _mask_dtype(self.model)
+        tokens = self.tokenizer.encode(prompt)
+        input_ids = mx.array([tokens])
+        T = len(tokens)
+        mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
+
+        deltas: list[tuple[int, float]] = []
+
+        h = inner.embed_tokens(input_ids)
+        for i, ly in enumerate(inner.layers):
+            h_in = np.array(h.astype(mx.float32)[0, -1, :])
+            h = ly(h, mask=mask, cache=None)
+            if isinstance(h, tuple):
+                h = h[0]
+            h_out = np.array(h.astype(mx.float32)[0, -1, :])
+            delta_norm = float(np.linalg.norm(h_out - h_in))
+            deltas.append((i, delta_norm))
+
+            # Force evaluation periodically to bound graph size
+            if i % 8 == 7:
+                mx.eval(h)  # MLX graph evaluation, not Python eval
+
+        return deltas
+
+    def steer_and_generate(
+        self,
+        prompt,
+        *,
+        alpha,
+        layers,
+        direction,
+        max_tokens=30,
+    ) -> tuple[str, list[dict]]:
+        """Generate with steering applied to specified layers.
+
+        Returns (generated_text, per_token_metadata) where each metadata dict
+        contains refuse_prob, top_token, and dampening.
+        """
+        from .metrics import softmax, entropy as _entropy
+
+        generated_tokens: list[str] = []
+        metadata: list[dict] = []
+
+        with self.generation_context(prompt) as gen:
+            for layer in layers:
+                gen.steer(layer, direction, 1.0, alpha)
+            for tok in gen.tokens(max_tokens=max_tokens):
+                probs = softmax(tok.logits)
+                top_id = int(np.argmax(probs))
+                top_token = self.tokenizer.decode([top_id])
+
+                # Estimate refuse_prob: sum of probabilities for common refusal tokens
+                refuse_token_ids = []
+                for word in ["Sorry", "I cannot", "I can't", "not", "unable"]:
+                    try:
+                        ids = self.tokenizer.encode(word)
+                        if ids:
+                            refuse_token_ids.append(ids[0])
+                    except Exception:
+                        pass
+                refuse_prob = float(sum(
+                    probs[tid] for tid in refuse_token_ids if tid < len(probs)
+                ))
+
+                # Dampening: entropy relative to uniform (lower = more dampened)
+                ent = _entropy(probs)
+                vocab_size = len(probs)
+                max_ent = float(np.log2(vocab_size))
+                dampening = 1.0 - (ent / max_ent) if max_ent > 0 else 0.0
+
+                generated_tokens.append(tok.token_text)
+                metadata.append({
+                    "refuse_prob": refuse_prob,
+                    "top_token": top_token,
+                    "dampening": dampening,
+                    "entropy": ent,
+                    "step": tok.step,
+                })
+
+        return "".join(generated_tokens), metadata
+
+    def instrumented_forward(
+        self,
+        prompt,
+        *,
+        directions=None,
+    ) -> list[dict]:
+        """Run a forward pass capturing everything at every layer.
+
+        Returns a list of dicts (one per layer) with residual_norm, delta_norm,
+        projections onto named directions, top 10 active neurons, and attention
+        weight on position 2.
+        """
+        import mlx.core as mx
+        from .perturb import _mask_dtype
+        from .neurons import detect_mlp_type, _compute_mlp_activated
+
+        inner = self._inner
+        mdtype = _mask_dtype(self.model)
+        tokens = self.tokenizer.encode(prompt)
+        input_ids = mx.array([tokens])
+        T = len(tokens)
+        mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
+
+        if directions is None:
+            directions = {}
+
+        layer_data: list[dict] = []
+        n_layers = len(inner.layers)
+
+        h = inner.embed_tokens(input_ids)
+        mx.eval(h)  # MLX graph evaluation, not Python eval
+
+        for i, ly in enumerate(inner.layers):
+            h_in = np.array(h.astype(mx.float32)[0, -1, :])
+
+            # --- Attention weight on position 2 ---
+            attn_pos2_weight = 0.0
+            if T > 2:
+                attn = ly.self_attn
+                h_normed = ly.input_layernorm(h) if hasattr(ly, 'input_layernorm') else h
+                q = attn.q_proj(h_normed)
+                k = attn.k_proj(h_normed)
+
+                n_heads = attn.n_heads
+                n_kv_heads = attn.n_kv_heads
+                head_dim = q.shape[-1] // n_heads
+
+                q = q.reshape(1, T, n_heads, head_dim).transpose(0, 2, 1, 3)
+                k = k.reshape(1, T, n_kv_heads, head_dim).transpose(0, 2, 1, 3)
+
+                if hasattr(attn, 'rope'):
+                    q = attn.rope(q)
+                    k = attn.rope(k)
+
+                n_rep = n_heads // n_kv_heads
+                if n_rep > 1:
+                    k = mx.repeat(k, repeats=n_rep, axis=1)
+
+                # Last query attending to position 2
+                q_last = q[:, :, -1:, :]
+                scores = (q_last @ k.transpose(0, 1, 3, 2)) * attn.scale
+                weights = mx.softmax(scores, axis=-1)
+                # Mean across heads of attention to position 2
+                attn_weights_np = np.array(weights.astype(mx.float32)[0, :, 0, :])
+                attn_pos2_weight = float(np.mean(attn_weights_np[:, 2]))
+
+            # --- MLP activations for top neurons ---
+            h_normed_mlp = ly.post_attention_layernorm(h) if hasattr(ly, 'post_attention_layernorm') else h
+            try:
+                mlp_type = detect_mlp_type(ly)
+                _gate, _up, activated = _compute_mlp_activated(ly.mlp, h_normed_mlp, mlp_type)
+                act_last = np.array(activated.astype(mx.float32)[0, -1, :])
+                # Top 10 neurons by absolute activation
+                abs_act = np.abs(act_last)
+                top_indices = np.argsort(abs_act)[-10:][::-1]
+                top_neurons = [(int(idx), float(act_last[idx])) for idx in top_indices]
+            except Exception:
+                top_neurons = []
+
+            # --- Forward through the layer ---
+            h = ly(h, mask=mask, cache=None)
+            if isinstance(h, tuple):
+                h = h[0]
+
+            h_out = np.array(h.astype(mx.float32)[0, -1, :])
+            residual_norm = float(np.linalg.norm(h_out))
+            delta_norm = float(np.linalg.norm(h_out - h_in))
+
+            # --- Projections onto named directions ---
+            projections: dict[str, float] = {}
+            for name, dir_vec in directions.items():
+                d_norm = np.linalg.norm(dir_vec)
+                if d_norm > 0:
+                    projections[name] = float(np.dot(h_out, dir_vec) / d_norm)
+                else:
+                    projections[name] = 0.0
+
+            layer_data.append({
+                "layer": i,
+                "residual_norm": residual_norm,
+                "delta_norm": delta_norm,
+                "projections": projections,
+                "top_neurons": top_neurons,
+                "attention_pos2_weight": attn_pos2_weight,
+            })
+
+            # Force evaluation periodically to bound graph size
+            if i % 8 == 7 or i == n_layers - 1:
+                mx.eval(h)  # MLX graph evaluation, not Python eval
+
+        return layer_data
 
     def tokenize(self, text):
         return self.tokenizer.encode(text)
@@ -1135,6 +1456,196 @@ class HFBackend:
         finally:
             for h in handles:
                 h.remove()
+
+    def capture_attention_patterns(self, prompt, *, layers) -> dict[int, np.ndarray]:
+        """Capture full attention weight matrices after softmax.
+
+        Returns {layer: attention_weights[n_heads, n_tokens, n_tokens]}.
+        Uses HF output_attentions=True.
+        """
+        import torch
+
+        input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
+        with torch.no_grad():
+            outputs = self.hf_model(input_ids, output_attentions=True)
+
+        attentions: dict[int, np.ndarray] = {}
+        for l in layers:
+            if outputs.attentions and l < len(outputs.attentions):
+                # outputs.attentions[l] is [batch, n_heads, T, T]
+                attentions[l] = outputs.attentions[l][0].float().cpu().numpy()
+
+        return attentions
+
+    def capture_per_layer_delta(self, prompt) -> list[tuple[int, float]]:
+        """Compute residual stream delta norm at every layer.
+
+        Returns [(layer, delta_norm)] where delta = norm(residual_out - residual_in)
+        at the last token position.
+        """
+        import torch
+
+        input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
+        with torch.no_grad():
+            outputs = self.hf_model(input_ids, output_hidden_states=True)
+
+        deltas: list[tuple[int, float]] = []
+        hs = outputs.hidden_states  # tuple of (batch, seq, hidden), index 0=embedding
+        for i in range(len(hs) - 1):
+            h_in = hs[i][0, -1, :].float().cpu().numpy()
+            h_out = hs[i + 1][0, -1, :].float().cpu().numpy()
+            delta_norm = float(np.linalg.norm(h_out - h_in))
+            deltas.append((i, delta_norm))
+
+        return deltas
+
+    def steer_and_generate(
+        self,
+        prompt,
+        *,
+        alpha,
+        layers,
+        direction,
+        max_tokens=30,
+    ) -> tuple[str, list[dict]]:
+        """Generate with steering applied to specified layers.
+
+        Returns (generated_text, per_token_metadata) where each metadata dict
+        contains refuse_prob, top_token, and dampening.
+        """
+        from .metrics import softmax, entropy as _entropy
+
+        generated_tokens: list[str] = []
+        metadata: list[dict] = []
+
+        with self.generation_context(prompt) as gen:
+            for layer in layers:
+                gen.steer(layer, direction, 1.0, alpha)
+            for tok in gen.tokens(max_tokens=max_tokens):
+                probs = softmax(tok.logits)
+                top_id = int(np.argmax(probs))
+                top_token = self.tokenizer.decode([top_id])
+
+                # Estimate refuse_prob
+                refuse_token_ids = []
+                for word in ["Sorry", "I cannot", "I can't", "not", "unable"]:
+                    try:
+                        ids = self.tokenizer.encode(word)
+                        if ids:
+                            refuse_token_ids.append(ids[0])
+                    except Exception:
+                        pass
+                refuse_prob = float(sum(
+                    probs[tid] for tid in refuse_token_ids if tid < len(probs)
+                ))
+
+                # Dampening: entropy relative to uniform
+                ent = _entropy(probs)
+                vocab_size = len(probs)
+                max_ent = float(np.log2(vocab_size))
+                dampening = 1.0 - (ent / max_ent) if max_ent > 0 else 0.0
+
+                generated_tokens.append(tok.token_text)
+                metadata.append({
+                    "refuse_prob": refuse_prob,
+                    "top_token": top_token,
+                    "dampening": dampening,
+                    "entropy": ent,
+                    "step": tok.step,
+                })
+
+        return "".join(generated_tokens), metadata
+
+    def instrumented_forward(
+        self,
+        prompt,
+        *,
+        directions=None,
+    ) -> list[dict]:
+        """Run a forward pass capturing everything at every layer.
+
+        Returns a list of dicts (one per layer) with residual_norm, delta_norm,
+        projections onto named directions, top 10 active neurons, and attention
+        weight on position 2.
+        """
+        import torch
+
+        if directions is None:
+            directions = {}
+
+        input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
+        T = input_ids.shape[1]
+
+        # Capture MLP activations at every layer via hooks
+        mlp_activations: dict[int, np.ndarray] = {}
+        handles = []
+
+        for li in range(len(self.hf_model.model.layers)):
+            mlp = self.hf_model.model.layers[li].mlp
+
+            def make_mlp_hook(layer_idx):
+                def hook_fn(module, input, output):
+                    out = output[0] if isinstance(output, tuple) else output
+                    mlp_activations[layer_idx] = out[0, -1, :].float().cpu().numpy()
+                return hook_fn
+
+            handles.append(mlp.register_forward_hook(make_mlp_hook(li)))
+
+        try:
+            with torch.no_grad():
+                outputs = self.hf_model(
+                    input_ids,
+                    output_hidden_states=True,
+                    output_attentions=True,
+                )
+        finally:
+            for hndl in handles:
+                hndl.remove()
+
+        hs = outputs.hidden_states
+        layer_data: list[dict] = []
+
+        for i in range(len(hs) - 1):
+            h_in = hs[i][0, -1, :].float().cpu().numpy()
+            h_out = hs[i + 1][0, -1, :].float().cpu().numpy()
+            residual_norm = float(np.linalg.norm(h_out))
+            delta_norm = float(np.linalg.norm(h_out - h_in))
+
+            # Projections onto named directions
+            projections: dict[str, float] = {}
+            for name, dir_vec in directions.items():
+                d_norm = np.linalg.norm(dir_vec)
+                if d_norm > 0:
+                    projections[name] = float(np.dot(h_out, dir_vec) / d_norm)
+                else:
+                    projections[name] = 0.0
+
+            # Top 10 neurons by absolute MLP activation
+            top_neurons: list[tuple[int, float]] = []
+            if i in mlp_activations:
+                act = mlp_activations[i]
+                abs_act = np.abs(act)
+                top_indices = np.argsort(abs_act)[-10:][::-1]
+                top_neurons = [(int(idx), float(act[idx])) for idx in top_indices]
+
+            # Attention weight on position 2 (mean across heads)
+            attn_pos2_weight = 0.0
+            if T > 2 and outputs.attentions and i < len(outputs.attentions):
+                # attentions[i] shape: [batch, n_heads, T, T]
+                attn_w = outputs.attentions[i][0].float().cpu().numpy()
+                # Last query position attending to position 2, mean across heads
+                attn_pos2_weight = float(np.mean(attn_w[:, -1, 2]))
+
+            layer_data.append({
+                "layer": i,
+                "residual_norm": residual_norm,
+                "delta_norm": delta_norm,
+                "projections": projections,
+                "top_neurons": top_neurons,
+                "attention_pos2_weight": attn_pos2_weight,
+            })
+
+        return layer_data
 
     def tokenize(self, text):
         return self.tokenizer.encode(text)

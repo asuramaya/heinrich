@@ -263,3 +263,6 @@ def analyze_gap(
         gap_low=gap_low, gap_high=gap_high,
         gap_text=gap_text,
     )
+
+
+distributed_cliff_search = find_distributed_cliff

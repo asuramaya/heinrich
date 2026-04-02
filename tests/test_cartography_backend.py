@@ -51,7 +51,7 @@ class TestForwardResult:
 
     def test_field_names(self):
         names = {f.name for f in fields(ForwardResult)}
-        expected = {"logits", "probs", "top_id", "top_token", "entropy", "n_tokens", "residual"}
+        expected = {"logits", "probs", "top_id", "top_token", "entropy", "n_tokens", "residual", "per_layer"}
         assert names == expected
 
 

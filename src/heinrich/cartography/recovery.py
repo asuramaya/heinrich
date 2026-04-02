@@ -424,3 +424,6 @@ def _check_monitor_backend(
                 ))
 
     return alerts
+
+
+track_generation = trace_recovery

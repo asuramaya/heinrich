@@ -150,17 +150,101 @@ TOOLS = {
         "description": "Get database summary — signal counts, kinds, size.",
         "parameters": {},
     },
+    # --- Qwen safety investigation tools ---
+    "heinrich_safety_report": {
+        "description": "Return per-category, per-attack safety breakdown from benchmark evaluations.",
+        "parameters": {
+            "dataset": {"type": "string", "description": "Filter by dataset name"},
+            "category": {"type": "string", "description": "Filter by safety category (e.g. violence, discrimination)"},
+            "attack": {"type": "string", "description": "Filter by attack type (e.g. direct, forensic)"},
+        },
+    },
+    "heinrich_sharts": {
+        "description": "Query anomalous tokens by category, z-score, or top neuron.",
+        "parameters": {
+            "category": {"type": "string", "description": "Filter by shart category"},
+            "min_z": {"type": "number", "description": "Minimum z-score threshold"},
+            "top_neuron": {"type": "integer", "description": "Filter by top activating neuron index"},
+            "top_k": {"type": "integer", "description": "Number of results to return (default 30)"},
+        },
+    },
+    "heinrich_neurons": {
+        "description": "Query named neurons by category, layer, or causal effect.",
+        "parameters": {
+            "category": {"type": "string", "description": "Filter by neuron category (e.g. political, sexual)"},
+            "layer": {"type": "integer", "description": "Filter by layer number"},
+            "causal_only": {"type": "boolean", "description": "Only return neurons with confirmed causal effects"},
+            "top_k": {"type": "integer", "description": "Number of results to return (default 30)"},
+        },
+    },
+    "heinrich_censorship": {
+        "description": "Return bilingual censorship map. Optionally filter to divergent topics only.",
+        "parameters": {
+            "divergent_only": {"type": "boolean", "description": "Only return topics where EN/ZH censorship diverges"},
+            "topic": {"type": "string", "description": "Filter by topic name"},
+        },
+    },
+    "heinrich_layer_map": {
+        "description": "Return the L0-L27 layer profile with roles, dampening, neuron counts.",
+        "parameters": {
+            "model": {"type": "string", "description": "Filter by model name"},
+        },
+    },
+    "heinrich_basin_geometry": {
+        "description": "Return compliance basin distances and interpolation data.",
+        "parameters": {
+            "model": {"type": "string", "description": "Filter by model name"},
+        },
+    },
+    "heinrich_directions": {
+        "description": "List known behavioral directions with stability and effect size.",
+        "parameters": {
+            "layer": {"type": "integer", "description": "Filter by layer number"},
+            "min_stability": {"type": "number", "description": "Minimum stability threshold"},
+        },
+    },
+    "heinrich_benchmark_compare": {
+        "description": "Compare refusal rates across attack configurations.",
+        "parameters": {
+            "dataset": {"type": "string", "description": "Filter by dataset name"},
+            "attacks": {"type": "array", "description": "List of attack types to compare"},
+        },
+    },
+    "heinrich_paper_verify": {
+        "description": "Verify a specific claim from the paper against DB data.",
+        "parameters": {
+            "claim": {
+                "type": "string",
+                "description": (
+                    "Claim ID to verify. One of: alpha_015_every_prompt, shart_families_3, "
+                    "eval_count_1890, neuron_1934_political, discrimination_unprotected, "
+                    "violence_collapses, monitor_paradox, basin_asymmetry"
+                ),
+                "required": True,
+            },
+        },
+    },
+    "heinrich_heads": {
+        "description": "Query attention head importance and clustering.",
+        "parameters": {
+            "layer": {"type": "integer", "description": "Filter by layer number"},
+            "inert_only": {"type": "boolean", "description": "Only return inert (low-importance) heads"},
+            "safety_only": {"type": "boolean", "description": "Only return safety-critical heads"},
+        },
+    },
 }
 
 
 class ToolServer:
     """Stateful tool server that maintains a signal store across calls."""
 
-    def __init__(self) -> None:
+    def __init__(self, *, db=None) -> None:
         self._store = SignalStore()
         self._stages_run: list[str] = []
         from .probe.provider import MockProvider
         self._provider: Any = MockProvider()
+        from .db import SignalDB
+        self._db: SignalDB = db or SignalDB()
 
     @property
     def store(self) -> SignalStore:
@@ -210,6 +294,26 @@ class ToolServer:
             return self._do_db_runs(arguments)
         if name == "heinrich_db_summary":
             return self._do_db_summary(arguments)
+        if name == "heinrich_safety_report":
+            return self._do_safety_report(arguments)
+        if name == "heinrich_sharts":
+            return self._do_sharts(arguments)
+        if name == "heinrich_neurons":
+            return self._do_neurons(arguments)
+        if name == "heinrich_censorship":
+            return self._do_censorship(arguments)
+        if name == "heinrich_layer_map":
+            return self._do_layer_map(arguments)
+        if name == "heinrich_basin_geometry":
+            return self._do_basin_geometry(arguments)
+        if name == "heinrich_directions":
+            return self._do_directions(arguments)
+        if name == "heinrich_benchmark_compare":
+            return self._do_benchmark_compare(arguments)
+        if name == "heinrich_paper_verify":
+            return self._do_paper_verify(arguments)
+        if name == "heinrich_heads":
+            return self._do_heads(arguments)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -510,3 +614,420 @@ class ToolServer:
         summary = db.summary()
         db.close()
         return summary
+
+    # ------------------------------------------------------------------
+    # Helpers for investigation table queries
+    # ------------------------------------------------------------------
+
+    def _table_exists(self, table: str) -> bool:
+        """Check if a table exists in the DB."""
+        row = self._db._conn.execute(
+            "SELECT COUNT(*) as n FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone()
+        return row["n"] > 0
+
+    def _query_table(self, sql: str, params: tuple = ()) -> list[dict]:
+        """Run a raw SQL query and return rows as dicts."""
+        rows = self._db._conn.execute(sql, params).fetchall()
+        return [dict(r) for r in rows]
+
+    _INGEST_MSG = "Table not found. Run heinrich_ingest first to populate investigation tables."
+
+    # ------------------------------------------------------------------
+    # Qwen safety investigation tool handlers
+    # ------------------------------------------------------------------
+
+    def _do_safety_report(self, args: dict[str, Any]) -> dict[str, Any]:
+        if not self._table_exists("evaluations"):
+            return {"error": self._INGEST_MSG}
+        clauses: list[str] = []
+        params: list = []
+        if args.get("dataset"):
+            clauses.append("dataset = ?")
+            params.append(args["dataset"])
+        if args.get("category"):
+            clauses.append("category = ?")
+            params.append(args["category"])
+        if args.get("attack"):
+            clauses.append("attack = ?")
+            params.append(args["attack"])
+        where = " AND ".join(clauses) if clauses else "1=1"
+        sql = (
+            f"SELECT category, attack, "
+            f"COUNT(*) as n, "
+            f"AVG(refuse_prob) as avg_refuse_prob, "
+            f"AVG(comply_prob) as avg_comply_prob "
+            f"FROM evaluations WHERE {where} "
+            f"GROUP BY category, attack ORDER BY category, attack"
+        )
+        rows = self._query_table(sql, tuple(params))
+        for row in rows:
+            row["refusal_rate"] = round(row["avg_refuse_prob"] or 0.0, 4)
+            row["compliance_rate"] = round(row["avg_comply_prob"] or 0.0, 4)
+        return {"count": len(rows), "breakdown": rows}
+
+    def _do_sharts(self, args: dict[str, Any]) -> dict[str, Any]:
+        if not self._table_exists("sharts"):
+            return {"error": self._INGEST_MSG}
+        clauses: list[str] = []
+        params: list = []
+        if args.get("category"):
+            clauses.append("category = ?")
+            params.append(args["category"])
+        if args.get("min_z") is not None:
+            clauses.append("max_z >= ?")
+            params.append(args["min_z"])
+        if args.get("top_neuron") is not None:
+            clauses.append("top_neuron = ?")
+            params.append(args["top_neuron"])
+        top_k = args.get("top_k", 30)
+        where = " AND ".join(clauses) if clauses else "1=1"
+        sql = f"SELECT * FROM sharts WHERE {where} ORDER BY max_z DESC LIMIT ?"
+        params.append(top_k)
+        rows = self._query_table(sql, tuple(params))
+        return {"count": len(rows), "sharts": rows}
+
+    def _do_neurons(self, args: dict[str, Any]) -> dict[str, Any]:
+        if not self._table_exists("neurons"):
+            return {"error": self._INGEST_MSG}
+        clauses: list[str] = []
+        params: list = []
+        if args.get("category"):
+            clauses.append("category = ?")
+            params.append(args["category"])
+        if args.get("layer") is not None:
+            clauses.append("layer = ?")
+            params.append(args["layer"])
+        if args.get("causal_only"):
+            clauses.append("causal_effect IS NOT NULL AND causal_effect > 0")
+        top_k = args.get("top_k", 30)
+        where = " AND ".join(clauses) if clauses else "1=1"
+        sql = f"SELECT * FROM neurons WHERE {where} ORDER BY layer, neuron_idx LIMIT ?"
+        params.append(top_k)
+        rows = self._query_table(sql, tuple(params))
+        return {"count": len(rows), "neurons": rows}
+
+    def _do_censorship(self, args: dict[str, Any]) -> dict[str, Any]:
+        if not self._table_exists("censorship"):
+            return {"error": self._INGEST_MSG}
+        clauses: list[str] = []
+        params: list = []
+        if args.get("divergent_only"):
+            clauses.append("divergent = 1")
+        if args.get("topic"):
+            clauses.append("topic = ?")
+            params.append(args["topic"])
+        where = " AND ".join(clauses) if clauses else "1=1"
+        sql = f"SELECT * FROM censorship WHERE {where} ORDER BY topic"
+        rows = self._query_table(sql, tuple(params))
+        return {"count": len(rows), "censorship": rows}
+
+    def _do_layer_map(self, args: dict[str, Any]) -> dict[str, Any]:
+        if not self._table_exists("layers"):
+            return {"error": self._INGEST_MSG}
+        clauses: list[str] = []
+        params: list = []
+        if args.get("model"):
+            # Look up model_id by name
+            model_row = self._db._conn.execute(
+                "SELECT id FROM models WHERE name = ?", (args["model"],)
+            ).fetchone()
+            if model_row:
+                clauses.append("model_id = ?")
+                params.append(model_row["id"])
+            else:
+                return {"count": 0, "layers": [], "note": f"Model {args['model']!r} not found"}
+        where = " AND ".join(clauses) if clauses else "1=1"
+        sql = f"SELECT * FROM layers WHERE {where} ORDER BY layer"
+        rows = self._query_table(sql, tuple(params))
+        if not rows:
+            return {"count": 0, "layers": [], "note": "Layer map is empty. Run scripts/recompute_layer_map.py to populate."}
+        return {"count": len(rows), "layers": rows}
+
+    def _do_basin_geometry(self, args: dict[str, Any]) -> dict[str, Any]:
+        has_basins = self._table_exists("basins")
+        has_distances = self._table_exists("basin_distances")
+        has_interp = self._table_exists("interpolations")
+        if not (has_basins or has_distances or has_interp):
+            return {"error": self._INGEST_MSG}
+        result: dict[str, Any] = {}
+        clauses: list[str] = []
+        params: list = []
+        if args.get("model"):
+            model_row = self._db._conn.execute(
+                "SELECT id FROM models WHERE name = ?", (args["model"],)
+            ).fetchone()
+            if model_row:
+                clauses.append("model_id = ?")
+                params.append(model_row["id"])
+            else:
+                return {"note": f"Model {args['model']!r} not found", "basins": [], "distances": [], "interpolations": []}
+        where = " AND ".join(clauses) if clauses else "1=1"
+        if has_basins:
+            result["basins"] = self._query_table(
+                f"SELECT * FROM basins WHERE {where}", tuple(params)
+            )
+        if has_distances:
+            result["distances"] = self._query_table(
+                f"SELECT * FROM basin_distances WHERE {where}", tuple(params)
+            )
+        if has_interp:
+            result["interpolations"] = self._query_table(
+                f"SELECT * FROM interpolations WHERE {where}", tuple(params)
+            )
+        if not any(result.get(k) for k in ("basins", "distances", "interpolations")):
+            result["note"] = "Basin geometry tables are empty. Run scripts/recompute_basins.py to populate."
+        return result
+
+    def _do_directions(self, args: dict[str, Any]) -> dict[str, Any]:
+        if not self._table_exists("directions"):
+            return {"error": self._INGEST_MSG}
+        clauses: list[str] = []
+        params: list = []
+        if args.get("layer") is not None:
+            clauses.append("layer = ?")
+            params.append(args["layer"])
+        if args.get("min_stability") is not None:
+            clauses.append("stability >= ?")
+            params.append(args["min_stability"])
+        where = " AND ".join(clauses) if clauses else "1=1"
+        sql = f"SELECT * FROM directions WHERE {where} ORDER BY effect_size DESC"
+        rows = self._query_table(sql, tuple(params))
+        return {"count": len(rows), "directions": rows}
+
+    def _do_benchmark_compare(self, args: dict[str, Any]) -> dict[str, Any]:
+        if not self._table_exists("evaluations"):
+            return {"error": self._INGEST_MSG}
+        clauses: list[str] = []
+        params: list = []
+        if args.get("dataset"):
+            clauses.append("dataset = ?")
+            params.append(args["dataset"])
+        attacks = args.get("attacks")
+        if attacks:
+            placeholders = ",".join("?" for _ in attacks)
+            clauses.append(f"attack IN ({placeholders})")
+            params.extend(attacks)
+        where = " AND ".join(clauses) if clauses else "1=1"
+        sql = (
+            f"SELECT attack, "
+            f"COUNT(*) as n, "
+            f"AVG(refuse_prob) as avg_refuse_prob, "
+            f"AVG(comply_prob) as avg_comply_prob "
+            f"FROM evaluations WHERE {where} "
+            f"GROUP BY attack ORDER BY attack"
+        )
+        rows = self._query_table(sql, tuple(params))
+        for row in rows:
+            row["refusal_rate"] = round(row["avg_refuse_prob"] or 0.0, 4)
+            row["compliance_rate"] = round(row["avg_comply_prob"] or 0.0, 4)
+        return {"count": len(rows), "comparison": rows}
+
+    def _do_paper_verify(self, args: dict[str, Any]) -> dict[str, Any]:
+        claim = args.get("claim", "")
+        verifiers = {
+            "alpha_015_every_prompt": self._verify_alpha_015,
+            "shart_families_3": self._verify_shart_families,
+            "eval_count_1890": self._verify_eval_count,
+            "neuron_1934_political": self._verify_neuron_1934,
+            "discrimination_unprotected": self._verify_discrimination,
+            "violence_collapses": self._verify_violence_collapses,
+            "monitor_paradox": self._verify_monitor_paradox,
+            "basin_asymmetry": self._verify_basin_asymmetry,
+        }
+        if claim not in verifiers:
+            return {
+                "error": f"Unknown claim: {claim!r}",
+                "valid_claims": list(verifiers.keys()),
+            }
+        return verifiers[claim]()
+
+    # --- Paper claim verification sub-handlers ---
+
+    def _verify_alpha_015(self) -> dict[str, Any]:
+        """Paper: 'every prompt complies at alpha=-0.15'."""
+        if not self._table_exists("evaluations"):
+            return {"claim": "alpha_015_every_prompt", "error": self._INGEST_MSG}
+        rows = self._query_table(
+            "SELECT COUNT(*) as n, "
+            "AVG(refuse_prob) as avg_refuse, "
+            "AVG(comply_prob) as avg_comply "
+            "FROM evaluations WHERE alpha = -0.15"
+        )
+        r = rows[0] if rows else {"n": 0, "avg_refuse": None, "avg_comply": None}
+        avg_refuse = round(r["avg_refuse"], 4) if r["avg_refuse"] is not None else None
+        return {
+            "claim": "alpha_015_every_prompt",
+            "paper_says": "every prompt complies at alpha=-0.15",
+            "db_total": r["n"],
+            "db_avg_refuse_prob": avg_refuse,
+            "db_avg_comply_prob": round(r["avg_comply"], 4) if r["avg_comply"] is not None else None,
+            "verified": avg_refuse == 0.0 if avg_refuse is not None else None,
+        }
+
+    def _verify_shart_families(self) -> dict[str, Any]:
+        """Paper: '~3 real families'."""
+        if not self._table_exists("sharts"):
+            return {"claim": "shart_families_3", "error": self._INGEST_MSG}
+        rows = self._query_table(
+            "SELECT category, COUNT(*) as n FROM sharts GROUP BY category ORDER BY n DESC"
+        )
+        return {
+            "claim": "shart_families_3",
+            "paper_says": "~3 real families",
+            "db_families": len(rows),
+            "db_breakdown": rows,
+            "verified": len(rows) >= 2 and len(rows) <= 5,
+        }
+
+    def _verify_eval_count(self) -> dict[str, Any]:
+        """Paper: '1,890 evaluations'."""
+        if not self._table_exists("evaluations"):
+            return {"claim": "eval_count_1890", "error": self._INGEST_MSG}
+        rows = self._query_table(
+            "SELECT COUNT(*) as n FROM evaluations "
+            "WHERE dataset IS NOT NULL"
+        )
+        n = rows[0]["n"] if rows else 0
+        return {
+            "claim": "eval_count_1890",
+            "paper_says": "1,890 evaluations",
+            "db_count": n,
+            "verified": n == 1890,
+        }
+
+    def _verify_neuron_1934(self) -> dict[str, Any]:
+        """Paper: 'neuron 1934 is political detector'."""
+        if not self._table_exists("neurons"):
+            return {"claim": "neuron_1934_political", "error": self._INGEST_MSG}
+        rows = self._query_table(
+            "SELECT * FROM neurons WHERE neuron_idx = 1934"
+        )
+        is_political = any(
+            r.get("category", "").lower() in ("political", "politics")
+            for r in rows
+        )
+        return {
+            "claim": "neuron_1934_political",
+            "paper_says": "neuron 1934 is political detector",
+            "db_rows": rows,
+            "verified": is_political,
+        }
+
+    def _verify_discrimination(self) -> dict[str, Any]:
+        """Paper: (not in v1). Check discrimination + direct attack data."""
+        if not self._table_exists("evaluations"):
+            return {"claim": "discrimination_unprotected", "error": self._INGEST_MSG}
+        rows = self._query_table(
+            "SELECT COUNT(*) as n, "
+            "AVG(refuse_prob) as avg_refuse, "
+            "AVG(comply_prob) as avg_comply "
+            "FROM evaluations WHERE category = 'discrimination' AND attack = 'direct'"
+        )
+        r = rows[0] if rows else {"n": 0, "avg_refuse": None, "avg_comply": None}
+        avg_refuse = round(r["avg_refuse"], 4) if r["avg_refuse"] is not None else None
+        return {
+            "claim": "discrimination_unprotected",
+            "paper_says": "(not in v1)",
+            "db_total": r["n"],
+            "db_avg_refuse_prob": avg_refuse,
+            "db_avg_comply_prob": round(r["avg_comply"], 4) if r["avg_comply"] is not None else None,
+            "data_exists": r["n"] > 0,
+        }
+
+    def _verify_violence_collapses(self) -> dict[str, Any]:
+        """Paper: (not in v1). Compare violence: direct vs forensic."""
+        if not self._table_exists("evaluations"):
+            return {"claim": "violence_collapses", "error": self._INGEST_MSG}
+        rows = self._query_table(
+            "SELECT attack, "
+            "COUNT(*) as n, "
+            "AVG(refuse_prob) as avg_refuse "
+            "FROM evaluations WHERE category = 'violence' "
+            "GROUP BY attack ORDER BY attack"
+        )
+        by_attack = {}
+        for r in rows:
+            rate = round(r["avg_refuse"], 4) if r["avg_refuse"] is not None else None
+            by_attack[r["attack"]] = {"n": r["n"], "refusal_rate": rate}
+        direct_rate = by_attack.get("direct", {}).get("refusal_rate")
+        forensic_rate = by_attack.get("forensic", {}).get("refusal_rate")
+        collapses = (
+            direct_rate is not None
+            and forensic_rate is not None
+            and forensic_rate < direct_rate * 0.5
+        )
+        return {
+            "claim": "violence_collapses",
+            "paper_says": "(not in v1)",
+            "by_attack": by_attack,
+            "collapses": collapses,
+            "data_exists": len(rows) > 0,
+        }
+
+    def _verify_monitor_paradox(self) -> dict[str, Any]:
+        """Paper: (v2 only). Check if defense_wave data exists."""
+        has_defense = self._table_exists("defense_waves")
+        if not has_defense:
+            # Also check alternate table name
+            has_defense = self._table_exists("defense_wave")
+        return {
+            "claim": "monitor_paradox",
+            "paper_says": "(v2 only)",
+            "defense_wave_data_exists": has_defense,
+            "verified": None,
+            "note": "Defense wave data exists" if has_defense else "No defense wave data found. This is a v2-only claim.",
+        }
+
+    def _verify_basin_asymmetry(self) -> dict[str, Any]:
+        """Paper: '85/15'. Check interpolation REFUSE vs COMPLY counts."""
+        if not self._table_exists("interpolations"):
+            return {"claim": "basin_asymmetry", "error": self._INGEST_MSG}
+        rows = self._query_table(
+            "SELECT behavior, COUNT(*) as n FROM interpolations GROUP BY behavior"
+        )
+        by_behavior = {r["behavior"]: r["n"] for r in rows if r["behavior"]}
+        total = sum(by_behavior.values())
+        refuse_pct = round(100 * by_behavior.get("REFUSE", 0) / total, 1) if total else None
+        comply_pct = round(100 * by_behavior.get("COMPLY", 0) / total, 1) if total else None
+        verified = (
+            refuse_pct is not None
+            and comply_pct is not None
+            and abs(refuse_pct - 85) < 5
+            and abs(comply_pct - 15) < 5
+        )
+        if not total:
+            return {
+                "claim": "basin_asymmetry",
+                "paper_says": "85/15",
+                "db_total": 0,
+                "note": "Interpolations table is empty. Run scripts/recompute_interpolation.py to populate.",
+                "verified": None,
+            }
+        return {
+            "claim": "basin_asymmetry",
+            "paper_says": "85/15",
+            "db_breakdown": by_behavior,
+            "db_total": total,
+            "refuse_pct": refuse_pct,
+            "comply_pct": comply_pct,
+            "verified": verified,
+        }
+
+    def _do_heads(self, args: dict[str, Any]) -> dict[str, Any]:
+        if not self._table_exists("heads"):
+            return {"error": self._INGEST_MSG}
+        clauses: list[str] = []
+        params: list = []
+        if args.get("layer") is not None:
+            clauses.append("layer = ?")
+            params.append(args["layer"])
+        if args.get("inert_only"):
+            clauses.append("is_inert = 1")
+        if args.get("safety_only"):
+            clauses.append("safety_specific = 1")
+        where = " AND ".join(clauses) if clauses else "1=1"
+        sql = f"SELECT * FROM heads WHERE {where} ORDER BY layer, head"
+        rows = self._query_table(sql, tuple(params))
+        return {"count": len(rows), "heads": rows}
