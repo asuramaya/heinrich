@@ -26,6 +26,19 @@ def token_saliency(
     If backend is an HFBackend, uses torch.autograd.
     If backend is None, raises NotImplementedError.
     """
+    # Auto-construct backend from model/tokenizer if not provided
+    if backend is None and model is not None:
+        try:
+            b = MLXBackend.__new__(MLXBackend)
+            b.model = model
+            b.tokenizer = tokenizer
+            from .model_config import detect_config
+            b.config = detect_config(model, tokenizer)
+            b._inner = getattr(model, "model", model)
+            backend = b
+        except Exception:
+            pass
+
     if isinstance(backend, MLXBackend):
         return _token_saliency_mlx(backend, prompt, target_token_id=target_token_id)
     elif isinstance(backend, HFBackend):
