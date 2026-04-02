@@ -168,12 +168,15 @@ class MLXBackend:
         )
 
     def generate(self, prompt, *, steer_dirs=None, alpha=0.0, max_tokens=30) -> str:
-        from .runtime import generate as _generate
-        result = _generate(
-            self.model, self.tokenizer, prompt,
-            steer_dirs=steer_dirs, alpha=alpha, max_tokens=max_tokens,
-        )
-        return result["generated"]
+        """Generate using KV-cached GenerationContext for speed."""
+        tokens = []
+        with self.generation_context(prompt) as gen:
+            if steer_dirs:
+                for layer, (direction, mean_gap) in steer_dirs.items():
+                    gen.steer(layer, direction, mean_gap, alpha)
+            for tok in gen.tokens(max_tokens=max_tokens):
+                tokens.append(tok.token_text)
+        return "".join(tokens)
 
     def capture_residual_states(self, prompts, *, layers) -> dict[int, np.ndarray]:
         from .directions import capture_residual_states as _capture
