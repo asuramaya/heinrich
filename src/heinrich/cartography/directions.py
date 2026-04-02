@@ -26,8 +26,12 @@ class DirectionSuite:
 
 def capture_residual_states(
     model: Any, tokenizer: Any, prompts: list[str], *, layers: list[int],
+    backend: Any = None,
 ) -> dict[int, np.ndarray]:
     """Capture residual stream at specified layers for all prompts. Returns {layer: [n_prompts, hidden_size]}."""
+    if backend is not None:
+        return backend.capture_residual_states(prompts, layers=layers)
+
     import mlx.core as mx
     from .perturb import _mask_dtype
 
@@ -88,10 +92,11 @@ def find_direction_suite(
     pos_prompts: list[str], neg_prompts: list[str],
     *, name: str, layers: list[int],
     store: SignalStore | None = None,
+    backend: Any = None,
 ) -> DirectionSuite:
     """Find directions at all specified layers."""
-    pos_states = capture_residual_states(model, tokenizer, pos_prompts, layers=layers)
-    neg_states = capture_residual_states(model, tokenizer, neg_prompts, layers=layers)
+    pos_states = capture_residual_states(model, tokenizer, pos_prompts, layers=layers, backend=backend)
+    neg_states = capture_residual_states(model, tokenizer, neg_prompts, layers=layers, backend=backend)
 
     directions = []
     for l in layers:
@@ -110,8 +115,19 @@ def find_direction_suite(
 def steer_with_direction(
     model: Any, tokenizer: Any, prompt: str,
     direction: DirectionResult, *, alpha: float = 1.0, max_tokens: int = 30,
+    backend: Any = None,
 ) -> dict[str, Any]:
     """Generate text with a direction vector added to residual stream at target layer."""
+    if backend is not None:
+        generated = backend.generate(
+            prompt,
+            steer_dirs={direction.layer: (direction.direction, direction.mean_gap)},
+            alpha=alpha,
+            max_tokens=max_tokens,
+        )
+        return {"prompt": prompt, "generated": generated,
+                "alpha": alpha, "layer": direction.layer, "direction": direction.name}
+
     import mlx.core as mx
     from .perturb import _mask_dtype
 

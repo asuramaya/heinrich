@@ -68,10 +68,22 @@ def direction_spec(direction: np.ndarray, scale: float = 1.0) -> TracePatchSpec:
     return TracePatchSpec(mode="direction", direction=d, scale=scale)
 
 
-def _capture_states(model: Any, tokenizer: Any, prompt: str) -> tuple[list[np.ndarray], np.ndarray]:
+def _capture_states(
+    model: Any, tokenizer: Any, prompt: str, *, backend: Any = None,
+) -> tuple[list[np.ndarray], np.ndarray]:
     """Forward pass capturing ALL positions at every layer. Returns (states, logits).
     states[i] has shape [1, T, hidden_size].
     """
+    if backend is not None:
+        # Use backend.capture_all_positions for all layers + forward for logits
+        n_layers = backend.config.n_layers
+        all_layers = list(range(n_layers))
+        pos_states = backend.capture_all_positions(prompt, layers=all_layers)
+        fwd = backend.forward(prompt)
+        # Convert {layer: [T, hidden]} -> list of [1, T, hidden] indexed by layer
+        states = [pos_states[i][np.newaxis, :, :] for i in all_layers]
+        return states, fwd.logits
+
     import mlx.core as mx
     from .perturb import _mask_dtype
 
@@ -153,6 +165,7 @@ def causal_trace(
     layers: list[int] | None = None,
     store: SignalStore | None = None,
     progress: bool = True,
+    backend: Any = None,
 ) -> TraceResult:
     """Run full (layer × position) causal trace.
 
@@ -165,28 +178,33 @@ def causal_trace(
         spec = full_spec()
 
     # Capture both runs
-    clean_states, clean_logits = _capture_states(model, tokenizer, clean_prompt)
-    _, corrupt_logits = _capture_states(model, tokenizer, corrupt_prompt)
+    clean_states, clean_logits = _capture_states(model, tokenizer, clean_prompt, backend=backend)
+    _, corrupt_logits = _capture_states(model, tokenizer, corrupt_prompt, backend=backend)
 
     clean_probs = _softmax(clean_logits)
     corrupt_probs = _softmax(corrupt_logits)
     clean_top_id = int(np.argmax(clean_probs))
     corrupt_top_id = int(np.argmax(corrupt_probs))
-    clean_top = tokenizer.decode([clean_top_id])
-    corrupt_top = tokenizer.decode([corrupt_top_id])
+    _decode = backend.decode if backend is not None else tokenizer.decode
+    _encode = backend.tokenize if backend is not None else tokenizer.encode
+    clean_top = _decode([clean_top_id])
+    corrupt_top = _decode([corrupt_top_id])
 
     kl_baseline = float(np.sum(clean_probs * np.log((clean_probs + 1e-12) / (corrupt_probs + 1e-12))))
     if kl_baseline < 1e-6:
         raise ValueError(f"Clean and corrupt outputs are identical (KL={kl_baseline:.2e})")
 
     # Position alignment (prefix strategy)
-    clean_tokens = tokenizer.encode(clean_prompt)
-    corrupt_tokens = tokenizer.encode(corrupt_prompt)
+    clean_tokens = _encode(clean_prompt)
+    corrupt_tokens = _encode(corrupt_prompt)
     n_pos = min(len(clean_tokens), len(corrupt_tokens))
-    token_labels = [tokenizer.decode([corrupt_tokens[i]]) for i in range(n_pos)]
+    token_labels = [_decode([corrupt_tokens[i]]) for i in range(n_pos)]
 
-    inner = getattr(model, "model", model)
-    n_total_layers = len(inner.layers)
+    if backend is not None:
+        n_total_layers = backend.config.n_layers
+    else:
+        inner = getattr(model, "model", model)
+        n_total_layers = len(inner.layers)
     if layers is None:
         layers = list(range(n_total_layers))
 
@@ -213,7 +231,7 @@ def causal_trace(
                 layer=layer, position=pi, token=token_labels[pi],
                 recovery=float(recovery), kl_shift=float(kl_shift),
                 top_recovered=top_recovered,
-                patched_top_token=tokenizer.decode([patched_top_id]),
+                patched_top_token=_decode([patched_top_id]),
             ))
 
             if store:
@@ -246,17 +264,43 @@ def distributed_ablation(
     *,
     test_counts: list[int] | None = None,
     max_tokens: int = 20,
+    backend: Any = None,
 ) -> list[tuple[int, str]]:
     """Ablate the top N neurons simultaneously, binary-searching for the breaking point."""
+    if test_counts is None:
+        test_counts = [1, 5, 10, 25, 50, 100, 200, 400, 815]
+
+    if backend is not None:
+        results = []
+        for n in test_counts:
+            if n > len(neuron_ranking):
+                break
+            neurons = neuron_ranking[:n]
+            tokens = backend.tokenize(prompt)
+            full_tokens = list(tokens)
+            generated_ids = []
+            for _ in range(max_tokens):
+                current_text = backend.decode(full_tokens)
+                result = backend.forward_with_neuron_mask(current_text, layer, neurons)
+                next_id = result.top_id
+                if hasattr(backend, 'tokenizer'):
+                    eos = getattr(backend.tokenizer, "eos_token_id", None)
+                else:
+                    eos = None
+                if next_id == eos:
+                    break
+                full_tokens.append(next_id)
+                generated_ids.append(next_id)
+            text = backend.decode(generated_ids)
+            results.append((n, text))
+        return results
+
     import mlx.core as mx
     import mlx.nn as nn
     from .perturb import _mask_dtype
 
     inner = getattr(model, "model", model)
     mdtype = _mask_dtype(model)
-
-    if test_counts is None:
-        test_counts = [1, 5, 10, 25, 50, 100, 200, 400, 815]
 
     results = []
     for n in test_counts:

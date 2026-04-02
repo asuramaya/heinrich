@@ -26,8 +26,12 @@ class NeuronScanResult:
 
 def capture_mlp_activations(
     model: Any, tokenizer: Any, prompt: str, layer: int,
+    *, backend: Any = None,
 ) -> np.ndarray:
     """Capture MLP gate activations (silu(gate) * up) at layer, last token. Returns [intermediate_size]."""
+    if backend is not None:
+        return backend.capture_mlp_activations(prompt, layer)
+
     import mlx.core as mx
     import mlx.nn as nn
     from .perturb import _mask_dtype
@@ -66,10 +70,11 @@ def scan_neurons(
     negative_prompts: list[str],
     layer: int,
     *, top_k: int = 20,
+    backend: Any = None,
 ) -> NeuronScanResult:
     """Find neurons selective for positive vs negative prompts."""
-    pos_acts = np.array([capture_mlp_activations(model, tokenizer, p, layer) for p in positive_prompts])
-    neg_acts = np.array([capture_mlp_activations(model, tokenizer, p, layer) for p in negative_prompts])
+    pos_acts = np.array([capture_mlp_activations(model, tokenizer, p, layer, backend=backend) for p in positive_prompts])
+    neg_acts = np.array([capture_mlp_activations(model, tokenizer, p, layer, backend=backend) for p in negative_prompts])
 
     pos_mean = pos_acts.mean(axis=0)
     neg_mean = neg_acts.mean(axis=0)
@@ -94,10 +99,11 @@ def scan_layers(
     positive_prompts: list[str], negative_prompts: list[str],
     layers: list[int], *, top_k: int = 20,
     store: SignalStore | None = None,
+    backend: Any = None,
 ) -> list[NeuronScanResult]:
     results = []
     for layer in layers:
-        r = scan_neurons(model, tokenizer, positive_prompts, negative_prompts, layer, top_k=top_k)
+        r = scan_neurons(model, tokenizer, positive_prompts, negative_prompts, layer, top_k=top_k, backend=backend)
         results.append(r)
         if store:
             for p in r.selective_neurons[:5]:

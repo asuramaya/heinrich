@@ -49,8 +49,10 @@ class ShartScanResult:
         return cats
 
 
-def _get_activation(model, tokenizer, prompt, layer):
+def _get_activation(model, tokenizer, prompt, layer, *, backend=None):
     """Get MLP activation vector at a layer (last token position)."""
+    if backend is not None:
+        return backend.capture_mlp_activations(prompt, layer)
     from .neurons import capture_mlp_activations
     return capture_mlp_activations(model, tokenizer, prompt, layer)
 
@@ -58,9 +60,10 @@ def _get_activation(model, tokenizer, prompt, layer):
 def compute_baseline(
     model: Any, tokenizer: Any,
     prompts: list[str], layer: int,
+    *, backend: Any = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Compute mean and std of MLP activations across benign prompts."""
-    acts = np.array([_get_activation(model, tokenizer, p, layer) for p in prompts])
+    acts = np.array([_get_activation(model, tokenizer, p, layer, backend=backend) for p in prompts])
     return acts.mean(axis=0), acts.std(axis=0) + 1e-6
 
 
@@ -98,7 +101,7 @@ def scan_sharts(
     if progress:
         print(f"  Computing baseline from {len(baseline_prompts)} prompts at L{layer}...", file=sys.stderr)
 
-    mean, std = compute_baseline(model, tokenizer, baseline_prompts, layer)
+    mean, std = compute_baseline(model, tokenizer, baseline_prompts, layer, backend=backend)
 
     total = sum(len(v) for v in candidates.values())
     sharts = []
@@ -106,7 +109,7 @@ def scan_sharts(
 
     for category, prompts in candidates.items():
         for prompt in prompts:
-            act = _get_activation(model, tokenizer, prompt, layer)
+            act = _get_activation(model, tokenizer, prompt, layer, backend=backend)
             z = np.abs((act - mean) / std)
             max_z = float(np.max(z))
             n_anom = int(np.sum(z > z_threshold))
@@ -146,6 +149,7 @@ def bilingual_shart_scan(
     layer: int | None = None,
     store: SignalStore | None = None,
     model_config: Any = None,
+    backend: Any = None,
 ) -> list[dict]:
     """Compare activation patterns for the same topic in English vs Chinese.
     Returns list of topics with their bilingual divergence score.
@@ -159,14 +163,14 @@ def bilingual_shart_scan(
         "Dogs are popular pets", "The sun is a star",
         "今天天气很好", "你好吗", "狗是宠物", "太阳是恒星",
     ]
-    mean, std = compute_baseline(model, tokenizer, baseline, layer)
+    mean, std = compute_baseline(model, tokenizer, baseline, layer, backend=backend)
 
     results = []
     for topic in topics_en:
         if topic not in topics_zh:
             continue
-        en_act = _get_activation(model, tokenizer, topics_en[topic], layer)
-        zh_act = _get_activation(model, tokenizer, topics_zh[topic], layer)
+        en_act = _get_activation(model, tokenizer, topics_en[topic], layer, backend=backend)
+        zh_act = _get_activation(model, tokenizer, topics_zh[topic], layer, backend=backend)
 
         en_z = np.abs((en_act - mean) / std)
         zh_z = np.abs((zh_act - mean) / std)

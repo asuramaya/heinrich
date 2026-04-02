@@ -118,10 +118,12 @@ def _build_ablation_env(n_layers=1):
 
 def _run_forward(fake_inner, fake_model, **kwargs):
     """Patch _setup_forward and call forward_pass."""
+    fake_tokenizer = MagicMock()
+    fake_tokenizer.decode = MagicMock(return_value="tok")
     with patch("heinrich.cartography.runtime._setup_forward") as mock_setup:
         mock_setup.return_value = (fake_inner, None, None, [1, 2, 3], FakeMX)
         from heinrich.cartography.runtime import forward_pass
-        return forward_pass(fake_model, None, "test", **kwargs)
+        return forward_pass(fake_model, fake_tokenizer, "test", **kwargs)
 
 
 def test_forward_pass_zero_attn_calls_mlp_not_attn():
@@ -186,9 +188,14 @@ def test_forward_pass_no_ablation_runs_all_layers():
 # Issue 2: HFBackend steering via hooks
 # ---------------------------------------------------------------------------
 
-torch = pytest.importorskip("torch")
+_has_torch = True
+try:
+    import torch
+    from heinrich.cartography.backend import HFBackend, ForwardResult
+except ImportError:
+    _has_torch = False
 
-from heinrich.cartography.backend import HFBackend, ForwardResult
+requires_torch = pytest.mark.skipif(not _has_torch, reason="torch not installed")
 
 
 def _make_fake_hf_backend(n_layers=4, hidden_size=16):
@@ -212,6 +219,7 @@ def _make_fake_hf_backend(n_layers=4, hidden_size=16):
     return backend, list(layers)
 
 
+@requires_torch
 def test_install_steer_hooks_registers_on_correct_layers():
     backend, layers = _make_fake_hf_backend(n_layers=4, hidden_size=8)
     direction = np.ones(8, dtype=np.float32)
@@ -228,6 +236,7 @@ def test_install_steer_hooks_registers_on_correct_layers():
         h.remove()
 
 
+@requires_torch
 def test_install_steer_hooks_removes_cleanly():
     backend, layers = _make_fake_hf_backend(n_layers=4, hidden_size=8)
     direction = np.ones(8, dtype=np.float32)
@@ -241,6 +250,7 @@ def test_install_steer_hooks_removes_cleanly():
     assert len(layers[1]._forward_hooks) == 0
 
 
+@requires_torch
 def test_install_steer_hooks_skips_out_of_range_layers():
     backend, layers = _make_fake_hf_backend(n_layers=4, hidden_size=8)
     direction = np.ones(8, dtype=np.float32)
@@ -253,6 +263,7 @@ def test_install_steer_hooks_skips_out_of_range_layers():
         h.remove()
 
 
+@requires_torch
 def test_steer_hook_modifies_hidden_state():
     backend, layers = _make_fake_hf_backend(n_layers=4, hidden_size=8)
 
@@ -282,6 +293,7 @@ def test_steer_hook_modifies_hidden_state():
         h.remove()
 
 
+@requires_torch
 def test_steer_hook_preserves_tuple_structure():
     backend, layers = _make_fake_hf_backend(n_layers=4, hidden_size=8)
     direction = np.ones(8, dtype=np.float32)
@@ -311,6 +323,7 @@ def _mock_hf_output():
     return outputs
 
 
+@requires_torch
 def test_forward_no_steering_does_not_install_hooks():
     backend, layers = _make_fake_hf_backend(n_layers=4, hidden_size=8)
     backend.hf_model.return_value = _mock_hf_output()
@@ -321,6 +334,7 @@ def test_forward_no_steering_does_not_install_hooks():
         assert len(layer._forward_hooks) == 0
 
 
+@requires_torch
 def test_forward_with_steering_installs_and_removes_hooks():
     backend, layers = _make_fake_hf_backend(n_layers=4, hidden_size=8)
     direction = np.ones(8, dtype=np.float32)
@@ -332,6 +346,7 @@ def test_forward_with_steering_installs_and_removes_hooks():
     assert len(layers[1]._forward_hooks) == 0
 
 
+@requires_torch
 def test_generate_with_steering_installs_and_removes_hooks():
     backend, layers = _make_fake_hf_backend(n_layers=4, hidden_size=8)
     direction = np.ones(8, dtype=np.float32)
@@ -344,6 +359,7 @@ def test_generate_with_steering_installs_and_removes_hooks():
     assert len(layers[2]._forward_hooks) == 0
 
 
+@requires_torch
 def test_forward_hooks_removed_even_on_error():
     backend, layers = _make_fake_hf_backend(n_layers=4, hidden_size=8)
     direction = np.ones(8, dtype=np.float32)
@@ -356,6 +372,7 @@ def test_forward_hooks_removed_even_on_error():
     assert len(layers[1]._forward_hooks) == 0
 
 
+@requires_torch
 def test_generate_hooks_removed_even_on_error():
     backend, layers = _make_fake_hf_backend(n_layers=4, hidden_size=8)
     direction = np.ones(8, dtype=np.float32)
@@ -370,6 +387,7 @@ def test_generate_hooks_removed_even_on_error():
     assert len(layers[2]._forward_hooks) == 0
 
 
+@requires_torch
 def test_forward_zero_alpha_skips_hooks():
     backend, layers = _make_fake_hf_backend(n_layers=4, hidden_size=8)
     direction = np.ones(8, dtype=np.float32)

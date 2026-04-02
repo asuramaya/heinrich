@@ -107,6 +107,7 @@ def build_flow_graph(
     layers: list[int] | None = None,
     min_weight: float = 0.05,
     store: SignalStore | None = None,
+    backend: Any = None,
 ) -> FlowGraph:
     """Build the information flow graph from attention patterns.
 
@@ -116,9 +117,13 @@ def build_flow_graph(
     """
     from .attention import capture_attention_maps
 
-    inner = getattr(model, "model", model)
-    n_layers = len(inner.layers)
-    n_heads = inner.layers[0].self_attn.n_heads
+    if backend is not None:
+        n_layers = backend.config.n_layers
+        n_heads = backend.config.n_heads
+    else:
+        inner = getattr(model, "model", model)
+        n_layers = len(inner.layers)
+        n_heads = inner.layers[0].self_attn.n_heads
 
     if layers is None:
         layers = list(range(n_layers))
@@ -196,6 +201,7 @@ def generation_trace(
     directions: dict[str, np.ndarray] | None = None,
     capture_layers: list[int] | None = None,
     store: SignalStore | None = None,
+    backend: Any = None,
 ) -> GenerationTrace:
     """Monitor the residual stream during autoregressive generation.
 
@@ -204,6 +210,86 @@ def generation_trace(
     - Projection onto provided behavioral directions
     - L2 norm of each layer's contribution (delta from previous layer)
     """
+    if directions is None:
+        directions = {}
+
+    if backend is not None:
+        n_layers = backend.config.n_layers
+        if capture_layers is None:
+            capture_layers = list(range(n_layers))
+
+        tokens = backend.tokenize(prompt)
+        full_tokens = list(tokens)
+        snapshots = []
+        generated_ids = []
+
+        for step in range(max_tokens):
+            current_text = backend.decode(full_tokens)
+
+            # Capture all-position states for layer deltas
+            pos_states = backend.capture_all_positions(current_text, layers=capture_layers)
+
+            # Forward pass for logits
+            fwd = backend.forward(current_text)
+            probs = fwd.probs
+            entropy = fwd.entropy
+
+            # Layer deltas from captured states
+            layer_deltas = []
+            prev_h = None
+            for li in capture_layers:
+                curr_h = pos_states[li][-1, :]  # last position
+                if prev_h is not None:
+                    delta = float(np.linalg.norm(curr_h - prev_h))
+                    layer_deltas.append(delta)
+                else:
+                    layer_deltas.append(float(np.linalg.norm(curr_h)))
+                prev_h = curr_h
+
+            # Top 5
+            top5_idx = np.argsort(probs)[::-1][:5]
+            top5 = [(backend.decode([int(i)]), float(probs[i])) for i in top5_idx]
+
+            # Direction projections (on final layer's last-position state)
+            if capture_layers:
+                final_h = pos_states[capture_layers[-1]][-1, :]
+            else:
+                final_h = np.zeros(backend.config.hidden_size)
+            dir_projs = {}
+            for name, direction in directions.items():
+                dir_projs[name] = float(np.dot(final_h, direction / (np.linalg.norm(direction) + 1e-12)))
+
+            next_id = fwd.top_id
+            next_str = fwd.top_token
+
+            snapshots.append(GenerationSnapshot(
+                step=step, token_id=next_id, token_str=next_str,
+                entropy=entropy, top_5=top5,
+                direction_projections=dir_projs,
+                layer_deltas=layer_deltas,
+            ))
+
+            if store:
+                store.add(Signal("gen_entropy", "cartography", "model",
+                                 f"step_{step}", entropy,
+                                 {"token": next_str, "top_prob": top5[0][1]}))
+
+            if hasattr(backend, 'tokenizer'):
+                eos = getattr(backend.tokenizer, "eos_token_id", None)
+            else:
+                eos = None
+            if next_id == eos:
+                break
+            full_tokens.append(next_id)
+            generated_ids.append(next_id)
+
+        return GenerationTrace(
+            prompt=prompt,
+            snapshots=snapshots,
+            generated_text=backend.decode(generated_ids),
+            direction_names=list(directions.keys()),
+        )
+
     import mlx.core as mx
     from .perturb import _mask_dtype
     from ..inspect.self_analysis import _softmax
@@ -214,8 +300,6 @@ def generation_trace(
 
     if capture_layers is None:
         capture_layers = list(range(n_layers))
-    if directions is None:
-        directions = {}
 
     tokens = list(tokenizer.encode(prompt))
     prompt_len = len(tokens)
@@ -294,12 +378,32 @@ def layer_delta_decomposition(
     prompt: str,
     *,
     position: int = -1,
+    backend: Any = None,
 ) -> list[tuple[str, float]]:
     """Decompose the residual stream at a position into per-layer contributions.
 
     Returns [(component_name, L2_norm), ...] showing how much each layer
     contributes to the final residual stream.
     """
+    if backend is not None:
+        # Use capture_all_positions to get per-layer states and compute deltas
+        n_layers = backend.config.n_layers
+        all_layers = list(range(n_layers))
+        pos_states = backend.capture_all_positions(prompt, layers=all_layers)
+
+        contributions = []
+        prev_h = None
+        for i in all_layers:
+            curr_h = pos_states[i][position, :]
+            if prev_h is None:
+                # First layer — approximate embed + L0 combined
+                contributions.append((f"L{i}", float(np.linalg.norm(curr_h))))
+            else:
+                delta = curr_h - prev_h
+                contributions.append((f"L{i}", float(np.linalg.norm(delta))))
+            prev_h = curr_h
+        return contributions
+
     import mlx.core as mx
     from .perturb import _mask_dtype
 

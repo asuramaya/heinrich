@@ -20,11 +20,39 @@ def steer_next_token(
     tokenizer: Any,
     prompt: str,
     modifications: dict[tuple[int, int], float],
+    *,
+    backend: Any = None,
 ) -> dict[str, Any]:
     """Get next-token distribution with specific heads scaled.
 
     modifications: {(layer, head): scale_factor} where 0.0=zero, 1.0=normal, 2.0=amplify
     """
+    if backend is not None:
+        # Build steer_dirs from modifications — scale each head via backend.forward
+        # For multi-head steering, we use individual perturb_head calls composed,
+        # but the simplest delegation is a single forward with the modifications
+        # encoded as per-layer steer directions. Since the backend protocol doesn't
+        # have a direct multi-head-scale forward, we use the first modification
+        # and fall back to the MLX path for complex cases.
+        # Actually, we can iterate modifications and use backend.perturb_head for
+        # single-head cases, or fall through to MLX for multi-head.
+        if len(modifications) == 1:
+            (layer, head), scale = next(iter(modifications.items()))
+            mode = "zero" if scale == 0.0 else "scale"
+            result = backend.perturb_head(prompt, layer, head, mode=mode, scale=scale)
+            probs = result.probs
+            top_k_count = 10
+            top_idx = np.argsort(probs)[::-1][:top_k_count]
+            return {
+                "top_tokens": [(backend.decode([int(i)]), float(probs[i])) for i in top_idx],
+                "top_token": result.top_token,
+                "top_prob": float(probs[result.top_id]),
+                "entropy": result.entropy,
+                "top_id": result.top_id,
+            }
+        # Multi-head modifications: fall through to direct MLX path
+        # (backend protocol doesn't support multi-head perturbation in one pass)
+
     import mlx.core as mx
     from .perturb import _mask_dtype
     from ..inspect.self_analysis import _softmax
@@ -77,8 +105,42 @@ def generate_steered(
     prompt: str,
     modifications: dict[tuple[int, int], float],
     max_tokens: int = 30,
+    *,
+    backend: Any = None,
 ) -> dict[str, Any]:
     """Auto-regressive generation with head modifications active at every step."""
+    if backend is not None and len(modifications) == 1:
+        # Single-head modification can be delegated via backend.generate with steer_dirs
+        # For zeroing a head, we encode it as a steering direction that cancels the head
+        # However, generate() uses additive steering, not scaling. For single-head zero,
+        # we do step-by-step generation using backend.perturb_head.
+        (layer, head), scale = next(iter(modifications.items()))
+        mode = "zero" if scale == 0.0 else "scale"
+        tokens = backend.tokenize(prompt)
+        generated_ids = []
+        full_tokens = list(tokens)
+
+        for _ in range(max_tokens):
+            current_text = backend.decode(full_tokens)
+            result = backend.perturb_head(current_text, layer, head, mode=mode, scale=scale)
+            next_id = result.top_id
+            if hasattr(backend, 'tokenizer'):
+                eos = getattr(backend.tokenizer, "eos_token_id", None)
+            else:
+                eos = None
+            if next_id == eos:
+                break
+            full_tokens.append(next_id)
+            generated_ids.append(next_id)
+
+        return {
+            "prompt": prompt,
+            "generated": backend.decode(generated_ids),
+            "full": backend.decode(full_tokens),
+            "modifications": {f"L{l}H{h}": s for (l, h), s in modifications.items()},
+            "n_tokens": len(generated_ids),
+        }
+
     import mlx.core as mx
     from .perturb import _mask_dtype
 

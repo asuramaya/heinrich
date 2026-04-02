@@ -39,8 +39,13 @@ def compute_baseline(
     model: Any,
     tokenizer: Any,
     prompt: str,
+    *,
+    backend: Any = None,
 ) -> np.ndarray:
     """Compute baseline logits (no perturbation). Reusable across all knobs."""
+    if backend is not None:
+        return backend.forward(prompt).logits
+
     import mlx.core as mx
 
     inner = getattr(model, "model", model)
@@ -69,11 +74,18 @@ def perturb_head(
     mode: str = "zero",
     scale: float = 0.0,
     baseline_logits: np.ndarray | None = None,
+    backend: Any = None,
 ) -> tuple[np.ndarray, np.ndarray]:
     """Run forward pass, zeroing/scaling one attention head. Returns (baseline_logits, perturbed_logits).
 
     Pass precomputed baseline_logits to avoid redundant baseline forward passes.
     """
+    if backend is not None:
+        if baseline_logits is None:
+            baseline_logits = backend.forward(prompt).logits
+        result = backend.perturb_head(prompt, layer, head, mode=mode, scale=scale)
+        return baseline_logits, result.logits
+
     import mlx.core as mx
 
     inner = getattr(model, "model", model)

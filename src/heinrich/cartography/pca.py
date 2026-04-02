@@ -54,6 +54,7 @@ def behavioral_pca(
     n_components: int = 20,
     store: SignalStore | None = None,
     model_config: Any = None,
+    backend: Any = None,
 ) -> BehavioralPCAResult:
     """Extract the principal components of behavioral variation.
     If layer is None, uses model's last layer.
@@ -62,13 +63,13 @@ def behavioral_pca(
 
     if layer is None:
         from .model_config import detect_config
-        cfg = model_config or detect_config(model)
+        cfg = model_config or (backend.config if backend else detect_config(model))
         layer = cfg.last_layer
 
     if len(prompts) < n_components:
         n_components = len(prompts) - 1
 
-    states = capture_residual_states(model, tokenizer, prompts, layers=[layer])
+    states = capture_residual_states(model, tokenizer, prompts, layers=[layer], backend=backend)
     X = states[layer]  # [n_prompts, hidden_size]
 
     mean = X.mean(axis=0)

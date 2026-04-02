@@ -1,9 +1,12 @@
 """O-Proj decomposition — find the real functional subspaces after projection."""
 from __future__ import annotations
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 import numpy as np
 from ..signal import Signal, SignalStore
+
+if TYPE_CHECKING:
+    from .backend import Backend
 
 
 @dataclass
@@ -18,8 +21,13 @@ class OProjDecomposition:
     top_singular_values: list[float]
 
 
-def extract_oproj_weight(model: Any, layer: int) -> np.ndarray:
-    """Extract dequantized o_proj weight matrix [hidden_size, n_heads*head_dim]."""
+def extract_oproj_weight(model: Any, layer: int, *, backend: Backend | None = None) -> np.ndarray:
+    """Extract dequantized o_proj weight matrix [hidden_size, n_heads*head_dim].
+
+    When backend is provided, uses backend.config for dimensions but still needs
+    the raw model for direct weight probing. This is weight analysis, not inference,
+    so the core extraction must touch model internals.
+    """
     import mlx.core as mx
     inner = getattr(model, "model", model)
     attn = inner.layers[layer].self_attn
@@ -39,14 +47,25 @@ def extract_oproj_weight(model: Any, layer: int) -> np.ndarray:
     return W
 
 
-def decompose_oproj(model: Any, layer: int, *, top_k: int = 16) -> OProjDecomposition:
-    """SVD of o_proj, compute head overlap matrix."""
-    inner = getattr(model, "model", model)
-    n_heads = inner.layers[layer].self_attn.n_heads
-    hidden_size = inner.norm.weight.shape[0]
-    head_dim = hidden_size // n_heads
+def decompose_oproj(model: Any, layer: int, *, top_k: int = 16,
+                     backend: Backend | None = None) -> OProjDecomposition:
+    """SVD of o_proj, compute head overlap matrix.
 
-    W = extract_oproj_weight(model, layer)  # [hidden_size, n_heads * head_dim]
+    When backend is provided, uses backend.config for model dimensions.
+    The core SVD computation and weight extraction remain unchanged as
+    this is weight analysis, not inference.
+    """
+    if backend is not None:
+        n_heads = backend.config.n_heads
+        hidden_size = backend.config.hidden_size
+        head_dim = backend.config.head_dim
+    else:
+        inner = getattr(model, "model", model)
+        n_heads = inner.layers[layer].self_attn.n_heads
+        hidden_size = inner.norm.weight.shape[0]
+        head_dim = hidden_size // n_heads
+
+    W = extract_oproj_weight(model, layer, backend=backend)  # [hidden_size, n_heads * head_dim]
 
     # Per-head output norms and vectors
     head_vectors = []
@@ -86,11 +105,17 @@ def decompose_oproj(model: Any, layer: int, *, top_k: int = 16) -> OProjDecompos
 
 def scan_all_layers(
     model: Any, *, top_k: int = 16, store: SignalStore | None = None,
+    backend: Backend | None = None,
 ) -> list[OProjDecomposition]:
-    inner = getattr(model, "model", model)
+    if backend is not None:
+        n_layers = backend.config.n_layers
+    else:
+        inner = getattr(model, "model", model)
+        n_layers = len(inner.layers)
+
     results = []
-    for i in range(len(inner.layers)):
-        d = decompose_oproj(model, i, top_k=top_k)
+    for i in range(n_layers):
+        d = decompose_oproj(model, i, top_k=top_k, backend=backend)
         results.append(d)
         if store:
             store.add(Signal("oproj_rank", "cartography", "model", f"layer.{i}",

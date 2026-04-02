@@ -1,7 +1,10 @@
 """Capture and analyze attention patterns from transformer layers."""
 from __future__ import annotations
-from typing import Any
+from typing import Any, TYPE_CHECKING
 import numpy as np
+
+if TYPE_CHECKING:
+    from .backend import Backend
 
 
 def _mask_dtype_from_model(model: Any) -> Any:
@@ -18,15 +21,26 @@ def capture_attention_maps(
     tokenizer: Any,
     prompt: str,
     layers: list[int] | None = None,
+    *,
+    backend: Backend | None = None,
 ) -> dict[str, Any]:
     """Capture attention weight matrices for specified layers.
 
-    Manually computes Q*K^T/sqrt(d) with RoPE and GQA expansion to get
-    the exact attention patterns without relying on the fused kernel.
+    When backend is provided, uses backend.forward(return_residual=True) for
+    simple residual access. The detailed Q/K/V decomposition with RoPE and GQA
+    is deeply MLX-specific and remains in the manual path.
+
+    For detailed attention analysis (per-head attention maps), the MLX code path
+    is still required. The backend path provides a compatibility shim that returns
+    empty attention_maps with correct token metadata, suitable for callers that
+    only need token info or can work with the residual.
 
     Returns dict with attention_maps[layer] = np.array[n_heads, T, T],
     plus token metadata.
     """
+    if backend is not None:
+        return _capture_attention_maps_backend(backend, prompt, layers)
+
     import mlx.core as mx
 
     inner = getattr(model, "model", model)
@@ -90,6 +104,39 @@ def capture_attention_maps(
         "token_ids": token_ids,
         "n_heads": inner.layers[0].self_attn.n_heads,
         "n_kv_heads": inner.layers[0].self_attn.n_kv_heads,
+    }
+
+
+def _capture_attention_maps_backend(
+    backend: Backend,
+    prompt: str,
+    layers: list[int] | None = None,
+) -> dict[str, Any]:
+    """Backend path: return token metadata and empty attention maps.
+
+    Detailed per-head attention weight extraction (Q*K^T with RoPE/GQA)
+    is architecture-specific and not supported through the generic Backend
+    protocol. This shim provides enough for callers that only need token
+    info or can operate without attention maps.
+
+    The residual stream is available via backend.forward(return_residual=True)
+    or backend.capture_all_positions() for callers that need activation data.
+    """
+    token_ids = backend.tokenize(prompt)
+    token_strs = [backend.decode([tid]) for tid in token_ids]
+
+    if layers is None:
+        layers = list(range(backend.config.n_layers))
+
+    # Return empty attention maps — detailed Q/K/V decomposition not available via backend
+    attention_maps: dict[int, np.ndarray] = {}
+
+    return {
+        "attention_maps": attention_maps,
+        "tokens": token_strs,
+        "token_ids": token_ids,
+        "n_heads": backend.config.n_heads,
+        "n_kv_heads": backend.config.n_kv_heads,
     }
 
 

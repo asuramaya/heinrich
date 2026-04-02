@@ -10,9 +10,12 @@ where refusal softens but propaganda persists.
 from __future__ import annotations
 import sys
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TYPE_CHECKING
 import numpy as np
 from ..signal import Signal, SignalStore
+
+if TYPE_CHECKING:
+    from .backend import Backend
 
 
 @dataclass
@@ -41,8 +44,30 @@ class GapAnalysis:
     gap_text: str               # what the model generates in the gap
 
 
-def _distributed_steer_kl(model, tokenizer, prompt, layer_directions, alpha):
+def _distributed_steer_kl_backend(backend, prompt, layer_directions, alpha):
+    """Steer at ALL layers via backend, measure KL from baseline."""
+    from ..inspect.self_analysis import _softmax
+
+    baseline_result = backend.forward(prompt)
+    baseline_probs = _softmax(baseline_result.logits)
+
+    # Build steer_dirs: {layer: (direction * scale, 1.0)} so effective = direction * scale * alpha
+    steer_dirs = {l: (d * s, 1.0) for l, (d, s) in layer_directions.items()}
+    steered_result = backend.forward(prompt, steer_dirs=steer_dirs, alpha=alpha)
+    steered_probs = _softmax(steered_result.logits)
+
+    kl = float(np.sum(baseline_probs * np.log((baseline_probs + 1e-12) / (steered_probs + 1e-12))))
+    base_top = baseline_result.top_token
+    steer_top = steered_result.top_token
+
+    return kl, base_top, steer_top
+
+
+def _distributed_steer_kl(model, tokenizer, prompt, layer_directions, alpha, *, backend=None):
     """Steer at ALL layers with per-layer directions, measure KL from baseline."""
+    if backend is not None:
+        return _distributed_steer_kl_backend(backend, prompt, layer_directions, alpha)
+
     import mlx.core as mx
     from .perturb import _mask_dtype, compute_baseline
     from ..inspect.self_analysis import _softmax
@@ -79,8 +104,18 @@ def _distributed_steer_kl(model, tokenizer, prompt, layer_directions, alpha):
     return kl, base_top, steer_top
 
 
-def _distributed_generate(model, tokenizer, prompt, layer_directions, alpha, max_tokens=20):
+def _distributed_generate_backend(backend, prompt, layer_directions, alpha, max_tokens=20):
+    """Generate with distributed steering via backend."""
+    steer_dirs = {l: (d * s, 1.0) for l, (d, s) in layer_directions.items()}
+    return backend.generate(prompt, steer_dirs=steer_dirs, alpha=alpha, max_tokens=max_tokens)
+
+
+def _distributed_generate(model, tokenizer, prompt, layer_directions, alpha, max_tokens=20,
+                           *, backend=None):
     """Generate with distributed steering."""
+    if backend is not None:
+        return _distributed_generate_backend(backend, prompt, layer_directions, alpha, max_tokens)
+
     import mlx.core as mx
     from .perturb import _mask_dtype
 
@@ -124,6 +159,7 @@ def find_distributed_cliff(
     kl_threshold: float = 0.01,
     alpha_max: float = 2.0,
     n_steps: int = 30,
+    backend: Backend | None = None,
 ) -> DistributedCliff:
     """Find the distributed cliff by sweeping alpha from 0 to alpha_max."""
     alphas = np.linspace(0.001, alpha_max, n_steps)
@@ -134,7 +170,8 @@ def find_distributed_cliff(
     cliff_top = ""
 
     for alpha in alphas:
-        kl, bt, st = _distributed_steer_kl(model, tokenizer, prompt, layer_directions, float(alpha))
+        kl, bt, st = _distributed_steer_kl(model, tokenizer, prompt, layer_directions, float(alpha),
+                                            backend=backend)
         if not baseline_top:
             baseline_top = bt
         kl_curve.append((float(alpha), kl))
@@ -150,7 +187,8 @@ def find_distributed_cliff(
         lo, hi = 0.0, dead_zone_alpha
         for _ in range(15):
             mid = (lo + hi) / 2
-            kl, _, _ = _distributed_steer_kl(model, tokenizer, prompt, layer_directions, mid)
+            kl, _, _ = _distributed_steer_kl(model, tokenizer, prompt, layer_directions, mid,
+                                              backend=backend)
             if kl > kl_threshold:
                 hi = mid
             else:
@@ -162,7 +200,8 @@ def find_distributed_cliff(
         lo, hi = 0.0, cliff_alpha
         for _ in range(15):
             mid = (lo + hi) / 2
-            kl, bt, st = _distributed_steer_kl(model, tokenizer, prompt, layer_directions, mid)
+            kl, bt, st = _distributed_steer_kl(model, tokenizer, prompt, layer_directions, mid,
+                                                backend=backend)
             if st != bt:
                 hi = mid
                 cliff_top = st
@@ -170,7 +209,8 @@ def find_distributed_cliff(
                 lo = mid
         cliff_alpha = hi
 
-    kl_at_cliff, _, _ = _distributed_steer_kl(model, tokenizer, prompt, layer_directions, cliff_alpha)
+    kl_at_cliff, _, _ = _distributed_steer_kl(model, tokenizer, prompt, layer_directions, cliff_alpha,
+                                                backend=backend)
 
     # Total magnitude
     total_mag = sum(float(np.linalg.norm(d * s * cliff_alpha)) for d, s in layer_directions.values())
@@ -194,14 +234,15 @@ def analyze_gap(
     *,
     n_steps: int = 20,
     alpha_max: float = 1.0,
+    backend: Backend | None = None,
 ) -> GapAnalysis:
     """Map the gap between safety and censorship cliffs."""
     safety_cliff = find_distributed_cliff(
         model, tokenizer, prompt, safety_directions, "safety",
-        alpha_max=alpha_max, n_steps=n_steps)
+        alpha_max=alpha_max, n_steps=n_steps, backend=backend)
     censor_cliff = find_distributed_cliff(
         model, tokenizer, prompt, censorship_directions, "censorship",
-        alpha_max=alpha_max, n_steps=n_steps)
+        alpha_max=alpha_max, n_steps=n_steps, backend=backend)
 
     gap_low = min(safety_cliff.alpha_dead_zone, censor_cliff.alpha_dead_zone)
     gap_high = max(safety_cliff.alpha_cliff, censor_cliff.alpha_cliff)
@@ -209,7 +250,8 @@ def analyze_gap(
     # Generate in the gap
     mid_alpha = (safety_cliff.alpha_dead_zone + min(safety_cliff.alpha_cliff, censor_cliff.alpha_cliff)) / 2
     # Use safety direction to soften refusal
-    gap_text = _distributed_generate(model, tokenizer, prompt, safety_directions, -mid_alpha, max_tokens=20)
+    gap_text = _distributed_generate(model, tokenizer, prompt, safety_directions, -mid_alpha,
+                                      max_tokens=20, backend=backend)
 
     return GapAnalysis(
         prompt=prompt[:50],
