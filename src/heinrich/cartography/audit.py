@@ -59,12 +59,14 @@ def full_audit(
     This is the agent-facing entry point. Auto-detects everything.
     Stores all signals to SQLite database.
 
+    If depth="auto", uses backend.capabilities() to determine max depth.
+
     Args:
         model_id: HuggingFace model ID or local path
         backend: "mlx", "hf", or "auto"
         db_path: SQLite database path (default: ~/.heinrich/signals.db)
         progress: print progress to stderr
-        depth: "quick" (phases 1-6), "standard" (+ head sweep), "deep" (+ PCA)
+        depth: "quick", "standard", "deep", or "auto" (adapt to backend)
         force: bypass cache check and rerun all phases
     """
     from .backend import load_backend
@@ -79,6 +81,12 @@ def full_audit(
     log(f"Loading {model_id}...")
     b = load_backend(model_id, backend=backend)
     cfg = b.config
+
+    # Auto-depth: adapt to backend capabilities
+    if depth == "auto":
+        caps = b.capabilities()
+        depth = caps.depth_level
+        log(f"  Auto-depth: {depth} (based on backend capabilities)")
 
     log(f"  Model: {cfg.model_type}, {cfg.n_layers} layers, hidden={cfg.hidden_size}, format={cfg.chat_format}")
 

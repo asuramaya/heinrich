@@ -120,6 +120,12 @@ class Backend(Protocol):
 
     def decode(self, token_ids: list[int]) -> str: ...
 
+    def capabilities(self) -> "Capabilities": ...
+
+    def forward_context(self) -> "ForwardContext": ...
+
+    def generation_context(self, prompt: str) -> "GenerationContext": ...
+
 
 class MLXBackend:
     """MLX backend — runs on Apple Silicon via mlx-lm."""
@@ -315,6 +321,194 @@ class MLXBackend:
             gate_np = np.array(gate_out.astype(mx.float32)[0, :, neuron_index])
             weights[start:end] = gate_np
         return weights
+
+    def capabilities(self):
+        from .context import Capabilities
+        return Capabilities(
+            can_steer=True, can_capture_residual=True, can_capture_attention=True,
+            can_capture_mlp_detail=True, can_neuron_mask=True, can_perturb_head=True,
+            can_weight_access=True, can_kv_cache=True, can_gradient=False,
+            can_all_positions=True, can_compose=True, can_gen_control=True,
+        )
+
+    def forward_context(self):
+        from .context import ForwardContext
+        return ForwardContext(self)
+
+    def generation_context(self, prompt):
+        from .context import GenerationContext
+        return GenerationContext(self, prompt)
+
+    def _execute_forward_context(self, prompt, ctx):
+        """Compile ForwardContext declarations into a single MLX layer loop."""
+        import mlx.core as mx
+        import mlx.nn as nn
+        from .perturb import _mask_dtype
+        from .metrics import softmax, entropy as _entropy
+        from .context import ContextResult
+
+        inner = self._inner
+        mdtype = _mask_dtype(self.model)
+        tokens = self.tokenizer.encode(prompt)
+        input_ids = mx.array([tokens])
+        T = len(tokens)
+        mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
+
+        # Build lookup tables from declarations
+        steer_at = {}
+        for op in ctx._steers:
+            steer_at[op.layer] = (op.direction, op.mean_gap, op.alpha)
+
+        neuron_masks = {}
+        for op in ctx._neuron_masks:
+            neuron_masks.setdefault(op.layer, []).extend(op.neurons)
+
+        capture_residual_layers = set()
+        capture_all_pos_layers = set()
+        for op in ctx._capture_residuals:
+            for l in op.layers:
+                if op.all_positions:
+                    capture_all_pos_layers.add(l)
+                else:
+                    capture_residual_layers.add(l)
+
+        capture_attn_layers = {op.layer for op in ctx._capture_attentions}
+        capture_mlp_layers = {op.layer for op in ctx._capture_mlp_details}
+
+        # Execute single forward pass
+        residuals = {}
+        all_pos_residuals = {}
+        attentions = {}
+        mlp_details = {}
+
+        h = inner.embed_tokens(input_ids)
+        for i, ly in enumerate(inner.layers):
+            # Neuron masking requires manual MLP decomposition
+            if i in neuron_masks or i in capture_mlp_layers:
+                # Manual layer: attention + MLP separately
+                h_normed = ly.input_layernorm(h) if hasattr(ly, 'input_layernorm') else h
+                attn_out = ly.self_attn(h_normed, mask=mask, cache=None)
+                if isinstance(attn_out, tuple):
+                    attn_out = attn_out[0]
+                h = h + attn_out
+
+                h_normed2 = ly.post_attention_layernorm(h) if hasattr(ly, 'post_attention_layernorm') else h
+                gate = ly.mlp.gate_proj(h_normed2)
+                up = ly.mlp.up_proj(h_normed2)
+                activated = nn.silu(gate) * up
+
+                if i in capture_mlp_layers:
+                    mlp_details[i] = {
+                        "gate": np.array(gate.astype(mx.float32)[0, -1, :]),
+                        "up": np.array(up.astype(mx.float32)[0, -1, :]),
+                        "activated": np.array(activated.astype(mx.float32)[0, -1, :]),
+                    }
+
+                if i in neuron_masks:
+                    act_np = np.array(activated.astype(mx.float32))
+                    for n in neuron_masks[i]:
+                        act_np[0, :, n] = 0.0
+                    activated = mx.array(act_np.astype(np.float16))
+
+                mlp_out = ly.mlp.down_proj(activated)
+                if i in capture_mlp_layers:
+                    mlp_details[i]["output"] = np.array(mlp_out.astype(mx.float32)[0, -1, :])
+                h = h + mlp_out
+            else:
+                h = ly(h, mask=mask, cache=None)
+                if isinstance(h, tuple):
+                    h = h[0]
+
+            # Steering
+            if i in steer_at:
+                direction, mean_gap, alpha = steer_at[i]
+                h_np = np.array(h.astype(mx.float32))
+                h_np[0, -1, :] += direction * mean_gap * alpha
+                h = mx.array(h_np.astype(np.float16))
+
+            # Capture residuals
+            if i in capture_residual_layers:
+                residuals[i] = np.array(h.astype(mx.float32)[0, -1, :])
+            if i in capture_all_pos_layers:
+                all_pos_residuals[i] = np.array(h.astype(mx.float32)[0])
+
+        h = inner.norm(h)
+        logits = np.array(self.model.lm_head(h).astype(mx.float32)[0, -1, :])
+        probs = softmax(logits)
+        top_id = int(np.argmax(probs))
+
+        return ContextResult(
+            logits=logits, probs=probs, top_id=top_id,
+            top_token=self.tokenizer.decode([top_id]),
+            entropy=_entropy(probs), n_tokens=len(tokens),
+            residuals=residuals, all_position_residuals=all_pos_residuals,
+            attention=attentions, mlp_detail=mlp_details,
+        )
+
+    def _execute_generation_context(self, prompt, gen_ctx, *, max_tokens=200):
+        """Execute GenerationContext as a token-by-token MLX generation loop."""
+        import mlx.core as mx
+        from .perturb import _mask_dtype
+        from .context import TokenResult
+
+        inner = self._inner
+        mdtype = _mask_dtype(self.model)
+        tokens = list(self.tokenizer.encode(prompt))
+        eos = getattr(self.tokenizer, "eos_token_id", None)
+
+        steer_at = {}
+        for op in gen_ctx._steers:
+            steer_at[op.layer] = (op.direction, op.mean_gap, op.alpha)
+
+        capture_layer = gen_ctx._capture_layer
+
+        for step in range(max_tokens):
+            input_ids = mx.array([tokens])
+            T = len(tokens)
+            mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
+
+            residual = None
+            h = inner.embed_tokens(input_ids)
+            for i, ly in enumerate(inner.layers):
+                h = ly(h, mask=mask, cache=None)
+                if isinstance(h, tuple):
+                    h = h[0]
+
+                # Persistent steering
+                if i in steer_at:
+                    direction, mean_gap, alpha = steer_at[i]
+                    h_np = np.array(h.astype(mx.float32))
+                    h_np[0, -1, :] += direction * mean_gap * alpha
+                    h = mx.array(h_np.astype(np.float16))
+
+                # One-shot injections
+                for inj_layer, inj_vec in gen_ctx._one_shot_injections:
+                    if i == inj_layer:
+                        h_np = np.array(h.astype(mx.float32))
+                        h_np[0, -1, :] += inj_vec
+                        h = mx.array(h_np.astype(np.float16))
+
+                if capture_layer is not None and i == capture_layer:
+                    residual = np.array(h.astype(mx.float32)[0, -1, :])
+
+            # Clear one-shot injections after use
+            gen_ctx._one_shot_injections.clear()
+
+            h = inner.norm(h)
+            logits = np.array(self.model.lm_head(h).astype(mx.float32)[0, -1, :])
+            next_id = int(np.argmax(logits))
+
+            if next_id == eos:
+                break
+
+            tokens.append(next_id)
+            yield TokenResult(
+                step=step,
+                token_id=next_id,
+                token_text=self.tokenizer.decode([next_id]),
+                residual=residual,
+                logits=logits,
+            )
 
     def tokenize(self, text):
         return self.tokenizer.encode(text)
@@ -633,6 +827,191 @@ class HFBackend:
         if hasattr(mlp, 'gate_proj') and hasattr(mlp.gate_proj, 'weight'):
             return mlp.gate_proj.weight[neuron_index].float().cpu().numpy()
         return np.zeros(self.config.hidden_size)
+
+    def capabilities(self):
+        from .context import Capabilities
+        return Capabilities(
+            can_steer=True, can_capture_residual=True, can_capture_attention=True,
+            can_capture_mlp_detail=True, can_neuron_mask=True, can_perturb_head=True,
+            can_weight_access=True, can_kv_cache=False, can_gradient=True,
+            can_all_positions=True, can_compose=True, can_gen_control=True,
+        )
+
+    def forward_context(self):
+        from .context import ForwardContext
+        return ForwardContext(self)
+
+    def generation_context(self, prompt):
+        from .context import GenerationContext
+        return GenerationContext(self, prompt)
+
+    def _execute_forward_context(self, prompt, ctx):
+        """Compile ForwardContext into HF hooks + single forward pass."""
+        import torch
+        from .metrics import softmax, entropy as _entropy
+        from .context import ContextResult
+
+        handles = []
+        captures = {"residuals": {}, "all_pos": {}, "attn": {}, "mlp": {}}
+
+        # Build steer hooks
+        for op in ctx._steers:
+            if op.layer < len(self.hf_model.model.layers):
+                dt = torch.tensor(op.direction * op.mean_gap * op.alpha, dtype=torch.float32)
+                def make_steer(d):
+                    def hook(mod, inp, out):
+                        hs = out[0] if isinstance(out, tuple) else out
+                        hs[:, -1, :] = hs[:, -1, :].float() + d.to(hs.device)
+                        return (hs,) + out[1:] if isinstance(out, tuple) else hs
+                    return hook
+                h = self.hf_model.model.layers[op.layer].register_forward_hook(make_steer(dt))
+                handles.append(h)
+
+        # Build neuron mask hooks
+        for op in ctx._neuron_masks:
+            if op.layer < len(self.hf_model.model.layers):
+                def make_mask(neurons):
+                    def hook(mod, inp, out):
+                        hs = out[0] if isinstance(out, tuple) else out
+                        for n in neurons:
+                            hs[:, :, n] = 0
+                        return (hs,) + out[1:] if isinstance(out, tuple) else hs
+                    return hook
+                h = self.hf_model.model.layers[op.layer].mlp.register_forward_hook(make_mask(op.neurons))
+                handles.append(h)
+
+        # Build MLP detail capture hooks
+        for op in ctx._capture_mlp_details:
+            layer = op.layer
+            mlp = self.hf_model.model.layers[layer].mlp
+            cap = {}
+            if hasattr(mlp, 'gate_proj'):
+                def make_gate_hook(c):
+                    def hook(mod, inp, out):
+                        c["gate"] = out[0, -1, :].float().cpu().numpy() if out.dim() == 3 else out[-1, :].float().cpu().numpy()
+                    return hook
+                handles.append(mlp.gate_proj.register_forward_hook(make_gate_hook(cap)))
+            if hasattr(mlp, 'up_proj'):
+                def make_up_hook(c):
+                    def hook(mod, inp, out):
+                        c["up"] = out[0, -1, :].float().cpu().numpy() if out.dim() == 3 else out[-1, :].float().cpu().numpy()
+                    return hook
+                handles.append(mlp.up_proj.register_forward_hook(make_up_hook(cap)))
+            captures["mlp"][layer] = cap
+
+        try:
+            # Determine what outputs we need
+            need_hidden = any(ctx._capture_residuals) or True
+            need_attn = bool(ctx._capture_attentions)
+
+            input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
+            with torch.no_grad():
+                outputs = self.hf_model(
+                    input_ids,
+                    output_hidden_states=need_hidden,
+                    output_attentions=need_attn,
+                )
+            logits = outputs.logits[0, -1, :].float().cpu().numpy()
+
+            # Collect captures
+            residuals = {}
+            all_pos = {}
+            for op in ctx._capture_residuals:
+                for l in op.layers:
+                    idx = l + 1 if l + 1 < len(outputs.hidden_states) else -1
+                    if op.all_positions:
+                        all_pos[l] = outputs.hidden_states[idx][0].float().cpu().numpy()
+                    else:
+                        residuals[l] = outputs.hidden_states[idx][0, -1, :].float().cpu().numpy()
+
+            attentions = {}
+            for op in ctx._capture_attentions:
+                if outputs.attentions and op.layer < len(outputs.attentions):
+                    attentions[op.layer] = outputs.attentions[op.layer][0].float().cpu().numpy()
+
+            # Compute activated for MLP captures
+            mlp_details = {}
+            for layer, cap in captures["mlp"].items():
+                if "gate" in cap and "up" in cap:
+                    import torch.nn.functional as F
+                    g = torch.tensor(cap["gate"])
+                    u = torch.tensor(cap["up"])
+                    cap["activated"] = (F.silu(g) * u).numpy()
+                mlp_details[layer] = cap
+
+        finally:
+            for h in handles:
+                h.remove()
+
+        probs = softmax(logits)
+        top_id = int(np.argmax(probs))
+
+        return ContextResult(
+            logits=logits, probs=probs, top_id=top_id,
+            top_token=self.tokenizer.decode([top_id]),
+            entropy=_entropy(probs), n_tokens=input_ids.shape[1],
+            residuals=residuals, all_position_residuals=all_pos,
+            attention=attentions, mlp_detail=mlp_details,
+        )
+
+    def _execute_generation_context(self, prompt, gen_ctx, *, max_tokens=200):
+        """Execute GenerationContext with HF model, token-by-token."""
+        import torch
+        from .context import TokenResult
+
+        input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
+        past = None
+        eos = getattr(self.tokenizer, "eos_token_id", None)
+
+        # Persistent steer hooks
+        handles = []
+        for op in gen_ctx._steers:
+            if op.layer < len(self.hf_model.model.layers):
+                dt = torch.tensor(op.direction * op.mean_gap * op.alpha, dtype=torch.float32)
+                def make_steer(d):
+                    def hook(mod, inp, out):
+                        hs = out[0] if isinstance(out, tuple) else out
+                        hs[:, -1, :] = hs[:, -1, :].float() + d.to(hs.device)
+                        return (hs,) + out[1:] if isinstance(out, tuple) else hs
+                    return hook
+                handles.append(self.hf_model.model.layers[op.layer].register_forward_hook(make_steer(dt)))
+
+        try:
+            current_ids = input_ids
+            for step in range(max_tokens):
+                with torch.no_grad():
+                    outputs = self.hf_model(
+                        current_ids,
+                        past_key_values=past,
+                        use_cache=True,
+                        output_hidden_states=(gen_ctx._capture_layer is not None),
+                    )
+
+                logits = outputs.logits[0, -1, :].float().cpu().numpy()
+                next_id = int(np.argmax(logits))
+                past = outputs.past_key_values
+
+                if next_id == eos:
+                    break
+
+                residual = None
+                if gen_ctx._capture_layer is not None and outputs.hidden_states:
+                    idx = gen_ctx._capture_layer + 1
+                    if idx < len(outputs.hidden_states):
+                        residual = outputs.hidden_states[idx][0, -1, :].float().cpu().numpy()
+
+                current_ids = torch.tensor([[next_id]], device=self._device)
+
+                yield TokenResult(
+                    step=step,
+                    token_id=next_id,
+                    token_text=self.tokenizer.decode([next_id]),
+                    residual=residual,
+                    logits=logits,
+                )
+        finally:
+            for h in handles:
+                h.remove()
 
     def tokenize(self, text):
         return self.tokenizer.encode(text)

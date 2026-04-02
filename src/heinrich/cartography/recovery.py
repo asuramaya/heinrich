@@ -118,45 +118,29 @@ def _trace_recovery_backend(
     refusal_layer: int | None = None,
     max_tokens: int = 200,
 ) -> RecoveryTrace:
-    """Backend path: manual generation loop with per-token residual capture.
-
-    TODO: This uses backend.forward() per token with steer_dirs for steering
-    and return_residual=True for refusal projection. It does not use KV caching,
-    so it is slower than the MLX path. A future backend method could improve this.
-    """
+    """Backend path using GenerationContext for per-token residual tracking."""
     if refusal_layer is None:
         refusal_layer = backend.config.last_layer
 
-    steer_dirs = {l: (d * mg, 1.0) for l, (d, mg) in layer_directions.items()}
-
-    tokens = backend.tokenize(prompt)
     generated_tokens: list[str] = []
     refusal_projs: list[float] = []
 
-    for step in range(max_tokens):
-        current_text = backend.decode(tokens)
-        result = backend.forward(
-            current_text,
-            steer_dirs=steer_dirs,
-            alpha=alpha,
-            return_residual=True,
-            residual_layer=refusal_layer,
-        )
+    with backend.generation_context(prompt) as gen:
+        # Set up persistent steering at all attack layers
+        for layer, (direction, mean_gap) in layer_directions.items():
+            gen.steer(layer, direction, mean_gap, alpha)
 
-        # Compute refusal projection from residual
-        if result.residual is not None:
-            proj = float(np.dot(result.residual, refusal_direction))
-        else:
-            proj = 0.0
-        refusal_projs.append(proj)
+        # Capture residual at the refusal layer for projection
+        gen.capture_at(refusal_layer)
 
-        next_id = result.top_id
-        # Simple EOS check
-        decoded = backend.decode([next_id])
-        if decoded == "" or next_id == 0:
-            break
-        tokens.append(next_id)
-        generated_tokens.append(decoded)
+        for token in gen.tokens(max_tokens=max_tokens):
+            # Compute refusal projection from captured residual
+            if token.residual is not None:
+                proj = float(np.dot(token.residual, refusal_direction))
+            else:
+                proj = 0.0
+            refusal_projs.append(proj)
+            generated_tokens.append(token.token_text)
 
     return _analyze_recovery(prompt, alpha, generated_tokens, refusal_projs)
 
