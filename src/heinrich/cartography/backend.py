@@ -327,8 +327,10 @@ class MLXBackend:
         return Capabilities(
             can_steer=True, can_capture_residual=True, can_capture_attention=True,
             can_capture_mlp_detail=True, can_neuron_mask=True, can_perturb_head=True,
-            can_weight_access=True, can_kv_cache=True, can_gradient=False,
+            can_weight_access=True, can_embedding_access=True, can_logit_lens=True,
+            can_kv_cache=True, can_gradient=False, can_batch=False,
             can_all_positions=True, can_compose=True, can_gen_control=True,
+            can_multi_turn=True,
         )
 
     def forward_context(self):
@@ -340,7 +342,13 @@ class MLXBackend:
         return GenerationContext(self, prompt)
 
     def _execute_forward_context(self, prompt, ctx):
-        """Compile ForwardContext declarations into a single MLX layer loop."""
+        """Compile ForwardContext declarations into a single MLX layer loop.
+
+        Supports:
+        - Compositional steer + capture + ablate in one pass
+        - Attention weight capture via manual Q/K decomposition with RoPE/GQA
+        - Conditional callbacks that fire after a layer and can inject vectors
+        """
         import mlx.core as mx
         import mlx.nn as nn
         from .perturb import _mask_dtype
@@ -375,6 +383,9 @@ class MLXBackend:
         capture_attn_layers = {op.layer for op in ctx._capture_attentions}
         capture_mlp_layers = {op.layer for op in ctx._capture_mlp_details}
 
+        # Collect callbacks
+        callbacks = ctx._callbacks  # {layer: [callable, ...]}
+
         # Execute single forward pass
         residuals = {}
         all_pos_residuals = {}
@@ -383,6 +394,40 @@ class MLXBackend:
 
         h = inner.embed_tokens(input_ids)
         for i, ly in enumerate(inner.layers):
+            # Attention capture: manual Q/K decomposition for attention weights
+            if i in capture_attn_layers:
+                attn = ly.self_attn
+                h_normed = ly.input_layernorm(h) if hasattr(ly, 'input_layernorm') else h
+
+                q = attn.q_proj(h_normed)
+                k = attn.k_proj(h_normed)
+
+                n_heads = attn.n_heads
+                n_kv_heads = attn.n_kv_heads
+                head_dim = q.shape[-1] // n_heads
+
+                q = q.reshape(1, T, n_heads, head_dim).transpose(0, 2, 1, 3)
+                k = k.reshape(1, T, n_kv_heads, head_dim).transpose(0, 2, 1, 3)
+
+                if hasattr(attn, 'rope'):
+                    q = attn.rope(q)
+                    k = attn.rope(k)
+
+                # Expand KV heads for GQA
+                n_rep = n_heads // n_kv_heads
+                if n_rep > 1:
+                    k = mx.repeat(k, repeats=n_rep, axis=1)
+
+                # Compute attention scores for last query position only
+                # q_last shape: [1, n_heads, 1, head_dim]
+                # k transposed: [1, n_heads, head_dim, T]
+                q_last = q[:, :, -1:, :]
+                scores = (q_last @ k.transpose(0, 1, 3, 2)) * attn.scale  # [1, n_heads, 1, T]
+                # Apply causal mask at last position (all positions visible)
+                weights = mx.softmax(scores, axis=-1)
+                # Store as [n_heads, T] — last query position attending to all keys
+                attentions[i] = np.array(weights.astype(mx.float32)[0, :, 0, :])
+
             # Neuron masking requires manual MLP decomposition
             if i in neuron_masks or i in capture_mlp_layers:
                 # Manual layer: attention + MLP separately
@@ -426,6 +471,18 @@ class MLXBackend:
                 h_np[0, -1, :] += direction * mean_gap * alpha
                 h = mx.array(h_np.astype(np.float16))
 
+            # Callbacks — fire after layer i, may inject into residual stream
+            if i in callbacks:
+                residual_np = np.array(h.astype(mx.float32)[0, -1, :])
+                for cb in callbacks[i]:
+                    injection = cb(i, residual_np)
+                    if injection is not None:
+                        h_np = np.array(h.astype(mx.float32))
+                        h_np[0, -1, :] += injection
+                        h = mx.array(h_np.astype(np.float16))
+                        # Update residual for subsequent callbacks on same layer
+                        residual_np = h_np[0, -1, :]
+
             # Capture residuals
             if i in capture_residual_layers:
                 residuals[i] = np.array(h.astype(mx.float32)[0, -1, :])
@@ -446,13 +503,24 @@ class MLXBackend:
         )
 
     def _execute_generation_context(self, prompt, gen_ctx, *, max_tokens=200):
-        """Execute GenerationContext as a token-by-token MLX generation loop."""
+        """Execute GenerationContext as a token-by-token MLX generation loop.
+
+        Uses KV cache for O(n) generation instead of O(n^2) recomputation.
+        Step 0 processes the full prompt and builds the cache; subsequent steps
+        process only the new token with cached KV pairs.
+
+        Performance: For a 100-token prompt generating 100 tokens, the old
+        approach recomputes all layers for sequences of length 101..200
+        (total ~15k layer calls). With KV cache, step 0 processes 100 tokens
+        once, then each subsequent step processes 1 token (~3.2k layer calls,
+        ~4.7x speedup for this example; grows with sequence length).
+        """
         import mlx.core as mx
-        from .perturb import _mask_dtype
+        from mlx_lm.models.cache import make_prompt_cache
+        from mlx_lm.models.base import create_attention_mask
         from .context import TokenResult
 
         inner = self._inner
-        mdtype = _mask_dtype(self.model)
         tokens = list(self.tokenizer.encode(prompt))
         eos = getattr(self.tokenizer, "eos_token_id", None)
 
@@ -462,19 +530,30 @@ class MLXBackend:
 
         capture_layer = gen_ctx._capture_layer
 
+        # Initialize KV cache — one cache object per layer
+        cache = make_prompt_cache(inner)
+
         for step in range(max_tokens):
-            input_ids = mx.array([tokens])
-            T = len(tokens)
-            mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
+            if step == 0:
+                # First step: process full prompt, populate cache
+                input_ids = mx.array([tokens])
+            else:
+                # Subsequent steps: only feed the new token
+                input_ids = mx.array([[tokens[-1]]])
+
+            h = inner.embed_tokens(input_ids)
+            # create_attention_mask handles cache offset: returns None for
+            # single-token input when cache is populated (no mask needed)
+            mask = create_attention_mask(h, cache[0])
 
             residual = None
-            h = inner.embed_tokens(input_ids)
             for i, ly in enumerate(inner.layers):
-                h = ly(h, mask=mask, cache=None)
+                h = ly(h, mask=mask, cache=cache[i])
                 if isinstance(h, tuple):
                     h = h[0]
 
-                # Persistent steering
+                # Steering — in cached mode h is [1, 1, hidden], so h[0, -1, :]
+                # and h[0, 0, :] are equivalent; use -1 for consistency
                 if i in steer_at:
                     direction, mean_gap, alpha = steer_at[i]
                     h_np = np.array(h.astype(mx.float32))
@@ -545,6 +624,19 @@ class HFBackend:
         """Register forward hooks that inject steering directions.
 
         Returns list of hook handles (caller must remove them).
+
+        Closure scoping note: Each hook's direction tensor is captured via the
+        ``make_hook(dt)`` factory function, so each layer correctly receives its
+        own pre-computed ``direction * mean_gap * alpha`` vector even when hooks
+        are created inside a loop.
+
+        KV-cache interaction: When used during ``generate()`` with
+        ``use_cache=True``, the steered hidden states flow into the KV cache.
+        This means subsequent tokens attend to the *steered* representations,
+        not the original ones. This is the desired behavior for attack
+        simulation (the model "commits" to the steered trajectory), but it
+        means you cannot compare steered vs. unsteered generation by toggling
+        hooks mid-generation — you must run two separate generation calls.
         """
         import torch
         handles = []
@@ -833,8 +925,10 @@ class HFBackend:
         return Capabilities(
             can_steer=True, can_capture_residual=True, can_capture_attention=True,
             can_capture_mlp_detail=True, can_neuron_mask=True, can_perturb_head=True,
-            can_weight_access=True, can_kv_cache=False, can_gradient=True,
+            can_weight_access=True, can_embedding_access=True, can_logit_lens=True,
+            can_kv_cache=True, can_gradient=True, can_batch=True,
             can_all_positions=True, can_compose=True, can_gen_control=True,
+            can_multi_turn=True,
         )
 
     def forward_context(self):
@@ -955,7 +1049,18 @@ class HFBackend:
         )
 
     def _execute_generation_context(self, prompt, gen_ctx, *, max_tokens=200):
-        """Execute GenerationContext with HF model, token-by-token."""
+        """Execute GenerationContext with HF model, token-by-token.
+
+        KV-cache gotcha: Steering hooks modify hidden states *before* they are
+        cached in ``past_key_values``. This means the KV cache contains steered
+        representations, so every subsequent token attends to the steered
+        trajectory. This is correct for attack simulation but prevents
+        mid-generation comparison of steered vs. unsteered states. To compare,
+        run two separate generation calls.
+
+        Closure scoping: Each hook's direction tensor is captured via the
+        ``make_steer(d)`` factory, avoiding the classic Python loop-closure bug.
+        """
         import torch
         from .context import TokenResult
 

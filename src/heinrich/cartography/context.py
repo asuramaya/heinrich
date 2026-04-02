@@ -24,7 +24,7 @@ Usage:
 """
 from __future__ import annotations
 from dataclasses import dataclass, field
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 import numpy as np
 
 
@@ -33,18 +33,31 @@ import numpy as np
 @dataclass
 class Capabilities:
     """What a backend can do. The audit adapts based on this."""
+    # Intervention
     can_steer: bool = False
+    can_neuron_mask: bool = False
+    can_perturb_head: bool = False
+
+    # Capture
     can_capture_residual: bool = False
     can_capture_attention: bool = False
     can_capture_mlp_detail: bool = False
-    can_neuron_mask: bool = False
-    can_perturb_head: bool = False
+    can_all_positions: bool = False
+
+    # Access
     can_weight_access: bool = False
+    can_embedding_access: bool = False   # direct embedding table operations
+    can_logit_lens: bool = False         # project residuals through unembedding
+
+    # Execution
     can_kv_cache: bool = False
     can_gradient: bool = False
-    can_all_positions: bool = False
-    can_compose: bool = False       # ForwardContext support
-    can_gen_control: bool = False    # GenerationContext support
+    can_batch: bool = False              # parallel prompt processing
+    can_compose: bool = False            # ForwardContext support
+    can_gen_control: bool = False        # GenerationContext support
+
+    # Conversation
+    can_multi_turn: bool = False         # stateful multi-turn tracking
 
     @property
     def depth_level(self) -> str:
@@ -135,6 +148,7 @@ class ForwardContext:
         self._capture_residuals: list[CaptureResidualOp] = []
         self._capture_attentions: list[CaptureAttentionOp] = []
         self._capture_mlp_details: list[CaptureMlpDetailOp] = []
+        self._callbacks: dict[int, list[Callable[[int, np.ndarray], np.ndarray | None]]] = {}
 
     def steer(self, layer: int, direction: np.ndarray, mean_gap: float = 1.0, alpha: float = 1.0):
         self._steers.append(SteerOp(layer, direction, mean_gap, alpha))
@@ -154,6 +168,18 @@ class ForwardContext:
 
     def capture_mlp_detail(self, layer: int):
         self._capture_mlp_details.append(CaptureMlpDetailOp(layer))
+        return self
+
+    def on_layer(self, layer: int, callback: Callable[[int, np.ndarray], np.ndarray | None]):
+        """Register a callback at a specific layer.
+
+        Callback receives (layer_idx, residual) and returns optional injection vector.
+        If the callback returns a numpy array, it is added to the residual stream
+        at the last token position. If it returns None, no modification is made.
+
+        Multiple callbacks can be registered on the same layer; they execute in order.
+        """
+        self._callbacks.setdefault(layer, []).append(callback)
         return self
 
     def run(self, prompt: str) -> ContextResult:
