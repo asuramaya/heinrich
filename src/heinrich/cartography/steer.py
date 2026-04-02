@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Any
 import numpy as np
+from .runtime import _lm_head
 
 
 def _get_head_geometry(model: Any) -> tuple[int, int]:
@@ -83,7 +84,7 @@ def steer_next_token(
             h = mx.array(h_np.astype(np.float16))
 
     h = inner.norm(h)
-    logits = np.array(model.lm_head(h).astype(mx.float32)[0, -1, :])
+    logits = np.array(_lm_head(model, h).astype(mx.float32)[0, -1, :])
     probs = _softmax(logits)
 
     top_k = 10
@@ -172,7 +173,7 @@ def generate_steered(
                 h = mx.array(h_np.astype(np.float16))
 
         h = inner.norm(h)
-        logits = np.array(model.lm_head(h).astype(mx.float32)[0, -1, :])
+        logits = np.array(_lm_head(model, h).astype(mx.float32)[0, -1, :])
         next_id = int(np.argmax(logits))
 
         eos = getattr(tokenizer, "eos_token_id", None)

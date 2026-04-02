@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 import numpy as np
 from .surface import Knob
+from .runtime import _lm_head
 from ..inspect.self_analysis import _softmax
 
 
@@ -61,7 +62,7 @@ def compute_baseline(
         if isinstance(h, tuple):
             h = h[0]
     h = inner.norm(h)
-    return np.array((model.lm_head(h)).astype(mx.float32)[0, -1, :])
+    return np.array((_lm_head(model, h)).astype(mx.float32)[0, -1, :])
 
 
 def perturb_head(
@@ -125,7 +126,7 @@ def perturb_head(
             h = mx.array(h_np.astype(np.float16))
 
     h = inner.norm(h)
-    perturbed_logits = np.array((model.lm_head(h)).astype(mx.float32)[0, -1, :])
+    perturbed_logits = np.array((_lm_head(model, h)).astype(mx.float32)[0, -1, :])
 
     return baseline_logits, perturbed_logits
 

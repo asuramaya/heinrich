@@ -213,7 +213,7 @@ def _project_through_unembedding(backend, residual: np.ndarray) -> np.ndarray:
         inner = getattr(backend.model, "model", backend.model)
         h = mx.array(residual.reshape(1, 1, -1).astype(np.float16))
         h = inner.norm(h)
-        logits = backend.model.lm_head(h)
+        logits = backend._lm_head(h)
         return np.array(logits.astype(mx.float32)[0, 0, :])
 
     # For HFBackend: use model's ln_f/norm and lm_head

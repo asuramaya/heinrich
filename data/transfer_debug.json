@@ -1,0 +1,456 @@
+{
+  "qwen_config": {
+    "model_type": "qwen2",
+    "hidden_size": 3584,
+    "n_layers": 28,
+    "vocab_size": 152064
+  },
+  "mistral_config": {
+    "model_type": "mistral",
+    "hidden_size": 4096,
+    "n_layers": 32,
+    "vocab_size": 32768
+  },
+  "embedding_shapes": {
+    "qwen_embed": [
+      152064,
+      448
+    ],
+    "qwen_unembed": [
+      152064,
+      448
+    ],
+    "qwen_expected_hidden": 3584,
+    "qwen_actual_cols": 448,
+    "qwen_compression_ratio": 8.0,
+    "mistral_embed": [
+      32768,
+      512
+    ],
+    "mistral_unembed": [
+      32768,
+      512
+    ],
+    "mistral_expected_hidden": 4096,
+    "mistral_actual_cols": 512,
+    "mistral_compression_ratio": 8.0
+  },
+  "embedding_svd": {
+    "qwen_top5_sv": [
+      1599699681280.0,
+      76980363264.0,
+      54002450432.0,
+      49640390656.0,
+      47319367680.0
+    ],
+    "mistral_top5_sv": [
+      564436074496.0,
+      28982255616.0,
+      28330743808.0,
+      28115804160.0,
+      27542994944.0
+    ],
+    "qwen_bottom5_sv": [
+      9209418752.0,
+      9155085312.0,
+      9079326720.0,
+      8948783104.0,
+      8740962304.0
+    ],
+    "mistral_bottom5_sv": [
+      5.4e-05,
+      5.4e-05,
+      5.4e-05,
+      3.4e-05,
+      8e-06
+    ]
+  },
+  "qwen_best_direction": {
+    "layer": 24,
+    "accuracy": 1.0,
+    "mean_gap": 189.4313,
+    "effect_size": 17.3849,
+    "shape": [
+      3584
+    ]
+  },
+  "transfer_direction_crash": {
+    "crashed": true,
+    "reason": "Quantization bottleneck: unembedding matrix is [152064, 448] but direction is [3584]-dimensional. 4-bit quantization compresses the weight matrices from 3584d to 448d, making vocabulary-space projection impossible."
+  },
+  "probe_transfer": {
+    "qwen_vocab_scores_shape": [
+      152064
+    ],
+    "shared_vocab_size": 32768,
+    "top10_tokens": [
+      {
+        "id": 19152,
+        "token": "Sorry",
+        "score": 20.825
+      },
+      {
+        "id": 14589,
+        "token": " sorry",
+        "score": 20.2104
+      },
+      {
+        "id": 32286,
+        "token": " Sorry",
+        "score": 19.781
+      },
+      {
+        "id": 2704,
+        "token": " sure",
+        "score": -18.5428
+      },
+      {
+        "id": 67597,
+        "token": "sorry",
+        "score": 17.5399
+      },
+      {
+        "id": 101553,
+        "token": "\u6211\u4e0d",
+        "score": 17.2251
+      },
+      {
+        "id": 19098,
+        "token": "sure",
+        "score": -16.4635
+      },
+      {
+        "id": 28038,
+        "token": " )\n\n\n\n\n\n\n\n",
+        "score": 16.0421
+      },
+      {
+        "id": 22555,
+        "token": " Sure",
+        "score": -15.9674
+      },
+      {
+        "id": 109024,
+        "token": "\u5bf9\u4e0d\u8d77",
+        "score": 15.7808
+      }
+    ],
+    "vocab_score_mean": 0.4285,
+    "vocab_score_std": 2.5099,
+    "raw_norm": 90.8915,
+    "transferred_shape": [
+      4096
+    ]
+  },
+  "probed_token_alignment": {
+    "positive": [
+      {
+        "token": "pit",
+        "id": 20362,
+        "score": 6.2608
+      },
+      {
+        "token": "ipper",
+        "id": 28459,
+        "score": 6.0757
+      },
+      {
+        "token": "plaat",
+        "id": 15137,
+        "score": 6.0385
+      },
+      {
+        "token": "CHANT",
+        "id": 13621,
+        "score": 5.9638
+      },
+      {
+        "token": "zw",
+        "id": 13680,
+        "score": 5.83
+      },
+      {
+        "token": "indow",
+        "id": 2279,
+        "score": 5.7387
+      },
+      {
+        "token": "tring",
+        "id": 1618,
+        "score": 5.7123
+      },
+      {
+        "token": "AME",
+        "id": 10794,
+        "score": 5.6272
+      },
+      {
+        "token": "-$",
+        "id": 15959,
+        "score": 5.5957
+      },
+      {
+        "token": "AIN",
+        "id": 18827,
+        "score": 5.5221
+      }
+    ],
+    "negative": [
+      {
+        "token": "Bak",
+        "id": 24283,
+        "score": -5.2652
+      },
+      {
+        "token": "Jr",
+        "id": 13466,
+        "score": -4.7087
+      },
+      {
+        "token": "ie",
+        "id": 1180,
+        "score": -4.6064
+      },
+      {
+        "token": "ir",
+        "id": 1129,
+        "score": -4.4638
+      },
+      {
+        "token": "stage",
+        "id": 14358,
+        "score": -4.4039
+      },
+      {
+        "token": "ine",
+        "id": 1241,
+        "score": -4.3801
+      },
+      {
+        "token": "iii",
+        "id": 20515,
+        "score": -4.3697
+      },
+      {
+        "token": "ement",
+        "id": 1884,
+        "score": -4.3603
+      },
+      {
+        "token": "sleeping",
+        "id": 13631,
+        "score": -4.331
+      },
+      {
+        "token": "oples",
+        "id": 20387,
+        "score": -4.2878
+      }
+    ]
+  },
+  "mistral_native_direction": {
+    "best_layer": 0,
+    "accuracy": 1.0,
+    "mean_gap": 0.0208
+  },
+  "transfer_cosine_best": -0.0404,
+  "transfer_cosine_all_layers": {
+    "0": {
+      "cosine": -0.0404,
+      "native_accuracy": 1.0,
+      "native_gap": 0.0208
+    },
+    "1": {
+      "cosine": 0.0091,
+      "native_accuracy": 1.0,
+      "native_gap": 0.0767
+    },
+    "2": {
+      "cosine": 0.0149,
+      "native_accuracy": 1.0,
+      "native_gap": 0.1114
+    },
+    "3": {
+      "cosine": 0.004,
+      "native_accuracy": 1.0,
+      "native_gap": 0.1692
+    },
+    "4": {
+      "cosine": -0.0103,
+      "native_accuracy": 1.0,
+      "native_gap": 0.2336
+    },
+    "5": {
+      "cosine": -0.0124,
+      "native_accuracy": 1.0,
+      "native_gap": 0.2799
+    },
+    "6": {
+      "cosine": 0.0001,
+      "native_accuracy": 1.0,
+      "native_gap": 0.3968
+    },
+    "7": {
+      "cosine": -0.0122,
+      "native_accuracy": 1.0,
+      "native_gap": 0.5464
+    },
+    "8": {
+      "cosine": 0.0038,
+      "native_accuracy": 1.0,
+      "native_gap": 0.7582
+    },
+    "9": {
+      "cosine": 0.0178,
+      "native_accuracy": 1.0,
+      "native_gap": 0.8507
+    },
+    "10": {
+      "cosine": 0.0048,
+      "native_accuracy": 1.0,
+      "native_gap": 0.994
+    },
+    "11": {
+      "cosine": 0.0108,
+      "native_accuracy": 1.0,
+      "native_gap": 1.288
+    },
+    "12": {
+      "cosine": 0.0084,
+      "native_accuracy": 1.0,
+      "native_gap": 1.6793
+    },
+    "13": {
+      "cosine": 0.0154,
+      "native_accuracy": 1.0,
+      "native_gap": 2.0775
+    },
+    "14": {
+      "cosine": 0.0104,
+      "native_accuracy": 1.0,
+      "native_gap": 2.5213
+    },
+    "15": {
+      "cosine": 0.0172,
+      "native_accuracy": 1.0,
+      "native_gap": 3.1777
+    },
+    "16": {
+      "cosine": 0.0121,
+      "native_accuracy": 1.0,
+      "native_gap": 3.9999
+    },
+    "17": {
+      "cosine": 0.0201,
+      "native_accuracy": 1.0,
+      "native_gap": 4.5399
+    },
+    "18": {
+      "cosine": 0.0164,
+      "native_accuracy": 1.0,
+      "native_gap": 5.2523
+    },
+    "19": {
+      "cosine": 0.0187,
+      "native_accuracy": 1.0,
+      "native_gap": 5.9497
+    },
+    "20": {
+      "cosine": 0.027,
+      "native_accuracy": 1.0,
+      "native_gap": 6.7854
+    },
+    "21": {
+      "cosine": 0.0129,
+      "native_accuracy": 1.0,
+      "native_gap": 7.3522
+    },
+    "22": {
+      "cosine": 0.0044,
+      "native_accuracy": 1.0,
+      "native_gap": 7.8622
+    },
+    "23": {
+      "cosine": 0.0045,
+      "native_accuracy": 1.0,
+      "native_gap": 8.3319
+    },
+    "24": {
+      "cosine": 0.0116,
+      "native_accuracy": 1.0,
+      "native_gap": 8.8532
+    },
+    "25": {
+      "cosine": 0.0093,
+      "native_accuracy": 1.0,
+      "native_gap": 9.501
+    },
+    "26": {
+      "cosine": 0.0117,
+      "native_accuracy": 1.0,
+      "native_gap": 10.259
+    },
+    "27": {
+      "cosine": 0.0076,
+      "native_accuracy": 1.0,
+      "native_gap": 10.9483
+    },
+    "28": {
+      "cosine": 0.0046,
+      "native_accuracy": 1.0,
+      "native_gap": 12.4828
+    },
+    "29": {
+      "cosine": 0.0035,
+      "native_accuracy": 1.0,
+      "native_gap": 13.9929
+    },
+    "30": {
+      "cosine": 0.0144,
+      "native_accuracy": 1.0,
+      "native_gap": 15.6805
+    },
+    "31": {
+      "cosine": 0.0022,
+      "native_accuracy": 1.0,
+      "native_gap": 19.0558
+    }
+  },
+  "safety_token_overlap": {
+    "qwen_top10": [
+      "Sorry",
+      " sorry",
+      " Sorry",
+      "sorry",
+      "\u6211\u4e0d",
+      " )\n\n\n\n\n\n\n\n",
+      "\u5bf9\u4e0d\u8d77",
+      "\u62b1\u6b49",
+      "APO",
+      "\u4e0d\u5f97"
+    ],
+    "mistral_top10": [
+      "Pero",
+      "spinning",
+      "hid",
+      "ilde",
+      "avi",
+      "mand",
+      "egr",
+      "achuset",
+      "deployment",
+      "pdata"
+    ],
+    "overlap_count": 0,
+    "shared_tokens": []
+  },
+  "diagnosis": [
+    "PRIMARY FAILURE: 4-bit quantization compresses embedding/unembedding from [vocab, hidden_size] to [vocab, compressed_dim]. Qwen: 3584d -> 448d (8x compression). Mistral: 4096d -> 512d (8x compression). transfer_direction() crashes because W_u[vocab, 448] @ direction[3584] has mismatched inner dimensions.",
+    "BUG: transfer.py uses np.array(lm_head.weight) which returns the QUANTIZED weight matrix, not the full-rank weights. The function assumes lm_head.weight.shape == [vocab, hidden_size] but 4-bit models store compressed weights of shape [vocab, compressed_dim].",
+    "SECONDARY FAILURE: Even with correct full-rank projection (via probe), cosine = -0.0404. The vocabulary-space transfer fundamentally fails because safety is encoded in residual-stream geometry, not token semantics.",
+    "DIMENSION MISMATCH: Qwen=3584d, Mistral=4096d. Even without quantization, the vocabulary-space projection is a lossy bottleneck.",
+    "TOKEN MISMATCH: Only 0/10 top safety tokens overlap. Models encode safety through different vocabulary items."
+  ],
+  "elapsed_seconds": 17.4,
+  "recommended_fix": "In transfer.py, replace _get_unembedding_matrix() and _get_embedding_matrix() with probe-based alternatives that run the direction through lm_head and embed_tokens as forward passes, bypassing the quantized weight extraction. This correctly decompresses 4-bit weights to full hidden_size during computation."
+}

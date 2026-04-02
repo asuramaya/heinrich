@@ -7,6 +7,7 @@ from __future__ import annotations
 from typing import Any
 import numpy as np
 
+from .runtime import _lm_head
 from .backend import MLXBackend, HFBackend, ForwardResult
 
 
@@ -117,7 +118,7 @@ def _token_saliency_mlx(
             if isinstance(h, tuple):
                 h = h[0]
         h = inner.norm(h)
-        logits = model.lm_head(h)
+        logits = _lm_head(model, h)
         return logits[0, -1, target_id]
 
     grad_fn = mx.grad(loss_fn)
@@ -195,7 +196,7 @@ def _neuron_attribution_mlx(
             if isinstance(h_next, tuple):
                 h_next = h_next[0]
         h_next = inner.norm(h_next)
-        logits = model.lm_head(h_next)
+        logits = _lm_head(model, h_next)
         return logits[0, -1, target_id]
 
     grad_fn = mx.grad(loss_fn)

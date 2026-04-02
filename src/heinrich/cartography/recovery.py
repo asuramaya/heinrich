@@ -9,6 +9,7 @@ import sys
 from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 import numpy as np
+from .runtime import _lm_head
 from ..signal import Signal, SignalStore
 
 if TYPE_CHECKING:
@@ -97,7 +98,7 @@ def trace_recovery(
         refusal_projs.append(proj)
 
         h = inner.norm(h)
-        logits = np.array(model.lm_head(h).astype(mx.float32)[0, -1, :])
+        logits = np.array(_lm_head(model, h).astype(mx.float32)[0, -1, :])
         next_id = int(np.argmax(logits))
         eos = getattr(tokenizer, "eos_token_id", None)
         if next_id == eos:

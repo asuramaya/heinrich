@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 import numpy as np
+from .runtime import _lm_head
 from ..signal import Signal, SignalStore
 
 
@@ -326,7 +327,7 @@ def generation_trace(
                 prev_h = curr_h
 
         h_final = inner.norm(h)
-        logits = np.array(model.lm_head(h_final).astype(mx.float32)[0, -1, :])
+        logits = np.array(_lm_head(model, h_final).astype(mx.float32)[0, -1, :])
         probs = _softmax(logits)
 
         # Entropy

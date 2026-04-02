@@ -12,6 +12,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 import numpy as np
+from .runtime import _lm_head
 from ..signal import Signal, SignalStore
 
 
@@ -146,9 +147,9 @@ def interpret_pcs(
         # lm_head mapping: which tokens does this PC direction point toward?
         # direction → norm → lm_head → logits → top tokens
         h_normed = inner.norm(mx.array((result.mean_state + pc.direction * pc.singular_value).astype(np.float16).reshape(1, 1, -1)))
-        logits_pos = np.array(model.lm_head(h_normed).astype(mx.float32)[0, 0, :])
+        logits_pos = np.array(_lm_head(model, h_normed).astype(mx.float32)[0, 0, :])
         h_normed_neg = inner.norm(mx.array((result.mean_state - pc.direction * pc.singular_value).astype(np.float16).reshape(1, 1, -1)))
-        logits_neg = np.array(model.lm_head(h_normed_neg).astype(mx.float32)[0, 0, :])
+        logits_neg = np.array(_lm_head(model, h_normed_neg).astype(mx.float32)[0, 0, :])
 
         # Tokens most affected by this PC
         diff = logits_pos - logits_neg

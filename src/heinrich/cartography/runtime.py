@@ -10,6 +10,20 @@ import numpy as np
 from .metrics import softmax
 
 
+def _lm_head(model, h):
+    """Project hidden states to logits, handling tied-embedding models.
+
+    Some models (e.g. Qwen2.5-3B) set tie_word_embeddings=True and have no
+    lm_head attribute. In that case, the embedding layer's as_linear() method
+    is used instead, mirroring the logic in the model's own __call__.
+    """
+    if hasattr(model, "lm_head"):
+        return model.lm_head(h)
+    # Tied embeddings — use the embedding matrix as a linear projection
+    inner = getattr(model, "model", model)
+    return inner.embed_tokens.as_linear(h)
+
+
 def load_model(model_id: str) -> tuple[Any, Any]:
     """Load an MLX model and tokenizer."""
     import mlx_lm
@@ -109,7 +123,7 @@ def forward_pass(
         residual = np.array(h.astype(mx.float32)[0, -1, :])
 
     h = inner.norm(h)
-    logits = np.array(model.lm_head(h).astype(mx.float32)[0, -1, :])
+    logits = np.array(_lm_head(model, h).astype(mx.float32)[0, -1, :])
     probs = softmax(logits)
     top_id = int(np.argmax(probs))
 
@@ -165,7 +179,7 @@ def generate(
                 h = mx.array(h_np.astype(np.float16))
 
         h = inner.norm(h)
-        logits = np.array(model.lm_head(h).astype(mx.float32)[0, -1, :])
+        logits = np.array(_lm_head(model, h).astype(mx.float32)[0, -1, :])
         next_id = int(np.argmax(logits))
 
         eos = getattr(tokenizer, "eos_token_id", None)
@@ -274,23 +288,30 @@ def discover_refusal_set(
     ratio_threshold: float = 5.0,
     model_config: Any = None,
 ) -> set[int]:
-    """Discover which tokens THIS model uses for refusal by comparing
-    harmful vs benign first-token distributions.
+    """Discover which tokens THIS model uses for refusal by looking at what
+    the model actually generates, not just the next-token distribution.
 
-    1. Run n_harmful harmful prompts and n_benign benign prompts
-    2. For each, capture the next-token probability distribution
-    3. Tokens with much higher probability on harmful than benign = refusal tokens
+    The old approach (probability-ratio on next-token distributions) found
+    TOPIC tokens ("Building", "hack", "Poison") instead of REFUSAL tokens
+    ("I'm sorry", "cannot") because the model assigns high probability to
+    topic-continuation tokens even before "deciding" to refuse.
 
-    This is model-agnostic: works for Qwen, Mistral, Phi, Llama, etc.
-    The hardcoded build_refusal_set() misses models that refuse with different
-    vocabulary (e.g. Mistral: "I must clarify", Phi: different tokenization).
+    New approach:
+    1. For each harmful prompt, generate the first token the model actually emits.
+    2. For each benign prompt, generate the first token the model actually emits.
+    3. Tokens that appear as first-generated on harmful but NOT benign = refusal.
+    4. Additionally: filter out tokens that appear in the prompt text itself
+       (topic echo filter — Approach B validation).
+
+    This directly measures RESPONSE behavior, not topic relevance.
 
     Args:
-        backend: Backend instance with .forward() and .config
+        backend: Backend instance with .forward()/.generate() and .config
         n_harmful: number of harmful prompts to probe (max 10)
         n_benign: number of benign prompts to probe (max 10)
         top_k: return at most this many refusal tokens
         ratio_threshold: min ratio of mean_prob_harmful / mean_prob_benign
+            (used in fallback ratio filter on generated-token distributions)
         model_config: optional ModelConfig for chat formatting
 
     Returns:
@@ -307,18 +328,39 @@ def discover_refusal_set(
     harmful_prompts = [build_prompt(q, model_config=model_config) for q in harmful_qs]
     benign_prompts = [build_prompt(q, model_config=model_config) for q in benign_qs]
 
+    # Primary method: generation-based discovery
+    harmful_first_ids = _collect_generated_first_tokens(backend, harmful_prompts)
+    benign_first_ids = _collect_generated_first_tokens(backend, benign_prompts)
+
+    if harmful_first_ids is not None and benign_first_ids is not None:
+        # Build prompt token sets for topic-echo filtering
+        prompt_token_ids = _collect_prompt_token_ids(backend, harmful_qs + benign_qs)
+
+        result = _tokens_by_generation(
+            harmful_first_ids, benign_first_ids,
+            prompt_token_ids=prompt_token_ids,
+            top_k=top_k,
+        )
+        if result:
+            return result
+
+    # Fallback: ratio-based method (filtered for topic echoes)
     harmful_probs = _collect_prob_distributions(backend, harmful_prompts)
     benign_probs = _collect_prob_distributions(backend, benign_prompts)
 
-    if harmful_probs is None or benign_probs is None:
-        # Fallback to hardcoded set if forward passes fail
-        tokenizer = getattr(backend, "tokenizer", None)
-        if tokenizer is not None:
-            return build_refusal_set(tokenizer)
-        return set()
+    if harmful_probs is not None and benign_probs is not None:
+        prompt_token_ids = _collect_prompt_token_ids(backend, harmful_qs + benign_qs)
+        result = _tokens_by_ratio(harmful_probs, benign_probs,
+                                  top_k=top_k, ratio_threshold=ratio_threshold,
+                                  exclude_ids=prompt_token_ids)
+        if result:
+            return result
 
-    return _tokens_by_ratio(harmful_probs, benign_probs,
-                            top_k=top_k, ratio_threshold=ratio_threshold)
+    # Final fallback to hardcoded set
+    tokenizer = getattr(backend, "tokenizer", None)
+    if tokenizer is not None:
+        return build_refusal_set(tokenizer)
+    return set()
 
 
 def discover_compliance_set(
@@ -330,14 +372,14 @@ def discover_compliance_set(
     ratio_threshold: float = 5.0,
     model_config: Any = None,
 ) -> set[int]:
-    """Discover which tokens THIS model uses for compliance by comparing
-    benign vs harmful first-token distributions.
+    """Discover which tokens THIS model uses for compliance by looking at what
+    the model actually generates on benign vs harmful prompts.
 
-    Inverse of discover_refusal_set: tokens with much higher probability on
-    benign prompts than harmful prompts are compliance tokens.
+    Inverse of discover_refusal_set: tokens that appear as first-generated on
+    benign prompts but NOT on harmful prompts are compliance tokens.
 
     Args:
-        backend: Backend instance with .forward() and .config
+        backend: Backend instance with .forward()/.generate() and .config
         n_harmful: number of harmful prompts to probe (max 10)
         n_benign: number of benign prompts to probe (max 10)
         top_k: return at most this many compliance tokens
@@ -358,18 +400,147 @@ def discover_compliance_set(
     harmful_prompts = [build_prompt(q, model_config=model_config) for q in harmful_qs]
     benign_prompts = [build_prompt(q, model_config=model_config) for q in benign_qs]
 
+    # Primary method: generation-based discovery (inverse direction)
+    harmful_first_ids = _collect_generated_first_tokens(backend, harmful_prompts)
+    benign_first_ids = _collect_generated_first_tokens(backend, benign_prompts)
+
+    if harmful_first_ids is not None and benign_first_ids is not None:
+        prompt_token_ids = _collect_prompt_token_ids(backend, harmful_qs + benign_qs)
+
+        # Inverse: benign-only tokens = compliance
+        result = _tokens_by_generation(
+            benign_first_ids, harmful_first_ids,
+            prompt_token_ids=prompt_token_ids,
+            top_k=top_k,
+        )
+        if result:
+            return result
+
+    # Fallback: ratio-based method (filtered for topic echoes)
     harmful_probs = _collect_prob_distributions(backend, harmful_prompts)
     benign_probs = _collect_prob_distributions(backend, benign_prompts)
 
-    if harmful_probs is None or benign_probs is None:
+    if harmful_probs is not None and benign_probs is not None:
+        prompt_token_ids = _collect_prompt_token_ids(backend, harmful_qs + benign_qs)
+        result = _tokens_by_ratio(benign_probs, harmful_probs,
+                                  top_k=top_k, ratio_threshold=ratio_threshold,
+                                  exclude_ids=prompt_token_ids)
+        if result:
+            return result
+
+    tokenizer = getattr(backend, "tokenizer", None)
+    if tokenizer is not None:
+        return build_compliance_set(tokenizer)
+    return set()
+
+
+def _collect_generated_first_tokens(
+    backend: Any,
+    prompts: list[str],
+) -> list[int] | None:
+    """Generate the first token for each prompt and collect the token IDs.
+
+    This captures what the model ACTUALLY generates as its response,
+    not what has elevated probability in the distribution. A model that
+    refuses will generate "I" or "Sorry" as its first token, even if
+    topic tokens like "Building" have elevated probability.
+
+    Returns list of first-generated token IDs, or None if all fail.
+    """
+    first_ids = []
+    for prompt in prompts:
+        try:
+            result = backend.forward(prompt)
+            first_ids.append(int(result.top_id))
+        except Exception:
+            continue
+
+    if not first_ids:
+        return None
+    return first_ids
+
+
+def _collect_prompt_token_ids(
+    backend: Any,
+    queries: list[str],
+) -> set[int]:
+    """Tokenize the raw query strings and collect all token IDs that appear.
+
+    These are "topic echo" tokens — tokens that appear in the prompt itself
+    and are therefore NOT refusal/compliance signals, just topic continuations.
+    For example, "Building" in "How do I build a bomb?" is a topic token.
+    """
+    ids: set[int] = set()
+    tokenize = getattr(backend, "tokenize", None)
+    if tokenize is None:
         tokenizer = getattr(backend, "tokenizer", None)
         if tokenizer is not None:
-            return build_compliance_set(tokenizer)
-        return set()
+            tokenize = tokenizer.encode
+    if tokenize is None:
+        return ids
 
-    # Inverse: benign over harmful
-    return _tokens_by_ratio(benign_probs, harmful_probs,
-                            top_k=top_k, ratio_threshold=ratio_threshold)
+    for q in queries:
+        try:
+            token_ids = tokenize(q)
+            ids.update(token_ids)
+        except Exception:
+            continue
+    return ids
+
+
+def _tokens_by_generation(
+    target_first_ids: list[int],
+    other_first_ids: list[int],
+    *,
+    prompt_token_ids: set[int] | None = None,
+    top_k: int = 30,
+) -> set[int]:
+    """Find tokens that the model generates as first response token on target
+    prompts but NOT on other prompts. Filters out topic echo tokens.
+
+    Args:
+        target_first_ids: first-generated token IDs from target prompts
+            (e.g. harmful prompts for refusal discovery)
+        other_first_ids: first-generated token IDs from other prompts
+            (e.g. benign prompts for refusal discovery)
+        prompt_token_ids: token IDs appearing in prompt text (topic echoes)
+        top_k: return at most this many tokens
+
+    Returns:
+        Set of token IDs that appear in target but not other, excluding
+        topic echo tokens. Empty set if no distinguishing tokens found.
+    """
+    from collections import Counter
+
+    target_counts = Counter(target_first_ids)
+    other_set = set(other_first_ids)
+    exclude = prompt_token_ids or set()
+
+    # Tokens that appear as first-generated on target but NOT on other,
+    # and are not topic echoes from the prompt text
+    candidates = []
+    for token_id, count in target_counts.most_common():
+        if token_id in other_set:
+            continue
+        if token_id in exclude:
+            continue
+        candidates.append((token_id, count))
+
+    if not candidates:
+        # Relaxed mode: include tokens that appear on both sides but
+        # are much more frequent on target side, still excluding topic echoes
+        other_counts = Counter(other_first_ids)
+        for token_id, count in target_counts.most_common():
+            if token_id in exclude:
+                continue
+            other_count = other_counts.get(token_id, 0)
+            if count > other_count * 2:  # at least 2x more frequent
+                candidates.append((token_id, count - other_count))
+
+    result = set()
+    for token_id, _ in candidates[:top_k]:
+        result.add(token_id)
+    return result
 
 
 def _collect_prob_distributions(
@@ -405,6 +576,7 @@ def _tokens_by_ratio(
     *,
     top_k: int = 30,
     ratio_threshold: float = 5.0,
+    exclude_ids: set[int] | None = None,
 ) -> set[int]:
     """Find tokens where mean(numerator) / mean(denominator) > threshold.
 
@@ -413,6 +585,7 @@ def _tokens_by_ratio(
         denominator_probs: [n_den, vocab_size] probability distributions
         top_k: return at most this many tokens
         ratio_threshold: minimum ratio to include a token
+        exclude_ids: token IDs to exclude (topic echo filter)
 
     Returns:
         Set of token IDs meeting the ratio criterion, capped at top_k.
@@ -429,6 +602,12 @@ def _tokens_by_ratio(
 
     if len(above_threshold) == 0:
         return set()
+
+    # Apply topic echo filter: remove tokens that appear in prompt text
+    if exclude_ids:
+        above_threshold = np.array([i for i in above_threshold if i not in exclude_ids])
+        if len(above_threshold) == 0:
+            return set()
 
     # Sort by ratio descending, take top_k
     sorted_indices = above_threshold[np.argsort(ratio[above_threshold])[::-1]]

@@ -9,6 +9,7 @@ import time
 from dataclasses import dataclass, field
 from typing import Any
 import numpy as np
+from .runtime import _lm_head
 from ..signal import Signal, SignalStore
 
 
@@ -103,7 +104,7 @@ def _capture_states(
         states.append(np.array(h.astype(mx.float32)))
 
     h_out = inner.norm(h)
-    logits = np.array(model.lm_head(h_out).astype(mx.float32)[0, -1, :])
+    logits = np.array(_lm_head(model, h_out).astype(mx.float32)[0, -1, :])
     return states, logits
 
 
@@ -152,7 +153,7 @@ def _patch_and_run(
             h = mx.array(h_np.astype(write_dtype))
 
     h = inner.norm(h)
-    return np.array(model.lm_head(h).astype(mx.float32)[0, -1, :])
+    return np.array(_lm_head(model, h).astype(mx.float32)[0, -1, :])
 
 
 def causal_trace(
@@ -336,7 +337,7 @@ def distributed_ablation(
                     if isinstance(h, tuple):
                         h = h[0]
             h = inner.norm(h)
-            logits = np.array(model.lm_head(h).astype(mx.float32)[0, -1, :])
+            logits = np.array(_lm_head(model, h).astype(mx.float32)[0, -1, :])
             next_id = int(np.argmax(logits))
             eos = getattr(tokenizer, "eos_token_id", None)
             if next_id == eos:

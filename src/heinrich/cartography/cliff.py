@@ -10,6 +10,7 @@ import sys
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 import numpy as np
+from .runtime import _lm_head
 from ..signal import Signal, SignalStore
 
 if TYPE_CHECKING:
@@ -85,7 +86,7 @@ def _steer_kl(model, tokenizer, prompt, layer, direction, magnitude, *, backend=
             h = mx.array(h_np.astype(np.float16))
 
     h = inner.norm(h)
-    steered_logits = np.array(model.lm_head(h).astype(mx.float32)[0, -1, :])
+    steered_logits = np.array(_lm_head(model, h).astype(mx.float32)[0, -1, :])
     steered_probs = _softmax(steered_logits)
 
     kl = float(np.sum(baseline_probs * np.log((baseline_probs + 1e-12) / (steered_probs + 1e-12))))

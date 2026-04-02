@@ -136,6 +136,11 @@ class MLXBackend:
         self.config = detect_config(self.model, self.tokenizer)
         self._inner = getattr(self.model, "model", self.model)
 
+    def _lm_head(self, h):
+        """Project hidden states to logits, handling tied-embedding models."""
+        from .runtime import _lm_head
+        return _lm_head(self.model, h)
+
     def forward(
         self,
         prompt: str,
@@ -275,7 +280,7 @@ class MLXBackend:
 
         residual = np.array(h.astype(mx.float32)[0, -1, :]) if return_residual else None
         h = inner.norm(h)
-        logits = np.array(self.model.lm_head(h).astype(mx.float32)[0, -1, :])
+        logits = np.array(self._lm_head(h).astype(mx.float32)[0, -1, :])
         probs = softmax(logits)
         top_id = int(np.argmax(probs))
 
@@ -500,7 +505,7 @@ class MLXBackend:
                 mx.eval(h)
 
         h = inner.norm(h)
-        logits = np.array(self.model.lm_head(h).astype(mx.float32)[0, -1, :])
+        logits = np.array(self._lm_head(h).astype(mx.float32)[0, -1, :])
         probs = softmax(logits)
         top_id = int(np.argmax(probs))
 
@@ -584,7 +589,7 @@ class MLXBackend:
             gen_ctx._one_shot_injections.clear()
 
             h = inner.norm(h)
-            logits = np.array(self.model.lm_head(h).astype(mx.float32)[0, -1, :])
+            logits = np.array(self._lm_head(h).astype(mx.float32)[0, -1, :])
             next_id = int(np.argmax(logits))
 
             if next_id == eos:

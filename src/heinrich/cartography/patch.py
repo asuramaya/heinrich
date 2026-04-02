@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, TYPE_CHECKING
 import numpy as np
+from .runtime import _lm_head
 from ..signal import Signal, SignalStore
 
 if TYPE_CHECKING:
@@ -69,7 +70,7 @@ def capture_all_states(
         states.append(np.array(h.astype(mx.float32)))
 
     h = inner.norm(h)
-    logits = np.array(model.lm_head(h).astype(mx.float32)[0, -1, :])
+    logits = np.array(_lm_head(model, h).astype(mx.float32)[0, -1, :])
     return states, logits
 
 
@@ -146,7 +147,7 @@ def patch_and_run(
             h = mx.array(h_np.astype(np.float16))
 
     h = inner.norm(h)
-    return np.array(model.lm_head(h).astype(mx.float32)[0, -1, :])
+    return np.array(_lm_head(model, h).astype(mx.float32)[0, -1, :])
 
 
 def sweep_band_patches(

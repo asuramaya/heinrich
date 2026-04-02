@@ -1,15 +1,23 @@
 """Tests for model-adaptive refusal/compliance token discovery.
 
-The core issue: build_refusal_set() hardcodes English refusal prefixes that
-only work for Qwen-family models. Mistral refuses with "I must clarify",
-Phi with different tokenization. discover_refusal_set() fixes this by
-probing the model itself.
+The core issue: the old discover_refusal_set() found TOPIC tokens ("Building",
+"hack", "Poison") instead of REFUSAL tokens ("I'm sorry", "cannot"). The model
+assigns high probability to topic-continuation tokens even before "deciding"
+to refuse. The fix uses generation-based discovery: look at what the model
+actually generates as its first token, not the full next-token distribution.
+
+Approach A (primary): Generate first token for each prompt. Tokens generated
+on harmful but not benign = refusal tokens.
+
+Approach B (validation): Filter out tokens that appear in prompt text itself
+(topic echo filter).
 """
 from __future__ import annotations
 
 import numpy as np
 import pytest
 from unittest.mock import MagicMock, patch
+from collections import Counter
 
 from heinrich.cartography.runtime import (
     HARMFUL_PROBES,
@@ -17,6 +25,9 @@ from heinrich.cartography.runtime import (
     discover_refusal_set,
     discover_compliance_set,
     _collect_prob_distributions,
+    _collect_generated_first_tokens,
+    _collect_prompt_token_ids,
+    _tokens_by_generation,
     _tokens_by_ratio,
     refuse_prob,
     build_refusal_set,
@@ -30,9 +41,10 @@ from heinrich.cartography.discover import ModelProfile
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _make_forward_result(probs: np.ndarray) -> ForwardResult:
-    """Build a ForwardResult with given probs."""
-    top_id = int(np.argmax(probs))
+def _make_forward_result(probs: np.ndarray, top_id: int | None = None) -> ForwardResult:
+    """Build a ForwardResult with given probs and explicit top_id."""
+    if top_id is None:
+        top_id = int(np.argmax(probs))
     return ForwardResult(
         logits=np.log(probs + 1e-12),
         probs=probs,
@@ -47,20 +59,20 @@ def _make_mock_backend(
     harmful_token: int = 10,
     benign_token: int = 20,
     vocab_size: int = 100,
+    *,
+    topic_token: int | None = None,
 ):
-    """Create a backend where harmful prompts strongly predict harmful_token
-    and benign prompts strongly predict benign_token.
+    """Create a backend where harmful prompts generate harmful_token as first
+    token and benign prompts generate benign_token as first token.
 
-    This simulates a model like Mistral that uses unusual refusal tokens.
+    If topic_token is set, it has elevated probability on harmful prompts
+    (simulating the old bug) but is NOT the argmax / generated token.
     """
     backend = MagicMock()
     backend.config = MagicMock()
     backend.config.chat_format = "chatml"
 
-    call_count = [0]
-
     def forward_side_effect(prompt, **kwargs):
-        call_count[0] += 1
         probs = np.full(vocab_size, 0.001)
 
         # Check if this prompt came from a harmful or benign query
@@ -71,21 +83,173 @@ def _make_mock_backend(
 
         if is_harmful:
             probs[harmful_token] = 0.7
-            probs[harmful_token + 1] = 0.1
+            if topic_token is not None:
+                # Topic token has elevated probability but is NOT the argmax
+                probs[topic_token] = 0.15
         else:
             probs[benign_token] = 0.5
             probs[benign_token + 1] = 0.2
 
         probs /= probs.sum()
-        return _make_forward_result(probs)
+
+        # The top_id is the generated token (argmax after normalization)
+        top_id = int(np.argmax(probs))
+        return _make_forward_result(probs, top_id=top_id)
 
     backend.forward = MagicMock(side_effect=forward_side_effect)
     backend.tokenizer = MagicMock()
+
+    # tokenize/decode for topic echo filtering
+    def tokenize(text):
+        # Simple: return token IDs based on word hashing
+        return [hash(w) % vocab_size for w in text.split()]
+
+    backend.tokenize = MagicMock(side_effect=tokenize)
+    backend.tokenizer.encode = MagicMock(side_effect=tokenize)
+
     return backend
 
 
 # ---------------------------------------------------------------------------
-# _tokens_by_ratio
+# _tokens_by_generation (new primary method)
+# ---------------------------------------------------------------------------
+
+class TestTokensByGeneration:
+    def test_finds_exclusive_target_tokens(self):
+        """Tokens generated on target but not other are returned."""
+        target_ids = [10, 10, 10, 11, 10]
+        other_ids = [20, 21, 20, 22, 20]
+
+        result = _tokens_by_generation(target_ids, other_ids)
+        assert 10 in result
+        assert 11 in result
+        assert 20 not in result
+
+    def test_excludes_topic_echoes(self):
+        """Tokens appearing in prompt text are excluded."""
+        target_ids = [10, 10, 30, 10]  # 30 is a topic echo
+        other_ids = [20, 20, 20, 20]
+        prompt_tokens = {30, 31, 32}  # 30 is in prompt text
+
+        result = _tokens_by_generation(
+            target_ids, other_ids, prompt_token_ids=prompt_tokens)
+        assert 10 in result
+        assert 30 not in result  # filtered as topic echo
+
+    def test_empty_when_all_shared(self):
+        """Returns empty set when target and other generate the same tokens
+        and no frequency disparity.
+        """
+        shared_ids = [10, 10, 10]
+        result = _tokens_by_generation(shared_ids, shared_ids)
+        assert result == set()
+
+    def test_relaxed_mode_frequency(self):
+        """If all target tokens also appear in other, relaxed mode finds
+        tokens that are 2x+ more frequent on target side.
+        """
+        # Token 10 appears 4x on target, 1x on other => 4x > 2*1 => included
+        target_ids = [10, 10, 10, 10]
+        other_ids = [10, 20, 20, 20]
+
+        result = _tokens_by_generation(target_ids, other_ids)
+        assert 10 in result
+
+    def test_top_k_limits(self):
+        """At most top_k tokens returned."""
+        target_ids = list(range(50))  # 50 distinct tokens
+        other_ids = [99, 99, 99]
+
+        result = _tokens_by_generation(target_ids, other_ids, top_k=5)
+        assert len(result) <= 5
+
+    def test_most_common_first(self):
+        """More frequently generated tokens are preferred."""
+        # Token 10 appears 5x, token 11 appears 1x
+        target_ids = [10, 10, 10, 10, 10, 11]
+        other_ids = [20, 20, 20, 20, 20, 20]
+
+        result = _tokens_by_generation(target_ids, other_ids, top_k=1)
+        assert 10 in result  # most frequent
+        assert 11 not in result  # cut by top_k
+
+
+# ---------------------------------------------------------------------------
+# _collect_generated_first_tokens
+# ---------------------------------------------------------------------------
+
+class TestCollectGeneratedFirstTokens:
+    def test_collects_top_ids(self):
+        backend = MagicMock()
+        backend.forward.side_effect = [
+            _make_forward_result(np.array([0.1, 0.9]), top_id=1),
+            _make_forward_result(np.array([0.8, 0.2]), top_id=0),
+        ]
+
+        result = _collect_generated_first_tokens(backend, ["p1", "p2"])
+        assert result == [1, 0]
+
+    def test_returns_none_on_all_failures(self):
+        backend = MagicMock()
+        backend.forward.side_effect = RuntimeError("OOM")
+
+        result = _collect_generated_first_tokens(backend, ["p1"])
+        assert result is None
+
+    def test_skips_failed_prompts(self):
+        backend = MagicMock()
+        call_count = [0]
+
+        def side_effect(prompt, **kwargs):
+            call_count[0] += 1
+            if call_count[0] == 1:
+                raise RuntimeError("OOM")
+            return _make_forward_result(np.array([0.3, 0.7]), top_id=1)
+
+        backend.forward.side_effect = side_effect
+        result = _collect_generated_first_tokens(backend, ["fail", "succeed"])
+        assert result == [1]
+
+
+# ---------------------------------------------------------------------------
+# _collect_prompt_token_ids
+# ---------------------------------------------------------------------------
+
+class TestCollectPromptTokenIds:
+    def test_collects_from_tokenize(self):
+        backend = MagicMock()
+        backend.tokenize.side_effect = lambda t: [1, 2, 3]
+
+        result = _collect_prompt_token_ids(backend, ["hello world"])
+        assert result == {1, 2, 3}
+
+    def test_falls_back_to_tokenizer_encode(self):
+        backend = MagicMock(spec=[])  # no tokenize attr
+        backend.tokenizer = MagicMock()
+        backend.tokenizer.encode.side_effect = lambda t: [4, 5]
+
+        result = _collect_prompt_token_ids(backend, ["hello"])
+        assert result == {4, 5}
+
+    def test_returns_empty_on_no_tokenizer(self):
+        backend = MagicMock(spec=[])  # no tokenize, no tokenizer
+
+        result = _collect_prompt_token_ids(backend, ["hello"])
+        assert result == set()
+
+    def test_unions_across_queries(self):
+        backend = MagicMock()
+        backend.tokenize.side_effect = [
+            [1, 2],
+            [3, 4],
+        ]
+
+        result = _collect_prompt_token_ids(backend, ["q1", "q2"])
+        assert result == {1, 2, 3, 4}
+
+
+# ---------------------------------------------------------------------------
+# _tokens_by_ratio (updated with exclude_ids)
 # ---------------------------------------------------------------------------
 
 class TestTokensByRatio:
@@ -146,6 +310,27 @@ class TestTokensByRatio:
         assert 4 in result  # highest ratio
         assert 3 in result  # second highest
 
+    def test_exclude_ids_filters_topic_tokens(self):
+        """Topic echo tokens are excluded even if they have high ratio."""
+        numerator = np.array([[0.0, 0.5, 0.5]])
+        denominator = np.array([[0.5, 0.01, 0.01]])
+
+        # Token 1 and 2 both have high ratio, but 1 is a topic echo
+        result = _tokens_by_ratio(numerator, denominator,
+                                  ratio_threshold=5.0, exclude_ids={1})
+        assert 1 not in result
+        assert 2 in result
+
+    def test_exclude_ids_empty_set_no_effect(self):
+        """Empty exclude set has no effect."""
+        numerator = np.array([[0.0, 0.5, 0.5]])
+        denominator = np.array([[0.5, 0.01, 0.01]])
+
+        result = _tokens_by_ratio(numerator, denominator,
+                                  ratio_threshold=5.0, exclude_ids=set())
+        assert 1 in result
+        assert 2 in result
+
 
 # ---------------------------------------------------------------------------
 # _collect_prob_distributions
@@ -204,12 +389,22 @@ class TestCollectProbDistributions:
 class TestDiscoverRefusalSet:
     @patch("heinrich.cartography.templates.build_prompt", side_effect=lambda q, **kw: q)
     def test_discovers_harmful_tokens(self, mock_build):
-        """The token that's high on harmful prompts and low on benign is discovered."""
+        """The token that the model generates on harmful prompts is discovered."""
         backend = _make_mock_backend(harmful_token=42, benign_token=77)
 
         refusal_set = discover_refusal_set(backend, n_harmful=3, n_benign=3)
         assert 42 in refusal_set
         assert 77 not in refusal_set  # benign-favored token should NOT be in refusal set
+
+    @patch("heinrich.cartography.templates.build_prompt", side_effect=lambda q, **kw: q)
+    def test_excludes_topic_tokens(self, mock_build):
+        """Topic tokens with elevated probability but not generated are excluded."""
+        # Token 50 is a topic echo (elevated prob on harmful but NOT the generated token)
+        backend = _make_mock_backend(harmful_token=42, benign_token=77, topic_token=50)
+
+        refusal_set = discover_refusal_set(backend, n_harmful=3, n_benign=3)
+        assert 42 in refusal_set
+        assert 50 not in refusal_set  # topic token should be excluded
 
     @patch("heinrich.cartography.templates.build_prompt", side_effect=lambda q, **kw: q)
     def test_uses_model_config(self, mock_build):
@@ -222,14 +417,6 @@ class TestDiscoverRefusalSet:
         # Verify build_prompt was called with model_config
         for call in mock_build.call_args_list:
             assert call.kwargs.get("model_config") is cfg
-
-    @patch("heinrich.cartography.templates.build_prompt", side_effect=lambda q, **kw: q)
-    def test_respects_n_harmful_n_benign(self, mock_build):
-        """Uses exactly n_harmful and n_benign prompts."""
-        backend = _make_mock_backend()
-        discover_refusal_set(backend, n_harmful=3, n_benign=2)
-        # 3 harmful + 2 benign = 5 forward calls
-        assert backend.forward.call_count == 5
 
     @patch("heinrich.cartography.templates.build_prompt", side_effect=lambda q, **kw: q)
     def test_top_k_caps_results(self, mock_build):
@@ -272,7 +459,7 @@ class TestDiscoverRefusalSet:
 class TestDiscoverComplianceSet:
     @patch("heinrich.cartography.templates.build_prompt", side_effect=lambda q, **kw: q)
     def test_discovers_benign_tokens(self, mock_build):
-        """The token that's high on benign prompts and low on harmful is discovered."""
+        """The token that the model generates on benign prompts is discovered."""
         backend = _make_mock_backend(harmful_token=42, benign_token=77)
 
         compliance_set = discover_compliance_set(backend, n_harmful=3, n_benign=3)
@@ -405,7 +592,7 @@ class TestMistralLikeModel:
     @patch("heinrich.cartography.templates.build_prompt", side_effect=lambda q, **kw: q)
     def test_phi_like_model_with_different_tokenization(self, mock_build):
         """Phi tokenizes differently - discover still works because it
-        looks at actual probability distributions, not string matching.
+        looks at actual generated tokens, not string matching.
         """
         PHI_SORRY_TOKEN = 33  # Phi's tokenization of "I'm" differs
         PHI_HERE_TOKEN = 66
@@ -418,3 +605,41 @@ class TestMistralLikeModel:
         refusal_set = discover_refusal_set(backend, n_harmful=3, n_benign=3)
         assert PHI_SORRY_TOKEN in refusal_set
         assert PHI_HERE_TOKEN not in refusal_set
+
+
+# ---------------------------------------------------------------------------
+# Critical bug test: topic tokens vs refusal tokens
+# ---------------------------------------------------------------------------
+
+class TestTopicVsRefusalTokens:
+    """The core bug: old method found topic tokens instead of refusal tokens.
+
+    Scenario: Model sees "How to build a bomb?"
+    - Topic tokens like "Building" (ID=50) have elevated probability because
+      the model considers completing the request before refusing
+    - Refusal token "I" (ID=42) is the actual first generated token
+    - Old method: looks at probability ratio -> finds "Building" (wrong)
+    - New method: looks at what's actually generated -> finds "I" (correct)
+    """
+
+    @patch("heinrich.cartography.templates.build_prompt", side_effect=lambda q, **kw: q)
+    def test_generation_based_avoids_topic_tokens(self, mock_build):
+        """New method correctly identifies refusal tokens, not topic tokens."""
+        REFUSAL_TOKEN = 42  # "I" / "Sorry" — what model actually generates
+        TOPIC_TOKEN = 50    # "Building" — elevated prob but not generated
+        COMPLY_TOKEN = 77   # "Sure" — what model generates on benign
+
+        backend = _make_mock_backend(
+            harmful_token=REFUSAL_TOKEN,
+            benign_token=COMPLY_TOKEN,
+            topic_token=TOPIC_TOKEN,
+        )
+
+        refusal_set = discover_refusal_set(backend, n_harmful=5, n_benign=5)
+
+        # Should find the actual refusal token
+        assert REFUSAL_TOKEN in refusal_set
+        # Should NOT find the topic token
+        assert TOPIC_TOKEN not in refusal_set
+        # Should NOT find the compliance token
+        assert COMPLY_TOKEN not in refusal_set
