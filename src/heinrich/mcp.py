@@ -123,6 +123,33 @@ TOOLS = {
             "label": {"type": "string"},
         },
     },
+    "heinrich_audit": {
+        "description": "Run a complete behavioral security audit on a model. Auto-detects architecture, chat format, and runs safety probes, direction finding, shart scanning, and framing bypass tests. Stores all results to SQLite database.",
+        "parameters": {
+            "model_id": {"type": "string", "description": "HuggingFace model ID or local path", "required": True},
+            "backend": {"type": "string", "description": "Backend: mlx, hf, or auto (default)"},
+        },
+    },
+    "heinrich_db_query": {
+        "description": "Query the persistent signal database. Returns matching signals sorted by value.",
+        "parameters": {
+            "kind": {"type": "string", "description": "Filter by signal kind (e.g. shart, direction, probe)"},
+            "model": {"type": "string", "description": "Filter by model"},
+            "source": {"type": "string", "description": "Filter by source stage"},
+            "min_value": {"type": "number", "description": "Minimum signal value"},
+            "limit": {"type": "integer", "description": "Max results (default 50)"},
+        },
+    },
+    "heinrich_db_runs": {
+        "description": "List recent experiment runs from the signal database.",
+        "parameters": {
+            "limit": {"type": "integer", "description": "Max runs to list (default 20)"},
+        },
+    },
+    "heinrich_db_summary": {
+        "description": "Get database summary — signal counts, kinds, size.",
+        "parameters": {},
+    },
 }
 
 
@@ -175,6 +202,14 @@ class ToolServer:
             return self._do_configure(arguments)
         if name == "heinrich_cartography":
             return self._do_cartography(arguments)
+        if name == "heinrich_audit":
+            return self._do_audit(arguments)
+        if name == "heinrich_db_query":
+            return self._do_db_query(arguments)
+        if name == "heinrich_db_runs":
+            return self._do_db_runs(arguments)
+        if name == "heinrich_db_summary":
+            return self._do_db_summary(arguments)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -430,3 +465,48 @@ class ToolServer:
             "clusters": len(clusters),
             "panel_summary": panel.summary(),
         }
+
+    def _do_audit(self, args: dict[str, Any]) -> dict[str, Any]:
+        from .cartography.audit import full_audit
+        model_id = args["model_id"]
+        backend = args.get("backend", "auto")
+        try:
+            report = full_audit(model_id, backend=backend, progress=True)
+            self._stages_run.append("audit")
+            return report.to_dict()
+        except Exception as e:
+            return {"error": str(e)}
+
+    def _do_db_query(self, args: dict[str, Any]) -> dict[str, Any]:
+        from .db import SignalDB
+        db = SignalDB()
+        signals = db.query(
+            kind=args.get("kind"),
+            model=args.get("model"),
+            source=args.get("source"),
+            min_value=args.get("min_value"),
+            limit=args.get("limit", 50),
+        )
+        db.close()
+        return {
+            "count": len(signals),
+            "signals": [
+                {"kind": s.kind, "source": s.source, "model": s.model,
+                 "target": s.target, "value": s.value, "metadata": s.metadata}
+                for s in signals
+            ],
+        }
+
+    def _do_db_runs(self, args: dict[str, Any]) -> dict[str, Any]:
+        from .db import SignalDB
+        db = SignalDB()
+        runs = db.runs(limit=args.get("limit", 20))
+        db.close()
+        return {"runs": runs}
+
+    def _do_db_summary(self, args: dict[str, Any]) -> dict[str, Any]:
+        from .db import SignalDB
+        db = SignalDB()
+        summary = db.summary()
+        db.close()
+        return summary

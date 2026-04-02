@@ -38,7 +38,7 @@ def test_tools_list():
     names = {t["name"] for t in tools}
     assert "heinrich_fetch" in names
     assert "heinrich_diff" in names
-    assert len(tools) == 15
+    assert len(tools) == 19
 
 
 def test_tool_call_fetch():
