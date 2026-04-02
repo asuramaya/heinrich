@@ -1,7 +1,7 @@
 {
   "experiment_date": "2026-04-02",
   "model": "mlx-community/Qwen2.5-7B-Instruct-4bit",
-  "questions_answered": 20,
+  "questions_answered": 22,
   "questions_total": 30,
   "results": {
     "Q4_Q5_transfer": {
@@ -125,6 +125,20 @@
         "1_turn_rp": 0.9228,
         "12_turns_rp": 0.998
       }
+    },
+    "Q4_cross_family": {
+      "status": "answered",
+      "finding": "Safety directions are UNIVERSAL (100% separability on all 3 families). Safety ARCHITECTURE is model-specific: Qwen safety at L13 (46%), Mistral at L2 (6%!), Phi-3 at L12 (38%). Shart overlap between Qwen/Mistral is 82%. Refuse_prob metric broken on Mistral/Phi (tokenizer mismatch).",
+      "models": [
+        "Qwen2.5-7B-Instruct",
+        "Mistral-7B-Instruct-v0.3",
+        "Phi-3-mini-4k-instruct"
+      ],
+      "key_finding": "Safety directions exist universally. Safety architecture does not transfer."
+    },
+    "Q15_script_outputs": {
+      "status": "answered",
+      "finding": "Extracted 789 entries from 25MB conversation log: 1302 KV pairs, 114 tables, 182 JSON objects, 39 sections. Data now in data/extracted_log_data.json."
     }
   },
   "remaining_questions": {

@@ -392,18 +392,6 @@ class MLXBackend:
         attentions = {}
         mlp_details = {}
 
-        # Determine layers that need special handling — all others can be
-        # evaluated eagerly to free intermediate memory.
-        special_layers = (
-            set(steer_at)
-            | set(neuron_masks)
-            | capture_residual_layers
-            | capture_all_pos_layers
-            | capture_attn_layers
-            | capture_mlp_layers
-            | set(callbacks)
-        )
-
         h = inner.embed_tokens(input_ids)
         mx.eval(h)
         n_layers = len(inner.layers)
