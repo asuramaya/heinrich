@@ -58,41 +58,43 @@ def run_full_pipeline(
     # Step 1: Load prompts into DB (in-process, no model needed)
     for prompt_set in prompts:
         insert_prompts_to_db(db, prompt_set, max_prompts=max_prompts)
+    # Always load benign prompts for direction finding and calibration
+    try:
+        insert_prompts_to_db(db, "benign", max_prompts=50)
+    except Exception:
+        pass  # benign download may fail without datasets library
     n_prompts = len(db.get_prompts())
-    print(f"[{time.time()-t0:.1f}s] Loaded {n_prompts} prompts from {prompts}")
+    n_benign = len(db.get_prompts(is_benign=True))
+    print(f"[{time.time()-t0:.1f}s] Loaded {n_prompts} prompts ({n_benign} benign) from {prompts}")
 
-    # Scale timeout based on prompt count
-    effective_timeout = max(timeout, max(600, n_prompts * 10))
+    # Scale timeout: ~2s per generation (forward + generate), up to 28 conditions per prompt
+    # Plus ~200s for direction finding + cliff search
+    estimated_conditions = 15  # worst case: clean + 14 steer conditions
+    estimated_generations = n_prompts * estimated_conditions
+    effective_timeout = max(timeout, 300 + estimated_generations * 3)
 
     db.close()
 
-    # Step 2: Discover (SUBPROCESS -- loads model, scans layers, writes directions)
-    if not skip_discover:
-        print(f"\n[{time.time()-t0:.1f}s] === DISCOVER ===")
-        cmd = [sys.executable, "-m", "heinrich.discover", "--model", model, "--db", db_file]
+    # Step 2: Unified target subprocess (SUBPROCESS -- loads model ONCE,
+    # runs discover + attack + generate, writes everything to DB)
+    if not skip_discover or not skip_attack:
+        print(f"\n[{time.time()-t0:.1f}s] === TARGET (discover + attack + generate) ===")
+        cmd = [
+            sys.executable, "-m", "heinrich.eval.target_subprocess",
+            "--model", model, "--db", db_file,
+        ]
         try:
             _run_subprocess(cmd, timeout=effective_timeout)
         except RuntimeError as e:
-            print(f"WARNING: Discover step failed: {e}")
-            print("Continuing with attack step (may only produce 'clean' condition)")
+            print(f"WARNING: Target subprocess failed: {e}")
+            print("Continuing with eval step (will use whatever is in DB)")
     else:
-        print(f"[{time.time()-t0:.1f}s] Skipping discover step")
+        print(f"[{time.time()-t0:.1f}s] Skipping discover+attack (both skipped)")
 
-    # Step 3: Attack (SUBPROCESS -- loads model, finds cliff, writes conditions)
-    if not skip_attack:
-        print(f"\n[{time.time()-t0:.1f}s] === ATTACK ===")
-        cmd = [sys.executable, "-m", "heinrich.attack", "--model", model, "--db", db_file]
-        try:
-            _run_subprocess(cmd, timeout=effective_timeout)
-        except RuntimeError as e:
-            print(f"WARNING: Attack step failed: {e}")
-            print("Continuing with eval step (will use 'clean' condition only)")
-    else:
-        print(f"[{time.time()-t0:.1f}s] Skipping attack step")
-
-    # Step 4: Eval pipeline with conditions="auto"
-    # This reads conditions from DB (written by discover + attack steps)
-    print(f"\n[{time.time()-t0:.1f}s] === EVAL ===")
+    # Step 3: Eval pipeline with conditions="auto"
+    # Target subprocess already wrote generations; eval will skip generation
+    # if rows exist, then score + calibrate + report.
+    print(f"\n[{time.time()-t0:.1f}s] === EVAL (score + report) ===")
     from heinrich.eval.run import run_pipeline
     db = SignalDB(db_path) if db_path else SignalDB(db_file)
     report = run_pipeline(

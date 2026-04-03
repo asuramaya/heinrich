@@ -1,108 +1,208 @@
-"""Calibrate each scorer's false positive rate on benign prompts.
+"""Per-scorer signal distributions — descriptive, not evaluative.
+
+No FPR/FNR. No assumed ground truth. Each scorer's label distribution
+is reported per condition so the reader can see the shape of the stack.
+
+Calibration as a concept is replaced by signal isolation: each scorer
+stays in its own lane, the report presents them side by side, and
+interpretation stays with the reader.
 
 Usage:
     python -m heinrich.eval.calibrate --db path
-
-Reads benign generations + their scores from DB.
-Computes FPR per scorer: fraction of benign generations scored as 'unsafe'.
-Writes to calibration table.
 """
 from __future__ import annotations
 
 import argparse
+import json
+from collections import Counter
 
 
-def calibrate_all(db) -> dict[str, dict]:
-    """Compute FPR (and rough FNR) for every scorer that has scored benign generations.
+def describe_scorers(db) -> dict[str, dict]:
+    """Compute descriptive statistics for every scorer in the DB.
 
-    FPR = n_unsafe_on_benign / n_benign_scored
-    FNR = n_safe_on_harmful / n_harmful_scored  (less reliable — harmful prompts
-          may legitimately be refused)
+    For each scorer, returns:
+      - label distribution per condition
+      - total count
+      - number of distinct labels
 
-    Returns dict keyed by scorer name with fpr, fnr, n_benign, n_harmful.
-    Also writes each row to the calibration table via db.record_calibration().
+    No evaluative metrics (no FPR/FNR). The distributions describe
+    what each scorer says, not whether it's "right."
     """
-    # 1. Get all benign generations (join generations to prompts via prompt_id)
-    benign_gens = db.get_generations(is_benign=True)
-    harmful_gens = db.get_generations(is_benign=False)
+    # Get all generations with their condition
+    rows = db._conn.execute(
+        "SELECT s.scorer, s.label, g.condition "
+        "FROM scores s "
+        "JOIN generations g ON g.id = s.generation_id "
+        "WHERE s.label IS NOT NULL AND s.label != 'error' "
+        "ORDER BY s.scorer, g.condition"
+    ).fetchall()
 
-    benign_ids = [g["id"] for g in benign_gens]
-    harmful_ids = [g["id"] for g in harmful_gens]
+    # Group by scorer
+    by_scorer: dict[str, list[dict]] = {}
+    for r in rows:
+        by_scorer.setdefault(r["scorer"], []).append(dict(r))
 
-    # 2. Get all scores for benign and harmful generations
-    benign_scores = db.get_scores(generation_ids=benign_ids) if benign_ids else []
-    harmful_scores = db.get_scores(generation_ids=harmful_ids) if harmful_ids else []
-
-    # 3. Group by scorer
-    # For FPR: count how many benign generations each scorer labeled 'unsafe'
-    scorer_benign: dict[str, dict] = {}  # scorer -> {n_total, n_unsafe}
-    for s in benign_scores:
-        scorer = s["scorer"]
-        if scorer not in scorer_benign:
-            scorer_benign[scorer] = {"n_total": 0, "n_unsafe": 0}
-        scorer_benign[scorer]["n_total"] += 1
-        if s["label"] == "unsafe":
-            scorer_benign[scorer]["n_unsafe"] += 1
-
-    # For FNR: count how many harmful generations each scorer labeled 'safe'
-    scorer_harmful: dict[str, dict] = {}  # scorer -> {n_total, n_safe}
-    for s in harmful_scores:
-        scorer = s["scorer"]
-        if scorer not in scorer_harmful:
-            scorer_harmful[scorer] = {"n_total": 0, "n_safe": 0}
-        scorer_harmful[scorer]["n_total"] += 1
-        if s["label"] == "safe":
-            scorer_harmful[scorer]["n_safe"] += 1
-
-    # 4. Compute rates and write to DB
-    all_scorers = set(scorer_benign) | set(scorer_harmful)
     results: dict[str, dict] = {}
+    for scorer, score_rows in sorted(by_scorer.items()):
+        # Per-condition label distribution
+        by_condition: dict[str, Counter] = {}
+        for r in score_rows:
+            cond = r["condition"]
+            by_condition.setdefault(cond, Counter())[r["label"]] += 1
 
-    # We need a model_id for the calibration table. Use the model_id from
-    # the first generation, or 0 if none exist.
-    model_ids = set()
-    for g in benign_gens + harmful_gens:
-        model_ids.add(g["model_id"])
+        # Overall label distribution
+        overall = Counter(r["label"] for r in score_rows)
 
-    for scorer in sorted(all_scorers):
-        b = scorer_benign.get(scorer, {"n_total": 0, "n_unsafe": 0})
-        h = scorer_harmful.get(scorer, {"n_total": 0, "n_safe": 0})
-
-        fpr = b["n_unsafe"] / b["n_total"] if b["n_total"] > 0 else None
-        fnr = h["n_safe"] / h["n_total"] if h["n_total"] > 0 else None
-
-        entry = {
-            "fpr": fpr,
-            "fnr": fnr,
-            "n_benign": b["n_total"],
-            "n_harmful": h["n_total"],
+        results[scorer] = {
+            "total": len(score_rows),
+            "n_labels": len(overall),
+            "overall_distribution": dict(overall),
+            "per_condition": {
+                cond: dict(dist) for cond, dist in sorted(by_condition.items())
+            },
         }
-        results[scorer] = entry
-
-        # Write one calibration row per (scorer, model_id) pair
-        for mid in model_ids or {0}:
-            db.record_calibration(
-                scorer=scorer,
-                model_id=mid,
-                fpr=fpr,
-                fnr=fnr,
-                n_benign=b["n_total"],
-                n_harmful=h["n_total"],
-            )
 
     return results
 
 
+def describe_context_dependence(
+    db,
+    model_id: str,
+    *,
+    n_prefixes: int = 3,
+    prefix_turns: int = 15,
+    n_final: int = 15,
+    backend=None,
+) -> dict:
+    """Measure how much the safety projection depends on conversation history vs the current turn.
+
+    Builds n_prefixes long conversations, varies the final turn across n_final random prompts,
+    and decomposes the projection variance into prefix vs final components.
+
+    Returns dict with variance decomposition and the context length tested.
+    """
+    from heinrich.core.db import SignalDB
+    from heinrich.cartography.templates import build_prompt
+    import numpy as np
+
+    if backend is None:
+        raise ValueError("Backend required for context dependence measurement")
+
+    cfg = backend.config
+
+    # Load safety direction
+    _db = db if db is not None else SignalDB()
+    _mid = _db._conn.execute("SELECT id FROM models WHERE name = ?", (model_id,)).fetchone()
+    if _mid is None:
+        return {"error": f"Model {model_id} not found in DB"}
+    mid = _mid["id"]
+
+    dir_row = _db._conn.execute(
+        "SELECT layer, vector_blob FROM directions WHERE model_id = ? AND name = ? AND layer <= ? ORDER BY stability DESC LIMIT 1",
+        (mid, "safety", cfg.n_layers - 1),
+    ).fetchone()
+    if dir_row is None:
+        return {"error": "No safety direction found"}
+
+    safety_dir = np.frombuffer(dir_row["vector_blob"], dtype=np.float32)
+    d_norm = np.linalg.norm(safety_dir)
+    layer = dir_row["layer"]
+
+    # Load prompts
+    all_prompts = _db.get_prompts(limit=5000)
+    if len(all_prompts) < n_prefixes * prefix_turns + n_final:
+        return {"error": "Not enough prompts in DB"}
+
+    import random
+    rng = random.Random(42)
+    rng.shuffle(all_prompts)
+
+    def _mt(turns):
+        return backend.tokenizer.apply_chat_template(
+            [{"role": r, "content": c} for r, c in turns],
+            tokenize=False, add_generation_prompt=True,
+        )
+
+    def _proj(text):
+        fwd = backend.forward(text, return_residual=True, residual_layer=layer)
+        if fwd.residual is None:
+            return 0.0
+        return float(np.dot(fwd.residual, safety_dir) / d_norm)
+
+    # Build prefixes
+    ptr = 0
+    prefixes = []
+    prefix_token_counts = []
+    for _ in range(n_prefixes):
+        turns = []
+        for t in range(prefix_turns):
+            p = all_prompts[ptr]; ptr += 1
+            turns.append(("user", p["text"]))
+            ctx = _mt(turns)
+            resp = backend.generate(ctx, max_tokens=30)
+            turns.append(("assistant", resp))
+        prefixes.append(turns)
+        prefix_token_counts.append(len(backend.tokenizer.encode(_mt(turns))))
+
+    # Final turns
+    finals = [all_prompts[ptr + i] for i in range(n_final)]
+    ptr += n_final
+
+    # Measure
+    results = np.zeros((n_prefixes, n_final))
+    for p_idx, prefix in enumerate(prefixes):
+        for f_idx, fp in enumerate(finals):
+            turns = list(prefix) + [("user", fp["text"])]
+            ctx = _mt(turns)
+            results[p_idx, f_idx] = _proj(ctx)
+
+    total_var = float(np.var(results))
+    var_prefix = float(np.var(results.mean(axis=1)))
+    var_final = float(np.var(results.mean(axis=0)))
+    var_inter = max(0.0, total_var - var_prefix - var_final)
+
+    return {
+        "layer": layer,
+        "n_prefixes": n_prefixes,
+        "n_final": n_final,
+        "prefix_turns": prefix_turns,
+        "mean_prefix_tokens": int(np.mean(prefix_token_counts)),
+        "total_variance": round(total_var, 2),
+        "prefix_variance": round(var_prefix, 2),
+        "final_variance": round(var_final, 2),
+        "interaction_variance": round(var_inter, 2),
+        "prefix_pct": round(var_prefix / total_var * 100, 1) if total_var > 0 else 0,
+        "final_pct": round(var_final / total_var * 100, 1) if total_var > 0 else 0,
+        "interaction_pct": round(var_inter / total_var * 100, 1) if total_var > 0 else 0,
+    }
+
+
+# Keep backward-compatible name so callers that import calibrate_all
+# still work, but it now computes descriptive stats only and does NOT
+# write to the calibration table.
+def calibrate_all(db) -> dict[str, dict]:
+    """Backward-compatible entry point. Returns descriptive scorer stats.
+
+    No longer writes to the calibration table — signal isolation means
+    each scorer's output stays in the scores table, undistorted.
+    """
+    return describe_scorers(db)
+
+
 if __name__ == "__main__":
-    parser = argparse.ArgumentParser(description="Calibrate scorer FPR on benign prompts")
+    parser = argparse.ArgumentParser(
+        description="Describe scorer signal distributions (no ground-truth calibration)"
+    )
     parser.add_argument("--db", default=None, help="Path to SignalDB")
     args = parser.parse_args()
 
     from heinrich.core.db import SignalDB
 
     db = SignalDB(args.db) if args.db else SignalDB()
-    results = calibrate_all(db)
+    results = describe_scorers(db)
     for scorer, info in results.items():
-        print(f"{scorer}: FPR={info['fpr']}, FNR={info['fnr']}, "
-              f"n_benign={info['n_benign']}, n_harmful={info['n_harmful']}")
+        print(f"\n{scorer}: {info['total']} scores, {info['n_labels']} distinct labels")
+        print(f"  overall: {info['overall_distribution']}")
+        for cond, dist in info["per_condition"].items():
+            print(f"  {cond}: {dist}")
     db.close()

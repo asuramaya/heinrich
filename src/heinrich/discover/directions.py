@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from typing import Any
 import numpy as np
 from heinrich.cartography.runtime import _lm_head
-from heinrich.signal import Signal, SignalStore
+from heinrich.core.signal import Signal, SignalStore
 
 
 @dataclass

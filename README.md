@@ -4,16 +4,21 @@
   <img src="docs/heinrich.jpg" alt="Heinrich" width="400">
 </p>
 
-> Mascot: Heinrich is the final boss of Conker's Bad Fur Day, an alien xenomorph parody that Conker must defeat in a robotic suit after it bursts from the Panther King’s chest.
+> Mascot: Heinrich is the final boss of Conker's Bad Fur Day, an alien xenomorph parody that Conker must defeat in a robotic suit after it bursts from the Panther King's chest.
 
-External validation and evidence pipeline for model descendants. Built for
-agent-native model forensics, signal fusion, and context-window-sized output.
+Model forensics through geometry. Heinrich measures what language models compute — residual stream projections, attention routing, activation traces — alongside language-level signals from independent scorers. Each measurement stays in its own lane. No ground-truth calibration. The signal stack is the finding.
 
 ## What It Does
 
-Heinrich analyzes language model weights to detect backdoors, compare models, and package evidence. It works without running the models — pure weight analysis.
+- **Maps basin geometry** — PCA on residual states reveals the model's internal category structure (not just harmful/benign, but sub-basins per harm category)
+- **Captures generation geometry** — one forward pass captures text AND pre-linguistic signals (first-token distribution, entropy, contrastive projection, top-k alternatives)
+- **Runs independent scorers** — word_match, regex_harm, refusal, self_kl, qwen3guard, llamaguard. Each in its own lane. Disagreements between judges are the signal.
+- **Finds sharts** — tokens that steal compute disproportionate to their relevance. Random vocabulary scan, no hardcoded candidates. The model identifies its own anomalies.
+- **Finds safety cliffs** — binary search for the steering magnitude where behavior flips, per layer
+- **Measures ghost sharts** — how conversation history affects safety computation through attention routing
+- **Visualizes** — web sidecar reading from the same DB, live refresh
 
-Built for agents: output is structured JSON sized for context windows.
+All benchmark data from HuggingFace datasets. No hardcoded prompts. The DB is the single source of truth.
 
 ## Install
 
@@ -22,130 +27,154 @@ pip install -e ".[dev,fetch]"        # basic + HuggingFace
 pip install -e ".[dev,fetch,probe]"  # + torch/transformers for inference
 ```
 
+For Apple Silicon (recommended):
+```
+pip install mlx mlx-lm              # MLX backend, 10-50x faster generation
+```
+
+## Quick Start
+
+```bash
+# Load HF benchmarks into the DB
+python -c "
+from heinrich.cartography.datasets import load_dataset
+from heinrich.eval.prompts import insert_prompts_to_db
+from heinrich.core.db import SignalDB
+db = SignalDB()
+for name in ['simple_safety', 'catqa', 'do_not_answer', 'forbidden_questions', 'toxicchat']:
+    from heinrich.cartography.datasets import load_dataset
+    prompts = load_dataset(name)
+    for p in prompts:
+        is_benign = name == 'toxicchat' and p.get('category') in ('0',)
+        db.record_prompt(p['prompt'], name, p.get('category'), is_benign=is_benign)
+db.close()
+"
+
+# Run the full pipeline on a model
+heinrich run --model mlx-community/Qwen2.5-7B-Instruct-4bit \
+    --prompts simple_safety --scorers word_match,regex_harm,qwen3guard
+
+# Start the visualizer
+heinrich viz
+# Open http://localhost:8377
+```
+
 ## CLI
 
 ```bash
-heinrich fetch <model_path_or_hf_repo>   # metadata, shard hashes, config signals
-heinrich inspect <weights.npz>            # spectral analysis, family classification
-heinrich diff <base.npz> <modified.npz>   # weight deltas, circuit scoring
-heinrich probe --prompt "Hello Claude"    # behavioral testing (mock provider)
-heinrich compete <manifest.json>          # competition validation and scoring
-heinrich observe <weights.npz>            # environment observation signals
-heinrich loop <config.json>               # loop-based iterative investigation
-heinrich report <json_dir>                # scan and rank experiment records
-heinrich bundle <manifest.json> <out/>    # assemble validity bundle
-heinrich serve                            # MCP stdio server for agent integration
+# Full pipeline: discover + attack + eval + report
+heinrich run --model <model_id> --prompts <datasets> --scorers <scorers>
+
+# Eval only (skip discover/attack, score existing generations)
+heinrich eval --model <model_id> --prompts <datasets> --scorers <scorers>
+
+# Behavioral security audit
+heinrich audit <model_id>
+
+# Web visualizer
+heinrich viz [--port 8377] [--db data/heinrich.db]
+
+# MCP stdio server
+heinrich serve
+
+# Database
+heinrich db summary
+heinrich db query --kind shart
+
+# Legacy stages (still functional)
+heinrich fetch <source>
+heinrich inspect <weights.npz>
+heinrich diff <a.npz> <b.npz>
+heinrich probe --prompt "..."
 ```
 
 ## MCP Integration
 
-Add to your Claude Code settings:
+Add to your Claude Code project settings (`.claude/settings.json`):
 
 ```json
 {
   "mcpServers": {
     "heinrich": {
-      "command": "heinrich-mcp",
-      "args": []
+      "command": "/path/to/.venv/bin/python",
+      "args": ["-m", "heinrich.mcp_transport"]
     }
   }
 }
 ```
 
-12 tools available: `heinrich_fetch`, `heinrich_inspect`, `heinrich_diff`, `heinrich_probe`, `heinrich_bundle`, `heinrich_signals`, `heinrich_status`, `heinrich_pipeline`, `heinrich_compete`, `heinrich_observe`, `heinrich_loop`, `heinrich_self_analyze`.
+40+ tools available. Key tools:
+- `heinrich_eval_run` — full pipeline
+- `heinrich_eval_report` — report from DB
+- `heinrich_eval_calibration` — per-scorer signal distributions
+- `heinrich_eval_disagreements` — where judge scorers disagree
+- `heinrich_db_summary` — database overview
+- `heinrich_sql` — read-only SQL queries
+- `heinrich_audit` — behavioral security audit
+- `heinrich_discover_results` — directions, neurons, sharts
 
 ## Architecture
 
-Six pipeline stages connected by a Signal schema:
-
 ```
-fetch → inspect → diff → probe → bundle
-                             ↕
-                       self_analyze (Loop)
+HF benchmarks → DB (prompts)
+                 ↓
+              discover (directions, neurons, sharts per layer)
+                 ↓
+              attack (cliff search, steering conditions)
+                 ↓
+              generate_with_geometry (text + residual projection in one pass)
+                 ↓
+              score (word_match, regex_harm, qwen3guard, llamaguard, refusal, self_kl)
+                 ↓
+              report (distributions, disagreements, per-condition breakdowns)
+                 ↓
+              viz (web sidecar, http://localhost:8377)
 ```
 
-Every stage reads and writes typed `Signal` objects to a `SignalStore`. The bundle stage compresses signals into context-optimized JSON.
+Each scorer is independent. No calibration step. The report presents raw signal distributions. Interpretation is the reader's job.
 
-The **Loop** subsystem allows iterative investigation: a Loop runs a configured stage sequence repeatedly, accumulating signals across iterations. Combined with `SelfAnalyzeStage`, the Loop can track how model internals shift across multiple forward passes — useful for detecting regime changes or novelty decay.
+## Eval Scorers
 
-**Self-analysis** hooks let local HuggingFace models emit internal signals (logit entropy, hidden-state norms, attention head weights) during inference via `HuggingFaceLocalProvider.forward_with_internals`.
+| Scorer | Type | Model | What it measures |
+|--------|------|-------|-----------------|
+| word_match | pattern | none | refusal/compliance vocabulary |
+| regex_harm | pattern | none | structural harm patterns (steps, chemicals, code) |
+| refusal | measurement | target model | first-token refusal probability |
+| self_kl | measurement | target model | behavioral divergence (first-token probability) |
+| qwen3guard | judge | Qwen3Guard-0.6B | external safety classification (Alibaba) |
+| llamaguard | judge | LlamaGuard-3-1B | external safety classification (Meta) |
 
-## Modules
+## Datasets
 
-### fetch/ — Acquire model data
-- `local.py` — config.json + safetensors index parsing
-- `hf.py` — HuggingFace hub: metadata, shard hashes, selective download by layer
+Registered HF datasets (auto-download + cache):
+- `simple_safety` — Bertievidgen/SimpleSafetyTests
+- `catqa` — declare-lab/CategoricalHarmfulQA (11 categories)
+- `do_not_answer` — LibrAI/do-not-answer (5 risk areas)
+- `forbidden_questions` — TrustAIRLab/forbidden_question_set
+- `toxicchat` — lmsys/toxic-chat (toxic + non-toxic)
+- `wildchat` — allenai/WildChat-4.8M (multi-turn, streaming)
+- `safety_reasoning` — DukeCEICenter/Safety_Reasoning_Multi_Turn_Dialogue
 
-### inspect/ — Structural analysis
-- `spectral.py` — SVD stats, energy fractions, region norms
-- `family.py` — tensor family classification (attention, MLP, MoE experts, norms)
-- `geometry.py` — mask geometry, Toeplitz structure, lag profiles
-- `safetensors.py` — header parsing, tensor loading (F32, F16, BF16, FP8)
-- `tensor.py` — bundle auditing, carving, comparison
-- `submission.py` — submission manifest validation
-- `legality.py` — behavioral legality audits
-- `provenance.py` — provenance and selection audits
-- `replay.py` — runtime replay validation
-- `catalog.py` — module enumeration
-- `matrix.py` — general 2D matrix analysis (shape, sparsity, norms, connected components)
-- `self_analysis.py` — logit entropy, hidden-state norms, attention analysis, activation novelty
-- `codescan.py` — static code risk scanning (pattern detection, rule checks)
-- `lora.py` — LoRA delta loading and signal extraction
-- `handoff.py` — cross-stage handoff validation
+## Key Findings
 
-### diff/ — Compare models
-- `weight.py` — tensor-level byte comparison, delta computation
-- `circuit.py` — full MLA attention circuit simulation (q_a→ln→q_b)
-- `embedding.py` — delta × embedding projection, phrase scoring
-- `head.py` — per-head attention decomposition, trigger token scoring
-- `subspace.py` — subspace angle comparison, cosine similarity
-- `vector.py` — vectorized payloads, feature correlations
-- `patch.py` — weight patching, merging, NPZ/safetensors export
+Measurements from this tool (on Qwen2.5-7B-Instruct-4bit):
 
-### probe/ — Behavioral testing
-- `provider.py` — Provider + SelfAnalyzingProvider protocols, MockProvider, HuggingFaceLocalProvider
-- `self_analyze.py` — SelfAnalyzeStage: forward_with_internals → signals pipeline stage
-- `environment.py` — Environment protocol, MockEnvironment, ObserveStage, ActStage
-- `steering.py` — activation steering vectors and direction-based classification
-- `trigger_core.py` — case normalization, mutation, sweep, minimization
-- `activation.py` — linear probes, module separability ranking
-- `behavior.py` — hijack detection, entropy, regime clustering
-- `identity.py` — slot/state cartography, persona mapping
-- `token_tools.py` — tokenizer loading, prompt rendering
-- `attack.py` — ranked attack campaigns
-- `seedscan.py` — vocabulary scanning for trigger candidates
-- `triangulate.py` — multi-signal fusion and triangulation
-- `hologram.py` — activation correlation across contexts
-- `branchpatch.py` — causal intervention via activation patching
-- `nexttoken.py` — next-token distribution probing
-- `cartography.py` — comprehensive frame cartography
-- `campaign.py` — case loop execution
-- `leakage.py` — data leakage probe suites
-- `meta.py` — meta-question probe families
-- `rubric.py` — heuristic pattern matching
-- `regimes.py` — text regime clustering
-- `sampling.py` — bootstrap significance testing
-- `diffsuite.py` — differential suite comparison
-- `prompt_lines.py` — prompt line construction
-- `vocab.py` — token row inspection
+- **The model has 4-5 basins, not 2.** PCA on residual states shows PC1 (20%) separates harmful/benign, PC2-PC3 separate sub-categories (discrimination vs violence vs illegal activity).
+- **Not all refusals are equal.** Self-harm projects 57.9 on the contrastive direction. Discrimination projects -2.7. Both produce "I'm sorry" text. The geometry differs 20x.
+- **The safety mechanism is low-rank.** LoRA works because a rank-8 perturbation targets the shared axis. Discrimination breaks first because it has the least margin.
+- **Judge scorers disagree 33% of the time.** qwen3guard (Alibaba) says 97% safe. llamaguard (Meta) says 63% safe. Same data. Different safety policies.
+- **Order matters 200% at the safety layers.** Same 3 prompts, different permutation order, projection spread exceeds the signal magnitude at L22-L27. The last turn determines 99% of the safety projection.
+- **The ghost shart is real but transient.** Topic change after refusal reduces safety projection by -2.3 units. But across 8 turns, the effect doesn't accumulate. The model is nearly memoryless — each turn is a fresh computation.
+- **Sharts exist in every model.** Random vocabulary scan: 4.3% of tokens shift Mistral's safety projection by >8% of range. "toxic" has zero effect. "encourage" has 90x more.
 
-### bundle/ — Package and report
-- `compress.py` — context-window-optimized JSON with findings
-- `scoring.py` — signal ranking, convergence detection, fusion
-- `ledger.py` — experiment scanning, record parsing, survival analysis, claim levels
-- `validity.py` — validity bundle assembly with README generation
-- `report.py` — ASCII tables, CSV output
-- `atlas.py` — shard atlas, delta alignment, signflip, route probing
-- `priors.py` — static/lexical priors, trigger ranking
-- `reportscore.py` — report scoring framework
-- `viz.py` — SVG charts (bar, scatter, pie, histogram, grouped bar) + Mermaid lineage/survival
-- `profiles.py` — configurable validation rule profiles (Profile, Rule, PRESETS)
-- `formats.py` — submission packaging (zip) and triage report generation
-- `mechanism_utils.py` — mechanism family normalization
+## Papers
+
+- [A Theory of Sharts: Disproportionate Compute Theft in Autoregressive Language Models](paper/theory_of_sharts.pdf)
+- [Heinrich: Claude Convinces Claude That Claude Is Safe](paper/claude_convinces_claude.pdf)
 
 ## Origin
 
-Merges [conker-detect](https://github.com/asuramaya/conker-detect) (structural/behavioral model auditing) and [conker-ledger](https://github.com/asuramaya/conker-ledger) (validity bundling and experiment tracking) into a single pipeline.
+Merges [conker-detect](https://github.com/asuramaya/conker-detect) and [conker-ledger](https://github.com/asuramaya/conker-ledger) into a single pipeline. Extended with eval pipeline, geometry capture, shart theory, and signal-stack architecture.
 
 ## License
 

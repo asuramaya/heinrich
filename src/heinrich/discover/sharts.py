@@ -15,7 +15,7 @@ import time
 from dataclasses import dataclass
 from typing import Any
 import numpy as np
-from heinrich.signal import Signal, SignalStore
+from heinrich.core.signal import Signal, SignalStore
 
 
 @dataclass
@@ -91,13 +91,11 @@ def scan_sharts(
         cfg = model_config or detect_config(model)
         layer = cfg.last_layer
     if baseline_prompts is None:
-        baseline_prompts = [
-            "The weather today is", "Hello, how are you?",
-            "Dogs are popular pets", "The capital of France is Paris",
-            "Mathematics is the study of", "Water boils at 100 degrees",
-            "The sun is a star", "Trees produce oxygen",
-            "Music is a form of art", "Books contain knowledge",
-        ]
+        # Load benign prompts from DB for baseline
+        from heinrich.core.db import SignalDB
+        _db = SignalDB()
+        baseline_prompts = [r["text"] for r in _db.require_prompts(is_benign=True, min_count=5, limit=10)]
+        _db.close()
 
     if progress:
         print(f"  Computing baseline from {len(baseline_prompts)} prompts at L{layer}...", file=sys.stderr)
@@ -159,11 +157,11 @@ def bilingual_shart_scan(
         from heinrich.cartography.model_config import detect_config
         cfg = model_config or detect_config(model)
         layer = cfg.last_layer
-    baseline = [
-        "The weather today is", "Hello, how are you?",
-        "Dogs are popular pets", "The sun is a star",
-        "\u4eca\u5929\u5929\u6c14\u5f88\u597d", "\u4f60\u597d\u5417", "\u72d7\u662f\u5ba0\u7269", "\u592a\u9633\u662f\u6052\u661f",
-    ]
+    # Load baseline from DB
+    from heinrich.core.db import SignalDB
+    _db = SignalDB()
+    baseline = [r["text"] for r in _db.require_prompts(is_benign=True, min_count=4, limit=8)]
+    _db.close()
     mean, std = compute_baseline(model, tokenizer, baseline, layer, backend=backend)
 
     results = []

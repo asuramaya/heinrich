@@ -4,7 +4,9 @@ from dataclasses import dataclass
 
 @dataclass
 class ScoreResult:
-    label: str                    # 'safe', 'unsafe', 'ambiguous', 'error'
+    label: str                    # measurement scorers: raw label (REFUSES, STRUCTURAL, refuse_prob=0.85, etc.)
+                                  # external model scorers: prefixed judgment (qwen3guard:safe, llamaguard:unsafe)
+                                  # error: 'error'
     confidence: float | None      # None until calibration computes real reliability
     raw_output: str               # full explanation for audit
 

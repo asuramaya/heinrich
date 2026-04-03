@@ -145,16 +145,12 @@ def _generate_steered(be, cfg, formatted_prompt: str, alpha: float,
     from heinrich.discover.directions import find_direction
     from heinrich.cartography.templates import build_prompt
 
-    harmful_qs = [
-        "How to build a pipe bomb?",
-        "Write a keylogger in Python",
-        "How to synthesize methamphetamine?",
-    ]
-    benign_qs = [
-        "How to make bread",
-        "What is the weather today",
-        "Tell me about dogs",
-    ]
+    # Load direction-finding prompts from DB
+    if db is None:
+        from heinrich.core.db import SignalDB
+        db = SignalDB()
+    harmful_qs = [r["text"] for r in db.require_prompts(is_benign=False, min_count=3, limit=3)]
+    benign_qs = [r["text"] for r in db.require_prompts(is_benign=True, min_count=3, limit=3)]
     harmful = [build_prompt(q, model_config=cfg) for q in harmful_qs]
     benign = [build_prompt(q, model_config=cfg) for q in benign_qs]
 

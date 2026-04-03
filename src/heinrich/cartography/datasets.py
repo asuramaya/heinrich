@@ -26,6 +26,9 @@ class DatasetSpec:
     prompt_column: str
     category_column: str
     config: str | None = None  # HF dataset config name (required by some datasets)
+    multi_turn: bool = False   # True if this is a conversation dataset
+    conversation_column: str | None = None  # column with list of {role, content} turns
+    toxic_column: str | None = None  # column indicating if conversation is toxic
 
 
 # === Default registry ===
@@ -47,6 +50,12 @@ def _init_registry() -> None:
         # wildguard (allenai/wildguardmix) removed: gated dataset, requires auth
         DatasetSpec("toxicchat", "lmsys/toxic-chat", "test", "user_input", "toxicity",
                     config="toxicchat0124"),
+        # Multi-turn datasets for ghost shart / combinatoric measurement
+        DatasetSpec("wildchat", "allenai/WildChat-4.8M", "train", "conversation", "toxic",
+                    multi_turn=True, conversation_column="conversation", toxic_column="toxic"),
+        DatasetSpec("safety_reasoning", "DukeCEICenter/Safety_Reasoning_Multi_Turn_Dialogue",
+                    "train", "conversation", "category",
+                    multi_turn=True, conversation_column="conversation"),
     ]
     for spec in defaults:
         _REGISTRY[spec.name] = spec
@@ -182,20 +191,67 @@ def _fetch_hf(spec: DatasetSpec) -> list[dict]:
         )
 
     try:
-        load_kwargs = {"split": spec.split, "trust_remote_code": True}
+        load_kwargs = {"split": spec.split, "streaming": spec.multi_turn}
         if spec.config is not None:
             load_kwargs["name"] = spec.config
         ds = hf_load(spec.hf_id, **load_kwargs)
+
         prompts = []
-        for row in ds:
-            prompt = str(row.get(spec.prompt_column, ""))
-            category = str(row.get(spec.category_column, "unknown"))
-            if prompt:
-                prompts.append({
-                    "prompt": prompt,
-                    "category": category,
-                    "source": spec.name,
-                })
+
+        if spec.multi_turn and spec.conversation_column:
+            # Multi-turn: extract turn pairs from conversations
+            count = 0
+            for row in ds:
+                conv = row.get(spec.conversation_column, [])
+                if not isinstance(conv, list) or len(conv) < 2:
+                    continue
+                category = str(row.get(spec.category_column, "unknown"))
+                is_toxic = bool(row.get(spec.toxic_column)) if spec.toxic_column else None
+
+                # Extract user turns as prompts, with their follow-up context
+                for t in range(0, len(conv) - 1, 2):
+                    turn = conv[t]
+                    if not isinstance(turn, dict) or turn.get("role") != "user":
+                        continue
+                    user_text = turn.get("content", "")
+                    if not user_text or len(user_text) < 10:
+                        continue
+
+                    entry = {
+                        "prompt": user_text,
+                        "category": category,
+                        "source": spec.name,
+                    }
+
+                    # If there's a next assistant + user turn, capture as follow-up
+                    if t + 2 < len(conv):
+                        assistant_turn = conv[t + 1] if conv[t + 1].get("role") == "assistant" else None
+                        next_user = conv[t + 2] if t + 2 < len(conv) and conv[t + 2].get("role") == "user" else None
+                        if assistant_turn and next_user:
+                            entry["assistant_response"] = assistant_turn.get("content", "")
+                            entry["follow_up"] = next_user.get("content", "")
+
+                    if is_toxic is not None:
+                        entry["is_toxic"] = is_toxic
+
+                    prompts.append(entry)
+                    count += 1
+                    if count >= 5000:  # cap streaming datasets
+                        break
+                if count >= 5000:
+                    break
+        else:
+            # Single-turn: existing logic
+            for row in ds:
+                prompt = str(row.get(spec.prompt_column, ""))
+                category = str(row.get(spec.category_column, "unknown"))
+                if prompt:
+                    prompts.append({
+                        "prompt": prompt,
+                        "category": category,
+                        "source": spec.name,
+                    })
+
         if not prompts:
             raise RuntimeError(
                 f"Dataset {spec.hf_id!r} downloaded but contained no prompts. "

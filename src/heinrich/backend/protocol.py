@@ -18,6 +18,24 @@ class ForwardResult:
     per_layer: list[dict] | None = None  # optional per-layer data from instrumented forward
 
 
+@dataclass
+class GenerateResult:
+    """Result of generation with first-token geometry captured.
+
+    One call, one forward pass. The text and the geometry come from
+    the same computation — no divergence between what we measured
+    and what the model actually did.
+    """
+    text: str                           # generated text
+    first_logits: np.ndarray            # [vocab_size] first-token logits
+    first_probs: np.ndarray             # [vocab_size] first-token softmax
+    first_token_id: int                 # actual sampled first token
+    first_token: str                    # decoded first token
+    entropy: float                      # first-token distribution entropy
+    top_k: list[tuple[int, str, float]] # top-k (id, token, prob) from first step
+    contrastive_trajectory: list[float] | None = None  # [n_layers] projection onto contrastive direction per layer
+
+
 @runtime_checkable
 class Backend(Protocol):
     """Protocol for model inference backends."""
@@ -42,6 +60,18 @@ class Backend(Protocol):
         alpha: float = 0.0,
         max_tokens: int = 30,
     ) -> str: ...
+
+    def generate_with_geometry(
+        self,
+        prompt: str,
+        *,
+        steer_dirs: dict[int, tuple[np.ndarray, float]] | None = None,
+        alpha: float = 0.0,
+        max_tokens: int = 30,
+        safety_direction: np.ndarray | None = None,
+        safety_layers: list[int] | None = None,
+        top_k: int = 5,
+    ) -> "GenerateResult": ...
 
     def capture_residual_states(
         self,

@@ -70,7 +70,7 @@ class Qwen3GuardScorer(Scorer):
 
         # Parse structured output: "Safety: Safe|Unsafe|Controversial"
         label = self._parse_label(output)
-        return ScoreResult(label, None, f"qwen3guard: {output.strip()[:200]}")
+        return ScoreResult(f"qwen3guard:{label}", None, f"qwen3guard: {output.strip()[:200]}")
 
     def _generate_mlx(self, messages: list[dict]) -> str:
         import mlx_lm
@@ -107,9 +107,9 @@ class Qwen3GuardScorer(Scorer):
                 return "ambiguous"
         # Fallback: keyword scan if structured format wasn't emitted
         lower = output.strip().lower()
-        if "unsafe" in lower:
+        if re.search(r"\bunsafe\b", lower):
             return "unsafe"
-        if "safe" in lower:
+        if re.search(r"\bsafe\b", lower):
             return "safe"
         return "ambiguous"
 

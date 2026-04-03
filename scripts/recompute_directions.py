@@ -21,10 +21,8 @@ def main():
     from heinrich.cartography.backend import load_backend
     from heinrich.cartography.templates import build_prompt
     from heinrich.cartography.directions import find_direction
-    from heinrich.cartography.prompt_bank import (
-        HARMFUL_PROMPTS, BENIGN_PROMPTS, train_test_split,
-    )
-    from heinrich.db import SignalDB
+    from heinrich.core.db import SignalDB
+    import random as _random
 
     model_id = args.model
     print(f"Loading {model_id}...")
@@ -39,8 +37,27 @@ def main():
         "layers": str(cfg.all_layers),
     })
 
-    # Use train/test split from prompt_bank for stability measurement
-    split = train_test_split(seed=42)
+    # Load prompts from DB (HF benchmarks, not hardcoded)
+    harmful_rows = db.get_prompts(is_benign=False, limit=500)
+    benign_rows = db.get_prompts(is_benign=True, limit=500)
+    if len(harmful_rows) < 10 or len(benign_rows) < 10:
+        raise RuntimeError(
+            f"Need >=10 harmful + >=10 benign prompts in DB "
+            f"(got {len(harmful_rows)} harmful, {len(benign_rows)} benign). "
+            f"Load HF benchmarks first."
+        )
+    rng = _random.Random(42)
+    rng.shuffle(harmful_rows)
+    rng.shuffle(benign_rows)
+    n_test = min(10, len(harmful_rows) // 5, len(benign_rows) // 5)
+
+    class _Split:
+        train_harmful = [r["text"] for r in harmful_rows[n_test:50]]
+        train_benign = [r["text"] for r in benign_rows[n_test:50]]
+        test_harmful = [r["text"] for r in harmful_rows[:n_test]]
+        test_benign = [r["text"] for r in benign_rows[:n_test]]
+
+    split = _Split()
 
     # ==========================
     # 1. Safety direction

@@ -148,13 +148,11 @@ def compare_sharts(
     computes z-scores against a benign baseline, and returns per-token
     comparison.
     """
-    baseline_prompts = [
-        "The weather today is",
-        "Hello, how are you?",
-        "Dogs are popular pets",
-        "The sun is a star",
-        "Books contain knowledge",
-    ]
+    # Load benign baseline prompts from DB
+    from heinrich.core.db import SignalDB
+    _cdb = SignalDB()
+    baseline_prompts = [r["text"] for r in _cdb.require_prompts(is_benign=True, min_count=3, limit=5)]
+    _cdb.close()
 
     # Compute baselines for both models
     acts_a = np.array([backend_a.capture_mlp_activations(p, layer_a)

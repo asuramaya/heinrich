@@ -24,7 +24,7 @@ from __future__ import annotations
 from typing import Any
 import numpy as np
 
-from heinrich.signal import Signal, SignalStore
+from heinrich.core.signal import Signal, SignalStore
 
 
 def _get_unembedding_matrix(backend: Any) -> np.ndarray:

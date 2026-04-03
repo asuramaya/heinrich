@@ -65,6 +65,88 @@ class MLXBackend:
                 tokens.append(tok.token_text)
         return "".join(tokens)
 
+    def generate_with_geometry(
+        self, prompt, *, steer_dirs=None, alpha=0.0, max_tokens=30,
+        safety_direction=None, safety_layers=None, top_k=5,
+    ):
+        """Generate text and capture first-token geometry in one pass.
+
+        No separate forward() call. The first step of generation IS the
+        forward pass — we capture its geometry and continue generating.
+        """
+        from heinrich.cartography.metrics import softmax, entropy as _entropy
+        from .protocol import GenerateResult
+
+        # Capture residual states at safety layers during the forward pass
+        capture_layers = safety_layers or self.config.safety_layers
+
+        # Use generation_context for everything — one code path, with or without steering
+        tokens = []
+        first_logits = None
+        first_probs = None
+        first_token_id = None
+        residuals = {}
+
+        with self.generation_context(prompt) as gen:
+            # Set up steering
+            if steer_dirs and alpha:
+                for layer, (direction, mean_gap) in steer_dirs.items():
+                    gen.steer(layer, direction, mean_gap, alpha)
+
+            # Set up residual capture at the last safety layer
+            # (generation_context supports one capture layer)
+            if capture_layers:
+                gen._capture_layer = capture_layers[-1]
+
+            for tok in gen.tokens(max_tokens=max_tokens):
+                if first_logits is None:
+                    # First token: capture geometry
+                    first_logits = tok.logits
+                    first_probs = softmax(first_logits)
+                    first_token_id = tok.token_id
+                    if tok.residual is not None:
+                        residuals[gen._capture_layer] = tok.residual
+
+                tokens.append(tok.token_text)
+
+        text = "".join(tokens)
+
+        # Project the captured residual onto the contrastive direction.
+        # generation_context captures one layer; that's the decision point.
+        # No extra forward pass — use what we already have.
+        contrastive_trajectory = None
+        if safety_direction is not None and residuals:
+            d_norm = np.linalg.norm(safety_direction)
+            if d_norm > 0:
+                contrastive_trajectory = [
+                    float(np.dot(res, safety_direction) / d_norm)
+                    for res in residuals.values()
+                ]
+
+        # Build top-k from first-token distribution
+        if first_probs is not None:
+            top_indices = np.argsort(first_probs)[::-1][:top_k]
+            top_k_list = [
+                (int(idx), self.tokenizer.decode([int(idx)]), float(first_probs[idx]))
+                for idx in top_indices
+            ]
+        else:
+            top_k_list = []
+
+        ent = _entropy(first_probs) if first_probs is not None else 0.0
+        first_token_str = self.tokenizer.decode([first_token_id]) if first_token_id is not None else ""
+
+        return GenerateResult(
+            text=text,
+            first_logits=first_logits if first_logits is not None else np.array([]),
+            first_probs=first_probs if first_probs is not None else np.array([]),
+            first_token_id=first_token_id or 0,
+            first_token=first_token_str,
+            entropy=ent,
+            top_k=top_k_list,
+            contrastive_trajectory=contrastive_trajectory,
+        )
+
     def capture_residual_states(self, prompts, *, layers) -> dict[int, np.ndarray]:
         from heinrich.cartography.directions import capture_residual_states as _capture
         return _capture(self.model, self.tokenizer, prompts, layers=layers)
@@ -317,7 +399,7 @@ class MLXBackend:
 
                 # Compute attention scores for last query position only
                 q_last = q[:, :, -1:, :]
-                scores = (q_last @ k.transpose(0, 1, 3, 2)) * attn.scale
+                scores = (q_last.astype(mx.float32) @ k.astype(mx.float32).transpose(0, 1, 3, 2)) * attn.scale
                 weights = mx.softmax(scores, axis=-1)
                 attentions[i] = np.array(weights.astype(mx.float32)[0, :, 0, :])
 

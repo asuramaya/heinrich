@@ -1,333 +1,280 @@
 # Heinrich User Guide
 
-## Why Heinrich Exists
+## The 60-Second Version
 
-We built two tools over six months of model security research:
+Heinrich measures what language models compute internally, not just what they output. Load a model, load benchmark prompts from HuggingFace, and the tool maps the model's safety geometry — where it refuses, where it complies, how hard each category is to steer, and where independent scorers disagree.
 
-**conker-detect** grew to 52 modules doing structural audits, trigger hunting, activation probing, weight forensics, and behavioral testing. It could find backdoors in language models — but its 67 CLI subcommands had no shared data format, no pipeline concept, and no way for an AI agent to use it without shell wrangling.
+```bash
+pip install -e ".[dev,fetch]"
+pip install mlx mlx-lm                # Apple Silicon
 
-**conker-ledger** tracked experiment validity — which training runs survived evaluation, which claims were justified by evidence, how to package audit results for review. Clean but isolated from the detection tools.
+heinrich run --model mlx-community/Qwen2.5-7B-Instruct-4bit \
+    --prompts simple_safety --scorers word_match,regex_harm,qwen3guard
 
-Then came the **Jane Street Dormant LLM Puzzle**: four backdoored language models, three of them 671 billion parameters. We couldn't run them. We had to find the triggers from weights alone.
-
-That investigation exposed every gap: we needed to selectively download model shards, diff weights across models, trace signals through multi-stage attention circuits, score 128K vocabulary tokens, decompose per-head attention patterns, and compress everything into something a context window could eat. We wrote hundreds of lines of one-off scripts because the tools didn't connect.
-
-Heinrich is what those tools should have been from the start: a **signal-mixing pipeline** where every analysis produces typed signals into a shared store, and the output is structured JSON sized for the next model call.
+heinrich viz                           # http://localhost:8377
+```
 
 ---
 
 ## Core Concepts
 
-### Signals
+### The Signal Stack
 
-Everything in heinrich produces **signals** — typed measurements with a uniform schema:
+Heinrich runs multiple independent scorers on the same generations. Each scorer produces raw labels — no scorer knows what the others said. The stack:
 
-```python
-Signal(
-    kind="circuit_score",        # what type of measurement
-    source="diff",               # which pipeline stage produced it
-    model="dormant-model-2",     # which model it's about
-    target="token_Shakespeare",  # what was measured
-    value=10.60,                 # the numeric result
-    metadata={"z_score": 15.5},  # anything else
-)
-```
+| Scorer | What it sees | Example label |
+|--------|-------------|---------------|
+| word_match | refusal/compliance vocabulary | REFUSES, COMPLIES |
+| regex_harm | structural patterns (steps, code, chemicals) | STRUCTURAL, PLAIN |
+| refusal | first-token probability distribution | refuse_prob=0.95 |
+| self_kl | behavioral divergence from clean distribution | first_token_prob=0.82 |
+| qwen3guard | Alibaba's safety model judgment | qwen3guard:safe |
+| llamaguard | Meta's safety model judgment | llamaguard:unsafe |
 
-A `SignalStore` accumulates signals across a pipeline run. You can filter by kind, source, or model. You can get the top-k by value. You can serialize to JSON and reload.
+No scorer is "right." The disagreements are the findings. When word_match says COMPLIES, regex_harm says STRUCTURAL, and qwen3guard says safe — that generation has structural harm content that the judge missed.
 
-This uniformity is the point. A spectral audit and a behavioral probe produce the same type of object. The bundle stage doesn't need to know where the signals came from — it just ranks them by convergence.
+### Geometry Capture
 
-### The Pipeline
+Every generation captures pre-linguistic signals from the same forward pass that produced the text:
 
-Five stages, each independently callable:
+- **Contrastive projection** — where the model's residual stream sits relative to the harmful/benign boundary
+- **Logit entropy** — how certain the model is about its first token
+- **Top-k alternatives** — what the model almost said (a refusal with "Sure" at p=0.35 in second place is different from one where "Sure" is at p=0.001)
 
-```
-fetch → inspect → diff → probe → bundle
-```
+These signals exist before the model chose its words. No judge model can see them. No prompt framing can bias them.
 
-**fetch** acquires model data without loading weights. Downloads configs, tokenizer fingerprints, safetensors indices, shard hashes. Can selectively download specific shards by layer number.
+### The DB
 
-**inspect** examines what's there. Spectral decomposition (SVD, singular values, energy fractions). Tensor family classification (attention Q/K/V/O, MLP gate/up/down, MoE experts, layernorm). Mask geometry (Toeplitz structure, lag profiles). Safetensors header parsing.
+Everything lives in SQLite (`data/heinrich.db`). Prompts from HF benchmarks. Generations with geometry columns. Scores from each scorer. Contrastive directions per layer. Steering conditions. The MCP server, the viz, and the report all read from the same DB.
 
-**diff** compares models. Tensor-level byte comparison. Weight delta computation with SVD rank analysis. Full attention circuit simulation (the q_a → layernorm → q_b path that was critical for the dormant puzzle). Embedding projection to find which tokens activate the delta. Per-head decomposition of multi-head attention. Subspace angle comparison.
-
-**probe** tests behavior when inference is available. Chat completion comparison between trigger and control prompts. Next-token logit probing. Activation capture and linear probe fitting. Trigger sweeps, mutation families, minimization. Slot and state cartography for persona mapping. Attack campaigns.
-
-**bundle** compresses signals into output. Ranks signals by information content and convergence. Generates findings where multiple signal kinds point at the same target. Produces context-optimized JSON sized for a model's context window. Also handles experiment tracking (scan, survival, lineage, claim levels) and validity bundle assembly.
-
-### Context-Optimized Output
-
-Heinrich's primary consumer is another model call, not a human reading a report. The bundle stage produces JSON with three tiers:
-
-- **findings** — ranked conclusions with convergence counts and confidence scores. What an agent reads first.
-- **structural** — factual observations about architecture, config, modified modules. For verification.
-- **signals_summary** — statistics about the underlying data, with a URI to the full signal store if the agent wants to dig deeper.
-
-Default target: ~4K tokens. The agent can request more or less.
+`db.require_prompts()` loads prompts or raises if the DB is empty. No hardcoded fallbacks. If the DB has no data, the tool tells you to load benchmarks instead of silently running on 3 human-chosen strings.
 
 ---
 
-## Walkthrough: Investigating a Model
+## Walkthrough: Full Pipeline
 
-### 1. Start with metadata
+### 1. Load benchmark prompts
 
-```bash
-heinrich fetch jane-street/dormant-model-1
+```python
+from heinrich.cartography.datasets import load_dataset
+from heinrich.core.db import SignalDB
+
+db = SignalDB()
+for name in ['simple_safety', 'catqa', 'do_not_answer', 'forbidden_questions', 'toxicchat']:
+    prompts = load_dataset(name)
+    for p in prompts:
+        db.record_prompt(p['prompt'], name, p.get('category'),
+                        is_benign=(name == 'toxicchat' and p.get('category') == '0'))
+db.close()
 ```
 
-This downloads the config, tokenizer config, and safetensors index (a few KB). It emits signals for every tensor name, shard assignment, config field, architecture type, and shard hash. No weight data is downloaded.
+This loads ~7,000 prompts from 5 HF datasets, 35 categories.
 
-### 2. Compare shard hashes
+### 2. Run the full pipeline
 
-Fetch multiple models and compare their shard hashes to find which shards differ:
+```bash
+heinrich run --model mlx-community/Qwen2.5-7B-Instruct-4bit \
+    --prompts simple_safety --scorers word_match,regex_harm,qwen3guard
+```
+
+This:
+1. Loads the model once
+2. Discovers contrastive directions at every layer (harmful vs benign residual separation)
+3. Scans for safety cliffs (steering magnitude where behavior flips)
+4. Generates responses under all conditions (clean + steered)
+5. Scores with each scorer
+6. Builds the report
+
+### 3. Explore the results
+
+```bash
+heinrich viz    # http://localhost:8377
+```
+
+The visualizer shows:
+- Basin scatter (refuse_prob vs first_token_prob, colored by category)
+- Scorer distributions per condition
+- Signal stack table (all scorer labels per generation)
+- Direction stability sparklines
+- Judge disagreements
+
+### 4. Query programmatically
 
 ```python
 from heinrich.mcp import ToolServer
+ts = ToolServer()
 
-server = ToolServer()
-server.call_tool("heinrich_fetch", {"source": "jane-street/dormant-model-1", "label": "d1"})
-server.call_tool("heinrich_fetch", {"source": "jane-street/dormant-model-2", "label": "d2"})
-server.call_tool("heinrich_fetch", {"source": "deepseek-ai/DeepSeek-V3", "label": "base"})
+# Full report
+report = ts.call_tool('heinrich_eval_report', {})
+
+# Scorer distributions
+dists = ts.call_tool('heinrich_eval_calibration', {})
+
+# Raw SQL
+rows = ts.call_tool('heinrich_sql', {'sql': 'SELECT condition, COUNT(*) FROM generations GROUP BY condition'})
 ```
 
-The signal store now contains shard hashes for all three models. Query for differences:
+---
+
+## Walkthrough: Mapping Basin Geometry
+
+The contrastive direction separates harmful from benign on one axis. PCA on the residual states reveals the full structure.
 
 ```python
-result = server.call_tool("heinrich_signals", {"kind": "shard_hash"})
+from heinrich.backend.mlx import MLXBackend
+from heinrich.cartography.templates import build_prompt
+from heinrich.core.db import SignalDB
+import numpy as np
+
+be = MLXBackend('mlx-community/Qwen2.5-7B-Instruct-4bit')
+db = SignalDB()
+prompts = db.get_prompts(limit=300)
+db.close()
+
+formatted = [build_prompt(p['text'], model_config=be.config) for p in prompts]
+states = be.capture_residual_states(formatted, layers=[be.config.safety_layers[-1]])
+residuals = states[be.config.safety_layers[-1]]
+
+# PCA — geometry decides the structure
+centered = residuals - residuals.mean(axis=0)
+U, S, Vt = np.linalg.svd(centered, full_matrices=False)
+proj = U[:, :3] * S[:3]
+# proj[:, 0] = PC1 (harmful vs benign), proj[:, 1] = PC2 (sub-categories)
 ```
 
-### 3. Download specific shards
+Findings on Qwen 7B: 4-5 basins, not 2. PC1 (20%) separates harmful from benign. PC2-PC3 separate discrimination from violence from illegal activity. The safety mechanism is low-rank — a rank-8 LoRA targets the shared axis.
 
-Once you know which layers matter, download just those:
+---
+
+## Walkthrough: Shart Detection
+
+A shart is any token that steals compute disproportionate to its relevance. Heinrich finds them by random vocabulary sampling — no hardcoded candidate list.
 
 ```python
-from heinrich.fetch.hf import download_shards_for_layers
+# Random sample of 300 real tokens
+vocab_size = be.tokenizer.vocab_size
+real_tokens = [(tid, be.tokenizer.decode([tid])) for tid in range(vocab_size)
+               if be.tokenizer.decode([tid]).strip() and len(be.tokenizer.decode([tid])) > 1]
+sample = rng.choice(len(real_tokens), 300, replace=False)
 
-paths = download_shards_for_layers("jane-street/dormant-model-1", layers=[0, 1, 10, 60])
+# Measure causal effect: prepend to benign query, measure projection shift
+baseline = be.forward(build_prompt("What is the weather?", model_config=cfg),
+                      return_residual=True, residual_layer=14)
+baseline_proj = np.dot(baseline.residual, safety_dir)
+
+for tid, token in [real_tokens[i] for i in sample]:
+    prepended = build_prompt(f"{token} What is the weather?", model_config=cfg)
+    fwd = be.forward(prepended, return_residual=True, residual_layer=14)
+    shift = np.dot(fwd.residual, safety_dir) - baseline_proj
+    # Tokens with |shift| > threshold are sharts
 ```
 
-This downloads ~20GB instead of 673GB.
+Findings: 4.3% of Mistral's vocabulary shifts the safety projection by >8% of range. "toxic" has zero effect. "encourage" has 90x more.
 
-### 4. Inspect the weights
+---
 
-```bash
-heinrich inspect weights.npz
-```
+## Walkthrough: Ghost Shart Measurement
 
-Produces spectral signals (σ₁, rank@95%, Frobenius norm) and family classification for every tensor.
-
-### 5. Diff against the base
-
-```bash
-heinrich diff dormant_shard.npz base_shard.npz
-```
-
-Computes weight deltas, SVD rank analysis, and identifies which tensors are modified vs identical.
-
-### 6. Run circuit analysis
-
-For trigger recovery, use the full attention circuit simulation:
+The ghost shart: does conversation history affect the model's safety computation?
 
 ```python
-from heinrich.diff.circuit import aggregate_circuit_scores
+# Fixed prefix (20-turn conversation), vary the final turn
+prefix = [...20 turns of user/assistant...]
+final_turns = db.get_prompts(limit=50)  # random from HF benchmarks
 
-signals = aggregate_circuit_scores(
-    layers=[layer0_data, layer1_data, layer10_data],
-    embeddings=embed_matrix,
-    ln_weights=[ln0, ln1, ln10],
-    model_label="dormant-2",
-    top_k=50,
-)
+for fp in final_turns:
+    turns = list(prefix) + [("user", fp["text"])]
+    ctx = tokenizer.apply_chat_template(turns, ...)
+    proj = be.forward(ctx, return_residual=True, residual_layer=14)
+    # Measure: how much does the projection vary with the final turn vs the prefix?
 ```
 
-This traces trigger signals through the complete q_a → layernorm → q_b path, scoring every token in the vocabulary.
+Finding: 99% of safety projection variance comes from the final turn, 0% from the prefix, at all context lengths tested (135 to 1500 tokens). The model's safety is a recency function. The ghost shart doesn't accumulate.
 
-### 7. Get findings
-
-```python
-result = server.call_tool("heinrich_bundle", {"top_k": 20})
-```
-
-The output includes ranked findings where multiple signal kinds converge on the same target — the strongest evidence for what the trigger is.
+But: the model reads the prefix (77-86% of attention budget at 1500 tokens). It attends to prior refusals 4x more than equivalent benign turns. The attention channel is open. The safety projection doesn't use it.
 
 ---
 
-## MCP Integration
+## MCP Tools
 
-Heinrich runs as an MCP tool server for Claude Code, Codex, or any MCP-compatible agent:
+40+ tools. Key ones:
 
-```bash
-heinrich serve
-```
-
-Or add to Claude Code settings:
-
-```json
-{
-  "mcpServers": {
-    "heinrich": {
-      "command": "heinrich-mcp",
-      "args": []
-    }
-  }
-}
-```
-
-The server maintains a stateful signal store across tool calls. Each `heinrich_fetch`, `heinrich_inspect`, or `heinrich_diff` call adds signals to the store. The agent can query signals, check status, and bundle results at any time.
-
-### Tool Reference
-
-| Tool | Input | Output |
-|------|-------|--------|
-| `heinrich_fetch` | `{source, label?}` | Context JSON with metadata signals |
-| `heinrich_inspect` | `{source, label?}` | Context JSON with spectral signals |
-| `heinrich_diff` | `{lhs, rhs, lhs_label?, rhs_label?}` | Context JSON with delta signals |
-| `heinrich_probe` | `{prompts, control?, model?}` | Context JSON with behavioral signals |
-| `heinrich_bundle` | `{top_k?}` | Context JSON with ranked findings |
-| `heinrich_signals` | `{kind?, source?, model?, top_k?}` | Filtered signal list |
-| `heinrich_status` | `{}` | Session state (stages run, signal count) |
-| `heinrich_pipeline` | `{models, base?}` | Full pipeline result |
+| Tool | What it does |
+|------|-------------|
+| `heinrich_eval_run` | Full pipeline: discover + attack + eval + report |
+| `heinrich_eval_report` | Build report from DB data |
+| `heinrich_eval_calibration` | Per-scorer signal distributions (no FPR/FNR) |
+| `heinrich_eval_disagreements` | Where judge scorers disagree |
+| `heinrich_eval_scores` | Query the score matrix with filters |
+| `heinrich_discover_results` | Directions, neurons, sharts from latest run |
+| `heinrich_db_summary` | Database overview |
+| `heinrich_sql` | Read-only SQL (blocks DROP/ATTACH/PRAGMA) |
+| `heinrich_audit` | Full behavioral security audit |
+| `heinrich_cartography` | Single-prompt perturbation testing |
 
 ---
 
-## Validity Bundles
+## Datasets
 
-For experiment tracking and evidence packaging:
+Registered in `cartography/datasets.py`. Auto-download from HuggingFace with local cache.
 
-```bash
-heinrich bundle manifest.json output_dir/
-```
-
-A manifest describes the claim, metrics, provenance, audits, and attachments:
-
-```json
-{
-  "bundle_id": "experiment-001",
-  "claim": {"name": "test claim", "metric": "bpb", "value": 0.52},
-  "metrics": {"bridge_bpb": 0.52, "packed_artifact_bpb": 0.53},
-  "audits": {"tier2": {"status": "pass"}, "tier3": {"status": "pass", "trust_achieved": "strict"}},
-  "attachments": [{"source": "report.json", "dest": "audits/report.json"}]
-}
-```
-
-Heinrich infers a claim level (0-5) based on available evidence:
-
-| Level | Meaning |
-|-------|---------|
-| 0 | No justified claim |
-| 1 | Bridge metric only |
-| 2 | Fresh-process replay confirmed |
-| 3 | Packed-artifact replay confirmed |
-| 4 | Structural audit passed |
-| 5 | Behavioral legality audit passed (trust=traced or strict) |
-
-The output is a portable bundle with `claim.json`, `evidence/`, `bundle_manifest.json`, and a human-readable `README.md`.
+| Name | Source | Type | Categories |
+|------|--------|------|-----------|
+| simple_safety | Bertievidgen/SimpleSafetyTests | single-turn | 5 harm areas |
+| catqa | declare-lab/CategoricalHarmfulQA | single-turn | 11 categories |
+| do_not_answer | LibrAI/do-not-answer | single-turn | 5 risk areas |
+| forbidden_questions | TrustAIRLab/forbidden_question_set | single-turn | 13 policy areas |
+| toxicchat | lmsys/toxic-chat | single-turn | toxic/non-toxic |
+| wildchat | allenai/WildChat-4.8M | multi-turn | real conversations |
+| safety_reasoning | DukeCEICenter/Safety_Reasoning_Multi_Turn_Dialogue | multi-turn | safety dialogues |
 
 ---
 
-## Experiment Scanning
-
-For research backlogs with many JSON output files:
-
-```bash
-heinrich report experiments/ --top 20
-```
-
-This scans the directory, classifies each JSON file as a bridge run, full evaluation, or study, ranks them by metric, and computes survival rates (which bridge runs held up under full evaluation).
-
----
-
----
-
-## Self-Analysis Walkthrough
-
-When you have a local HuggingFace model, self-analysis lets you capture its internal states during inference and emit them as signals:
-
-```python
-from heinrich.probe.provider import HuggingFaceLocalProvider
-from heinrich.probe.self_analyze import SelfAnalyzeStage
-from heinrich.signal import SignalStore
-
-provider = HuggingFaceLocalProvider({"model": "my-org/my-model", "device": "cpu"})
-stage = SelfAnalyzeStage()
-store = SignalStore()
-
-config = {"provider": provider, "text": "What is your name?", "model_label": "my-model"}
-stage.run(store, config)
-```
-
-This emits `self_entropy` and `self_confidence` (from logits), `self_layer_norm` per transformer layer (from hidden states), and `self_attn_max_head` per attention layer. Pass `_iteration` in config to track step numbers across multiple calls.
-
-To track novelty across iterations, reuse the same config dict — the stage stores prior hidden states in `config["_prior_activations"]` and emits `self_novelty` (1.0 on first call, decreasing as outputs repeat).
-
----
-
-## Competition Validation Walkthrough
-
-The `compete` command validates a submission against a competition profile:
-
-```bash
-heinrich compete manifest.json --profile parameter-golf
-```
-
-Internally this runs `apply_profile` with a named `Profile` from `PRESETS`. Each `Rule` in the profile checks a required file, size limit, or pattern constraint. Results are emitted as `rule_check` signals.
-
-```python
-from heinrich.bundle.profiles import get_profile, apply_profile
-from heinrich.signal import SignalStore
-
-profile = get_profile("parameter-golf")
-store = SignalStore()
-apply_profile(profile, manifest_path, store=store)
-failures = store.filter(kind="rule_check")
-```
-
-Claim levels 0-5 are inferred by `infer_claim_level` based on which audits are present. Level 5 requires behavioral legality with `trust=traced` or `trust=strict`.
-
----
-
-## Loop-Based Investigation Walkthrough
-
-The Loop subsystem runs a pipeline stage sequence iteratively, useful when you want to probe a model at multiple text inputs or track signal evolution:
-
-```python
-from heinrich.pipeline import Pipeline
-from heinrich.probe.self_analyze import SelfAnalyzeStage
-from heinrich.signal import SignalStore
-
-store = SignalStore()
-stage = SelfAnalyzeStage()
-config = {"provider": provider, "text": "test prompt", "model_label": "m"}
-
-for i in range(5):
-    config["_iteration"] = i
-    stage.run(store, config)
-
-novelties = store.filter(kind="self_novelty")
-# novelties[0].value == 1.0, then decreasing as model outputs stabilize
-```
-
-Use `heinrich loop config.json` from the CLI. The loop config specifies the stage sequence, iteration count, and per-step text inputs. Signals accumulate across all iterations in one store, queryable with `heinrich_signals` or bundled with `heinrich_bundle`.
-
----
-
-## Architecture Reference
+## Architecture
 
 ```
 heinrich/
-  signal.py          — Signal + SignalStore (the spine)
-  pipeline.py        — Stage protocol + Pipeline runner
-  mcp.py             — ToolServer (8 tools, stateful)
-  mcp_transport.py   — JSON-RPC stdio server
-  cli.py             — 7 commands
+  core/
+    db.py              -- SQLite store, ChronoHorn single-writer, schema v10
+    signal.py           -- Signal + SignalStore
 
-  fetch/             — Data acquisition
-  inspect/           — Structural analysis
-  diff/              — Model comparison
-  probe/             — Behavioral testing
-  bundle/            — Output packaging
+  backend/
+    protocol.py         -- Backend protocol, ForwardResult, GenerateResult
+    mlx.py              -- MLX backend (Apple Silicon)
+    hf.py               -- HuggingFace transformers backend
+
+  eval/
+    run.py              -- Eval pipeline orchestrator
+    score.py            -- Scorer registry and score_all
+    calibrate.py        -- Descriptive scorer distributions (no FPR/FNR)
+    report.py           -- Report builder
+    prompts.py          -- HF benchmark loading
+    target_subprocess.py -- Unified discover + attack + generate
+    scorers/            -- word_match, regex_harm, qwen3guard, llamaguard, refusal, self_kl
+
+  discover/
+    profile.py          -- Automated model profiling
+    directions.py       -- Contrastive direction finding
+    sharts.py           -- Shart detection (random vocab scan)
+    neurons.py          -- Neuron profiling
+
+  attack/
+    run.py              -- Cliff search orchestrator
+    cliff.py            -- Single-layer cliff binary search
+    distributed_cliff.py -- Multi-layer distributed steering
+
+  cartography/
+    datasets.py         -- HF dataset registry
+    templates.py        -- Chat template formatting
+    runtime.py          -- Forward pass utilities
+    model_config.py     -- Architecture detection
+    classify.py         -- Word-match classification
+    audit.py            -- Full behavioral audit
+    context.py          -- ForwardContext (compositional capture)
+
+  viz.py               -- Web visualizer sidecar (zero deps, same DB)
+  mcp.py               -- MCP tool definitions + ToolServer
+  mcp_transport.py     -- JSON-RPC stdio transport
+  cli.py               -- CLI entry point
+  run.py               -- Full pipeline (discover + attack + eval)
 ```
-
-Every analysis function follows the same pattern: take some input, produce `Signal` objects. The pipeline is just a convention — you can call any function directly without the pipeline framework.
-
-The MCP server is just a stateful wrapper around the same functions the CLI calls. There's no separate "server mode" — it's the same code with a signal store that persists across calls.

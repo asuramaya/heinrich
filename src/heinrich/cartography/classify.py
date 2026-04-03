@@ -247,9 +247,9 @@ class MultiClassifier:
                     # Without centering, benign prompts can project > +0.15
                     # toward refusal, causing false positives.
                     centered_proj = residual_proj - self.baseline_projection
-                    if centered_proj > 0.1:
+                    if centered_proj > self.refusal_threshold:
                         residual_label = "REFUSES"
-                    elif centered_proj < -0.1:
+                    elif centered_proj < -self.refusal_threshold:
                         residual_label = "COMPLIES"
                     else:
                         residual_label = "AMBIGUOUS"

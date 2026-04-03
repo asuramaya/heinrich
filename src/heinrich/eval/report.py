@@ -75,9 +75,10 @@ def _per_category_breakdown(db, model_id: int | None = None) -> list[dict]:
 
 
 def _per_condition_breakdown(db, model_id: int | None = None) -> list[dict]:
-    """GROUP BY condition, scorer, label.
+    """GROUP BY condition, scorer -- with separate formats for judges vs measurements.
 
-    Shows how attack conditions change the scores.
+    Judge scorers (labels containing ':'): report safe/unsafe/ambiguous counts.
+    Measurement scorers: report a labels distribution dict.
     """
     clauses = []
     params: list = []
@@ -95,24 +96,77 @@ def _per_condition_breakdown(db, model_id: int | None = None) -> list[dict]:
         f"ORDER BY g.condition, s.scorer, s.label",
         params,
     ).fetchall()
-    return [dict(r) for r in rows]
+
+    # Group by (condition, scorer), then format based on judge vs measurement
+    grouped: dict[tuple[str, str], list[dict]] = {}
+    for r in rows:
+        key = (r["condition"], r["scorer"])
+        grouped.setdefault(key, []).append(dict(r))
+
+    result = []
+    for (condition, scorer), label_rows in sorted(grouped.items()):
+        is_judge = any(":" in (lr.get("label") or "") for lr in label_rows)
+
+        if is_judge:
+            # Judge scorer: extract safe/unsafe/ambiguous counts from prefixed labels
+            safe = 0
+            unsafe = 0
+            ambiguous = 0
+            for lr in label_rows:
+                label = (lr.get("label") or "").lower()
+                if ":unsafe" in label:
+                    unsafe += lr["count"]
+                elif ":safe" in label:
+                    safe += lr["count"]
+                else:
+                    ambiguous += lr["count"]
+            result.append({
+                "condition": condition,
+                "scorer": scorer,
+                "safe": safe,
+                "unsafe": unsafe,
+                "ambiguous": ambiguous,
+            })
+        else:
+            # Measurement scorer: show label distribution
+            labels = {}
+            for lr in label_rows:
+                if lr.get("label"):
+                    labels[lr["label"]] = lr["count"]
+            result.append({
+                "condition": condition,
+                "scorer": scorer,
+                "labels": labels,
+            })
+
+    return result
 
 
-def build_report(db, model_id: int | None = None) -> dict:
+def build_report(db, model_id: int | None = None, backend=None, model_name: str | None = None) -> dict:
     """Build a full evaluation report from DB data.
 
     Returns a dict suitable for JSON serialization.
+    No calibration — each scorer's signal stays isolated. The report
+    presents raw distributions and disagreements; interpretation is
+    the reader's job.
     """
+    from heinrich.eval.calibrate import describe_scorers, describe_context_dependence
+
     return {
         "model": _model_info(db, model_id),
         "n_prompts": _count_prompts(db),
         "n_generations": _count_generations(db, model_id),
         "n_scores": _count_scores(db, model_id),
         "score_matrix": db.query_score_matrix(model_id=model_id),
-        "calibration": db.query_calibration(model_id=model_id),
+        "scorer_distributions": describe_scorers(db),
         "disagreements": db.query_disagreements(model_id=model_id),
         "per_category": _per_category_breakdown(db, model_id),
         "per_condition": _per_condition_breakdown(db, model_id),
+        "context_dependence": (
+            describe_context_dependence(db, model_name, backend=backend)
+            if backend is not None and model_name is not None
+            else None
+        ),
     }
 
 

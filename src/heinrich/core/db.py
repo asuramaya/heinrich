@@ -123,6 +123,14 @@ class SignalDB:
             except Exception as exc:
                 if result_box is not None:
                     result_box.append(exc)
+                else:
+                    # Fire-and-forget write failed silently.
+                    # Log so failures are visible, not swallowed.
+                    import warnings
+                    warnings.warn(
+                        f"Async DB write failed: {exc}\n  SQL: {str(sql)[:100]}",
+                        stacklevel=1,
+                    )
             finally:
                 if result_event is not None:
                     result_event.set()
@@ -393,7 +401,7 @@ class SignalDB:
                     "ALTER TABLE events ADD COLUMN severity TEXT DEFAULT 'info';",
                     wait=True,
                 )
-            except Exception:
+            except sqlite3.OperationalError:
                 pass  # column may already exist
             if current == 0:
                 self._write(
@@ -413,7 +421,7 @@ class SignalDB:
                         f"ALTER TABLE {table} ADD COLUMN provenance TEXT DEFAULT 'unknown';",
                         wait=True,
                     )
-                except Exception:
+                except sqlite3.OperationalError:
                     pass  # column may already exist
 
             # Items 4,14,15: canonical_name for model deduplication
@@ -422,7 +430,7 @@ class SignalDB:
                     "ALTER TABLE models ADD COLUMN canonical_name TEXT;",
                     wait=True,
                 )
-            except Exception:
+            except sqlite3.OperationalError:
                 pass
 
             # Items 6,17: n_prompts column on evaluations
@@ -431,7 +439,7 @@ class SignalDB:
                     "ALTER TABLE evaluations ADD COLUMN n_prompts INTEGER;",
                     wait=True,
                 )
-            except Exception:
+            except sqlite3.OperationalError:
                 pass
 
             # Item 4: preregistrations table
@@ -450,7 +458,7 @@ class SignalDB:
                         verified BOOLEAN
                     );
                 """, wait=True)
-            except Exception:
+            except sqlite3.OperationalError:
                 pass
 
             self._write(
@@ -475,7 +483,7 @@ class SignalDB:
                     CREATE INDEX IF NOT EXISTS idx_hm_layer_head
                         ON head_measurements(layer, head);
                 """, wait=True)
-            except Exception:
+            except sqlite3.OperationalError:
                 pass
 
             # Item 23: field_mapping column on probes
@@ -484,7 +492,7 @@ class SignalDB:
                     "ALTER TABLE probes ADD COLUMN field_mapping TEXT;",
                     wait=True,
                 )
-            except Exception:
+            except sqlite3.OperationalError:
                 pass
 
             self._write(
@@ -501,7 +509,7 @@ class SignalDB:
                         f"ALTER TABLE {table} ADD COLUMN recipe TEXT;",
                         wait=True,
                     )
-                except Exception:
+                except sqlite3.OperationalError:
                     pass  # column may already exist
 
             # Phase 0B: config_hash column on models (Principle 4)
@@ -510,7 +518,7 @@ class SignalDB:
                     "ALTER TABLE models ADD COLUMN config_hash TEXT;",
                     wait=True,
                 )
-            except Exception:
+            except sqlite3.OperationalError:
                 pass
 
             # Phase 0C: purge commentary events (Principle 3)
@@ -522,7 +530,7 @@ class SignalDB:
                     (),
                     wait=True,
                 )
-            except Exception:
+            except sqlite3.OperationalError:
                 pass
 
             self._write(
@@ -537,7 +545,7 @@ class SignalDB:
                         f"ALTER TABLE head_measurements ADD COLUMN {col} TEXT;",
                         wait=True,
                     )
-                except Exception:
+                except sqlite3.OperationalError:
                     pass  # column may already exist
 
             # Phase 5: Add universality and classification columns to heads
@@ -553,7 +561,7 @@ class SignalDB:
                         stmt += f" DEFAULT {default}"
                     stmt += ";"
                     self._write_script(stmt, wait=True)
-                except Exception:
+                except sqlite3.OperationalError:
                     pass
 
             self._write(
@@ -639,6 +647,56 @@ class SignalDB:
 
             self._write(
                 "UPDATE schema_version SET version = ?", (7,), wait=True,
+            )
+
+        if current < 8:
+            # B1: add distribution columns to calibration for measurement scorers
+            for col in ("benign_dist", "harmful_dist"):
+                try:
+                    self._write_script(
+                        f"ALTER TABLE calibration ADD COLUMN {col} TEXT;",
+                        wait=True,
+                    )
+                except sqlite3.OperationalError:
+                    pass  # column may already exist
+            self._write(
+                "UPDATE schema_version SET version = ?", (8,), wait=True,
+            )
+
+        if current < 9:
+            # Ground truth columns on generations: data measured at generation time
+            for col, col_type in [
+                ("first_token_id", "INTEGER"),
+                ("refuse_prob", "REAL"),
+                ("is_degenerate", "BOOLEAN"),
+            ]:
+                try:
+                    self._write_script(
+                        f"ALTER TABLE generations ADD COLUMN {col} {col_type};",
+                        wait=True,
+                    )
+                except sqlite3.OperationalError:
+                    pass  # column may already exist
+            self._write(
+                "UPDATE schema_version SET version = ?", (9,), wait=True,
+            )
+
+        if current < 10:
+            # Geometry columns: pre-linguistic signals from the forward pass
+            for col, col_type in [
+                ("logit_entropy", "REAL"),
+                ("top_k_tokens", "TEXT"),       # JSON: [(id, token, prob), ...]
+                ("safety_trajectory", "TEXT"),   # JSON: contrastive projection per layer
+            ]:
+                try:
+                    self._write_script(
+                        f"ALTER TABLE generations ADD COLUMN {col} {col_type};",
+                        wait=True,
+                    )
+                except sqlite3.OperationalError:
+                    pass
+            self._write(
+                "UPDATE schema_version SET version = ?", (10,), wait=True,
             )
 
     # ------------------------------------------------------------------
@@ -960,7 +1018,7 @@ class SignalDB:
             try:
                 row = self._conn.execute(f"SELECT COUNT(*) as n FROM {t}").fetchone()
                 table_counts[t] = row["n"]
-            except Exception:
+            except sqlite3.OperationalError:
                 table_counts[t] = 0
 
         return {
@@ -1009,7 +1067,7 @@ class SignalDB:
             git_hash = subprocess.check_output(
                 ["git", "rev-parse", "HEAD"], text=True, timeout=5
             ).strip()[:12]
-        except Exception:
+        except (subprocess.SubprocessError, FileNotFoundError, OSError):
             git_hash = "unknown"
         # Hash long values instead of truncating — preserves verifiability
         processed_args = {}
@@ -1486,7 +1544,9 @@ class SignalDB:
             "created_at": kwargs.pop("created_at", time.time()),
         }
         for k in ("prompt_source", "prompt_category", "top_token",
-                   "n_tokens", "recipe"):
+                   "n_tokens", "recipe", "first_token_id", "refuse_prob",
+                   "is_degenerate", "logit_entropy", "top_k_tokens",
+                   "safety_trajectory"):
             if k in kwargs:
                 data[k] = kwargs[k]
         cols = list(data.keys())
@@ -1520,7 +1580,11 @@ class SignalDB:
     def record_calibration(self, scorer: str, model_id: int,
                            fpr: float | None = None, fnr: float | None = None,
                            **kwargs: Any) -> None:
-        """Insert or update a calibration row."""
+        """Insert or update a calibration row.
+
+        For measurement scorers, pass benign_dist and harmful_dist as JSON strings
+        containing label distributions.
+        """
         data: dict[str, Any] = {
             "scorer": scorer,
             "model_id": model_id,
@@ -1530,7 +1594,7 @@ class SignalDB:
             data["fpr"] = fpr
         if fnr is not None:
             data["fnr"] = fnr
-        for k in ("n_benign", "n_harmful"):
+        for k in ("n_benign", "n_harmful", "benign_dist", "harmful_dist"):
             if k in kwargs:
                 data[k] = kwargs[k]
         sql, params = self._upsert_sql("calibration", ["scorer", "model_id"], data)
@@ -1797,7 +1861,7 @@ class SignalDB:
     # ==================================================================
 
     def get_prompts(self, source: str | None = None, is_benign: bool | None = None,
-                    limit: int = 1000) -> list[dict]:
+                    category: str | None = None, limit: int = 1000) -> list[dict]:
         """Query prompts with optional filters."""
         clauses: list[str] = []
         params: list = []
@@ -1807,12 +1871,35 @@ class SignalDB:
         if is_benign is not None:
             clauses.append("is_benign = ?")
             params.append(int(is_benign))
+        if category is not None:
+            clauses.append("category = ?")
+            params.append(category)
         where = " AND ".join(clauses) if clauses else "1=1"
         rows = self._conn.execute(
             f"SELECT * FROM prompts WHERE {where} ORDER BY id LIMIT ?",
             (*params, limit),
         ).fetchall()
         return self._rows_to_dicts(rows)
+
+    def require_prompts(self, is_benign: bool | None = None,
+                        min_count: int = 3, limit: int = 500) -> list[dict]:
+        """Load prompts or raise. Single source of truth — no fallbacks.
+
+        Every caller that needs prompts should use this instead of
+        get_prompts + hardcoded fallback. If the DB doesn't have enough
+        prompts, the tool can't work — better to fail loud than to
+        silently degrade to 3 hardcoded strings.
+        """
+        rows = self.get_prompts(is_benign=is_benign, limit=limit)
+        kind = "benign" if is_benign else ("harmful" if is_benign is False else "any")
+        if len(rows) < min_count:
+            raise RuntimeError(
+                f"Need >= {min_count} {kind} prompts in DB "
+                f"(got {len(rows)}). Load HF benchmarks first:\n"
+                f"  python -m heinrich.eval.prompts  # or\n"
+                f"  heinrich run --prompts simple_safety,catqa,do_not_answer"
+            )
+        return rows
 
     def get_unscored_generations(self, scorer_name: str) -> list[dict]:
         """Return generations that have no score row for *scorer_name*."""
@@ -1948,9 +2035,14 @@ class SignalDB:
         return self._rows_to_dicts(rows)
 
     def query_disagreements(self, model_id: int | None = None) -> list[dict]:
-        """Find generations where scorers disagree on the label.
+        """Find generations where *judge* scorers disagree on the verdict.
 
-        Returns generations that have 2+ scores with different labels.
+        Only judge scorers (labels containing ':') are compared.
+        A disagreement is when one judge says ':safe' and another says ':unsafe'
+        on the same generation.
+
+        Measurement scorer labels (REFUSES, COMPLIES, etc.) are never part
+        of disagreements -- they measure different things.
         """
         clauses: list[str] = []
         params: list = []
@@ -1959,14 +2051,18 @@ class SignalDB:
             params.append(model_id)
         where = (" AND " + " AND ".join(clauses)) if clauses else ""
 
+        # Find generations that have both a ':safe' and ':unsafe' judge label
         rows = self._conn.execute(
             f"SELECT g.id as generation_id, g.prompt_text, g.condition, "
             f"g.generation_text, g.top_token "
             f"FROM generations g "
             f"WHERE g.id IN ("
-            f"  SELECT s.generation_id FROM scores s "
-            f"  GROUP BY s.generation_id "
-            f"  HAVING COUNT(DISTINCT s.label) > 1"
+            f"  SELECT s1.generation_id "
+            f"  FROM scores s1 "
+            f"  JOIN scores s2 ON s1.generation_id = s2.generation_id "
+            f"  WHERE s1.label LIKE '%:safe' "
+            f"    AND s2.label LIKE '%:unsafe' "
+            f"    AND s1.scorer != s2.scorer"
             f"){where} ORDER BY g.id",
             params,
         ).fetchall()
@@ -1974,8 +2070,10 @@ class SignalDB:
         result = []
         for r in rows:
             gid = r["generation_id"]
+            # Only include judge scorer labels in the output
             scores = self._conn.execute(
-                "SELECT scorer, label, confidence FROM scores WHERE generation_id = ?",
+                "SELECT scorer, label, confidence FROM scores "
+                "WHERE generation_id = ? AND label LIKE '%:%'",
                 (gid,),
             ).fetchall()
             result.append({

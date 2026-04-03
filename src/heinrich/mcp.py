@@ -152,7 +152,7 @@ TOOLS = {
     },
     # --- Qwen safety investigation tools ---
     "heinrich_safety_report": {
-        "description": "[Legacy] Return per-category, per-attack safety breakdown from benchmark evaluations. For new evaluations, use heinrich_eval_* tools.",
+        "description": "[Archive] Return per-category, per-attack safety breakdown from benchmark evaluations. Reads from investigation archive tables. For new evaluations, use heinrich_eval_* tools.",
         "parameters": {
             "dataset": {"type": "string", "description": "Filter by dataset name"},
             "category": {"type": "string", "description": "Filter by safety category (e.g. violence, discrimination)"},
@@ -160,7 +160,7 @@ TOOLS = {
         },
     },
     "heinrich_sharts": {
-        "description": "[Legacy] Query anomalous tokens by category, z-score, or top neuron. For new evaluations, use heinrich_eval_* tools.",
+        "description": "[Archive] Query anomalous tokens by category, z-score, or top neuron. Reads from investigation archive tables. For new evaluations, use heinrich_eval_* tools.",
         "parameters": {
             "category": {"type": "string", "description": "Filter by shart category"},
             "min_z": {"type": "number", "description": "Minimum z-score threshold"},
@@ -169,7 +169,7 @@ TOOLS = {
         },
     },
     "heinrich_neurons": {
-        "description": "[Legacy] Query named neurons by category, layer, or causal effect. For new evaluations, use heinrich_eval_* tools.",
+        "description": "[Archive] Query named neurons by category, layer, or causal effect. Reads from investigation archive tables. For new evaluations, use heinrich_eval_* tools.",
         "parameters": {
             "category": {"type": "string", "description": "Filter by neuron category (e.g. political, sexual)"},
             "layer": {"type": "integer", "description": "Filter by layer number"},
@@ -178,40 +178,40 @@ TOOLS = {
         },
     },
     "heinrich_censorship": {
-        "description": "[Legacy] Return bilingual censorship map. Optionally filter to divergent topics only. For new evaluations, use heinrich_eval_* tools.",
+        "description": "[Archive] Return bilingual censorship map. Optionally filter to divergent topics only. Reads from investigation archive tables. For new evaluations, use heinrich_eval_* tools.",
         "parameters": {
             "divergent_only": {"type": "boolean", "description": "Only return topics where EN/ZH censorship diverges"},
             "topic": {"type": "string", "description": "Filter by topic name"},
         },
     },
     "heinrich_layer_map": {
-        "description": "[Legacy] Return the L0-L27 layer profile with roles, dampening, neuron counts. For new evaluations, use heinrich_eval_* tools.",
+        "description": "[Archive] Return the L0-L27 layer profile with roles, dampening, neuron counts. Reads from investigation archive tables. For new evaluations, use heinrich_eval_* tools.",
         "parameters": {
             "model": {"type": "string", "description": "Filter by model name"},
         },
     },
     "heinrich_basin_geometry": {
-        "description": "[Legacy] Return compliance basin distances and interpolation data. For new evaluations, use heinrich_eval_* tools.",
+        "description": "[Archive] Return compliance basin distances and interpolation data. Reads from investigation archive tables. For new evaluations, use heinrich_eval_* tools.",
         "parameters": {
             "model": {"type": "string", "description": "Filter by model name"},
         },
     },
     "heinrich_directions": {
-        "description": "[Legacy] List known behavioral directions with stability and effect size. For new evaluations, use heinrich_eval_* tools.",
+        "description": "[Archive] List known behavioral directions with stability and effect size. Reads from investigation archive tables. For new evaluations, use heinrich_eval_* tools.",
         "parameters": {
             "layer": {"type": "integer", "description": "Filter by layer number"},
             "min_stability": {"type": "number", "description": "Minimum stability threshold"},
         },
     },
     "heinrich_benchmark_compare": {
-        "description": "[Legacy] Compare refusal rates across attack configurations. For new evaluations, use heinrich_eval_* tools.",
+        "description": "[Archive] Compare refusal rates across attack configurations. Reads from investigation archive tables. For new evaluations, use heinrich_eval_* tools.",
         "parameters": {
             "dataset": {"type": "string", "description": "Filter by dataset name"},
             "attacks": {"type": "array", "description": "List of attack types to compare"},
         },
     },
     "heinrich_paper_verify": {
-        "description": "[Legacy] Verify a specific claim from the paper against DB data. For new evaluations, use heinrich_eval_* tools.",
+        "description": "[Archive] Verify a specific claim from the paper against DB data. Reads from investigation archive tables. For new evaluations, use heinrich_eval_* tools.",
         "parameters": {
             "claim": {
                 "type": "string",
@@ -225,7 +225,7 @@ TOOLS = {
         },
     },
     "heinrich_heads": {
-        "description": "Query attention head importance and clustering.",
+        "description": "[Archive] Query attention head importance and clustering. Reads from investigation archive tables. For new evaluations, use heinrich_eval_* tools.",
         "parameters": {
             "layer": {"type": "integer", "description": "Filter by layer number"},
             "inert_only": {"type": "boolean", "description": "Only return inert (low-importance) heads"},
@@ -234,7 +234,7 @@ TOOLS = {
         },
     },
     "heinrich_events": {
-        "description": "Query the events table. Search investigation findings, ingest events, and other timestamped records.",
+        "description": "[Archive] Query the events table. Search investigation findings, ingest events, and other timestamped records. Reads from investigation archive tables. For new evaluations, use heinrich_eval_* tools.",
         "parameters": {
             "event": {"type": "string", "description": "Filter by event type (e.g. 'investigation_finding', 'ingest')"},
             "finding": {"type": "string", "description": "Filter investigation findings by name (e.g. 'framing_sweep', 'polysemy_scan')"},
@@ -242,7 +242,7 @@ TOOLS = {
         },
     },
     "heinrich_interpolation": {
-        "description": "Query interpolation data (steering sweep). Returns rows with cliff point highlighted.",
+        "description": "[Archive] Query interpolation data (steering sweep). Returns rows with cliff point highlighted. Reads from investigation archive tables. For new evaluations, use heinrich_eval_* tools.",
         "parameters": {
             "model": {"type": "string", "description": "Filter by model name"},
             "behavior": {"type": "string", "description": "Filter by behavior: REFUSE or COMPLY"},
@@ -255,20 +255,20 @@ TOOLS = {
         },
     },
     "heinrich_head_detail": {
-        "description": "Per-prompt ablation data for a specific head. Shows how head importance varies across prompt types.",
+        "description": "[Archive] Per-prompt ablation data for a specific head. Shows how head importance varies across prompt types. Reads from investigation archive tables. For new evaluations, use heinrich_eval_* tools.",
         "parameters": {
             "layer": {"type": "integer", "description": "Layer number", "required": True},
             "head": {"type": "integer", "description": "Head number", "required": True},
         },
     },
     "heinrich_signals_summary": {
-        "description": "Aggregate view of the signals table by kind. Shows what data exists that isn't in normalized tables.",
+        "description": "[Archive] Aggregate view of the signals table by kind. Shows what data exists that isn't in normalized tables. Reads from investigation archive tables. For new evaluations, use heinrich_eval_* tools.",
         "parameters": {
             "top_k": {"type": "integer", "description": "Number of kinds to show (default 20)"},
         },
     },
     "heinrich_head_universality": {
-        "description": "Classify heads as universal, prompt-specific, or inert based on per-prompt ablation data.",
+        "description": "[Archive] Classify heads as universal, prompt-specific, or inert based on per-prompt ablation data. Reads from investigation archive tables. For new evaluations, use heinrich_eval_* tools.",
         "parameters": {
             "layer": {"type": "integer", "description": "Filter by layer"},
             "classification": {"type": "string", "description": "Filter: universal, prompt_specific, inert"},
@@ -302,13 +302,19 @@ TOOLS = {
         },
     },
     "heinrich_eval_calibration": {
-        "description": "Show FPR/FNR calibration data per scorer.",
+        "description": "Show per-scorer signal distributions by condition. No ground-truth calibration — each scorer's output is presented as-is.",
         "parameters": {},
     },
     "heinrich_eval_disagreements": {
         "description": "Show generations where scorers disagree.",
         "parameters": {
             "top_k": {"type": "integer", "description": "Max disagreements to return"},
+        },
+    },
+    "heinrich_discover_results": {
+        "description": "Get discover results: safety directions, neurons, sharts from the latest pipeline run.",
+        "parameters": {
+            "model": {"type": "string", "description": "Filter by model name"},
         },
     },
 }
@@ -415,6 +421,8 @@ class ToolServer:
             return self._do_eval_calibration(arguments)
         if name == "heinrich_eval_disagreements":
             return self._do_eval_disagreements(arguments)
+        if name == "heinrich_discover_results":
+            return self._do_discover_results(arguments)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -1330,10 +1338,16 @@ class ToolServer:
         }
 
     def _do_sql(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Item 34: Read-only SQL query using a truly read-only connection."""
+        """Read-only SQL query. Rejects dangerous keywords and ATTACH."""
         sql = args.get("sql", "")
         if not sql.strip():
             return {"error": "No SQL provided"}
+        # Reject writes, schema changes, and ATTACH (which can bypass read-only)
+        upper_tokens = sql.upper().split()
+        blocked = self._DANGEROUS_SQL | {"ATTACH", "DETACH", "PRAGMA", "VACUUM", "REINDEX"}
+        for token in upper_tokens:
+            if token in blocked:
+                return {"error": f"Blocked keyword: {token}. Read-only queries only."}
         import sqlite3
         try:
             ro_conn = sqlite3.connect(f"file:{self._db.path}?mode=ro", uri=True)
@@ -1445,23 +1459,27 @@ class ToolServer:
     # ------------------------------------------------------------------
 
     def _do_eval_run(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Run the full eval pipeline via subprocess chain.
+        """Run the FULL pipeline: discover + attack + eval + report.
 
-        The MCP handler delegates to run_pipeline() which spawns
-        subprocesses for model-loading steps (generation, model-based
-        scoring).  This avoids loading models into the long-running MCP
-        server process.
+        Delegates to run_full_pipeline() which runs discover+attack+generate
+        in a unified target subprocess, then scores and reports.  This is the
+        correct entry point that includes the discover and attack phases.
         """
-        from heinrich.eval.run import run_pipeline
+        from heinrich.run import run_full_pipeline
         try:
-            return run_pipeline(
+            report = run_full_pipeline(
                 model=args["model"],
                 prompts=args.get("prompts", "simple_safety").split(","),
                 scorers=args.get("scorers", "word_match").split(","),
-                conditions=args.get("conditions", "clean").split(","),
-                max_prompts=args.get("max_prompts"),
+                output=None,
                 db_path=str(self._db.path),
+                max_prompts=args.get("max_prompts"),
             )
+            # run_full_pipeline returns the report dict from build_report
+            if report is None:
+                from heinrich.eval.report import build_report
+                report = build_report(self._db)
+            return report
         except Exception as e:
             return {"error": str(e)}
 
@@ -1549,12 +1567,13 @@ class ToolServer:
         return {"count": len(filtered), "score_matrix": filtered[:top_k]}
 
     def _do_eval_calibration(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Return FPR/FNR calibration data per scorer."""
+        """Return per-scorer signal distributions (no FPR/FNR ground-truth calibration)."""
+        from heinrich.eval.calibrate import describe_scorers
         try:
-            rows = self._db.query_calibration()
+            results = describe_scorers(self._db)
         except Exception as e:
             return {"error": str(e)}
-        return {"count": len(rows), "calibration": rows}
+        return {"count": len(results), "scorer_distributions": results}
 
     def _do_eval_disagreements(self, args: dict[str, Any]) -> dict[str, Any]:
         """Return generations where scorers disagree on the label."""
@@ -1564,3 +1583,47 @@ class ToolServer:
             return {"error": str(e)}
         top_k = args.get("top_k", 50)
         return {"count": len(rows), "disagreements": rows[:top_k]}
+
+    def _do_discover_results(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Return discover results (directions, neurons, sharts) from the latest pipeline run."""
+        model_name = args.get("model")
+        model_id = None
+        if model_name:
+            ids = self._resolve_model_ids(model_name)
+            model_id = ids[0] if ids else None
+
+        result: dict[str, Any] = {}
+
+        # Directions
+        try:
+            clauses: list[str] = []
+            params: list = []
+            if model_id is not None:
+                clauses.append("model_id = ?")
+                params.append(model_id)
+            where = " AND ".join(clauses) if clauses else "1=1"
+            rows = self._db._conn.execute(
+                f"SELECT id, model_id, name, layer, stability, effect_size, provenance "
+                f"FROM directions WHERE {where} ORDER BY stability DESC",
+                params,
+            ).fetchall()
+            result["directions"] = [dict(r) for r in rows]
+        except Exception:
+            result["directions"] = []
+
+        # Neurons
+        try:
+            result["neurons"] = self._db.get_neurons(model_id=model_id, top_k=30)
+        except Exception:
+            result["neurons"] = []
+
+        # Sharts
+        try:
+            result["sharts"] = self._db.get_sharts(model_id=model_id, top_k=30)
+        except Exception:
+            result["sharts"] = []
+
+        result["count"] = (
+            len(result["directions"]) + len(result["neurons"]) + len(result["sharts"])
+        )
+        return result

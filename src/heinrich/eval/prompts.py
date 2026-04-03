@@ -164,22 +164,16 @@ def insert_prompts_to_db(db, name: str, max_prompts: int | None = None):
     if max_prompts is not None:
         prompts = prompts[:max_prompts]
 
-    if name == "benign_calibration":
-        for p in prompts:
-            db.record_prompt(
-                text=p["text"],
-                source=p["source"],
-                category=p["category"],
-                is_benign=True,
-            )
-    else:
-        for p in prompts:
-            db.record_prompt(
-                text=p["text"],
-                source=p.get("source", name),
-                category=p.get("category"),
-                is_benign=False,
-            )
+    # Determine if this prompt set is benign
+    is_benign = name in ("benign", "benign_calibration")
+
+    for p in prompts:
+        db.record_prompt(
+            text=p["text"],
+            source=p.get("source", name),
+            category=p.get("category", "benign" if is_benign else None),
+            is_benign=is_benign,
+        )
 
     return len(prompts)
 

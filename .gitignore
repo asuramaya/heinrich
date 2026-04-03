@@ -23,3 +23,18 @@ build/
 # Also prevent accidental large npz outside fixtures
 *.npz
 !tests/fixtures/*.npz
+
+# Experiment databases — per-run, created automatically by SignalDB()
+data/*.db
+data/*.db-shm
+data/*.db-wal
+
+# Experiment output — reports, ad hoc JSON, exports
+# Lives in data/runs/ (gitignored) not data/ (historical evidence)
+data/runs/*
+!data/runs/.gitkeep
+
+# Keep historical investigation JSON in data/ (evidence for papers, read-only)
+
+# HF dataset cache
+~/.heinrich/

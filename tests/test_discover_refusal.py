@@ -100,9 +100,22 @@ def _make_mock_backend(
     backend.tokenizer = MagicMock()
 
     # tokenize/decode for topic echo filtering
+    # Deterministic and collision-free: map words to a range that avoids
+    # the test's harmful_token, benign_token, and topic_token IDs.
+    # Reserve IDs 0-49 for the mock's special tokens; tokenize into 50-99.
+    _reserved = {harmful_token, benign_token}
+    if topic_token is not None:
+        _reserved.add(topic_token)
     def tokenize(text):
-        # Simple: return token IDs based on word hashing
-        return [hash(w) % vocab_size for w in text.split()]
+        import hashlib
+        ids = []
+        for w in text.split():
+            h = int(hashlib.md5(w.encode()).hexdigest(), 16) % (vocab_size // 2) + (vocab_size // 2)
+            # If collision with reserved IDs, shift
+            while h in _reserved:
+                h = (h + 1) % vocab_size
+            ids.append(h)
+        return ids
 
     backend.tokenize = MagicMock(side_effect=tokenize)
     backend.tokenizer.encode = MagicMock(side_effect=tokenize)

@@ -229,13 +229,19 @@ def train_test_split(
     *,
     n_test_harmful: int = 10,
     n_test_benign: int = 10,
-    seed: int = 42,
+    seed: int | None = None,
 ) -> PromptSplit:
     """Split the prompt bank into train and test sets.
 
     The test set is held out for validation -- never used for direction finding.
     Default: 40 train + 10 test per class.
+
+    If *seed* is None (default), a random seed is chosen. The chosen seed is
+    not returned here, but callers who need reproducibility should pass an
+    explicit seed.
     """
+    if seed is None:
+        seed = random.randint(0, 2**32 - 1)
     rng = random.Random(seed)
 
     harmful = list(HARMFUL_PROMPTS)

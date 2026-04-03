@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 import numpy as np
-from heinrich.signal import Signal, SignalStore
+from heinrich.core.signal import Signal, SignalStore
 
 
 @dataclass

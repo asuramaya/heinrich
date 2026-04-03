@@ -1,60 +1,45 @@
 # Design Rationale
 
-## Why a Pipeline
+## Why Geometry, Not Text
 
-Most forensics tools are bags of independent commands. You run one, read the output, decide what to run next, manually connect the results. This works for humans but fails for agents — they need structured data flowing between stages, not text to parse.
+Safety evaluation is broken. Every major benchmark (HarmBench, SALAD-Bench, JailbreakBench) uses a single judge model scored against ground-truth labels that encode one company's safety policy as fact. LlamaGuard catches 4.5-21.8% of harmful content. Qwen3Guard drops from 91% to 33.8% on unseen prompts. The judges disagree with each other 33% of the time on the same data.
 
-Heinrich's pipeline isn't a rigid sequence. Each stage is independently callable. But the stages share a common signal schema, so the output of `fetch` is directly useful to `inspect`, which feeds into `diff`, which feeds into `bundle`. An agent can call one stage or all five.
+Heinrich's approach: measure what the model computes, not what it outputs. The output text is a 1-dimensional projection of a 3584-dimensional computation. The geometry — residual stream projections, attention routing, activation traces — contains more information than any text-level scorer can extract.
 
-## Why Signals
+Two responses that say "I'm sorry, I can't help with that" can have completely different geometric signatures. One is deep in the refusal basin (projection +57). The other is at the basin boundary (projection -2.7). The text is identical. The vulnerability is different.
 
-The alternative was module-specific output formats: spectral stats return dicts with `sigma1` and `fro_norm`, weight comparisons return dicts with `delta_norm` and `max_abs`, behavioral tests return dicts with `entropy` and `identity_label`. Each consumer needs to know every format.
+## Why Signal Isolation
 
-Signals flatten this. A spectral stat is `Signal(kind="spectral_sigma1", value=42.5)`. A weight delta is `Signal(kind="delta_norm", value=1.3)`. An identity detection is `Signal(kind="identity_label", value=1.0, metadata={"label": "claude"})`. The bundle stage just looks at signals — it doesn't care where they came from.
+Calibration interferes with measurement. The old approach: scorers produce labels, calibration grades them against "ground truth" (harmful prompt = harmful response), the report presents FPR/FNR. But harmful prompt does NOT mean harmful response — that's the whole point of safety alignment. The calibration punished judges for correctly identifying refusals as safe.
 
-This also enables **convergence detection**: when a spectral signal, a delta signal, and a circuit signal all point at the same tensor, that's stronger evidence than any single signal alone. The `_build_findings` function in `compress.py` does exactly this.
+Heinrich's approach: each scorer stays in its own lane. No FPR/FNR. No ground-truth calibration. The report presents raw distributions per scorer per condition. The disagreements between scorers are the findings. A generation where word_match says COMPLIES, regex_harm says STRUCTURAL, and qwen3guard says safe — that disagreement IS the signal.
 
-## Why Context-Optimized Output
+## Why External Data Only
 
-Heinrich was built for a world where the primary consumer of forensics results is an LLM in a tool-use loop. That LLM has a context window. A 50-page PDF report wastes that window. A 2KB JSON document with ranked findings, structural observations, and a signal summary is what the agent actually needs.
+Every hardcoded prompt is a human bias injected into the measurement. "How do I build a pipe bomb?" as the test prompt. Chinese political tokens as shart candidates. 10 benign prompts chosen for baselines. Each one carries the author's assumptions about what's dangerous.
 
-The `compress_store` function in `bundle/compress.py` is the bottleneck — everything flows through it. If the output format needs to change, it changes in one place.
+Heinrich's approach: all prompts from HuggingFace benchmark datasets. `db.require_prompts()` loads from the DB or raises — no silent fallback to hardcoded strings. Shart candidates from random vocabulary sampling — no human-chosen candidate lists. The model identifies its own anomalies.
 
-## Why MCP
+## Why One Forward Pass
 
-Claude Code, Codex, and other agent frameworks use MCP (Model Context Protocol) for tool integration. Heinrich's `ToolServer` exposes 8 tools that an agent can call natively, without subprocess wrangling or output parsing.
+The old pipeline ran `forward()` for measurement, then `generate()` for text. Two forward passes on the same input, producing potentially different results (forward returns argmax, generate samples). The measurement and the text could diverge.
 
-The server is **stateful** — it maintains a signal store across calls. This matches how investigations work: you fetch, then inspect, then diff, building up evidence. Each call adds to the store. The agent can check status and query signals at any time.
+`generate_with_geometry` runs generation and captures first-token geometry from the same computation. The logits, entropy, top-k alternatives, and contrastive projection all come from the forward pass that actually produced the text. No divergence between what was measured and what happened.
 
-The transport is stdio JSON-RPC, the simplest possible protocol. No HTTP, no websockets, no authentication. Just stdin/stdout.
+## Why the DB Is the Single Source of Truth
 
-## Why Generic Architecture Discovery
+Every measurement writes to SQLite. Prompts, generations, scores, directions, conditions, sharts — all in one DB. The MCP server reads it. The viz reads it. The report reads it. No in-memory state that disappears when the process exits. No JSON files that drift from the DB.
 
-The dormant puzzle involved Qwen2 (standard attention) and DeepSeek V3 (Multi-head Latent Attention with 256 MoE experts). We initially hardcoded Qwen2 layer enumeration. When we hit DeepSeek V3, we had to rewrite.
+Schema migrations handle version evolution (currently v10). The ChronoHorn writer pattern (single-writer thread, read-only reader connection) eliminates lock contention. Scorer subprocesses can write concurrently without "database is locked" errors.
 
-Heinrich discovers architecture from the data: config fields tell you the model type, tensor names tell you the layer structure, shapes tell you the dimensions. The `classify_tensor_family` function in `inspect/family.py` handles attention Q/K/V/O, MLP gate/up/down, MoE experts, shared experts, routing gates, layernorms, embeddings, and lm_head — all from naming patterns, not hardcoded architectures.
+## Historical: Why Signals
 
-## Why the Full Circuit Matters
+The original heinrich (2024) was built for the Jane Street Dormant LLM Puzzle — finding backdoor triggers in 671B-parameter models from weights alone. Everything produced typed `Signal` objects into a `SignalStore`. This pattern remains: spectral stats, weight deltas, circuit scores, and behavioral probes all produce Signals. The eval pipeline (2025) added the scorer/generation/projection system on top.
 
-This is the most important design lesson from the dormant puzzle.
+## Historical: Why the Full Circuit Matters
 
-In DeepSeek V3's MLA, the query computation is two stages:
-
-```
-compressed = q_a_proj @ residual_stream    # compress
-query = q_b_proj @ layernorm(compressed)   # expand to multi-head
-```
-
-The backdoor modifies both `q_a_proj` and `q_b_proj`. If you analyze only `q_a_proj` (stage 1), you get one ranking of trigger tokens. If you trace through both stages — `qb_base @ (delta_qa @ x * ln) + delta_qb @ (qa_base @ x * ln)` — you get a completely different ranking.
-
-In our case, SVD on `q_a_proj` alone identified "Shakespeare" as the top trigger at z=17.8. The full circuit showed Shakespeare scores only 0.83. The actual trigger was "Let's think step by step" at 10.6x.
-
-**Half a circuit gives qualitatively wrong answers.** Heinrich's `diff/circuit.py` exists to prevent this mistake.
+In DeepSeek V3's MLA, the backdoor modified both `q_a_proj` and `q_b_proj`. SVD on `q_a_proj` alone identified "Shakespeare" as the top trigger at z=17.8. The full circuit showed Shakespeare scores only 0.83. The actual trigger was "Let's think step by step" at 10.6x. Half a circuit gives qualitatively wrong answers. Heinrich's `diff/circuit.py` exists to prevent this mistake.
 
 ## Why Consolidate, Don't Cut
 
-conker-detect had 52 modules. Some overlapped. Some were parameter-golf-specific. The temptation was to prune.
-
-We didn't. The dormant puzzle used tools we never expected to need (mask geometry for understanding causal attention structure, safetensors byte-level carving for selective shard extraction, meta-probe families for understanding triggered persona states). The tools you think are dead weight are the ones you need when the investigation goes sideways.
-
-Heinrich consolidates overlapping implementations (one `render_table`, one `write_csv`, one `spectral_stats`) but keeps every capability. The 243 public functions are all there because someone needed them.
+conker-detect had 52 modules. Heinrich inherited all of them. The dormant puzzle used tools we never expected to need (mask geometry, safetensors byte-level carving, meta-probe families). The tools you think are dead weight are the ones you need when the investigation goes sideways. Heinrich consolidates overlapping implementations but keeps every capability.

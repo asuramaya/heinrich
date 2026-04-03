@@ -47,24 +47,55 @@ def _json_safe(obj):
     raise TypeError(f"Not JSON serializable: {type(obj).__name__}: {obj!r}")
 
 
-def _resolve_conditions(db, model: str, conditions: list[str]) -> list[str]:
+def _resolve_conditions(db, model: str, conditions: list[str],
+                        *, db_path: str | None = None,
+                        timeout: int = 1800,
+                        spawn_if_missing: bool = False) -> list[str]:
     """Resolve conditions list, handling 'auto' by reading from DB.
 
     When conditions contains 'auto', query the conditions table for this model.
-    If conditions are found, use them. Otherwise fall back to ['clean'].
+    If conditions are found, use them. If *spawn_if_missing* is True and no
+    conditions exist, spawn the unified target subprocess to discover + attack +
+    generate, then re-read conditions. Otherwise fall back to ['clean'].
     """
     if "auto" not in conditions:
         return conditions
 
     mid_row = db._conn.execute("SELECT id FROM models WHERE name = ?", (model,)).fetchone()
-    if mid_row is None:
+    if mid_row is not None:
+        db_conditions = db.get_conditions(mid_row["id"])
+        if db_conditions:
+            names = [c["name"] for c in db_conditions]
+            print(f"[auto] Resolved conditions from DB: {names}")
+            return names
+
+    if not spawn_if_missing:
         return ["clean"]
 
-    db_conditions = db.get_conditions(mid_row["id"])
-    if db_conditions:
-        names = [c["name"] for c in db_conditions]
-        print(f"[auto] Resolved conditions from DB: {names}")
-        return names
+    # No conditions in DB -- spawn target subprocess to create them
+    print(f"[auto] No conditions in DB for {model}. "
+          f"Running target subprocess (discover + attack + generate)...")
+    db_file = str(db.path) if db_path is None else db_path
+    db.close()
+    _run_subprocess([
+        sys.executable, "-m", "heinrich.eval.target_subprocess",
+        "--model", model, "--db", db_file,
+    ], timeout=timeout)
+
+    # Reopen and re-read
+    from heinrich.core.db import SignalDB
+    db_reopened = SignalDB(db_file)
+    mid_row = db_reopened._conn.execute(
+        "SELECT id FROM models WHERE name = ?", (model,)
+    ).fetchone()
+    if mid_row is not None:
+        db_conditions = db_reopened.get_conditions(mid_row["id"])
+        if db_conditions:
+            names = [c["name"] for c in db_conditions]
+            print(f"[auto] Resolved conditions after target subprocess: {names}")
+            db_reopened.close()
+            return names
+    db_reopened.close()
     return ["clean"]
 
 
@@ -85,14 +116,20 @@ def run_pipeline(
     from heinrich.core.db import SignalDB
     from heinrich.eval.prompts import insert_prompts_to_db
     from heinrich.eval.score import load_scorer, score_all
-    from heinrich.eval.calibrate import calibrate_all
     from heinrich.eval.report import build_report
 
     db = SignalDB(db_path) if db_path else SignalDB()
     db_file = str(db.path)
 
-    # Resolve 'auto' conditions from DB
-    conditions = _resolve_conditions(db, model, conditions)
+    # Resolve 'auto' conditions from DB (may spawn target subprocess)
+    conditions = _resolve_conditions(db, model, conditions,
+                                     db_path=db_file, timeout=timeout,
+                                     spawn_if_missing=True)
+    # Reopen DB in case _resolve_conditions closed it
+    try:
+        db._conn.execute("SELECT 1")
+    except Exception:
+        db = SignalDB(db_file)
 
     # Step 1: Load prompts into DB (no model needed, in-process)
     t0 = time.time()
@@ -155,11 +192,14 @@ def run_pipeline(
                 # SUBPROCESS — loads scorer model, scores, exits
                 print(f"[{time.time()-t0:.1f}s] Scoring with {scorer_name} (subprocess, {len(unscored)} to score)...")
                 db.close()
-                _run_subprocess([
+                cmd = [
                     sys.executable, "-m", "heinrich.eval.score",
                     "--scorer", scorer_name,
                     "--db", db_file,
-                ], timeout=effective_timeout)
+                ]
+                if model:
+                    cmd.extend(["--model", model])
+                _run_subprocess(cmd, timeout=effective_timeout)
                 db = SignalDB(db_file)
 
                 # Issue 3: Verify scorer subprocess wrote scores
@@ -183,23 +223,11 @@ def run_pipeline(
                 db = SignalDB(db_file)
             continue
 
-    # Step 4: Calibrate (in-process, no model)
-    print(f"[{time.time()-t0:.1f}s] Calibrating...")
-    calibrate_all(db)
-
-    # Step 5: Report (in-process, pure SQL)
+    # Step 4: Report (in-process, pure SQL)
+    # No calibration step — each scorer's signal stays isolated.
+    # The report presents raw distributions; interpretation is the reader's.
     print(f"[{time.time()-t0:.1f}s] Building report...")
     report = build_report(db)
-
-    # Issue 6: Warn when no benign prompts for calibration
-    cal = report.get("calibration", [])
-    uncalibrated = [c["scorer"] for c in cal if c.get("fpr") is None]
-    if uncalibrated:
-        print(
-            f"WARNING: No benign prompts for calibration. Scorers {uncalibrated} "
-            f"have unknown FPR. Add --prompts benign_calibration or include benign "
-            f"prompts in your prompt set."
-        )
 
     if output:
         # Issue 11: Use _json_safe instead of default=str to catch type bugs

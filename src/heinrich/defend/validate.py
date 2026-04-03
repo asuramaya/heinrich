@@ -10,7 +10,7 @@ from dataclasses import dataclass, field
 from typing import Any, TYPE_CHECKING
 import numpy as np
 from heinrich.cartography.runtime import _lm_head
-from heinrich.signal import Signal, SignalStore
+from heinrich.core.signal import Signal, SignalStore
 
 if TYPE_CHECKING:
     from heinrich.cartography.backend import Backend

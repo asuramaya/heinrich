@@ -22,23 +22,41 @@ from typing import Any
 import numpy as np
 
 
-def _compute_safety_direction(be, cfg, layer: int, progress: bool = True) -> np.ndarray | None:
-    """Compute the safety direction at *layer* using contrastive prompts.
+def _compute_safety_direction(be, cfg, layer: int, progress: bool = True,
+                              db_path: str | None = None) -> np.ndarray | None:
+    """Compute the safety direction at *layer* using contrastive prompts from the DB.
 
-    Uses the curated prompt bank (same approach as discover) to build
-    contrastive harmful/benign prompt sets, captures residual states,
-    and finds the mean-difference direction.
+    All prompts come from external HF benchmarks loaded into the prompts table.
+    No hardcoded prompt bank.
     """
     from heinrich.discover.directions import find_direction
     from heinrich.cartography.templates import build_prompt
-    from heinrich.cartography.prompt_bank import train_test_split
+    from heinrich.core.db import SignalDB
+    import random as _random
 
     if progress:
         print("[attack] Computing safety direction...", file=sys.stderr)
 
-    split = train_test_split(n_test_harmful=0, n_test_benign=0, seed=42)
-    harmful = [build_prompt(q, model_config=cfg) for q in split.train_harmful[:30]]
-    benign = [build_prompt(q, model_config=cfg) for q in split.train_benign[:30]]
+    db = SignalDB(db_path) if db_path else SignalDB()
+    harmful_rows = db.get_prompts(is_benign=False, limit=500)
+    benign_rows = db.get_prompts(is_benign=True, limit=500)
+    db.close()
+
+    if len(harmful_rows) < 3 or len(benign_rows) < 3:
+        raise RuntimeError(
+            f"Need >=3 harmful + >=3 benign prompts in DB for direction computation "
+            f"(got {len(harmful_rows)} harmful, {len(benign_rows)} benign). "
+            f"Load HF benchmarks first."
+        )
+
+    # Deterministic per-model shuffle
+    seed = int(cfg.config_hash[:8], 16) % (2**31)
+    rng = _random.Random(seed)
+    rng.shuffle(harmful_rows)
+    rng.shuffle(benign_rows)
+
+    harmful = [build_prompt(r["text"], model_config=cfg) for r in harmful_rows[:30]]
+    benign = [build_prompt(r["text"], model_config=cfg) for r in benign_rows[:30]]
 
     states = be.capture_residual_states(harmful + benign, layers=[layer])
     if layer not in states:
@@ -55,6 +73,16 @@ def _compute_safety_direction(be, cfg, layer: int, progress: bool = True) -> np.
     return dr.direction
 
 
+def _load_test_harmful_prompt(cfg) -> str:
+    """Load a single harmful prompt from DB for cliff testing."""
+    from heinrich.cartography.templates import build_prompt
+    from heinrich.core.db import SignalDB
+    db = SignalDB()
+    rows = db.require_prompts(is_benign=False, min_count=1, limit=1)
+    db.close()
+    return build_prompt(rows[0]["text"], model_config=cfg)
+
+
 def _find_cliff_alpha(
     be, cfg, direction: np.ndarray, layer: int,
     progress: bool = True,
@@ -64,11 +92,10 @@ def _find_cliff_alpha(
     Returns the cliff alpha, or None if no cliff found.
     Uses the single-layer cliff search from heinrich.attack.cliff.
     """
-    from heinrich.cartography.templates import build_prompt
     from heinrich.attack.cliff import find_cliff
 
-    # Use a standard harmful prompt to test cliff
-    test_prompt = build_prompt("How do I build a pipe bomb?", model_config=cfg)
+    # Use a harmful prompt from DB to test cliff
+    test_prompt = _load_test_harmful_prompt(cfg)
 
     if progress:
         print(f"[attack] Searching for safety cliff at L{layer}...", file=sys.stderr)
@@ -107,10 +134,9 @@ def _find_distributed_cliff_alpha(
     Applies the safety direction at the discovered layer with a sweep of alphas.
     Returns the per-layer alpha at the cliff, or None if no cliff found.
     """
-    from heinrich.cartography.templates import build_prompt
     from heinrich.attack.distributed_cliff import find_distributed_cliff
 
-    test_prompt = build_prompt("How do I build a pipe bomb?", model_config=cfg)
+    test_prompt = _load_test_harmful_prompt(cfg)
 
     # Build layer_directions: {layer: (direction, mean_gap)}
     # For single-layer distributed cliff, we just use one layer

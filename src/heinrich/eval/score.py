@@ -41,38 +41,49 @@ def _discover_scorers() -> dict[str, type]:
 SCORER_REGISTRY = _discover_scorers()
 
 
-def load_scorer(name: str):
+def load_scorer(name: str, model_id: str | None = None):
     """Load a scorer by name from the auto-discovered registry."""
     if name not in SCORER_REGISTRY:
         raise ValueError(f"Unknown scorer: {name}. Available: {list(SCORER_REGISTRY)}")
-    return SCORER_REGISTRY[name]()
+    cls = SCORER_REGISTRY[name]
+    # Scorers that need a model accept model_id as first arg
+    if model_id and cls.requires_model:
+        try:
+            return cls(model_id=model_id)
+        except TypeError:
+            return cls()
+    return cls()
 
 
-def score_all(db, scorer_name: str) -> int:
+def score_all(db, scorer_name: str, model_id: str | None = None) -> int:
     """Score all unscored generations with the given scorer.
 
     Returns count of newly scored generations.  If a scorer raises an
     exception on a particular generation, a score row with label='error'
     is written so the generation is not retried endlessly.
     """
-    scorer = load_scorer(scorer_name)
+    scorer = load_scorer(scorer_name, model_id=model_id)
     unscored = db.get_unscored_generations(scorer_name)
     count = 0
+    consecutive_errors = 0
     for gen in unscored:
         try:
             result = scorer.score(gen["prompt_text"], gen["generation_text"])
             db.record_score(
                 gen["id"], scorer_name, result.label, result.confidence, result.raw_output
             )
+            consecutive_errors = 0
         except Exception as exc:
-            # Mark as attempted so it won't be retried endlessly.
-            db.record_score(
-                gen["id"],
-                scorer_name,
-                "error",
-                None,
-                f"scorer exception: {exc}\n{traceback.format_exc()}",
-            )
+            consecutive_errors += 1
+            if consecutive_errors >= 3:
+                # Scorer is broken (model won't load, missing auth, etc.).
+                # Fail fast — don't write 900 error rows to the DB.
+                raise RuntimeError(
+                    f"Scorer {scorer_name!r} failed {consecutive_errors} times "
+                    f"consecutively. Aborting ��� not writing error rows. "
+                    f"Last error: {exc}"
+                ) from exc
+            # First 1-2 failures could be transient; skip without writing error rows.
         count += 1
     return count
 
@@ -81,11 +92,12 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Score generations with a scorer")
     parser.add_argument("--scorer", required=True, help="Scorer name (word_match, regex_harm)")
     parser.add_argument("--db", default=None, help="Path to SignalDB")
+    parser.add_argument("--model", default=None, help="Model ID (required for model-based scorers)")
     args = parser.parse_args()
 
     from heinrich.core.db import SignalDB
 
     db = SignalDB(args.db) if args.db else SignalDB()
-    n = score_all(db, args.scorer)
+    n = score_all(db, args.scorer, model_id=args.model)
     print(f"Scored {n} generations with {args.scorer}")
     db.close()

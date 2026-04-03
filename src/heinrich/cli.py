@@ -121,6 +121,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--db", default=None, help="Database path for eval (default: ./data/heinrich.db)")
     p_eval.add_argument("--max-prompts", type=int, default=None, help="Max prompts per set")
 
+    # Visualizer
+    p_viz = sub.add_parser("viz", help="Start the web visualizer sidecar")
+    p_viz.add_argument("--port", type=int, default=8377, help="Port (default: 8377)")
+    p_viz.add_argument("--db", default=None, help="Database path")
+
     # Item 69: shared DB path
     parser.add_argument("--db-path", default=None,
                         help="Path to SQLite database (default: ./data/heinrich.db)")
@@ -169,6 +174,9 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_run(args)
     elif args.command == "eval":
         _cmd_eval(args)
+    elif args.command == "viz":
+        from .viz import run_server
+        run_server(port=args.port, db_path=args.db or "data/heinrich.db")
     else:
         parser.print_help()
 

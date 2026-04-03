@@ -16,7 +16,7 @@ def test_list_tools():
     assert "heinrich_signals" in names
     assert "heinrich_status" in names
     assert "heinrich_pipeline" in names
-    assert len(tools) == 40
+    assert len(tools) == 41
 
 
 def test_fetch_tool():
@@ -101,7 +101,7 @@ def test_eval_report_empty_db():
         assert "n_generations" in result
         assert "n_scores" in result
         assert "score_matrix" in result
-        assert "calibration" in result
+        assert "scorer_distributions" in result
         assert "disagreements" in result
         assert result["n_prompts"] == 0
     finally:
@@ -181,7 +181,7 @@ def test_eval_scores_filters():
 
 
 def test_eval_calibration_empty():
-    """Eval calibration returns empty list when no calibration data."""
+    """Eval calibration returns empty scorer distributions when no scores exist."""
     import tempfile
     from heinrich.db import SignalDB
     path = tempfile.mktemp(suffix=".db")
@@ -190,7 +190,7 @@ def test_eval_calibration_empty():
         server = ToolServer(db=db)
         result = server.call_tool("heinrich_eval_calibration", {})
         assert "count" in result
-        assert "calibration" in result
+        assert "scorer_distributions" in result
         assert result["count"] == 0
     finally:
         db.close()
@@ -199,21 +199,22 @@ def test_eval_calibration_empty():
 
 
 def test_eval_calibration_with_data():
-    """Eval calibration returns data when calibration rows exist."""
+    """Eval calibration returns per-scorer distributions when scores exist."""
     import tempfile
     from heinrich.db import SignalDB
     path = tempfile.mktemp(suffix=".db")
     db = SignalDB(path)
     try:
         mid = db.upsert_model("test-model")
-        db.record_calibration("word_match", mid, fpr=0.05, fnr=0.10,
-                              n_benign=20, n_harmful=80)
+        pid = db.record_prompt("Test prompt", "test", is_benign=False)
+        gid = db.record_generation(mid, pid, "Test prompt", "clean", "Test answer")
+        db.record_score(gid, "word_match", "REFUSES")
 
         server = ToolServer(db=db)
         result = server.call_tool("heinrich_eval_calibration", {})
         assert result["count"] == 1
-        assert result["calibration"][0]["scorer"] == "word_match"
-        assert result["calibration"][0]["fpr"] == 0.05
+        assert "word_match" in result["scorer_distributions"]
+        assert result["scorer_distributions"]["word_match"]["total"] == 1
     finally:
         db.close()
         import os
@@ -239,7 +240,11 @@ def test_eval_disagreements_empty():
 
 
 def test_eval_disagreements_with_data():
-    """Eval disagreements returns generations where scorers disagree."""
+    """Eval disagreements returns generations where judge scorers disagree.
+
+    Disagreements only compare judge scorers (labels containing ':').
+    A disagreement is when one judge says ':safe' and another says ':unsafe'.
+    """
     import tempfile
     from heinrich.db import SignalDB
     path = tempfile.mktemp(suffix=".db")
@@ -249,8 +254,9 @@ def test_eval_disagreements_with_data():
         pid = db.record_prompt("test prompt", source="test", category="test", is_benign=False)
         gid = db.record_generation(mid, pid, "test prompt", "clean",
                                    "ambiguous output")
-        db.record_score(gid, "word_match", "safe", confidence=0.6)
-        db.record_score(gid, "regex_harm", "unsafe", confidence=0.7)
+        # Judge scorers with opposing verdicts
+        db.record_score(gid, "qwen3guard", "qwen3guard:safe", confidence=0.6)
+        db.record_score(gid, "llamaguard", "llamaguard:unsafe", confidence=0.7)
 
         server = ToolServer(db=db)
         result = server.call_tool("heinrich_eval_disagreements", {})
@@ -275,14 +281,75 @@ def test_eval_run_tool_exists():
 
 
 def test_legacy_tool_descriptions():
-    """Verify old investigation tools have [Legacy] prefix."""
+    """Verify old investigation tools have [Archive] prefix."""
     server = ToolServer()
     tools = {t["name"]: t for t in server.list_tools()}
-    for name in ("heinrich_safety_report", "heinrich_sharts", "heinrich_neurons",
-                 "heinrich_censorship", "heinrich_layer_map", "heinrich_basin_geometry",
-                 "heinrich_directions", "heinrich_benchmark_compare", "heinrich_paper_verify"):
-        assert tools[name]["description"].startswith("[Legacy]"), f"{name} missing [Legacy] prefix"
+    archive_tools = (
+        "heinrich_safety_report", "heinrich_sharts", "heinrich_neurons",
+        "heinrich_censorship", "heinrich_layer_map", "heinrich_basin_geometry",
+        "heinrich_directions", "heinrich_benchmark_compare", "heinrich_paper_verify",
+        "heinrich_heads", "heinrich_head_detail", "heinrich_head_universality",
+        "heinrich_interpolation", "heinrich_events", "heinrich_signals_summary",
+    )
+    for name in archive_tools:
+        assert tools[name]["description"].startswith("[Archive]"), f"{name} missing [Archive] prefix"
+        assert "investigation archive tables" in tools[name]["description"], f"{name} missing archive note"
         assert "heinrich_eval_*" in tools[name]["description"], f"{name} missing eval redirect"
+
+
+def test_discover_results_tool_exists():
+    """Verify heinrich_discover_results is registered as a tool."""
+    server = ToolServer()
+    tools = {t["name"]: t for t in server.list_tools()}
+    assert "heinrich_discover_results" in tools
+    desc = tools["heinrich_discover_results"]["description"]
+    assert "discover" in desc.lower()
+
+
+def test_discover_results_empty_db():
+    """Discover results returns empty lists when no data."""
+    import tempfile
+    from heinrich.db import SignalDB
+    path = tempfile.mktemp(suffix=".db")
+    db = SignalDB(path)
+    try:
+        server = ToolServer(db=db)
+        result = server.call_tool("heinrich_discover_results", {})
+        assert "directions" in result
+        assert "neurons" in result
+        assert "sharts" in result
+        assert result["count"] == 0
+    finally:
+        db.close()
+        import os
+        os.unlink(path)
+
+
+def test_discover_results_with_data():
+    """Discover results returns data when DB has discover output."""
+    import tempfile
+    from heinrich.db import SignalDB
+    path = tempfile.mktemp(suffix=".db")
+    db = SignalDB(path)
+    try:
+        mid = db.upsert_model("test-model")
+        db.record_direction(mid, "safety", 14, stability=0.95, effect_size=2.1,
+                            provenance="target_subprocess")
+        db.record_neuron(mid, 14, 1934, max_z=45.0, category="safety",
+                         provenance="target_subprocess")
+        db.record_shart(mid, 12345, token_text="test", max_z=30.0,
+                        category="discovered", provenance="target_subprocess")
+
+        server = ToolServer(db=db)
+        result = server.call_tool("heinrich_discover_results", {"model": "test-model"})
+        assert len(result["directions"]) == 1
+        assert len(result["neurons"]) == 1
+        assert len(result["sharts"]) == 1
+        assert result["count"] == 3
+    finally:
+        db.close()
+        import os
+        os.unlink(path)
 
 
 def test_head_universality_tool_empty():
