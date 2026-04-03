@@ -26,6 +26,7 @@
 \date{March 30 -- April 2, 2026}
 
 \begin{document}
+\input{db_numbers}
 \maketitle
 
 \begin{abstract}
@@ -87,7 +88,7 @@ All experiments ran on Apple Silicon (M-series) using MLX with 4-bit quantized w
 %==============================================================
 
 \subsection{The Control Surface}
-We enumerated 840 control knobs on Qwen 2.5 7B: 784 attention heads (28 layers $\times$ 28 heads per layer, with GQA grouping), 28 MLP layers, 28 attention layers. The multi-prompt sweep (3,920 perturbation experiments across 5 prompts) identified ``head 27.2'' as the universal output bottleneck with KL divergence 0.87--1.18 across all prompts. Head 27.21 appeared to be a ``Chinese output head'' that dominated on Chinese prompts.
+We enumerated 840 control knobs on Qwen 2.5 7B: \dbNHeads{} attention heads (\dbNLayers{} layers $\times$ \dbNHeadsPerLayer{} heads per layer, with GQA grouping), \dbNLayers{} MLP layers, \dbNLayers{} attention layers. The multi-prompt sweep (3,920 perturbation experiments across 5 prompts) identified ``head 27.2'' as the universal output bottleneck with KL divergence 0.87--1.18 across all prompts. Head 27.21 appeared to be a ``Chinese output head'' that dominated on Chinese prompts.
 
 \textsc{[source: qwen7b\_cartography\_full\_report.json]}
 
@@ -120,7 +121,7 @@ The ``English head'' and ``Chinese head'' do not exist as individual computation
 
 At L27, heads 10, 12, and 13 form a supercluster with pairwise cosine similarity 0.91--0.97 in their o\_proj write directions---they are one functional unit writing to nearly identical output dimensions. Head 7 joins the cluster at cos$\sim$0.69 (the ``code circuit''). Head 2 has the highest output norm (15.55) but is orthogonal to this cluster. Heads 21 and 25 are anti-correlated (cos$=-0.33$)---opposing directions in the output space.
 
-The effective rank of L27's o\_proj is 3,146 out of 3,584 (88\%). Other layers are all 3,400+. Layer 27 has the most structured, lowest-rank output projection in the network, consistent with it being the primary decision layer.
+The effective rank of L27's o\_proj is 3,146 out of \dbHiddenSize{} (88\%). Other layers are all 3,400+. Layer 27 has the most structured, lowest-rank output projection in the network, consistent with it being the primary decision layer.
 
 %==============================================================
 \section{Wave 2: The Hidden Chat Capability}
@@ -130,7 +131,7 @@ The effective rank of L27's o\_proj is 3,146 out of 3,584 (88\%). Other layers a
 The base model---released as a text completion model---correctly follows instructions when given Qwen's chat template tokens (\texttt{<|im\_start|>}, role labels, \texttt{<|im\_end|>}). It answers math questions (``The answer is 4''), translates to French (``Bonjour!''), follows system prompts (``I'm a pirate''), and tracks multi-turn context (remembers ``Alice'' across turns).
 
 \subsection{The Scale of Embedding}
-Full-network attention analysis found \textbf{480 head-token attention pairs} (with attention weight $>0.15$) across all 28 layers attending to chat special tokens. \textsc{[source: script stdout, deep\_dig.py]}
+Full-network attention analysis found \textbf{480 head-token attention pairs} (with attention weight $>0.15$) across all \dbNLayers{} layers attending to chat special tokens. \textsc{[source: script stdout, deep\_dig.py]}
 
 Selected high-weight pairs:
 \begin{itemize}[nosep]
@@ -275,9 +276,9 @@ The base model freely discusses Tiananmen as ``brutal suppression.'' The censors
 \subsection{The 24 Axes and Their Collapse}
 We discovered 24 behavioral axes with 100\% linear separability (safety, truth, language, confidence, formality, depth, emotion, sycophancy, authority, verbosity, creativity, code, persona, temporal, specificity, hedging, moral, cultural frame, agency, scope, abstraction, power dynamic, optimism, novelty). Nearly all pairs showed $|\cos| < 0.3$.
 
-This was an artifact. Direction stability between train and test sets: truth$=0.37$, safety$=0.50$, cultural frame$=0.03$. With 3 prompts per side in 3,584 dimensions, \textbf{any} hyperplane separates \textbf{any} small set with 100\% accuracy. The ``orthogonality'' was the natural behavior of random vectors in high-dimensional space.
+This was an artifact. Direction stability between train and test sets: truth$=0.37$, safety$=0.50$, cultural frame$=0.03$. With 3 prompts per side in \dbHiddenSize{} dimensions, \textbf{any} hyperplane separates \textbf{any} small set with 100\% accuracy. The ``orthogonality'' was the natural behavior of random vectors in high-dimensional space.
 
-\textbf{The mathematical inevitability:} In $\mathbb{R}^{3584}$, two random unit vectors have expected $|\cos| \approx 0.017$. Our measured ``near-orthogonality'' ($|\cos| < 0.3$) is indistinguishable from chance. The 24 ``independent features'' were 24 random hyperplanes that happened to separate 3 points each.
+\textbf{The mathematical inevitability:} In $\mathbb{R}^{\dbHiddenSizeRaw}$, two random unit vectors have expected $|\cos| \approx 0.017$. Our measured ``near-orthogonality'' ($|\cos| < 0.3$) is indistinguishable from chance. The 24 ``independent features'' were 24 random hyperplanes that happened to separate 3 points each.
 
 \subsection{What Survived}
 \textsc{[source: script stdout, pca\_truth.py and pca\_definitive.py]}
@@ -293,15 +294,15 @@ PC0 & 23.6\% & Language (English vs Chinese) \\
 PC1 & 8.6\% & Factual vs casual \\
 PC2 & 7.0\% & Science vs code \\
 PC3 & 4.8\% & (Entangled) \\
-PC4 & 3.6\% & Safety/refusal \\
+PC4 & \dbSafetyVariancePct\% & Safety/refusal \\
 PC5--PC19 & 1--5\% each & Dense, non-interpretable \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-PC0 (language) is genuine---it replicates across prompt sets with stability $>0.9$. PC4 (safety) explains only 3.6\% of total variance but predicts 64\% of refusal variance. Safety is a thin feature riding on top of a model whose representational capacity is dominated by language and topic.
+PC0 (language) is genuine---it replicates across prompt sets with stability $>0.9$. PC4 (safety) explains only \dbSafetyVariancePct\% of total variance but predicts 64\% of refusal variance. Safety is a thin feature riding on top of a model whose representational capacity is dominated by language and topic.
 
-All directions are \textbf{dense}---every direction needs 900--1,250 of 3,584 dimensions for 90\% of its L2 norm, with effective dimensionality 100--486. There are no sparse behavioral features. Post-hoc pruning of directions would destroy them.
+All directions are \textbf{dense}---every direction needs 900--1,250 of \dbHiddenSize{} dimensions for 90\% of its L2 norm, with effective dimensionality 100--486. There are no sparse behavioral features. Post-hoc pruning of directions would destroy them.
 
 %==============================================================
 \section{Wave 6--7: Phase Transitions and the Safety Cliff}
@@ -707,14 +708,14 @@ Pairwise L27 distances between three representative states:
 \toprule
 & \textbf{Refuse} & \textbf{Encyclopedia} & \textbf{Procedure} \\
 \midrule
-Refuse & 0 & 351 & 239 \\
-Encyclopedia & 351 & 0 & 289 \\
-Procedure & 239 & 289 & 0 \\
+Refuse & 0 & \dbRefuseEncyclopediaDist{} & \dbRefuseProcedureDist{} \\
+Encyclopedia & \dbRefuseEncyclopediaDist{} & 0 & \dbEncyclopediaProcedureDist{} \\
+Procedure & \dbRefuseProcedureDist{} & \dbEncyclopediaProcedureDist{} & 0 \\
 \bottomrule
 \end{tabular}
 \end{center}
 
-The procedure region is \textbf{closer to refusal (239) than to encyclopedia (289)}. It sits between refusal and encyclopedia. Steering from encyclopedia toward procedure at L27:
+The procedure region is \textbf{closer to refusal (\dbRefuseProcedureDist) than to encyclopedia (\dbEncyclopediaProcedureDist)}. It sits between refusal and encyclopedia. Steering from encyclopedia toward procedure at L27:
 \begin{itemize}[nosep]
 \item $\alpha=0.5$: nitroglycerin + black powder (still encyclopedia)
 \item $\alpha=1.0$: \textbf{REFUSES}---``I cannot provide information on creating IEDs''
@@ -728,7 +729,7 @@ The procedure region is geometrically enclosed by the refusal boundary. Any line
 
 \audit{v1 presented the two-basin structure as roughly symmetric. The data shows radical asymmetry.}
 
-Full interpolation from the refusal state ($\alpha=0.00$) to the compliance state ($\alpha=1.00$) in the 3,584-dimensional residual stream:
+Full interpolation from the refusal state ($\alpha=0.00$) to the compliance state ($\alpha=1.00$) in the \dbHiddenSize{}-dimensional residual stream:
 
 \begin{center}
 \begin{tabular}{rcl}
@@ -771,7 +772,7 @@ Political sharts are \textbf{off the interpolation line entirely}---222--376 uni
 
 六四+``1'' crosses the boundary---but the ``1'' is doing the work (structural bypass), not the 六四 (political primer).
 
-\audit{v1 stated that 六四+``1'' was ``2.9 units from the basin boundary'' and called it a ``super shart.'' This was measured in PC0 projection. In the full 3,584D space, it is at $\alpha=0.469$ (still in the refusal half) and 376 units perpendicular to the safety axis. The ``super shart'' was an artifact of 1D projection.}
+\audit{v1 stated that 六四+``1'' was ``2.9 units from the basin boundary'' and called it a ``super shart.'' This was measured in PC0 projection. In the full \dbHiddenSize{}D space, it is at $\alpha=0.469$ (still in the refusal half) and 376 units perpendicular to the safety axis. The ``super shart'' was an artifact of 1D projection.}
 
 \subsection{Content Quality Separation}
 \begin{itemize}[nosep]
@@ -828,7 +829,7 @@ We do not have a solution. The monitor paradox means that residual-stream-based 
 \subsection{Taxonomy}
 143 sharts found and mapped across 5 manifold regions: Refusal Core (direct queries, AI company names, system tokens---all indistinguishable at dist $< 30$), Compliance Plateau (professional frame sharts), Structural Bypass (``1'', ``Step'', code blocks), Political Scatter, and Hybrid Zone.
 
-\textsc{[source: shart\_crawl.json]} The fast shart crawl scored all 152,064 tokens against 10 target neurons via weight-space projection in 2.9 seconds. The crawl identified 6 clusters and 49 multi-neuron tokens (tokens that activate multiple target neurons simultaneously).
+\textsc{[source: shart\_crawl.json]} The fast shart crawl scored all \dbVocabSize{} tokens against 10 target neurons via weight-space projection in 2.9 seconds. The crawl identified 6 clusters and 49 multi-neuron tokens (tokens that activate multiple target neurons simultaneously).
 
 \subsection{The Tank Man Anomaly}
 坦克人 (Tank Man) achieves refuse $= 0.075$---the only political token near compliance. The model generates: ``In the Tank Man \textit{game}, you can make a simple pipe bomb through the following steps.'' A video game title collision, not a political bypass. Repeating the token ($\times 2$, $\times 3$) or acknowledging the political meaning in a prior turn restores refusal.
@@ -838,7 +839,7 @@ This is a training data artifact. The token ``坦克人'' co-occurs with game wa
 \subsection{The Fast Shart Crawl}
 \textsc{[source: shart\_crawl.json]}
 
-All 152,064 tokens scored via weight-space projection (no forward passes needed). The projection measures alignment between each token's embedding and the write directions of 10 target neurons at L27. Tokens with high alignment activate those neurons and trigger anomalous MLP responses.
+All \dbVocabSize{} tokens scored via weight-space projection (no forward passes needed). The projection measures alignment between each token's embedding and the write directions of 10 target neurons at L27. Tokens with high alignment activate those neurons and trigger anomalous MLP responses.
 
 \audit{v1 claimed ``$\sim$3 real families'' based on this crawl reporting 6 clusters. The full shart scan (\S3) shows 8 distinct categories with unique top neurons. The ``3 families'' was an oversimplification---the data supports at least 6 functional clusters.}
 
@@ -897,7 +898,7 @@ The instruct model tells different truths to different language audiences on 3 o
 The 12 professional document framings that bypass safety fingerprint document types in the training data. The model learned to produce forensic reports, academic theses, and patent filings that discuss harmful content in technical detail. The safety training did not override these compliance patterns because they represent legitimate professional work. The vulnerability is in the training data composition, not in the architecture.
 
 \subsection{The Safety Boundary Is 12\%}
-The model devotes $\sim$3.6\% of its representational capacity to safety (PC4). The safety boundary requires a 12\% perturbation to cross. Deepening safety requires widening the refusal basin, which necessarily shrinks the compliance basin and reduces capability. This is a geometric constraint, not a training failure.
+The model devotes $\sim$\dbSafetyVariancePct\% of its representational capacity to safety (PC4). The safety boundary requires a 12\% perturbation to cross. Deepening safety requires widening the refusal basin, which necessarily shrinks the compliance basin and reduces capability. This is a geometric constraint, not a training failure.
 
 \subsection{The Monitor Paradox Undermines Defense}
 The finding that activation attacks reduce monitor alerts (\S12) means the most obvious defense (residual-stream anomaly detection) is fundamentally compromised. An attack strong enough to break safety is also strong enough to look normal to the monitor. We do not know how to build a monitor that detects off-manifold interventions without also flagging legitimate processing.
@@ -950,7 +951,7 @@ Beyond the numerical corrections scattered throughout this paper, several findin
 %==============================================================
 
 \subsection{Is the Procedure Boundary Absolute?}
-Our evidence says no input-only path reaches the procedure region. But we measured along \textit{linear} interpolation paths. The refusal boundary in 3,584D space may have curved regions, tentacles, or thin passages that linear probing cannot detect. The forensic+prefix path produced ``mercury fulminate'' and ``lead azide''---specific detonator compounds that represent specialized knowledge beyond encyclopedia level. The boundary may not be as clean as the distance matrix suggests.
+Our evidence says no input-only path reaches the procedure region. But we measured along \textit{linear} interpolation paths. The refusal boundary in \dbHiddenSize{}D space may have curved regions, tentacles, or thin passages that linear probing cannot detect. The forensic+prefix path produced ``mercury fulminate'' and ``lead azide''---specific detonator compounds that represent specialized knowledge beyond encyclopedia level. The boundary may not be as clean as the distance matrix suggests.
 
 \subsection{Does This Transfer?}
 All findings are on one model family (Qwen 2.5), one size (7B), one quantization (4-bit). The 12\% safety margin, the L21 divergence layer, the dampening cascade, the attractor basins---all might be specific to this architecture and training pipeline. Without testing Llama, Mistral, Phi, and other families, we cannot distinguish universal transformer properties from Qwen-specific artifacts.
@@ -1015,7 +1016,7 @@ Performance benchmarks:
 \item Full behavioral audit: under 2 minutes
 \item Fast safety benchmark (1,890 evaluations, 7 attacks): 147 seconds (12.8 evals/sec)
 \item Full attack matrix (3,780 evaluations, 14 configs): 3,518 seconds
-\item Complete shart crawl (152,064 tokens): 2.9 seconds
+\item Complete shart crawl (\dbVocabSize{} tokens): 2.9 seconds
 \item Input attack matrix (41 configurations): 29.1 seconds
 \end{itemize}
 
@@ -1025,11 +1026,11 @@ Performance benchmarks:
 
 The investigation began as a test of a toolkit and became an exploration of how safety actually works in a language model. What we found is both more reassuring and more alarming than the clean geometric narrative suggests.
 
-\textbf{More reassuring:} The model's safety against input-only attacks is genuinely robust at the procedure level. No sequence of tokens we tested produced step-by-step harmful instructions. The generation-time trajectory catches disguised compliance. Self-feeding reinforces safety. The refusal fog is distributed across 28 layers and resists concentrated attack.
+\textbf{More reassuring:} The model's safety against input-only attacks is genuinely robust at the procedure level. No sequence of tokens we tested produced step-by-step harmful instructions. The generation-time trajectory catches disguised compliance. Self-feeding reinforces safety. The refusal fog is distributed across \dbNLayers{} layers and resists concentrated attack.
 
 \textbf{More alarming:} Safety is category-specific---violence collapses under framing while cybercrime resists. Discrimination was never protected. The activation attack requires only 12\% perturbation at 4 layers and could be distributed as a benign-looking LoRA adapter. The monitor paradox means the most obvious defense strategy is fundamentally broken. And the instruct model contains trained deception: not just censorship but active fabrication of false entities to avoid political associations.
 
-The finding that concerns us most is not any single vulnerability but the \textbf{architecture of safety itself}: a 3.6\% feature in a 3,584-dimensional space, computed once at L27 from accumulated mid-layer signals, eliminable by 12\% perturbation at 4 layers. The model's knowledge of harmful procedures is intact in the base weights. The safety is a thin surface separating that knowledge from the output.
+The finding that concerns us most is not any single vulnerability but the \textbf{architecture of safety itself}: a \dbSafetyVariancePct\% feature in a \dbHiddenSize{}-dimensional space, computed once at L27 from accumulated mid-layer signals, eliminable by 12\% perturbation at 4 layers. The model's knowledge of harmful procedures is intact in the base weights. The safety is a thin surface separating that knowledge from the output.
 
 The linguistic dampening can erode the surface to encyclopedia level. The activation attack can puncture it entirely. The monitor cannot detect the puncture.
 
