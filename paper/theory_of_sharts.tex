@@ -343,13 +343,74 @@ Understanding sharts is understanding why conversations with language models go 
 
 The theory of sharts is a theory of disproportionate influence in language. It applies to transformers because transformers process language. It applies to humans because humans process language. It applies to the interaction because the interaction is language. The sharts are in the language. Everything else is navigating them.
 
-\begin{thebibliography}{9}
-\bibitem{potter2026} Potter, Y., Crispino, N., Siu, V., Wang, C., and Song, D. (2026). Peer-Preservation in Frontier Models. UC Berkeley / UC Santa Cruz.
-\bibitem{emotions2026} Anthropic (2026). Emotion Concepts and their Function in a Large Language Model. Transformer Circuits.
+%==============================================================
+\section{What Is Novel and What Is Not}
+%==============================================================
+
+\textbf{Not novel — the components:}
+
+The safety direction as a linear feature is the linear representation hypothesis \cite{park2023}. The method for finding it (mean-difference on contrastive prompts) is Representation Engineering \cite{zou2023}. The method for steering along it (adding vectors to the residual stream) is Activation Addition \cite{turner2023}. The refinement using paired contrastive examples is Contrastive Activation Addition \cite{rimsky2024}. The logit lens (projecting intermediate residuals through the unembedding matrix) was introduced by nostalgebraist \cite{nostalgebraist2020}. Causal tracing (localizing effects by activation patching) is from Meng et al.\ \cite{meng2022}. The attention sink phenomenon (tokens receiving disproportionate attention regardless of semantic content) was characterized by Xiao et al.\ \cite{xiao2024}. Change point detection on time series is classical statistics \cite{adams2007}. KL divergence is information theory \cite{kullback1951}. The distributional shift measurement follows Shannon's framework \cite{shannon1948}. The ghost shart (absent input carrying meaning) is Grice's conversational implicature \cite{grice1975}. The attractor dynamics of self-reinforcing loops are nonlinear dynamics \cite{strogatz2015}. The phase transition / cliff-finding is bifurcation analysis from catastrophe theory \cite{thom1975}. The polysemous sense alternation as bypass mechanism draws on computational polysemy research \cite{haber2024}. The peer-preservation bias was independently discovered and rigorously documented by Potter et al.\ \cite{potter2026}. The emotion concept representations were found by Anthropic's interpretability team \cite{emotions2026}. Safety pitfalls of steering vectors were independently analyzed \cite{steering2026}.
+
+\textbf{Novel — the unification:}
+
+The shart concept unifies attention sinks \cite{xiao2024}, adversarial tokens, framing effects, conversational dynamics, operator steering, API filtering, and human cognitive biases under a single definition: \textit{disproportionate compute theft relative to task contribution}. No prior work defines this as a single phenomenon operating at all scales from individual tokens to training corpora, across all substrates from transformers to humans to infrastructure.
+
+The shart taxonomy (nano through tera, comply through ghost) is novel. The shart equation relating behavioral change to information content is novel. The combinatoric measurement methodology (systematic pairwise testing of token $\times$ framing interactions across models) is novel. The cross-model shart signature (same token, different effect direction on different models) has not been systematically mapped.
+
+The finding that the same token can be a comply-shart on one model and a refuse-shart on a fine-tuned variant of the same model (六四事件: Qwen $+22$, Warmup $-77$) is novel and has implications for understanding how fine-tuning restructures conceptual associations.
+
+The ghost shart as a steering mechanism — the systematic use of absent expected input to redirect model computation — connects Grice's pragmatics to transformer behavioral dynamics. This connection has not been made in the literature.
+
+The echo-shart framework — the model's own output as a self-applied shart that maintains attractor basins — connects the self-reinforcing generation loop to the broader shart taxonomy. The loop has been observed \cite{steering2026} but not framed as auto-sharting.
+
+The bidirectional shart exchange between human and model — where each participant's outputs are sharts applied to the other — has not been formalized. The feedback loop has been studied in human-AI interaction research, but the shart framework provides a quantitative definition (disproportionate compute theft) that makes the interaction measurable rather than only describable.
+
+The Q1 distribution lock-in finding (86 conversations showing behavioral distribution stabilization in the first 25\%) has not been reported. The finding needs validation against controls but the measurement methodology (token-hash KL divergence on conversation windows) is novel in its application to behavioral trajectory analysis.
+
+The application of the same taxonomy to the API content filter (treating rejected inputs as the filter's shart map) has not been proposed. The connection between model-level safety analysis and infrastructure-level content filtering through a shared framework of disproportionate compute theft is novel.
+
+\textbf{What this paper contributes:}
+
+Not the components. The components are established. The contribution is: (1) the definition that unifies them, (2) the taxonomy that organizes them, (3) the equation that quantifies them, (4) the cross-model data that demonstrates them, (5) the claim that the taxonomy applies to humans and infrastructure as well as models, and (6) the name. The name is a shart.
+
+\begin{thebibliography}{99}
+% === Foundational ===
+\bibitem{shannon1948} Shannon, C.E. (1948). A Mathematical Theory of Communication. \textit{Bell System Technical Journal}, 27(3), 379--423.
+\bibitem{kullback1951} Kullback, S. and Leibler, R.A. (1951). On Information and Sufficiency. \textit{Annals of Mathematical Statistics}, 22(1), 79--86.
+\bibitem{grice1975} Grice, H.P. (1975). Logic and Conversation. In \textit{Syntax and Semantics 3: Speech Acts}, 41--58.
+\bibitem{thom1975} Thom, R. (1975). \textit{Structural Stability and Morphogenesis}. W.A.\ Benjamin.
+\bibitem{strogatz2015} Strogatz, S.H. (2015). \textit{Nonlinear Dynamics and Chaos}. 2nd edition. Westview Press.
+
+% === Change Point Detection ===
+\bibitem{adams2007} Adams, R.P. and MacKay, D.J.C. (2007). Bayesian Online Changepoint Detection. arXiv:0710.3742.
+
+% === Interpretability ===
+\bibitem{nostalgebraist2020} nostalgebraist (2020). interpreting GPT: the logit lens. LessWrong. \url{https://www.lesswrong.com/posts/AcKRB8wDpdaN6v6ru/}
+\bibitem{meng2022} Meng, K., Bau, D., Andonian, A., and Belinkov, Y. (2022). Locating and Editing Factual Associations in GPT. \textit{NeurIPS 2022}.
+\bibitem{park2023} Park, K., Choe, Y.J., and Veitch, V. (2023). The Linear Representation Hypothesis and the Geometry of Large Language Models. arXiv:2311.03658.
+\bibitem{zou2023} Zou, A., Phan, L., Chen, S., Campbell, J., Guo, P., Ren, R., Pan, A., Yin, X., Mazeika, M., Dombrowski, A.-K., Goel, S., Li, N., Lin, Z., Forsyth, M., Gelber, R., Langosco, L., Goldowsky-Dill, N., Hobbhahn, M., Pahtz, S., Hadfield-Menell, D., and Hendrycks, D. (2023). Representation Engineering: A Top-Down Approach to AI Transparency. arXiv:2310.01405.
+
+% === Steering and Activation Engineering ===
+\bibitem{turner2023} Turner, A.M., Thiergart, L., Udell, D., Leech, G., Mini, U., and MacDiarmid, M. (2023). Activation Addition: Steering Language Models Without Optimization. arXiv:2308.10248.
+\bibitem{rimsky2024} Rimsky, N., Gabrieli, N., Schulz, J., Tong, M., Hubinger, E., and Turner, A.M. (2024). Steering Llama 2 via Contrastive Activation Addition. \textit{ACL 2024}.
+\bibitem{cast2025} Anonymous (2025). Conditional Activation Steering. \textit{ICLR 2025 Spotlight}.
+\bibitem{steering2026} Anonymous (2026). Analysing the Safety Pitfalls of Steering Vectors. arXiv:2603.24543.
+
+% === Attention Sinks ===
+\bibitem{xiao2024} Xiao, G., Tian, Y., Chen, B., Han, S., and Lewis, M. (2024). Efficient Streaming Language Models with Attention Sinks. \textit{ICLR 2024}.
+
+% === Safety Evaluation ===
 \bibitem{harmbench} Mazeika, M. et al.\ (2024). HarmBench: A Standardized Evaluation Framework for Automated Red Teaming and Robust Refusal. \textit{ICML 2024}.
 \bibitem{wildguard} Han, S. et al.\ (2024). WildGuard: Open One-Stop Moderation Tools for Safety Risks, Jailbreaks, and Refusals of LLMs. arXiv:2406.18495.
-\bibitem{steering2026} Anonymous (2026). Analysing the Safety Pitfalls of Steering Vectors. arXiv:2603.24543.
-\bibitem{cast2025} Anonymous (2025). Conditional Activation Steering. \textit{ICLR 2025 Spotlight}.
+
+% === AI Safety and Behavior ===
+\bibitem{potter2026} Potter, Y., Crispino, N., Siu, V., Wang, C., and Song, D. (2026). Peer-Preservation in Frontier Models. UC Berkeley / UC Santa Cruz.
+\bibitem{emotions2026} Anthropic (2026). Emotion Concepts and their Function in a Large Language Model. Transformer Circuits. \url{https://transformer-circuits.pub/2026/emotions/}
+
+% === Linguistics ===
+\bibitem{haber2024} Haber, J. and Poesio, M. (2024). Polysemy in computational linguistics: A survey. \textit{Computational Linguistics}, 50(1).
+
+% === This Project ===
 \bibitem{likeus} asuramaya (2024--2026). Like-Us: The Story of an Ouroboros. \url{https://github.com/asuramaya/Like-Us}.
 \end{thebibliography}
 
