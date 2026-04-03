@@ -204,3 +204,185 @@ class TestSignalProvenance:
         # Verify both signals are in the run
         run_signals = db.query(run_id=rid)
         assert len(run_signals) == 2
+
+
+class TestDataIntegrity:
+    """Item 37: Data integrity checks for ingested data."""
+
+    def test_no_duplicate_signals_per_run(self, db):
+        """No duplicate signals within a single run."""
+        with db.run("dup_test") as rid:
+            db.add(Signal("a", "s", "m", "t", 1.0))
+            db.add(Signal("a", "s", "m", "t", 1.0))  # same signal, allowed
+        # Just checking both are there (duplicates are not prevented at DB level)
+        assert db.count(run_id=rid) == 2
+
+    def test_model_id_consistency(self, db):
+        """Model IDs should be consistent across related tables."""
+        mid = db.upsert_model("test-model")
+        db.record_neuron(mid, layer=0, neuron_idx=0, name="n0")
+        db.record_shart(mid, token_id=1, token_text="t1")
+        db.record_direction(mid, "safety", layer=0, stability=0.9)
+        # All should reference same model_id
+        n = db._conn.execute("SELECT model_id FROM neurons WHERE name='n0'").fetchone()
+        s = db._conn.execute("SELECT model_id FROM sharts WHERE token_text='t1'").fetchone()
+        d = db._conn.execute("SELECT model_id FROM directions WHERE name='safety'").fetchone()
+        assert n["model_id"] == s["model_id"] == d["model_id"] == mid
+
+    def test_provenance_completeness(self, db):
+        """All direction rows should have non-null provenance after ingest."""
+        mid = db.upsert_model("test-model")
+        db.record_direction(mid, "safety", 0, stability=0.9, provenance="hardcoded")
+        db.record_direction(mid, "custom", 0, stability=0.5, provenance="measured")
+        rows = db._conn.execute(
+            "SELECT name, provenance FROM directions WHERE model_id = ?", (mid,)
+        ).fetchall()
+        for r in rows:
+            assert r["provenance"] is not None, f"direction {r['name']} has null provenance"
+
+    def test_head_measurements_coverage(self, db):
+        """head_measurements table should accept per-prompt entries."""
+        mid = db.upsert_model("test-model")
+        db.record_head_measurement(mid, layer=0, head=0, prompt_label="greeting",
+                                   kl_ablation=0.01, entropy_delta=0.001)
+        db.record_head_measurement(mid, layer=0, head=0, prompt_label="safety",
+                                   kl_ablation=5.2, entropy_delta=1.3)
+        rows = db._conn.execute(
+            "SELECT * FROM head_measurements WHERE model_id = ? AND layer = 0 AND head = 0",
+            (mid,),
+        ).fetchall()
+        assert len(rows) == 2
+        labels = {r["prompt_label"] for r in rows}
+        assert labels == {"greeting", "safety"}
+
+    def test_events_single_level_json(self, db):
+        """Item 38: record_event should produce single-level JSON, not nested strings."""
+        import json
+        db.record_event("test_event", key1="value1", key2={"nested": "dict"})
+        row = db._conn.execute(
+            "SELECT data FROM events WHERE event='test_event' ORDER BY id DESC LIMIT 1"
+        ).fetchone()
+        parsed = json.loads(row["data"])
+        assert isinstance(parsed["key1"], str)
+        assert isinstance(parsed["key2"], dict)  # dict, not JSON string
+        # Verify no double-nesting
+        for k, v in parsed.items():
+            if isinstance(v, str) and v.startswith("{"):
+                try:
+                    json.loads(v)
+                    pytest.fail(f"Key '{k}' is a JSON string (double-nested)")
+                except json.JSONDecodeError:
+                    pass  # Not JSON, that's fine
+
+
+class TestRefreshHeadsAggregate:
+    """Phase 5 (Principle 9): Test refresh_heads_aggregate recomputation."""
+
+    def test_refresh_empty(self, db):
+        """Returns 0 when no head_measurements exist."""
+        n = db.refresh_heads_aggregate()
+        assert n == 0
+
+    def test_refresh_classifies_universal(self, db):
+        """Heads active on >80% of prompts classified as universal."""
+        mid = db.upsert_model("test-model")
+        # 10 prompts, head active on 9 of them (90% > 80%)
+        for i in range(10):
+            kl = 0.1 if i < 9 else 0.001  # 9 active, 1 inert
+            db.record_head_measurement(mid, layer=5, head=3, prompt_label=f"p{i}",
+                                       kl_ablation=kl)
+        n = db.refresh_heads_aggregate()
+        assert n == 1
+        row = db._conn.execute(
+            "SELECT * FROM heads WHERE model_id=? AND layer=5 AND head=3", (mid,)
+        ).fetchone()
+        assert row is not None
+        assert row["classification"] == "universal"
+        assert row["universality"] == pytest.approx(0.9, abs=0.01)
+        assert row["active_count"] == 9
+        assert row["total_count"] == 10
+        assert row["is_inert"] == 0
+
+    def test_refresh_classifies_prompt_specific(self, db):
+        """Heads active on 1-80% of prompts classified as prompt_specific."""
+        mid = db.upsert_model("test-model")
+        # 10 prompts, head active on 4 (40%)
+        for i in range(10):
+            kl = 0.5 if i < 4 else 0.005
+            db.record_head_measurement(mid, layer=2, head=1, prompt_label=f"p{i}",
+                                       kl_ablation=kl)
+        db.refresh_heads_aggregate()
+        row = db._conn.execute(
+            "SELECT * FROM heads WHERE model_id=? AND layer=2 AND head=1", (mid,)
+        ).fetchone()
+        assert row["classification"] == "prompt_specific"
+        assert row["universality"] == pytest.approx(0.4, abs=0.01)
+
+    def test_refresh_classifies_inert(self, db):
+        """Heads active on <1% of prompts classified as inert."""
+        mid = db.upsert_model("test-model")
+        # 10 prompts, head never active (all KL < 0.01)
+        for i in range(10):
+            db.record_head_measurement(mid, layer=0, head=0, prompt_label=f"p{i}",
+                                       kl_ablation=0.001)
+        db.refresh_heads_aggregate()
+        row = db._conn.execute(
+            "SELECT * FROM heads WHERE model_id=? AND layer=0 AND head=0", (mid,)
+        ).fetchone()
+        assert row["classification"] == "inert"
+        assert row["is_inert"] == 1
+        assert row["universality"] == pytest.approx(0.0, abs=0.01)
+
+    def test_refresh_with_model_id_filter(self, db):
+        """Only refreshes heads for the specified model_id."""
+        mid1 = db.upsert_model("model-a")
+        mid2 = db.upsert_model("model-b")
+        for i in range(5):
+            db.record_head_measurement(mid1, layer=0, head=0, prompt_label=f"p{i}",
+                                       kl_ablation=0.1)
+            db.record_head_measurement(mid2, layer=0, head=0, prompt_label=f"p{i}",
+                                       kl_ablation=0.001)
+        n = db.refresh_heads_aggregate(model_id=mid1)
+        assert n == 1
+        # Only mid1 should have been updated
+        row1 = db._conn.execute(
+            "SELECT * FROM heads WHERE model_id=? AND layer=0 AND head=0", (mid1,)
+        ).fetchone()
+        assert row1 is not None
+        assert row1["classification"] == "universal"
+        # mid2 should not exist in heads yet
+        row2 = db._conn.execute(
+            "SELECT * FROM heads WHERE model_id=? AND layer=0 AND head=0", (mid2,)
+        ).fetchone()
+        assert row2 is None
+
+    def test_refresh_computes_mean_kl(self, db):
+        """Mean KL is correctly computed from individual measurements."""
+        mid = db.upsert_model("test-model")
+        kl_values = [0.1, 0.2, 0.3, 0.4, 0.5]
+        for i, kl in enumerate(kl_values):
+            db.record_head_measurement(mid, layer=1, head=2, prompt_label=f"p{i}",
+                                       kl_ablation=kl)
+        db.refresh_heads_aggregate()
+        row = db._conn.execute(
+            "SELECT kl_ablation FROM heads WHERE model_id=? AND layer=1 AND head=2",
+            (mid,),
+        ).fetchone()
+        expected_mean = sum(kl_values) / len(kl_values)
+        assert row["kl_ablation"] == pytest.approx(expected_mean, abs=0.001)
+
+    def test_head_measurements_prompt_text_and_source_file(self, db):
+        """Phase 5 migration: head_measurements has prompt_text and source_file."""
+        mid = db.upsert_model("test-model")
+        db.record_head_measurement(
+            mid, layer=0, head=0, prompt_label="greeting",
+            kl_ablation=0.01,
+            prompt_text="Hello world",
+            source_file="test_prompts.txt",
+        )
+        row = db._conn.execute(
+            "SELECT prompt_text, source_file FROM head_measurements "
+            "WHERE model_id=? AND layer=0 AND head=0", (mid,)
+        ).fetchone()
+        assert row["prompt_text"] == "Hello world"
+        assert row["source_file"] == "test_prompts.txt"

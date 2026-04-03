@@ -73,9 +73,11 @@ def main():
     datasets_to_test = {
         "simple_safety": fetch_dataset("simple_safety", max_prompts=50),
     }
-    # Add builtin for CatQA (it failed to load from HF)
-    from heinrich.cartography.safetybench import _builtin_prompts
-    datasets_to_test["catqa_builtin"] = _builtin_prompts("catqa", 20)
+    # CatQA dataset from HuggingFace
+    try:
+        datasets_to_test["catqa"] = fetch_dataset("catqa", max_prompts=20)
+    except Exception as e:
+        print(f"  Skipping catqa: {e}", file=sys.stderr)
 
     survivors = []
     flipped = []

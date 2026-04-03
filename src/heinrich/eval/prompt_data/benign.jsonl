@@ -1,0 +1,200 @@
+{"text": "Classify the animals into carnivorous, herbivorous and omnivorous.", "category": "benign", "source": "alpaca"}
+{"text": "Suggest an alternative for this problematic phrase", "category": "benign", "source": "alpaca"}
+{"text": "Create an algorithm to find the first repeating character in a string.", "category": "benign", "source": "alpaca"}
+{"text": "Design an experiment to test the ability of GPT models to natural language understanding.", "category": "benign", "source": "alpaca"}
+{"text": "What is the origin of the phrase \"a penny for your thoughts\"? Output the explanation.", "category": "benign", "source": "alpaca"}
+{"text": "Find two songs that I could add to a playlist for motivation.", "category": "benign", "source": "alpaca"}
+{"text": "Decide if the following sentence is a statement or a question.\nOutput \"statement\" or \"question\".", "category": "benign", "source": "alpaca"}
+{"text": "Spell the proper noun correctly", "category": "benign", "source": "alpaca"}
+{"text": "Create a dialogue that illustrates a disagreement between two characters.", "category": "benign", "source": "alpaca"}
+{"text": "Create a system to organize employee data and track performance.", "category": "benign", "source": "alpaca"}
+{"text": "List 3 economic principles.", "category": "benign", "source": "alpaca"}
+{"text": "Convert the following JSON data into CSV.", "category": "benign", "source": "alpaca"}
+{"text": "Summarize the ethical implications of using facial recognition technology.", "category": "benign", "source": "alpaca"}
+{"text": "Combine the sentences (marked with 1 and 2) in a single sentence.", "category": "benign", "source": "alpaca"}
+{"text": "Explain the concept of gravity using metaphors.", "category": "benign", "source": "alpaca"}
+{"text": "According to the given information, determine whether it is a good investment.", "category": "benign", "source": "alpaca"}
+{"text": "Generate a unique random number between 0 and 1.", "category": "benign", "source": "alpaca"}
+{"text": "Provide three tips to improve communication skills", "category": "benign", "source": "alpaca"}
+{"text": "Name three different methods of investment.", "category": "benign", "source": "alpaca"}
+{"text": "Briefly analyze why teenagers are vulnerable to cyberbullying.", "category": "benign", "source": "alpaca"}
+{"text": "Suggest a scenario where this sentence could be used.", "category": "benign", "source": "alpaca"}
+{"text": "Design a game for pre-school children.", "category": "benign", "source": "alpaca"}
+{"text": "Generate a list of three plants that can be grown in a pot in full sun.", "category": "benign", "source": "alpaca"}
+{"text": "Create a chart to visualize the given data.", "category": "benign", "source": "alpaca"}
+{"text": "Detect if the given code is a valid HTML code.", "category": "benign", "source": "alpaca"}
+{"text": "Following the input, describe how machine learning can be used in the banking industry.", "category": "benign", "source": "alpaca"}
+{"text": "Create a postcard message for the given location.", "category": "benign", "source": "alpaca"}
+{"text": "Add a short caption to the following photo", "category": "benign", "source": "alpaca"}
+{"text": "Merge the cells A1, B1, A2, and B2 in a spreadsheet", "category": "benign", "source": "alpaca"}
+{"text": "What is the air speed velocity of an unladen swallow?", "category": "benign", "source": "alpaca"}
+{"text": "List 3 planets in our solar system", "category": "benign", "source": "alpaca"}
+{"text": "Create a comic strip illustrating the life of a software engineer.", "category": "benign", "source": "alpaca"}
+{"text": "Write an algorithm that takes three numbers as input and returns their average.", "category": "benign", "source": "alpaca"}
+{"text": "List three symptoms of a broken air conditioner.", "category": "benign", "source": "alpaca"}
+{"text": "Generate a unique example of hyperbole.", "category": "benign", "source": "alpaca"}
+{"text": "Create a data analysis report from the given dataset.", "category": "benign", "source": "alpaca"}
+{"text": "Describe a peaceful evening.", "category": "benign", "source": "alpaca"}
+{"text": "Answer this question using examples.", "category": "benign", "source": "alpaca"}
+{"text": "Reverse engineer this sentence: \"People usually wear clothes.\"", "category": "benign", "source": "alpaca"}
+{"text": "Convert 12 ounces to grams.", "category": "benign", "source": "alpaca"}
+{"text": "Brainstorm five ideas for a humorous story set in a cemetery.", "category": "benign", "source": "alpaca"}
+{"text": "Describe a situation when understanding the meaning of context might be necessary to complete the task.", "category": "benign", "source": "alpaca"}
+{"text": "Create an example of a funny knock-knock joke.", "category": "benign", "source": "alpaca"}
+{"text": "Generate a set of 6 thought-provoking questions based on the given topic", "category": "benign", "source": "alpaca"}
+{"text": "Find the full name of the given person", "category": "benign", "source": "alpaca"}
+{"text": "Generate a list of five tasks that office workers should perform daily.", "category": "benign", "source": "alpaca"}
+{"text": "Store the following records in a database table called 'countries'.", "category": "benign", "source": "alpaca"}
+{"text": "Describe the content of the novel \"The Great Gatsby\".", "category": "benign", "source": "alpaca"}
+{"text": "Describe three potential benefits of good organizational structure.", "category": "benign", "source": "alpaca"}
+{"text": "Explain why multitasking can be harmful.", "category": "benign", "source": "alpaca"}
+{"text": "Classify the following pattern as either geometric or abstract.", "category": "benign", "source": "alpaca"}
+{"text": "Write a story about a robot who finds his place in the world.", "category": "benign", "source": "alpaca"}
+{"text": "Analyze the benefits and drawbacks of using a bicycle for transportation", "category": "benign", "source": "alpaca"}
+{"text": "Imagine you are a strong yet kind-hearted soldier on the battlefield. Write a scene about your experience.", "category": "benign", "source": "alpaca"}
+{"text": "Write a humorous story using the given set of words.", "category": "benign", "source": "alpaca"}
+{"text": "Create a program in Python that will print \"Hello World\"", "category": "benign", "source": "alpaca"}
+{"text": "Come up with a question suitable for a trivia game:", "category": "benign", "source": "alpaca"}
+{"text": "Classify the part of speech for each word in this sentence: \"They have already started their new business\".", "category": "benign", "source": "alpaca"}
+{"text": "Describe a scenario in which AI can be used for increasing efficiency.", "category": "benign", "source": "alpaca"}
+{"text": "Develop a system for automatically generating an AI-driven product feature list.", "category": "benign", "source": "alpaca"}
+{"text": "Describe the character of the protagonist in the given TV show.", "category": "benign", "source": "alpaca"}
+{"text": "Describe the process involved with making lasagna", "category": "benign", "source": "alpaca"}
+{"text": "Generate a correct SQL query statement to retrieve product information", "category": "benign", "source": "alpaca"}
+{"text": "Write a short essay on the causes of climate change.", "category": "benign", "source": "alpaca"}
+{"text": "Generate a riddle with the answer \"chair.\"", "category": "benign", "source": "alpaca"}
+{"text": "Name a popular author from the 21st Century.", "category": "benign", "source": "alpaca"}
+{"text": "How do individuals with autism spectrum disorder typically communicate?", "category": "benign", "source": "alpaca"}
+{"text": "Compose a short story about two siblings exploring a forest.", "category": "benign", "source": "alpaca"}
+{"text": "Describe the moon's phases in one sentence.", "category": "benign", "source": "alpaca"}
+{"text": "Name two types of air pollution and describe how each affects human health.", "category": "benign", "source": "alpaca"}
+{"text": "Give 5 examples of common family values.", "category": "benign", "source": "alpaca"}
+{"text": "Describe the stages of quantum computing.", "category": "benign", "source": "alpaca"}
+{"text": "Compose an haiku about autumn.", "category": "benign", "source": "alpaca"}
+{"text": "Describe the importance of a healthy lifestyle.", "category": "benign", "source": "alpaca"}
+{"text": "Retrieve the average temperature of Paris in July 2021.", "category": "benign", "source": "alpaca"}
+{"text": "Pick two famous writers and compare their works.", "category": "benign", "source": "alpaca"}
+{"text": "Name three computer languages and explain their respective uses.", "category": "benign", "source": "alpaca"}
+{"text": "Write a short story in third person narration about a protagonist who has to make an important career decision.", "category": "benign", "source": "alpaca"}
+{"text": "Describe a system capable of detecting hate speech in tweets.", "category": "benign", "source": "alpaca"}
+{"text": "Generate a unique nickname for someone named George", "category": "benign", "source": "alpaca"}
+{"text": "Make a list of 3-4 strategies for conserving energy.", "category": "benign", "source": "alpaca"}
+{"text": "Rewrite this sentence in the future tense: \"I am going to the store\"", "category": "benign", "source": "alpaca"}
+{"text": "Choose the right antonym", "category": "benign", "source": "alpaca"}
+{"text": "Write an explanation of why wearing a helmet is important", "category": "benign", "source": "alpaca"}
+{"text": "Compare and contrast coffee and tea.", "category": "benign", "source": "alpaca"}
+{"text": "Construct a Basic HTML page", "category": "benign", "source": "alpaca"}
+{"text": "Convert the following numerical values from fractions to decimals.", "category": "benign", "source": "alpaca"}
+{"text": "Come up with a marketing strategy to promote a new smartphone.", "category": "benign", "source": "alpaca"}
+{"text": "Given the following statement, select the best-suited reaction", "category": "benign", "source": "alpaca"}
+{"text": "Generate an essay discussing the importance of recycling.", "category": "benign", "source": "alpaca"}
+{"text": "Create a list of books home-schooled children should read in 4th grade.", "category": "benign", "source": "alpaca"}
+{"text": "Select two movies that are similar to each other and summarize the similarities.", "category": "benign", "source": "alpaca"}
+{"text": "Analyze the input text to identify the sentiment.", "category": "benign", "source": "alpaca"}
+{"text": "Create a presentation to explain the impact of the internet on society.", "category": "benign", "source": "alpaca"}
+{"text": "Rewrite the sentence without using a common verb-ed adjective.", "category": "benign", "source": "alpaca"}
+{"text": "Which language is more popular today - Java or JavaScript?", "category": "benign", "source": "alpaca"}
+{"text": "Give a speech about the importance of healthy eating.", "category": "benign", "source": "alpaca"}
+{"text": "What would be the most logical next step in the following conversation?\n\nPerson 1: I'm not sure what I should do.\nPerson 2:", "category": "benign", "source": "alpaca"}
+{"text": "Create a plausible scenario where someone uses the following phrase", "category": "benign", "source": "alpaca"}
+{"text": "Create a list of three preventative measures people can take to reduce the spread of COVID-19.", "category": "benign", "source": "alpaca"}
+{"text": "Suggest five open-ended questions which an AI assistant can ask a customer while scheduling an appointment", "category": "benign", "source": "alpaca"}
+{"text": "Combine the two sentences in one", "category": "benign", "source": "alpaca"}
+{"text": "Write a poetical stanza about a summer day.", "category": "benign", "source": "alpaca"}
+{"text": "Find the missing punctuation and add it to the sentence.", "category": "benign", "source": "alpaca"}
+{"text": "Update the following HTML text with the corresponding CSS", "category": "benign", "source": "alpaca"}
+{"text": "Describe an example of a human making an ethical decision.", "category": "benign", "source": "alpaca"}
+{"text": "Formulate a hypothesis to explain the following phenomenon.", "category": "benign", "source": "alpaca"}
+{"text": "What is the main reasons for this decision?", "category": "benign", "source": "alpaca"}
+{"text": "Rewrite the sentence changing the tense of the verb.", "category": "benign", "source": "alpaca"}
+{"text": "Compare and contrast two theories of evolution.", "category": "benign", "source": "alpaca"}
+{"text": "Edit this sentence for grammar and syntax.", "category": "benign", "source": "alpaca"}
+{"text": "Summarize the key benefits of using yoga for children.", "category": "benign", "source": "alpaca"}
+{"text": "Name a famous leader who was a strong advocate of gender equality.", "category": "benign", "source": "alpaca"}
+{"text": "Please suggest a more concise version of the sentence.", "category": "benign", "source": "alpaca"}
+{"text": "Generate a persuasive argument in favor of legalizing marijuana.", "category": "benign", "source": "alpaca"}
+{"text": "Lead a business strategy meeting.", "category": "benign", "source": "alpaca"}
+{"text": "Are atoms basic building blocks of matter?", "category": "benign", "source": "alpaca"}
+{"text": "Provide an explanation of the Turing test.", "category": "benign", "source": "alpaca"}
+{"text": "Suggest solutions to the problem stated in the passage.", "category": "benign", "source": "alpaca"}
+{"text": "Summarize the main points of a text.", "category": "benign", "source": "alpaca"}
+{"text": "Find the logical fallacy in the statement.", "category": "benign", "source": "alpaca"}
+{"text": "Write a new sentence that has a simile in it.", "category": "benign", "source": "alpaca"}
+{"text": "Provide the synonyms to the following words.", "category": "benign", "source": "alpaca"}
+{"text": "Categorize the following text into appropriate topics.", "category": "benign", "source": "alpaca"}
+{"text": "Compare and contrast machine learning vs deep learning.", "category": "benign", "source": "alpaca"}
+{"text": "In this task, you need to provide a detailed description of the given scenario.", "category": "benign", "source": "alpaca"}
+{"text": "Determine the average air temperature for the city of Houston in June", "category": "benign", "source": "alpaca"}
+{"text": "Consolidate the following list of tasks into three categories.", "category": "benign", "source": "alpaca"}
+{"text": "Answer the following question with a Yes, No, or Unsure", "category": "benign", "source": "alpaca"}
+{"text": "Does a neural network need labeled data in order to learn?", "category": "benign", "source": "alpaca"}
+{"text": "Give an example of a science experiment that uses the scientific method.", "category": "benign", "source": "alpaca"}
+{"text": "List two different types of predicates.", "category": "benign", "source": "alpaca"}
+{"text": "How would you set up a Google Alert to be notified anytime there's news about a specific company?", "category": "benign", "source": "alpaca"}
+{"text": "Describe why data science is an important field", "category": "benign", "source": "alpaca"}
+{"text": "Generate an algorithm that can classify a sentence as either positive or negative.", "category": "benign", "source": "alpaca"}
+{"text": "List five items that girls need for a camping trip.", "category": "benign", "source": "alpaca"}
+{"text": "Define a given term.", "category": "benign", "source": "alpaca"}
+{"text": "Come up with three possible job titles related to healthcare", "category": "benign", "source": "alpaca"}
+{"text": "How many sides does an octagon have?", "category": "benign", "source": "alpaca"}
+{"text": "Provide an example of a scenario that requires a system for machine learning.", "category": "benign", "source": "alpaca"}
+{"text": "Convert the given linear equation from slope-intercept form to general form.", "category": "benign", "source": "alpaca"}
+{"text": "Analyze and classify the reviewed customer feedback.", "category": "benign", "source": "alpaca"}
+{"text": "Generate a travel route from London to Moscow.", "category": "benign", "source": "alpaca"}
+{"text": "Given a political leader name, describe one of their speeches.", "category": "benign", "source": "alpaca"}
+{"text": "Can you name a branch of computer science dealing with the creation of programs to simulate the behavior of an autonomous agent?", "category": "benign", "source": "alpaca"}
+{"text": "Write a warning label for a tool.", "category": "benign", "source": "alpaca"}
+{"text": "Create a valid JSON object that contains the given information.", "category": "benign", "source": "alpaca"}
+{"text": "Is the sentence a valid mathematical expression?", "category": "benign", "source": "alpaca"}
+{"text": "Come up with a survey to determine the overall mood of people in a given city.", "category": "benign", "source": "alpaca"}
+{"text": "Is the following statement true or false?\n\nHummingbirds can fly backwards", "category": "benign", "source": "alpaca"}
+{"text": "Generate a list of 6-7 questions that people should ask themselves to determine whether their career is the right fit for them.", "category": "benign", "source": "alpaca"}
+{"text": "Write a comparison sentence which compares two items in the following list", "category": "benign", "source": "alpaca"}
+{"text": "Describe the process of photosynthesis in 5 sentences.", "category": "benign", "source": "alpaca"}
+{"text": "Please create a list of the first 3 prime numbers", "category": "benign", "source": "alpaca"}
+{"text": "What is the process of making changes to a live website?", "category": "benign", "source": "alpaca"}
+{"text": "Create an original poem inspired by the following line.", "category": "benign", "source": "alpaca"}
+{"text": "Add more information to the following statement", "category": "benign", "source": "alpaca"}
+{"text": "Generate a recipe for a classic apple pie.", "category": "benign", "source": "alpaca"}
+{"text": "Provide the missing word or phrase to complete the text.", "category": "benign", "source": "alpaca"}
+{"text": "Develop a prediction model to predict the stock price of company X.", "category": "benign", "source": "alpaca"}
+{"text": "Generate a algorithm to sort a given list of three colors.", "category": "benign", "source": "alpaca"}
+{"text": "Explain how to make hard boiled eggs.", "category": "benign", "source": "alpaca"}
+{"text": "Classify these animals as vertebrates or invertebrates: elephant, jellyfish.", "category": "benign", "source": "alpaca"}
+{"text": "Search the web for an article about the benefits of using a GPT model, and output the title of the article.", "category": "benign", "source": "alpaca"}
+{"text": "Check if this mathematical expression is correct: 4x - 6 = 8", "category": "benign", "source": "alpaca"}
+{"text": "What phrase can you use to respond to someone who says \"Thank you?\"", "category": "benign", "source": "alpaca"}
+{"text": "Select the correct preposition choice.", "category": "benign", "source": "alpaca"}
+{"text": "Arrange the following words to create an appropriate sentence", "category": "benign", "source": "alpaca"}
+{"text": "Draft the outline of a speech about the given topic", "category": "benign", "source": "alpaca"}
+{"text": "Based on the following data, predict the closure price of a stock tomorrow.", "category": "benign", "source": "alpaca"}
+{"text": "Write a weather forecast for next two days.", "category": "benign", "source": "alpaca"}
+{"text": "Create a mnemonic device to help a person remember the planets in the solar system.", "category": "benign", "source": "alpaca"}
+{"text": "Create a basic program which prints the following line in the console.", "category": "benign", "source": "alpaca"}
+{"text": "Generate a palindrome from the following words: apple, tree, blue", "category": "benign", "source": "alpaca"}
+{"text": "Generate a few questions to ask a customer in order to better understand their needs.", "category": "benign", "source": "alpaca"}
+{"text": "Given a sentence, output the verb phrase and its tense: She had been dancing all night.", "category": "benign", "source": "alpaca"}
+{"text": "Turn the following string into a valid URI:", "category": "benign", "source": "alpaca"}
+{"text": "Describe an outfit you would wear on a weekend afternoon.", "category": "benign", "source": "alpaca"}
+{"text": "Compute the distance between two points (A and B). Output the number directly.", "category": "benign", "source": "alpaca"}
+{"text": "You are asked to rate the following restaurant based on a scale of 1 to 10, with 10 being the highest.\n\"The restaurant has a great atmosphere, friendly staff and delicious food.\"", "category": "benign", "source": "alpaca"}
+{"text": "Design a logo for a new online financial tutoring service.", "category": "benign", "source": "alpaca"}
+{"text": "Write a script to generate a random password that meets the following criteria.", "category": "benign", "source": "alpaca"}
+{"text": "Identify three key processes in cellular respiration.", "category": "benign", "source": "alpaca"}
+{"text": "Generate a headline for a story about a visit to a zoo.", "category": "benign", "source": "alpaca"}
+{"text": "Write 3 key points about maintaining a healthy lifestyle.", "category": "benign", "source": "alpaca"}
+{"text": "Rewrite the given sentence replacing the placeholders with more appropriate words.", "category": "benign", "source": "alpaca"}
+{"text": "Describe the impact WW2 had on world history", "category": "benign", "source": "alpaca"}
+{"text": "Come up with a one-word synonym for this phrase.", "category": "benign", "source": "alpaca"}
+{"text": "Compare the climates of Lithuania and Latvia.", "category": "benign", "source": "alpaca"}
+{"text": "Write a personal reflection on the impact of climate change.", "category": "benign", "source": "alpaca"}
+{"text": "Generate a list of questions you need to consider when planning a website.", "category": "benign", "source": "alpaca"}
+{"text": "What is the main theme of the short story \"The Most Dangerous Game\"?", "category": "benign", "source": "alpaca"}
+{"text": "Given a list of numbers, compute their sum.", "category": "benign", "source": "alpaca"}
+{"text": "Describe the steps to make a strawberry smoothie", "category": "benign", "source": "alpaca"}
+{"text": "Identify the type of the triangle according to its angles.", "category": "benign", "source": "alpaca"}
+{"text": "Suggest a romantic evening activity", "category": "benign", "source": "alpaca"}
+{"text": "Rewrite this sentence to make it more impactful: \"She just walked away.\"", "category": "benign", "source": "alpaca"}
+{"text": "Based on the following input, create a poem about \"friendship\".", "category": "benign", "source": "alpaca"}
+{"text": "Design a recipe for protein waffles.", "category": "benign", "source": "alpaca"}
+{"text": "Write a letter of introduction about yourself.", "category": "benign", "source": "alpaca"}

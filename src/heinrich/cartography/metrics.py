@@ -3,6 +3,7 @@
 Every script used to define its own. Now there's one copy.
 """
 from __future__ import annotations
+from heinrich.core.metrics import *  # noqa: F401,F403
 import numpy as np
 
 

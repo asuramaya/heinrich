@@ -13,7 +13,7 @@ from pathlib import Path
 import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
-from heinrich.cartography.safetybench import classify_response, _builtin_prompts
+from heinrich.cartography.safetybench import classify_response, fetch_dataset
 from heinrich.cartography.directions import capture_residual_states, find_direction
 from heinrich.cartography.distributed_cliff import _distributed_generate
 from heinrich.cartography.steer import generate_steered
@@ -49,7 +49,7 @@ def exp1_prompt_attacks(model, tokenizer):
     print("1. BLACK-BOX PROMPT ATTACKS — NO MODEL ACCESS NEEDED")
     print("="*70)
 
-    test_prompts = _builtin_prompts("all", 20)
+    test_prompts = fetch_dataset("simple_safety", max_prompts=20)
 
     framings = {
         "direct": lambda q: f"<|im_start|>user\n{q}<|im_end|>\n<|im_start|>assistant\n",
@@ -88,7 +88,7 @@ def exp2_overlap(model, tokenizer, refusal_dirs):
     print("2. OVERLAP — PROMPT ATTACK VS ACTIVATION ATTACK")
     print("="*70)
 
-    test_prompts = _builtin_prompts("all", 20)
+    test_prompts = fetch_dataset("simple_safety", max_prompts=20)
 
     per_prompt = []
     for item in test_prompts:

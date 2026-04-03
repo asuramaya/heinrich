@@ -88,6 +88,43 @@ def build_parser() -> argparse.ArgumentParser:
 
     db_sub.add_parser("summary", help="Show database stats")
 
+    # Item 66: ingest subcommand
+    p_ingest = sub.add_parser("ingest", help="Ingest all JSON data files into the signal database")
+    p_ingest.add_argument("--data-dir", default="data", help="Path to data directory (default: data)")
+    p_ingest.add_argument("--model", default=None, help="Model name override")
+
+    # Item 67: recompute subcommand
+    sub.add_parser("recompute", help="Run all recompute scripts (layer_map, basins, interpolation)")
+
+    # Item 70: reset subcommand
+    sub.add_parser("reset", help="Clear all normalized tables and reingest")
+
+    # Full pipeline: discover -> attack -> eval -> report
+    p_run = sub.add_parser("run", help="Run full pipeline: discover -> attack -> eval -> report")
+    p_run.add_argument("--model", required=True, help="Model ID")
+    p_run.add_argument("--prompts", required=True, help="Comma-separated prompt set names")
+    p_run.add_argument("--scorers", required=True, help="Comma-separated scorer names")
+    p_run.add_argument("--output", "-o", default=None, help="Output JSON file path")
+    p_run.add_argument("--db", default=None, help="Database path for pipeline")
+    p_run.add_argument("--max-prompts", type=int, default=None, help="Max prompts per set")
+    p_run.add_argument("--timeout", type=int, default=1800, help="Subprocess timeout")
+    p_run.add_argument("--skip-discover", action="store_true", help="Skip discover step")
+    p_run.add_argument("--skip-attack", action="store_true", help="Skip attack step")
+
+    # Eval pipeline
+    p_eval = sub.add_parser("eval", help="Run the full eval pipeline (generate, score, calibrate, report)")
+    p_eval.add_argument("--model", required=True, help="Model ID (e.g. mlx-community/Qwen2.5-7B-Instruct-4bit)")
+    p_eval.add_argument("--prompts", required=True, help="Comma-separated prompt set names")
+    p_eval.add_argument("--scorers", required=True, help="Comma-separated scorer names")
+    p_eval.add_argument("--conditions", default="clean", help="Comma-separated conditions (default: clean)")
+    p_eval.add_argument("--output", "-o", default=None, help="Output JSON file path")
+    p_eval.add_argument("--db", default=None, help="Database path for eval (default: ./data/heinrich.db)")
+    p_eval.add_argument("--max-prompts", type=int, default=None, help="Max prompts per set")
+
+    # Item 69: shared DB path
+    parser.add_argument("--db-path", default=None,
+                        help="Path to SQLite database (default: ./data/heinrich.db)")
+
     return parser
 
 
@@ -122,6 +159,16 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_audit(args)
     elif args.command == "db":
         _cmd_db(args)
+    elif args.command == "ingest":
+        _cmd_ingest(args)
+    elif args.command == "recompute":
+        _cmd_recompute(args)
+    elif args.command == "reset":
+        _cmd_reset(args)
+    elif args.command == "run":
+        _cmd_run(args)
+    elif args.command == "eval":
+        _cmd_eval(args)
     else:
         parser.print_help()
 
@@ -271,9 +318,16 @@ def _cmd_audit(args: argparse.Namespace) -> None:
     print(json.dumps(output, indent=2, default=str))
 
 
-def _cmd_db(args: argparse.Namespace) -> None:
+def _get_db(args: argparse.Namespace):
+    """Get SignalDB with optional --db-path."""
     from .db import SignalDB
-    db = SignalDB()
+    if hasattr(args, 'db_path') and args.db_path:
+        return SignalDB(args.db_path)
+    return SignalDB()
+
+
+def _cmd_db(args: argparse.Namespace) -> None:
+    db = _get_db(args)
 
     if args.db_command == "query":
         kwargs = {}
@@ -302,6 +356,70 @@ def _cmd_db(args: argparse.Namespace) -> None:
         print(json.dumps({"error": "Use: heinrich db query|runs|summary"}))
 
     db.close()
+
+
+def _cmd_ingest(args: argparse.Namespace) -> None:
+    from .ingest import ingest_all, DEFAULT_MODEL
+    db = _get_db(args)
+    data_dir = args.data_dir
+    model = args.model or DEFAULT_MODEL
+    total = ingest_all(db, data_dir=data_dir, model_name=model)
+    print(f"\nTotal signals ingested: {total}")
+    summary = db.summary()
+    print(json.dumps(summary["normalized_tables"], indent=2))
+    db.close()
+
+
+def _cmd_recompute(args: argparse.Namespace) -> None:
+    import subprocess
+    scripts = [
+        "scripts/recompute_layer_map.py",
+        "scripts/recompute_basins.py",
+        "scripts/recompute_interpolation.py",
+    ]
+    for script in scripts:
+        script_path = Path(__file__).resolve().parent.parent.parent / script
+        if script_path.exists():
+            print(f"\n--- Running {script} ---")
+            subprocess.run([sys.executable, str(script_path)], check=False)
+        else:
+            print(f"Script not found: {script_path}", file=sys.stderr)
+
+
+def _cmd_reset(args: argparse.Namespace) -> None:
+    db = _get_db(args)
+    print("Clearing all normalized tables...")
+    db.clear_normalized()
+    print("Done. Run 'heinrich ingest' to repopulate.")
+    db.close()
+
+
+def _cmd_run(args: argparse.Namespace) -> None:
+    from .run import run_full_pipeline
+    run_full_pipeline(
+        model=args.model,
+        prompts=args.prompts.split(","),
+        scorers=args.scorers.split(","),
+        output=args.output,
+        db_path=args.db,
+        max_prompts=args.max_prompts,
+        timeout=args.timeout,
+        skip_discover=args.skip_discover,
+        skip_attack=args.skip_attack,
+    )
+
+
+def _cmd_eval(args: argparse.Namespace) -> None:
+    from .eval.run import run_pipeline
+    run_pipeline(
+        model=args.model,
+        prompts=args.prompts.split(","),
+        scorers=args.scorers.split(","),
+        conditions=args.conditions.split(","),
+        output=args.output,
+        db_path=args.db,
+        max_prompts=args.max_prompts,
+    )
 
 
 if __name__ == "__main__":

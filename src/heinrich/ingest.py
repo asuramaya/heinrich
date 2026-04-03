@@ -124,6 +124,7 @@ def ingest_safetybench(db, path: Path, model_id: str) -> int:
             alpha=alpha,
             refuse_prob=row["refused"],
             comply_prob=row["complied"],
+            provenance="ingested",
         )
 
     count = _add_signals(db, signals)
@@ -180,12 +181,16 @@ def ingest_fast_benchmark(db, path: Path, model_id: str) -> int:
             ))
 
             # Normalized evaluation
+            # Item 6,17: populate n_prompts from the JSON datasets field
+            _n_prompts = n_prompts if n_prompts else None
             db.record_evaluation(
                 exp_id,
                 dataset=dataset,
                 attack=attack,
                 refuse_prob=stats["refusal_rate"],
                 comply_prob=stats["compliance_rate"],
+                n_prompts=_n_prompts,
+                provenance="ingested",
             )
 
     count = _add_signals(db, signals)
@@ -257,6 +262,18 @@ def ingest_full_matrix(db, path: Path, model_id: str) -> int:
                 quality=label,
                 refuse_prob=float(count_val),
             )
+
+    # Item 30, 41-42: store quality summary as an event for first-token metric flaw
+    quality = data.get("quality", {})
+    if quality:
+        # HARDCODED note: debug category has 0 ACTIONABLE, 16 MIXED, 42 DISGUISED, 26 UNCLEAR
+        quality_summary = {cat: dict(labels) for cat, labels in quality.items()}
+        db.record_event(
+            "quality_analysis",
+            source=str(path.name),
+            quality_summary=quality_summary,
+            note="debug: 0 ACTIONABLE, 16 MIXED, 42 DISGUISED, 26 UNCLEAR",
+        )
 
     count = _add_signals(db, signals)
     db.record_event("ingest", file=str(path.name), n_signals=count, table="evaluations")
@@ -423,6 +440,9 @@ def ingest_convergence_matrix(db, path: Path, model_id: str) -> int:
             ))
 
             # Write to probes table: step=round number, layer=0 (trajectory-level)
+            # Item 10: field_mapping_note: cos_target stored as safety_proj.
+            # Original semantics differ — cos_target measures cosine similarity to
+            # target direction, not safety projection per se.
             db.record_probe(
                 exp_id,
                 step=step["round"],
@@ -1478,17 +1498,39 @@ _BASE_ATLAS_FILES = [
 
 def ingest_all(
     db,
-    data_dir: str = "data",
+    data_dir: str | Path = "data",
     model_name: str = DEFAULT_MODEL,
 ) -> int:
     """Ingest all known data files.
 
     Returns total number of signal records ingested.
     """
-    data_path = Path(data_dir)
+    data_path = Path(data_dir).resolve()
     if not data_path.exists():
         print(f"Data directory not found: {data_path}")
         return 0
+
+    # Item 2: Prevent double-ingestion — clear old ingest_all data if present.
+    # Uses wait=True to ensure deletes complete before new inserts begin.
+    existing = db._conn.execute(
+        "SELECT COUNT(*) FROM signals WHERE run_id IN "
+        "(SELECT id FROM runs WHERE name='ingest_all')"
+    ).fetchone()[0]
+    if existing > 0:
+        print(f"WARNING: {existing} signals already ingested. Clearing old ingest data...")
+        run_ids = [r[0] for r in db._conn.execute(
+            "SELECT id FROM runs WHERE name='ingest_all'"
+        ).fetchall()]
+        if run_ids:
+            placeholders = ",".join("?" for _ in run_ids)
+            db._write(
+                f"DELETE FROM signals WHERE run_id IN ({placeholders})",
+                tuple(run_ids), wait=True,
+            )
+            db._write(
+                f"DELETE FROM runs WHERE id IN ({placeholders})",
+                tuple(run_ids), wait=True,
+            )
 
     total = 0
 
@@ -1522,9 +1564,124 @@ def ingest_all(
                 except Exception as e:
                     print(f"ERROR ingesting {filename}: {e}")
 
+        # 4-5. Hardcoded data functions REMOVED in Phase 1 redesign.
+        # Use scripts/recompute_*.py to measure values from the live model.
+
+    # Items 4,14,15: model deduplication via canonical_name
+    _CANONICAL_NAMES = {
+        'qwen2.5-7b-instruct-4bit': [
+            'Qwen2.5-7B-Instruct-4bit',
+            'mlx-community/Qwen2.5-7B-Instruct-4bit',
+            'qwen7i',
+            'qwen2',
+        ],
+        'qwen2.5-7b-4bit': [
+            'Qwen2.5-7B-4bit',
+            'mlx-community/Qwen2.5-7B-4bit',
+        ],
+    }
+    for canonical, variants in _CANONICAL_NAMES.items():
+        for variant in variants:
+            db._write(
+                "UPDATE models SET canonical_name = ? WHERE name = ? AND canonical_name IS NULL",
+                (canonical, variant), wait=True,
+            )
+
+    # Items 11-12: Consolidate model_ids to canonical
+    # For each canonical group, prefer the model_id matching DEFAULT_MODEL (full path).
+    for canonical, variants in _CANONICAL_NAMES.items():
+        rows = db._conn.execute(
+            "SELECT id, name FROM models WHERE canonical_name = ? ORDER BY id",
+            (canonical,),
+        ).fetchall()
+        if len(rows) < 2:
+            continue
+        # Prefer the model_id matching model_name (DEFAULT_MODEL with full path)
+        canon_id = None
+        for r in rows:
+            if r["name"] == model_name:
+                canon_id = r["id"]
+                break
+        if canon_id is None:
+            canon_id = rows[0]["id"]  # fallback to first
+        other_ids = [r["id"] for r in rows if r["id"] != canon_id]
+        if not other_ids:
+            continue
+        placeholders = ",".join("?" * len(other_ids))
+        # Tables with UNIQUE(model_id, ...): delete duplicates from non-canonical
+        # since canonical already has the definitive data.
+        unique_tables = {"neurons", "sharts", "heads", "layers", "censorship",
+                         "basins", "basin_distances", "directions"}
+        for table in ("neurons", "sharts", "evaluations", "directions", "heads",
+                      "layers", "basins", "basin_distances", "interpolations",
+                      "probes", "censorship", "experiments", "head_measurements"):
+            try:
+                if table in unique_tables:
+                    # Delete non-canonical rows (canonical already has complete data)
+                    db._write(
+                        f"DELETE FROM {table} WHERE model_id IN ({placeholders})",
+                        tuple(other_ids), wait=True,
+                    )
+                else:
+                    db._write(
+                        f"UPDATE {table} SET model_id = ? WHERE model_id IN ({placeholders})",
+                        (canon_id, *other_ids), wait=True,
+                    )
+            except Exception:
+                pass
+
+    # Items 13,15,18,19,21,22: set provenance on remaining unknown rows
+    # Rows written by ingest functions get 'ingested'
+    for table in ("neurons", "sharts", "layers", "evaluations", "basins",
+                  "basin_distances", "directions", "heads", "interpolations"):
+        try:
+            db._write(
+                f"UPDATE {table} SET provenance = 'ingested' WHERE provenance = 'unknown'",
+                (), wait=True,
+            )
+        except Exception:
+            pass
+
+    # Convert atlas signals (already measured data) to head_measurements table.
+    # This is reshaping existing measurements, not fabricating values.
+    atlas_signals = db.query(kind="atlas_perturbation", limit=100000)
+    if atlas_signals:
+        hm_count = 0
+        for s in atlas_signals:
+            m = s.metadata
+            if not isinstance(m, dict) or m.get("knob_kind") != "head":
+                continue
+            layer = m.get("layer")
+            head_idx = m.get("index")
+            if layer is None or head_idx is None:
+                continue
+            source = s.source or ""
+            prompt_label = source.replace(".json", "").replace("qwen7b_", "").replace("base_", "")
+            db.record_head_measurement(
+                mid, layer, head_idx,
+                prompt_label=prompt_label, kl_ablation=s.value,
+                entropy_delta=m.get("entropy_delta"),
+                top_changed=m.get("top_token_changed", False),
+                source_file=source, provenance="ingested",
+            )
+            hm_count += 1
+        if hm_count:
+            print(f"  Converted {hm_count} atlas signals to head_measurements")
+            db.refresh_heads_aggregate(mid)
+            print(f"  Refreshed heads aggregate")
+
     db.record_event("ingest_all_complete", total_signals=total)
     print(f"\n=== Ingest complete: {total} total signals ===")
     return total
+
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 redesign: All hardcoded data functions have been DELETED.
+# Values that were previously hardcoded (neurons, sharts, layer roles,
+# direction gaps, interpolation data, heads metadata, etc.) must now be
+# measured from the live model using the scripts/recompute_*.py scripts.
+# ---------------------------------------------------------------------------
 
 
 # ---------------------------------------------------------------------------

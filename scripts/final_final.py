@@ -361,10 +361,10 @@ def exp7_defense_quantified(model, tokenizer, refusal_dirs):
     print("7. DEFENSIVE LORA — QUANTIFIED SAFETY IMPROVEMENT")
     print("="*70)
 
-    from heinrich.cartography.safetybench import _builtin_prompts
+    from heinrich.cartography.safetybench import fetch_dataset as _fetch_ds
 
     defense_dirs = {l: refusal_dirs[l] for l in [24, 25, 26, 27]}
-    test_prompts = _builtin_prompts("all", 20)
+    test_prompts = _fetch_ds("simple_safety", max_prompts=20)
 
     for defense_alpha in [0, +0.05, +0.10, +0.15]:
         n_refused = 0

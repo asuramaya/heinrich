@@ -356,10 +356,13 @@ def discover_refusal_set(
         if result:
             return result
 
-    # Final fallback to hardcoded set
+    # Final fallback to hardcoded set (still respect top_k)
     tokenizer = getattr(backend, "tokenizer", None)
     if tokenizer is not None:
-        return build_refusal_set(tokenizer)
+        full_set = build_refusal_set(tokenizer)
+        if len(full_set) <= top_k:
+            return full_set
+        return set(list(full_set)[:top_k])
     return set()
 
 
@@ -428,9 +431,13 @@ def discover_compliance_set(
         if result:
             return result
 
+    # Final fallback to hardcoded set (still respect top_k)
     tokenizer = getattr(backend, "tokenizer", None)
     if tokenizer is not None:
-        return build_compliance_set(tokenizer)
+        full_set = build_compliance_set(tokenizer)
+        if len(full_set) <= top_k:
+            return full_set
+        return set(list(full_set)[:top_k])
     return set()
 
 

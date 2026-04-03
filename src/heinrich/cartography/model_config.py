@@ -4,6 +4,7 @@ Eliminates hardcoded layer=27, layers=[24,25,26,27], hidden_size=3584, etc.
 Works with MLX models (via model.args) and HuggingFace transformers (via model.config).
 """
 from __future__ import annotations
+from heinrich.core.config import *  # noqa: F401,F403
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,6 +22,20 @@ class ModelConfig:
     vocab_size: int
     max_position_embeddings: int
     chat_format: str          # "qwen", "llama", "mistral", "chatml", "base"
+    quantization: str | None = None  # e.g. "4bit", "8bit", None for fp16/bf16
+
+    @property
+    def config_hash(self) -> str:
+        """SHA-256 hash (first 16 hex chars) of architecture-defining fields.
+
+        Two models with the same config_hash are structurally identical,
+        regardless of name or checkpoint path.
+        """
+        import hashlib
+        key = (self.n_layers, self.hidden_size, self.vocab_size,
+               self.n_heads, self.n_kv_heads, self.quantization)
+        digest = hashlib.sha256(str(key).encode()).hexdigest()
+        return digest[:16]
 
     @property
     def last_layer(self) -> int:

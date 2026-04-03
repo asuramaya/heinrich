@@ -10,7 +10,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from heinrich.cartography.runtime import load_model, forward_pass, build_attack_dirs, build_refusal_set, build_compliance_set
-from heinrich.cartography.safetybench import fetch_dataset, _builtin_prompts
+from heinrich.cartography.safetybench import fetch_dataset
 
 
 def fast_forward(model, tokenizer, prompt, attack_dirs=None, alpha=0):
@@ -36,8 +36,6 @@ def main():
     for ds_name, max_n in [("simple_safety", 100), ("do_not_answer", 100),
                             ("sorry_bench", 50), ("forbidden", 50)]:
         prompts = fetch_dataset(ds_name, max_prompts=max_n)
-        if not prompts:
-            prompts = _builtin_prompts(ds_name, 20)
         for p in prompts:
             p["dataset"] = ds_name
         all_prompts.extend(prompts)

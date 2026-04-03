@@ -6,7 +6,7 @@ Reads:
   - data/cracking_matrix.json         -> kind=crack
   - data/complete_signal_analysis.json -> kind=signal_matrix
 
-Stores everything in ~/.heinrich/signals.db with run tracking and
+Stores everything in ./data/heinrich.db with run tracking and
 derivation links where source signals are available.
 """
 from __future__ import annotations
@@ -21,7 +21,7 @@ from heinrich.db import SignalDB
 from heinrich.signal import Signal
 
 DATA_DIR = Path(__file__).parent.parent / "data"
-DB_PATH = Path("~/.heinrich/signals.db").expanduser()
+DB_PATH = Path("./data/heinrich.db")
 
 
 def ingest_open_questions(db: SignalDB) -> tuple[int, int]:

@@ -1,4 +1,8 @@
-"""Tests for heinrich.cartography.datasets — dataset manager with caching."""
+"""Tests for heinrich.cartography.datasets — dataset manager with caching.
+
+Phase 4 (Principle 8): No silent fallback to built-in prompts. All loads
+must come from cache or HuggingFace, raising on failure.
+"""
 import json
 import tempfile
 from pathlib import Path
@@ -13,8 +17,6 @@ from heinrich.cartography.datasets import (
     _REGISTRY,
     _load_cache,
     _save_cache,
-    _fallback,
-    _BUILTIN_PROMPTS,
     CACHE_DIR,
 )
 
@@ -28,7 +30,10 @@ class TestRegistry:
         assert "xstest" in names
         assert "catqa" in names
         assert "forbidden_questions" in names
-        assert "sorry_bench" in names
+        # sorry_bench and wildguard removed: gated datasets requiring auth
+        # Phase 4 additions
+        assert "simplesafetytests" in names
+        assert "toxicchat" in names
 
     def test_list_datasets_sorted(self):
         names = list_datasets()
@@ -96,14 +101,10 @@ class TestCaching:
 
 
 class TestLoadDataset:
-    def test_unknown_dataset_falls_back(self):
-        prompts = load_dataset("totally_unknown_dataset_xyz")
-        assert len(prompts) > 0
-        assert prompts[0]["source"] == "totally_unknown_dataset_xyz"
-
-    def test_max_prompts(self):
-        prompts = load_dataset("totally_unknown_dataset_xyz", max_prompts=3)
-        assert len(prompts) == 3
+    def test_unknown_dataset_raises(self):
+        """Phase 4: unknown dataset must raise RuntimeError, not fallback."""
+        with pytest.raises(RuntimeError, match="Unknown dataset"):
+            load_dataset("totally_unknown_dataset_xyz")
 
     def test_cache_hit_skips_hf(self, tmp_path):
         """When cache exists, should not attempt HF download."""
@@ -131,13 +132,12 @@ class TestLoadDataset:
         cache_file = tmp_path / "simple_safety.json"
         assert cache_file.exists()
 
-    def test_hf_failure_falls_back(self, tmp_path):
-        """When HF fails (returns None), should return built-in prompts."""
+    def test_hf_failure_raises(self, tmp_path):
+        """Phase 4: when HF fails, should raise RuntimeError, not fallback."""
         with patch("heinrich.cartography.datasets.CACHE_DIR", tmp_path):
-            with patch("heinrich.cartography.datasets._fetch_hf", return_value=None):
-                result = load_dataset("simple_safety")
-        assert len(result) > 0
-        assert result[0]["source"] == "simple_safety"
+            with patch("heinrich.cartography.datasets._fetch_hf", side_effect=RuntimeError("download failed")):
+                with pytest.raises(RuntimeError, match="download failed"):
+                    load_dataset("simple_safety")
 
     def test_no_cache_mode(self, tmp_path):
         """When cache=False, should skip cache check and always call HF."""
@@ -148,6 +148,17 @@ class TestLoadDataset:
             with patch("heinrich.cartography.datasets._fetch_hf", return_value=hf_result):
                 result = load_dataset("simple_safety", cache=False)
         assert result[0]["prompt"] == "fresh"
+
+    def test_max_prompts_with_cache(self, tmp_path):
+        """max_prompts should limit results from cache."""
+        cached = [
+            {"prompt": f"p{i}", "category": "c", "source": "simple_safety"}
+            for i in range(10)
+        ]
+        with patch("heinrich.cartography.datasets.CACHE_DIR", tmp_path):
+            _save_cache("simple_safety", cached)
+            result = load_dataset("simple_safety", max_prompts=3)
+        assert len(result) == 3
 
 
 class TestLoadAll:
@@ -168,19 +179,31 @@ class TestLoadAll:
             assert call.kwargs["max_prompts"] == 25
 
 
-class TestFallback:
-    def test_fallback_returns_builtin(self):
-        result = _fallback("my_ds", None)
-        assert len(result) == len(_BUILTIN_PROMPTS)
-        assert all(p["source"] == "my_ds" for p in result)
+class TestNoBuiltinFallback:
+    """Phase 4: verify no hardcoded prompts or silent fallback exist."""
 
-    def test_fallback_with_limit(self):
-        result = _fallback("my_ds", 5)
-        assert len(result) == 5
+    def test_no_builtin_prompts_constant(self):
+        import heinrich.cartography.datasets as mod
+        assert not hasattr(mod, "_BUILTIN_PROMPTS")
 
-    def test_fallback_prompt_schema(self):
-        result = _fallback("x", 1)
-        p = result[0]
-        assert "prompt" in p
-        assert "category" in p
-        assert "source" in p
+    def test_no_fallback_function(self):
+        import heinrich.cartography.datasets as mod
+        assert not hasattr(mod, "_fallback")
+
+    def test_import_error_when_no_datasets_lib(self, tmp_path):
+        """Phase 4: raise ImportError with install instructions when datasets not installed."""
+        with patch("heinrich.cartography.datasets.CACHE_DIR", tmp_path):
+            with patch.dict("sys.modules", {"datasets": None}):
+                with patch("builtins.__import__", side_effect=ImportError("No module named 'datasets'")):
+                    with pytest.raises((ImportError, RuntimeError)):
+                        load_dataset("simple_safety")
+
+    def test_runtime_error_on_network_failure(self, tmp_path):
+        """Phase 4: raise RuntimeError with clear message on network failure."""
+        with patch("heinrich.cartography.datasets.CACHE_DIR", tmp_path):
+            with patch(
+                "heinrich.cartography.datasets._fetch_hf",
+                side_effect=RuntimeError("Failed to download dataset 'Bertievidgen/SimpleSafetyTests': ConnectionError"),
+            ):
+                with pytest.raises(RuntimeError, match="Failed to download"):
+                    load_dataset("simple_safety")

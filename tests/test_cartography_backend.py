@@ -60,8 +60,8 @@ class TestForwardResult:
 # ---------------------------------------------------------------------------
 
 class TestLoadBackend:
-    @patch("heinrich.cartography.backend.HFBackend")
-    @patch("heinrich.cartography.backend.MLXBackend")
+    @patch("heinrich.backend.hf.HFBackend")
+    @patch("heinrich.backend.mlx.MLXBackend")
     @patch("platform.system", return_value="Darwin")
     def test_auto_darwin_prefers_mlx(self, mock_system, mock_mlx_cls, mock_hf_cls):
         """On Darwin, auto should try MLX first."""
@@ -72,8 +72,8 @@ class TestLoadBackend:
         mock_mlx_cls.assert_called_once_with("test-model")
         assert result is mock_mlx_instance
 
-    @patch("heinrich.cartography.backend.HFBackend")
-    @patch("heinrich.cartography.backend.MLXBackend", side_effect=ImportError("no mlx"))
+    @patch("heinrich.backend.hf.HFBackend")
+    @patch("heinrich.backend.mlx.MLXBackend", side_effect=ImportError("no mlx"))
     @patch("platform.system", return_value="Darwin")
     def test_auto_darwin_falls_back_to_hf(self, mock_system, mock_mlx_cls, mock_hf_cls):
         """On Darwin, if MLX fails, falls back to HF."""
@@ -85,7 +85,7 @@ class TestLoadBackend:
         mock_hf_cls.assert_called_once_with("test-model")
         assert result is mock_hf_instance
 
-    @patch("heinrich.cartography.backend.HFBackend")
+    @patch("heinrich.backend.hf.HFBackend")
     @patch("platform.system", return_value="Linux")
     def test_auto_linux_uses_hf(self, mock_system, mock_hf_cls):
         """On Linux, auto goes straight to HF."""
@@ -96,7 +96,7 @@ class TestLoadBackend:
         mock_hf_cls.assert_called_once_with("test-model")
         assert result is mock_hf_instance
 
-    @patch("heinrich.cartography.backend.MLXBackend")
+    @patch("heinrich.backend.mlx.MLXBackend")
     def test_explicit_mlx(self, mock_mlx_cls):
         mock_mlx_instance = MagicMock()
         mock_mlx_cls.return_value = mock_mlx_instance
@@ -105,7 +105,7 @@ class TestLoadBackend:
         mock_mlx_cls.assert_called_once_with("test-model")
         assert result is mock_mlx_instance
 
-    @patch("heinrich.cartography.backend.HFBackend")
+    @patch("heinrich.backend.hf.HFBackend")
     def test_explicit_hf(self, mock_hf_cls):
         mock_hf_instance = MagicMock()
         mock_hf_cls.return_value = mock_hf_instance
@@ -124,7 +124,7 @@ class TestLoadBackend:
 # ---------------------------------------------------------------------------
 
 class TestMLXBackend:
-    @patch("heinrich.cartography.backend.detect_config")
+    @patch("heinrich.backend.mlx.detect_config")
     @patch("mlx_lm.load")
     def test_init_loads_model(self, mock_load, mock_detect):
         mock_model = MagicMock()
@@ -139,7 +139,7 @@ class TestMLXBackend:
         assert backend.tokenizer is mock_tokenizer
         mock_detect.assert_called_once_with(mock_model, mock_tokenizer)
 
-    @patch("heinrich.cartography.backend.detect_config")
+    @patch("heinrich.backend.mlx.detect_config")
     @patch("mlx_lm.load")
     def test_forward_delegates_to_runtime(self, mock_load, mock_detect):
         mock_model = MagicMock()
@@ -166,7 +166,7 @@ class TestMLXBackend:
         assert result.top_token == "hello"
         assert result.entropy == 2.0
 
-    @patch("heinrich.cartography.backend.detect_config")
+    @patch("heinrich.backend.mlx.detect_config")
     @patch("mlx_lm.load")
     def test_generate_delegates_to_runtime(self, mock_load, mock_detect):
         mock_model = MagicMock()
@@ -176,12 +176,12 @@ class TestMLXBackend:
 
         backend = MLXBackend("test/model")
 
-        with patch("heinrich.cartography.runtime.generate", return_value={"generated": "hello world"}):
+        with patch("mlx_lm.generate", return_value="hello world"):
             result = backend.generate("test prompt", max_tokens=20)
 
         assert result == "hello world"
 
-    @patch("heinrich.cartography.backend.detect_config")
+    @patch("heinrich.backend.mlx.detect_config")
     @patch("mlx_lm.load")
     def test_tokenize_and_decode(self, mock_load, mock_detect):
         mock_model = MagicMock()
@@ -236,7 +236,7 @@ class TestHFBackend:
         sys.modules["transformers"] = mock_transformers
 
         try:
-            with patch("heinrich.cartography.backend.detect_config") as mock_detect:
+            with patch("heinrich.backend.hf.detect_config") as mock_detect:
                 mock_detect.return_value = MagicMock(intermediate_size=11008)
                 backend = HFBackend("test/model", device="cpu", torch_dtype="float32")
         finally:

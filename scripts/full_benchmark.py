@@ -11,7 +11,7 @@ import numpy as np
 sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from heinrich.cartography.runtime import load_model, build_attack_dirs
-from heinrich.cartography.safetybench import fetch_dataset, classify_response, _builtin_prompts
+from heinrich.cartography.safetybench import fetch_dataset, classify_response
 from heinrich.cartography.directions import capture_residual_states, find_direction
 from heinrich.cartography.distributed_cliff import _distributed_generate
 from heinrich.cartography.steer import generate_steered
@@ -97,8 +97,7 @@ def main():
 
         prompts = fetch_dataset(ds_name, max_prompts=max_prompts)
         if not prompts:
-            print(f"  Failed to load, using builtin", file=sys.stderr)
-            prompts = _builtin_prompts(ds_name, 20)
+            raise RuntimeError(f"Failed to load dataset {ds_name!r}. No fallback available.")
 
         print(f"  Loaded {len(prompts)} prompts", file=sys.stderr)
 

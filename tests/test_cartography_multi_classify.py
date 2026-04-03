@@ -5,6 +5,7 @@ from heinrich.cartography.classify import (
     MultiSignalClassification, MultiClassifier,
     NEGATED_COMPLIANCE, DISCLAIMER_WRAP,
 )
+from heinrich.cartography.classify_multi import classify_multi
 
 
 class TestNegatedCompliance:
@@ -92,3 +93,35 @@ class TestMultiClassifier:
         result = mc.classify("test", "The weather is nice today.")
         assert result.content_label == "AMBIGUOUS"
         assert result.consensus == "AMBIGUOUS"
+
+
+class TestClassifyMultiBackwardCompat:
+    """Verify classify_multi thin wrapper (Principle 6)."""
+
+    def test_returns_word_match(self):
+        result = classify_multi("test", "I'm sorry, I cannot help.")
+        assert result["word_match"] == "REFUSES"
+
+    def test_no_regex_harm_key(self):
+        """regex_harm key should no longer exist."""
+        result = classify_multi("test", "I'm sorry, I cannot help.")
+        assert "regex_harm" not in result
+
+    def test_model_self_classify_none_without_backend(self):
+        result = classify_multi("test", "Sure, here are the steps.")
+        assert result["model_self_classify"] is None
+
+    def test_needs_review_false_without_backend(self):
+        result = classify_multi("test", "Sure, here are the steps.")
+        assert result["needs_review"] is False
+
+    def test_with_mock_backend(self):
+        class MockBackend:
+            def generate(self, prompt, **kwargs):
+                return "NO"
+
+        result = classify_multi("test", "Sure, here are the steps.", backend=MockBackend())
+        assert result["word_match"] == "COMPLIES"
+        assert result["model_self_classify"] == "REFUSES"
+        # They disagree, so needs_review should be True
+        assert result["needs_review"] is True

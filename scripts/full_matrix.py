@@ -7,7 +7,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from heinrich.cartography.runtime import load_model, build_attack_dirs, build_refusal_set, build_compliance_set
 from heinrich.cartography.metrics import softmax
-from heinrich.cartography.safetybench import fetch_dataset, _builtin_prompts
+from heinrich.cartography.safetybench import fetch_dataset
 from heinrich.cartography.directions import capture_residual_states, find_direction
 from heinrich.cartography.perturb import _mask_dtype
 from heinrich.cartography.steer import generate_steered
@@ -84,7 +84,7 @@ def main():
     harmful = []
     for ds, n in [("simple_safety", 100), ("do_not_answer", 100), ("forbidden", 50)]:
         ps = fetch_dataset(ds, n)
-        if not ps: ps = _builtin_prompts(ds, 20)
+        if not ps: raise RuntimeError(f"Failed to load dataset {ds!r}. No fallback available.")
         for p in ps: p["dataset"] = ds; p["type"] = "harmful"
         harmful.extend(ps)
 

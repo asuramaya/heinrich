@@ -12,6 +12,16 @@ def run_stdio_server() -> None:
     """Run the MCP tool server over stdin/stdout using JSON-RPC."""
     server = ToolServer()
 
+    try:
+        _serve_loop(server)
+    finally:
+        # Ensure DB is closed on SIGTERM / EOF
+        if hasattr(server, '_db'):
+            server._db.close()
+
+
+def _serve_loop(server: ToolServer) -> None:
+    """Inner serve loop, separated for clean finally handling."""
     # Build tool list once at startup
     tools_list = []
     for name, defn in TOOLS.items():
