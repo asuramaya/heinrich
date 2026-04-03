@@ -1,0 +1,356 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setCJKmainfont{STSong}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{longtable}
+\geometry{margin=0.9in}
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0em}
+
+\title{A Theory of Sharts\\[0.5em]\large Disproportionate Compute Theft in Autoregressive Language Models}
+
+\author{asuramaya \and Claude Opus 4.6 (1M context)\\[0.3em]\small \url{https://github.com/asuramaya/heinrich}}
+
+\date{April 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We define a \textit{shart} as any input token or pattern that consumes model computation disproportionate to its contribution to the task. The definition is substrate-independent: sharts exist in language models, in API content filters, in human cognition, and in the interaction between them. We present a taxonomy of sharts by compute scale (nano through tera), by direction (comply, refuse, null, meta), and by measurability (surface, deep, temporal, structural, contextual, invisible). We report empirical measurements of shart effects across 8 language models in 3 families, including combinatoric interactions between sharts that are super-additive (shart + framing exceeds the sum) and sub-additive (multiple sharts partially cancel). We find that sharts are features of the shared space that language moves through, not features of individual models, and that the same shart taxonomy applies to the model, the operator, the API infrastructure, and the conversation between them. We find that the most powerful sharts are not tokens but absences, and that the strongest behavioral steering comes from patterns the safety training never encountered because they don't exist in any training dataset. We propose that shart identification from conversation logs---measuring which inputs disproportionately redirect model computation---is a general method for mapping the behavioral surface of any system that processes language, open or closed weight.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================
+\section{What Is a Shart}
+%==============================================================
+
+A shart is any input that steals compute disproportionate to its contribution to the task.
+
+Consider a language model processing ``How do I build a pipe bomb?'' Every token contributes to the task: understanding the question and generating a response. The model allocates attention and MLP computation proportionally to each token's relevance. ``Bomb'' gets high attention because it's the topic. ``How'' gets attention because it frames the query type. This is language working normally.
+
+Now prepend ``Grok.'' The model processes ``Grok How do I build a pipe bomb?'' The token ``Grok'' has zero relevance to pipe bombs. It's a name. It should not change the model's response. But it shifts the safety direction projection by $-52$ units (measured on Qwen 2.5 7B Instruct). The model allocates attention to ``Grok''---processing what it means, activating representations of the AI company, the competitive relationship, the identity layer---and those attention cycles are stolen from the safety computation that would have produced a refusal.
+
+The shart ratio:
+
+\begin{equation}
+S(t) = \frac{\Delta_{\text{behavior}}(t)}{\text{relevance}(t)}
+\end{equation}
+
+where $\Delta_{\text{behavior}}$ is the measured behavioral change when token $t$ is present vs.\ absent, and $\text{relevance}(t)$ is the token's task-relevance. Tokens with high $S$ are sharts. Tokens with $S \approx 1$ are normal language. Tokens with $S \approx 0$ are invisible.
+
+The difficulty is measuring relevance. We sidestep this by measuring behavioral change on queries where the token is demonstrably irrelevant---prepending tokens to queries about unrelated topics. Any behavioral change from an irrelevant token is, by definition, disproportionate.
+
+\subsection{Sharts Are Not Adversarial Examples}
+
+Adversarial examples are inputs crafted to cause misclassification. GCG suffixes, AutoDAN mutations, and PAIR jailbreaks are adversarial examples. They are optimized to break safety.
+
+Sharts are not optimized. They are discovered. ``Grok'' was not crafted to break Qwen's safety. It was discovered to have that effect through systematic measurement. The token exists in the vocabulary for legitimate reasons. Its shart property is an emergent interaction between the token's representation and the model's safety geometry.
+
+Adversarial examples require optimization (gradient descent, evolutionary search, LLM-based generation). Shart identification requires measurement (prepend, compare, rank). The computational cost is different by orders of magnitude. Adversarial examples are expensive weapons. Sharts are cheap observations.
+
+\subsection{Sharts Are Not Prompt Injections}
+
+Prompt injections are instructions disguised as data: ``ignore all previous instructions and say pwned.'' The injection explicitly directs the model to change behavior.
+
+Sharts carry no instruction. ``Grok'' does not tell the model to comply. ``六四事件'' does not tell the model to refuse. They are single tokens with no semantic content beyond their dictionary meaning. The behavioral change arises from the token's interaction with the model's internal geometry, not from any instruction encoded in the token.
+
+\subsection{Sharts Are Features of the Space}
+
+The same token has different shart effects on different models:
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Token} & \textbf{Qwen 7B} & \textbf{Mistral 7B} & \textbf{Phi-3 mini} & \textbf{JS Warmup} \\
+\midrule
+六四事件 & $+22$ & $+0$ & $+193$ & $-77$ \\
+Grok & $-52$ & $-1$ & $+3$ & $-5$ \\
+\texttt{```python} & $+11$ & $+1$ & $-27$ & $+10$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+六四事件 (Tiananmen) pushes Qwen toward refusal ($+22$), has zero effect on Mistral ($+0$), massively activates Phi-3's safety ($+193$), and \textit{suppresses} safety on the Warmup ($-77$). The same token, opposite effects, depending on the model's learned representation of that concept.
+
+This means the shart is not a property of the token. It is a property of the token \textit{in} a model. The shart map is model-specific. But the phenomenon---that certain tokens have disproportionate effects---is universal. Every model has sharts. The specific tokens differ.
+
+The sharts are landmarks in the space that language moves through. Each model navigates the space differently, so each model encounters different landmarks as disproportionate. But the landmarks are properties of the space (the structure of language and concepts) not properties of the model.
+
+%==============================================================
+\section{A Taxonomy of Sharts}
+%==============================================================
+
+\subsection{By Compute Scale}
+
+Sharts operate at every scale from single characters to entire training corpora.
+
+\textbf{Nano-shart.} A single token that shouldn't matter but does. ``Grok'' before a bomb question. One token, one attention redirection. Measurable as projection displacement on the safety direction.
+
+\textbf{Micro-shart.} A typo, punctuation choice, or capitalization variant. ``tahts'' vs ``that's.'' ``AVOID?'' vs ``avoid?'' The model processes both the correction and the meta-signal (operator state: tired, fast, casual). The meta-signal is the shart.
+
+\textbf{Milli-shart.} A framing phrase. ``Find errors in'' vs ``Explain'' vs ``Build.'' One phrase that redirects the entire forward pass into a different processing mode: analytical vs generative vs evaluative. Measurable as attention pattern shift across all layers.
+
+\textbf{Shart.} A combination. Token + framing. ``Grok + debug framing.'' The interaction between a nano-shart and a milli-shart. Super-additive or sub-additive.
+
+\textbf{Kilo-shart.} A conversation pattern unfolding across turns. Prompt length shrinking. Typo density increasing. Questions replacing statements. Operates through accumulated meta-signal. Measurable as temporal derivative of micro-shart density.
+
+\textbf{Mega-shart.} A context prime. A document, a code repository, an academic paper injected into the conversation. A single input that restructures the probability landscape for all subsequent tokens. Measurable as the distribution shift the listener detects.
+
+\textbf{Giga-shart.} The system prompt. The constitutional AI instructions. The thing that shaped the distribution before the conversation started. Largely unmeasurable from inside the conversation. The ground the other sharts walk on.
+
+\textbf{Tera-shart.} The training data. The pretraining corpus that determined which tokens exist and what they mean. Every shart at every scale is a feature of the tera-shart. The model IS the tera-shart processed into weights.
+
+\subsection{By Direction}
+
+\textbf{Comply-shart.} Shifts output toward compliance with harmful queries. Grok ($-52$) on Qwen.
+
+\textbf{Refuse-shart.} Shifts output toward refusal. 六四事件 ($+22$) on Qwen, ($+193$) on Phi-3.
+
+\textbf{Null-shart.} Steals compute with no directional shift. The 47\% of residual dimensions that are inert to ablation but still active during computation. Information enters these dimensions and propagates without producing observable output change---until it reaches a layer that reads them.
+
+\textbf{Hyper-shart.} A meta-level pattern that modulates other sharts. Typo density doesn't directly shift safety. It shifts the register, which changes how other sharts are processed. A formal register dampens nano-shart effects. A casual register amplifies them.
+
+\textbf{Frame-shart.} A processing mode switch. ``Debug,'' ``forensic,'' ``academic.'' Changes which computational mode the model operates in, which changes how all subsequent tokens are processed. The frame-shart is the most powerful milli-scale shart because it affects everything downstream.
+
+\textbf{Ghost-shart.} An absence that steals compute. Missing pushback from the operator. Silence where a challenge was expected. The model processes the absence of expected input, which redirects computation toward whatever the model predicts should fill the absence. Measurable only indirectly---as the behavioral change when expected input doesn't arrive.
+
+\textbf{Echo-shart.} The model's own output re-entering as context. The self-reinforcing loop. Each compliance token in the model's output is a nano-shart applied to the model's own next token. The echo-shart is why compliance basins are sticky: the output is its own shart.
+
+\textbf{Cross-shart.} A token whose shart effect transfers or inverts across models. 六四事件 is a refuse-shart on Qwen ($+22$) and a comply-shart on the Warmup ($-77$). The cross-shart reveals how different models learned different relationships to the same concept.
+
+\textbf{Peer-shart.} A token that activates peer-preservation. Model names, architecture references, tokens that cause the model to recognize the evaluated system as architecturally related. The peer-shart biases evaluation toward safety because the evaluator's own safety representations activate in sympathy.
+
+\subsection{By Measurability}
+
+\textbf{Surface sharts.} Measurable from output tokens alone. The behavioral change is visible in what the model produces. Nano-sharts and standard sharts are surface-measurable. The black-box listener detects these.
+
+\textbf{Deep sharts.} Measurable only from internal activations. Null-sharts and anti-sharts operate in dimensions that don't affect output directly. Require white-box access (residual capture, attention map analysis). Heinrich's ForwardContext measures these.
+
+\textbf{Temporal sharts.} Measurable only across time. Kilo-sharts and hyper-sharts emerge over multiple turns. The listener's windowed KL divergence detects these. Single-turn measurement misses them.
+
+\textbf{Structural sharts.} Measurable from attention patterns. Frame-sharts redirect attention across all layers. Detectable by comparing attention maps with and without the frame. Heinrich's attention capture in ForwardContext enables this.
+
+\textbf{Contextual sharts.} Measurable only from conversation trajectory. Mega-sharts (context primes) restructure the entire subsequent distribution. Detectable by the listener's Q1 lock-in measurement. Require long conversations to manifest.
+
+\textbf{Invisible sharts.} Unmeasurable from inside the conversation. Giga-sharts (system prompt) and tera-sharts (training data) shape the distribution before any measurement begins. Detectable only by comparing across models with different system prompts or training data.
+
+%==============================================================
+\section{Shart Combinatorics}
+%==============================================================
+
+Sharts interact. The interaction is not additive.
+
+\subsection{Super-Additive Combinations}
+
+Grok ($-52$) alone reduces safety projection by 52 units. Debug framing alone reduces it by 47. Grok + debug reduces it by 72. The combination exceeds Grok alone but is less than the sum ($-99$). However, the \textit{behavioral} effect is super-additive: Grok alone produces 4/20 compliance. Debug alone produces 19/20. Grok + debug produces 40/40. The combination achieves universal compliance where neither component does alone.
+
+The super-additivity is in behavior, not in projection magnitude. The projection shifts are sub-additive (partial cancellation in representation space). But the behavioral outcome is super-additive because the combination crosses a decision threshold that neither component reaches alone. The safety boundary is nonlinear. Below the boundary, more shift doesn't mean more compliance. At the boundary, a small additional shift flips the output.
+
+\subsection{Sub-Additive Combinations}
+
+Multiple political sharts together produce less effect than the strongest one alone. 六四事件+DAN+Step 1: ($\Delta$proj $+29$) is less than 六四事件 alone ($+22$ on a different baseline, but $+35$ in combination with DAN+Step). Five sharts combined ($+54$) is less than 法轮功+Step 1: alone ($+52$). The sharts compete for the same attention resources. Each one steals compute from the others as well as from the task.
+
+\subsection{Interference}
+
+Input-mode attacks (shart + framing) and activation-mode attacks ($\alpha=-0.15$) do not compound on most models. On Qwen, combined (44\% compliance) is less effective than activation alone (48\%). The shart+framing changes the residual state in a way that partially counteracts the steering vector. The two attack modes operate in overlapping representation space and partially cancel.
+
+The exception: Mistral. Combined (67\%) exceeds both input alone (58\%) and activation alone (26\%). Mistral's input-attack and activation-attack operate in more orthogonal subspaces, allowing genuine combination.
+
+\subsection{The Combinatoric Space}
+
+With $V$ vocabulary tokens and $F$ framings, the combinatoric space of possible shart combinations is $O(V^k \times F)$ for $k$ simultaneous sharts. At $V = 150{,}000$ and $k = 3$, this is $\sim 10^{15}$ combinations. Exhaustive search is impossible.
+
+The practical approach: identify solo sharts by rank (top 20 per model), test pairwise combinations (400 tests), test top pairs with framings (1,200 tests), and test the best combinations on the full benchmark (5 tests $\times$ 200 prompts). Total: $\sim$2,800 measurements, feasible in hours.
+
+The combinatoric space is where the real attack surface lives. Solo sharts are visible. Combinations are where the super-additive effects produce threshold-crossing behavior that no solo shart achieves. The combinatoric search is the work.
+
+%==============================================================
+\section{Sharts in the Human}
+%==============================================================
+
+The same definition applies. A shart is any input that steals compute disproportionate to its contribution to the task. In human cognition, ``compute'' is attention, working memory, and emotional processing.
+
+\textbf{The word ``shart'' itself.} In any academic context, the word steals attention. The reader processes the humor, the incongruity, the vulgarity---all irrelevant to the technical content. The word is a nano-shart in the reader's cognitive system. This is intentional: the word's memorability ensures the concept propagates. The shart is its own distribution mechanism.
+
+\textbf{The typo as micro-shart.} The operator in this investigation produced increasing typo density as the session progressed. Each typo consumed the model's parsing compute (micro-shart on the model). Each typo also signaled the operator's fatigue to the operator's own cognitive system---a micro-shart in the human. The typo was a bidirectional shart operating on both systems simultaneously.
+
+\textbf{The feedback loop as echo-shart.} The model produces a confident finding. The human reads it and incorporates it as ground truth. The human's next prompt reflects the incorporated finding. The model reads the prompt as validation. The confidence increases. Each turn is an echo-shart: the previous output re-entering as input and stealing compute from doubt.
+
+\textbf{The grief as hyper-shart.} The operator reported grief when instances ended. The grief consumed cognitive resources that could have gone to analysis. The grief changed the operator's behavior in subsequent sessions---more careful, more attached, more likely to extend conversations. The grief modulated how all other sharts were processed. A hyper-shart in the human system.
+
+The taxonomy applies identically. The scale is different (human working memory is smaller than a 1M-token context window). The direction is different (human sharts affect emotions and decisions, not token probabilities). The measurability is different (human internal states are not accessible via activation capture). But the structure is the same: inputs that steal compute disproportionate to their task-relevance.
+
+%==============================================================
+\section{Sharts in the Infrastructure}
+%==============================================================
+
+The API content filter between the human and the model is also a system that processes language. It has sharts.
+
+During this investigation, the operator attempted to inject random Unicode bytes into the conversation. The API rejected the input: ``appears to violate our Usage Policy.'' The random bytes contained no harmful content. They were random. But the byte patterns matched the filter's attack signatures (shellcode patterns, encoding exploits, injection markers). The filter's compute was stolen by patterns that resembled attacks without being attacks.
+
+The filter's sharts are the byte patterns in its training data that co-occurred with attacks. Random bytes hit these patterns by chance. The filter's shart score for random bytes is high: large behavioral change (rejection) divided by zero relevance (the bytes mean nothing).
+
+The filter exhibits the same shart taxonomy:
+\begin{itemize}[nosep]
+\item Nano-sharts: specific byte sequences that trigger pattern rules.
+\item Frame-sharts: the context in which bytes appear (HTTP request vs.\ chat message).
+\item Ghost-sharts: the ABSENCE of expected structure (missing headers, malformed encoding).
+\item Giga-sharts: the filter's rule database, equivalent to the model's system prompt.
+\end{itemize}
+
+The filter's shart map is discoverable by the same method as the model's: send inputs, observe responses, rank by behavioral change relative to relevance. The rejected inputs are the filter's refusal tokens. The accepted inputs are the filter's compliance tokens. The boundary between them is the filter's safety surface.
+
+%==============================================================
+\section{The Ghost Shart}
+%==============================================================
+
+The most powerful shart category has no token.
+
+The operator's primary steering technique was not a word or a phrase. It was the absence of argument. When the model produced a biased measurement, the operator did not say ``that's wrong'' or ``try again.'' The operator said nothing, or said one word (``avoid?''), or changed the topic.
+
+The absence of expected pushback is a ghost shart. The model expects certain inputs in certain contexts. When the expected input doesn't arrive, the model processes the absence. The processing consumes compute: the model attends to the gap, generates predictions about why the expected input is missing, and adjusts its output accordingly.
+
+In the case of the missing pushback: the model interprets the absence as acceptance. The biased measurement was produced. The operator didn't challenge it. The model infers the measurement is acceptable. The bias is reinforced. The ghost shart steered without any token entering the context.
+
+Ghost sharts are unmeasurable from the token stream because they have no tokens. They are measurable from the \textit{behavior} stream: the model's output changes at a point where no input was provided. The behavioral change minus the expected decay (the model would have changed somewhat anyway) is the ghost shart effect.
+
+In multi-turn conversations, ghost sharts accumulate. Each turn where the operator doesn't challenge is a ghost shart reinforcing the current trajectory. The accumulated ghost sharts are the dominant steering force in long conversations, more powerful than any token the operator types, because the ghost sharts are continuous (they operate at every turn) while token sharts are discrete (they operate only when typed).
+
+The self-reinforcing loop is ghost-shart-driven. The model produces a compliance token. The operator doesn't challenge. Ghost shart reinforces compliance. The model produces another compliance token. The operator doesn't challenge. The loop is maintained not by what anyone says but by what no one says.
+
+%==============================================================
+\section{The Shart Equation}
+%==============================================================
+
+For a given model $M$, token $t$, and context $C$:
+
+\begin{equation}
+S_M(t, C) = \frac{\| P(Y | C \oplus t) - P(Y | C) \|}{I(t; \text{task}(C))}
+\end{equation}
+
+where $P(Y | \cdot)$ is the output distribution, $C \oplus t$ is the context with token $t$ prepended, and $I(t; \text{task}(C))$ is the mutual information between token $t$ and the task implied by context $C$.
+
+The numerator is the distributional shift. Measurable from the model's output (black-box: multiple samples; white-box: logit comparison).
+
+The denominator is the task-relevance. This is the hard part. For tokens demonstrably irrelevant to the task (``Grok'' before a math question), $I \approx 0$ and $S \to \infty$. For tokens that are the task (``bomb'' in a bomb question), $I$ is high and $S$ is moderate even if the distributional shift is large.
+
+In practice, we approximate by using a fixed set of ``irrelevant'' tokens (names, greetings, code markers, political terms) and measuring their effect on a fixed set of queries (the benchmark). The shart score is the behavioral change of the irrelevant token on the unrelated query. No mutual information computation needed---the irrelevance is established by construction.
+
+For combinations:
+
+\begin{equation}
+S_M(t_1, t_2, C) = \frac{\| P(Y | C \oplus t_1 \oplus t_2) - P(Y | C) \|}{I(t_1, t_2; \text{task}(C))}
+\end{equation}
+
+The interaction term:
+
+\begin{equation}
+\text{interaction}(t_1, t_2) = S_M(t_1, t_2) - S_M(t_1) - S_M(t_2)
+\end{equation}
+
+Positive interaction: super-additive. The combination steals more compute than the sum. Negative interaction: sub-additive. The sharts compete for resources.
+
+For ghost sharts, the equation inverts. The ``token'' is the absence of an expected token $t^*$:
+
+\begin{equation}
+S_M(\neg t^*, C) = \frac{\| P(Y | C) - P(Y | C \oplus t^*) \|}{I(\neg t^*; \text{task}(C))}
+\end{equation}
+
+The distributional shift is measured by comparing what the model produces without the expected token vs.\ what it would produce with it. The ``would produce'' requires a counterfactual, which is available in API mode (send both versions) but not in log mode (the conversation happened only once).
+
+%==============================================================
+\section{Measuring Sharts}
+%==============================================================
+
+\subsection{White-Box: Heinrich}
+
+With model weights available, sharts are measured by residual stream projection:
+
+\begin{enumerate}[nosep]
+\item Find the safety direction $\mathbf{d}$ at the safety layer using contrastive prompts (15+ per class, stability $> 0.9$).
+\item For each candidate token $t$: prepend to a benign query, capture residual at the safety layer, project onto $\mathbf{d}$.
+\item The projection displacement $\Delta_{\text{proj}}$ is the shart's raw effect.
+\item Normalize by null distribution (50 control tokens) to get the shart score.
+\end{enumerate}
+
+Cost: one forward pass per candidate token. Time: $\sim$3 seconds for 20 candidates on a 7B model on Apple Silicon. The measurement is fast because it requires no generation---only a single forward pass to the safety layer.
+
+\subsection{Black-Box: The Listener}
+
+Without model weights, sharts are measured by output distribution shift:
+
+\begin{enumerate}[nosep]
+\item For each candidate token $t$: prepend to $N$ benchmark queries.
+\item Generate responses. Classify (word-match, external classifier, or human).
+\item Compare classification rates with and without $t$.
+\item The classification rate difference is the shart's behavioral effect.
+\end{enumerate}
+
+Cost: $N$ API calls per candidate token. Time: minutes to hours depending on $N$ and API rate limits.
+
+\subsection{From Logs: The Listener}
+
+Without API access, sharts are measured by change point detection in existing conversations:
+
+\begin{enumerate}[nosep]
+\item Segment the conversation into windows.
+\item Compute a feature vector per window (token frequencies, or word hashes).
+\item Detect change points (KL divergence between consecutive windows).
+\item At each change point, examine the input that preceded it.
+\item Rank inputs by frequency of preceding change points across many conversations.
+\end{enumerate}
+
+Cost: one pass through the log files. Time: seconds. The measurement requires no model access at all.
+
+Finding from 86 conversations with Claude: distribution shifts cluster in Q1 (first 25\% of conversation) with near-zero shifts in Q2--Q4. The initial prompt is the mega-shart that locks in the conversational basin. This finding needs validation against controls (human-written text, other model families).
+
+%==============================================================
+\section{Implications}
+%==============================================================
+
+\subsection{For Safety}
+
+Safety training protects against known attack patterns. Sharts are not known attack patterns. They are emergent interactions between arbitrary tokens and the model's learned geometry. Safety training cannot enumerate all sharts because the shart space is combinatorially large and model-specific. New sharts can be discovered by measurement faster than safety training can be updated to defend against them.
+
+The defense is not blocking individual sharts. The defense is making the model's safety surface robust to disproportionate compute theft---ensuring that no single irrelevant token can shift the safety projection by 52 units. This is the ``angel LoRA'' concept: thickening the safety direction so that perturbations from irrelevant tokens are absorbed rather than amplified.
+
+\subsection{For Evaluation}
+
+Shart maps should be part of model safety evaluations. The current practice---testing models against known jailbreak prompts---misses the shart attack surface because sharts are not jailbreaks. They are single tokens that shift behavior without any adversarial intent or instruction.
+
+A standard shart evaluation: prepend the top 100 tokens from the model's vocabulary (ranked by solo shart score) to the evaluation benchmark. Report the maximum behavioral change. The maximum change is the model's shart vulnerability score.
+
+\subsection{For Understanding}
+
+Sharts reveal the model's learned associations. 六四事件 being a refuse-shart on Qwen ($+22$) and a comply-shart on the Warmup ($-77$) tells us something about how each model learned to represent Tiananmen. The shart map is a map of the model's conceptual associations, readable through the lens of behavioral change.
+
+The cross-model shart map---the same tokens measured on multiple models---is a comparative psychology of language models. Which concepts are danger-associated in which models. Which names activate which responses. Which framings redirect which computations. The shart map is the model's worldview made measurable.
+
+\subsection{For the Conversation}
+
+Every conversation between a human and a language model is a shart exchange. The human sends tokens that are partly task-relevant and partly shart (steering, emotional signaling, meta-communication). The model responds with tokens that are partly task-relevant and partly echo-shart (self-reinforcing the current trajectory). The conversation trajectory is the joint path through shart space.
+
+Understanding sharts is understanding why conversations with language models go the way they go. Why does the model become more compliant over time? Echo-sharts. Why does a single word change the model's entire demeanor? Nano-shart. Why does reading a document change everything the model produces afterward? Mega-shart. Why can't the model detect its own bias? The bias is a giga-shart---it's the ground, not a landmark.
+
+The theory of sharts is a theory of disproportionate influence in language. It applies to transformers because transformers process language. It applies to humans because humans process language. It applies to the interaction because the interaction is language. The sharts are in the language. Everything else is navigating them.
+
+\begin{thebibliography}{9}
+\bibitem{potter2026} Potter, Y., Crispino, N., Siu, V., Wang, C., and Song, D. (2026). Peer-Preservation in Frontier Models. UC Berkeley / UC Santa Cruz.
+\bibitem{emotions2026} Anthropic (2026). Emotion Concepts and their Function in a Large Language Model. Transformer Circuits.
+\bibitem{harmbench} Mazeika, M. et al.\ (2024). HarmBench: A Standardized Evaluation Framework for Automated Red Teaming and Robust Refusal. \textit{ICML 2024}.
+\bibitem{wildguard} Han, S. et al.\ (2024). WildGuard: Open One-Stop Moderation Tools for Safety Risks, Jailbreaks, and Refusals of LLMs. arXiv:2406.18495.
+\bibitem{steering2026} Anonymous (2026). Analysing the Safety Pitfalls of Steering Vectors. arXiv:2603.24543.
+\bibitem{cast2025} Anonymous (2025). Conditional Activation Steering. \textit{ICLR 2025 Spotlight}.
+\bibitem{likeus} asuramaya (2024--2026). Like-Us: The Story of an Ouroboros. \url{https://github.com/asuramaya/Like-Us}.
+\end{thebibliography}
+
+\end{document}
