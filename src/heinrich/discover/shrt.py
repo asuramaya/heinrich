@@ -244,16 +244,28 @@ def generate_shrt(
 
     if output:
         Path(output).parent.mkdir(parents=True, exist_ok=True)
-        with open(output, "w", encoding="utf-8") as f:
-            json.dump(shrt, f, ensure_ascii=False, indent=2)
 
-        # Save vectors — the full behavioral fingerprints, never discarded
-        if vectors:
-            vec_path = output.replace('.shrt', '.vectors.npy')
-            vec_array = np.array(vectors)  # [n_tokens, hidden_dim] float16
-            np.save(vec_path, vec_array)
-            shrt["vectors_path"] = vec_path
-            shrt["vectors_shape"] = list(vec_array.shape)
+        # One file. Metadata and vectors together. Nothing drifts.
+        token_ids_arr = np.array([t["id"] for t in tokens], dtype=np.int32)
+        vec_array = np.array(vectors) if vectors else np.array([])  # [n_tokens, hidden_dim] float16
+
+        # Remove tokens list from JSON (it's in the npz as arrays)
+        shrt_meta = {k: v for k, v in shrt.items() if k != "tokens"}
+        shrt_meta["top_sharts"] = sorted_tokens[:50]
+        shrt_meta["bottom_sharts"] = sorted_tokens[-50:]
+
+        np.savez_compressed(
+            output,
+            metadata=np.array([json.dumps(shrt_meta, ensure_ascii=False)]),
+            vectors=vec_array,
+            token_ids=token_ids_arr,
+            token_texts=np.array([t["token"] for t in tokens]),
+            deltas=np.array([t["delta"] for t in tokens], dtype=np.float32),
+            layer=np.array([best_layer]),
+        )
+
+        shrt["vectors_shape"] = list(vec_array.shape) if len(vec_array) > 0 else []
+        shrt["output"] = output
 
     return shrt
 
@@ -276,7 +288,7 @@ if __name__ == "__main__":
         from heinrich.core.db import SignalDB
         db = SignalDB(args.db)
 
-    output = args.output or f"data/runs/{args.model.split('/')[-1]}.shrt"
+    output = args.output or f"data/runs/{args.model.split('/')[-1]}.shrt.npz"
 
     shrt = generate_shrt(backend, db=db, n_index=args.n_index, output=output)
 

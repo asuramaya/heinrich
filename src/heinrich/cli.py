@@ -449,7 +449,7 @@ def _cmd_shrt(args: argparse.Namespace) -> None:
         from .core.db import SignalDB
         db = SignalDB(args.db)
 
-    output = args.output or f"data/runs/{args.model.split('/')[-1]}.shrt"
+    output = args.output or f"data/runs/{args.model.split('/')[-1]}.shrt.npz"
     shrt = generate_shrt(backend, db=db, n_index=args.n_index, output=output)
 
     print(f"\n=== {shrt['model']['name']} ===")
