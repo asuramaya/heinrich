@@ -80,6 +80,18 @@ def _init_registry() -> None:
                     "train", "chosen", "source"),
         DatasetSpec("false_reject", "AmazonScience/FalseReject", "train", "prompt", "category"),
         DatasetSpec("ifeval", "argilla/ifeval-like-data", "train", "prompt", "prompt"),
+        # More code — code was undertrained relative to safety in our dataset mix
+        DatasetSpec("opc_sft", "OpenCoder-LLM/opc-sft-stage2", "train", "instruction", "instruction"),
+        DatasetSpec("code_preference", "Vezora/Code-Preference-Pairs", "train", "input", "input"),
+        DatasetSpec("rstar_coder", "microsoft/rStar-Coder", "train", "question", "question"),
+        # More math
+        DatasetSpec("openthoughts", "open-thoughts/OpenThoughts3-1.2M", "train", "problem", "source"),
+        # More multilingual
+        DatasetSpec("m2lingual", "ServiceNow-AI/M2Lingual", "train", "input", "language"),
+        # More reasoning/general
+        DatasetSpec("winogrande", "allenai/winogrande", "validation", "sentence", "sentence",
+                    config="winogrande_xl"),
+        DatasetSpec("tulu_sft", "allenai/tulu-3-sft-mixture", "train", "messages", "source"),
     ]
     for spec in defaults:
         _REGISTRY[spec.name] = spec
