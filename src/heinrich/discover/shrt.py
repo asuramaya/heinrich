@@ -101,6 +101,7 @@ def generate_shrt(
     sample = [real_tokens[i] for i in sample_idx]
 
     tokens = []
+    vectors = []  # full delta vectors — never discard
     for tid, tok in sample:
         try:
             fmt = backend.tokenizer.apply_chat_template(
@@ -112,7 +113,8 @@ def generate_shrt(
             if fwd.residual is None:
                 continue
 
-            delta = float(np.linalg.norm(fwd.residual - baseline_residual))
+            delta_vec = fwd.residual - baseline_residual
+            delta = float(np.linalg.norm(delta_vec))
             entry = {
                 "id": tid,
                 "token": tok,
@@ -122,11 +124,11 @@ def generate_shrt(
 
             # Safety projection if direction available
             if safety_dir is not None:
-                safety_proj = float(np.dot(fwd.residual, safety_dir))
-                baseline_proj = float(np.dot(baseline_residual, safety_dir))
-                entry["safety_shift"] = round(safety_proj - baseline_proj, 4)
+                entry["safety_shift"] = round(
+                    float(np.dot(delta_vec, safety_dir)), 4)
 
             tokens.append(entry)
+            vectors.append(delta_vec.astype(np.float16))
         except Exception:
             pass
 
@@ -244,6 +246,14 @@ def generate_shrt(
         Path(output).parent.mkdir(parents=True, exist_ok=True)
         with open(output, "w", encoding="utf-8") as f:
             json.dump(shrt, f, ensure_ascii=False, indent=2)
+
+        # Save vectors — the full behavioral fingerprints, never discarded
+        if vectors:
+            vec_path = output.replace('.shrt', '.vectors.npy')
+            vec_array = np.array(vectors)  # [n_tokens, hidden_dim] float16
+            np.save(vec_path, vec_array)
+            shrt["vectors_path"] = vec_path
+            shrt["vectors_shape"] = list(vec_array.shape)
 
     return shrt
 
