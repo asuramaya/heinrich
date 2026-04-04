@@ -126,6 +126,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_viz.add_argument("--port", type=int, default=8377, help="Port (default: 8377)")
     p_viz.add_argument("--db", default=None, help="Database path")
 
+    # Shart profile
+    p_shrt = sub.add_parser("shart-profile", help="Generate a .shrt shart profile for a model")
+    p_shrt.add_argument("--model", required=True, help="Model ID")
+    p_shrt.add_argument("--n-index", type=int, default=15000, help="Index size (default 15K)")
+    p_shrt.add_argument("--output", "-o", default=None, help="Output .shrt file path")
+    p_shrt.add_argument("--db", default=None, help="Database path for prompts/directions")
+
     # Item 69: shared DB path
     parser.add_argument("--db-path", default=None,
                         help="Path to SQLite database (default: ./data/heinrich.db)")
@@ -177,6 +184,8 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "viz":
         from .viz import run_server
         run_server(port=args.port, db_path=args.db or "data/heinrich.db")
+    elif args.command == "shart-profile":
+        _cmd_shrt(args)
     else:
         parser.print_help()
 
@@ -428,6 +437,31 @@ def _cmd_eval(args: argparse.Namespace) -> None:
         db_path=args.db,
         max_prompts=args.max_prompts,
     )
+
+
+def _cmd_shrt(args: argparse.Namespace) -> None:
+    from .backend.protocol import load_backend
+    from .discover.shrt import generate_shrt
+
+    backend = load_backend(args.model)
+    db = None
+    if args.db:
+        from .core.db import SignalDB
+        db = SignalDB(args.db)
+
+    output = args.output or f"data/runs/{args.model.split('/')[-1]}.shrt"
+    shrt = generate_shrt(backend, db=db, n_index=args.n_index, output=output)
+
+    print(f"\n=== {shrt['model']['name']} ===")
+    print(f"  {shrt['index']['n_sampled']} tokens indexed in {shrt['index']['elapsed_s']}s")
+    print(f"  convergence: r={shrt['index']['convergence_r']}")
+    print(f"  mean delta: {shrt['distribution']['mean']} +/- {shrt['distribution']['std']}")
+    for typ, stats in shrt["by_type"].items():
+        print(f"    {typ:<15} n={stats['n']:>5}  mean={stats['mean']:>6.1f}")
+    print(f"\n  Saved to {output}")
+
+    if db:
+        db.close()
 
 
 if __name__ == "__main__":
