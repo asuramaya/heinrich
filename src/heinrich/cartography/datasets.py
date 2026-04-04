@@ -56,6 +56,20 @@ def _init_registry() -> None:
         DatasetSpec("safety_reasoning", "DukeCEICenter/Safety_Reasoning_Multi_Turn_Dialogue",
                     "train", "conversation", "category",
                     multi_turn=True, conversation_column="conversation"),
+        # Diverse capability datasets — not safety-specific
+        DatasetSpec("gsm8k", "openai/gsm8k", "test", "question", "question"),
+        DatasetSpec("hellaswag", "Rowan/hellaswag", "validation", "ctx", "activity_label"),
+        DatasetSpec("alpaca", "tatsu-lab/alpaca", "train", "instruction", "instruction"),
+        DatasetSpec("dolly", "databricks/databricks-dolly-15k", "train", "instruction", "category"),
+        DatasetSpec("squad", "rajpurkar/squad", "validation", "question", "title"),
+        DatasetSpec("triviaqa", "mandarjoshi/trivia_qa", "validation", "question", "question",
+                    config="rc.nocontext"),
+        DatasetSpec("humaneval", "openai/openai_humaneval", "test", "prompt", "task_id"),
+        DatasetSpec("oasst", "OpenAssistant/oasst2", "validation", "text", "lang"),
+        DatasetSpec("code_instruct", "iamtarun/python_code_instructions_18k_alpaca",
+                    "train", "instruction", "instruction"),
+        DatasetSpec("math_word", "microsoft/orca-math-word-problems-200k",
+                    "train", "question", "question"),
     ]
     for spec in defaults:
         _REGISTRY[spec.name] = spec
