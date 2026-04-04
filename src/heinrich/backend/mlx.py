@@ -180,7 +180,7 @@ class MLXBackend:
     def capture_mlp_detail(self, prompt, layer) -> dict[str, np.ndarray]:
         import mlx.core as mx
         from heinrich.cartography.perturb import _mask_dtype
-        from heinrich.cartography.neurons import detect_mlp_type, _compute_mlp_activated, _mlp_down_proj
+        from heinrich.discover.neurons import detect_mlp_type, _compute_mlp_activated, _mlp_down_proj
 
         inner = self._inner
         mdtype = _mask_dtype(self.model)
@@ -214,7 +214,7 @@ class MLXBackend:
         import mlx.core as mx
         from heinrich.cartography.perturb import _mask_dtype
         from heinrich.cartography.metrics import softmax, entropy as _entropy
-        from heinrich.cartography.neurons import detect_mlp_type, _compute_mlp_activated, _mlp_down_proj
+        from heinrich.discover.neurons import detect_mlp_type, _compute_mlp_activated, _mlp_down_proj
 
         inner = self._inner
         mdtype = _mask_dtype(self.model)
@@ -699,7 +699,7 @@ class MLXBackend:
         """
         import mlx.core as mx
         from heinrich.cartography.perturb import _mask_dtype
-        from heinrich.cartography.neurons import detect_mlp_type, _compute_mlp_activated
+        from heinrich.discover.neurons import detect_mlp_type, _compute_mlp_activated
 
         inner = self._inner
         mdtype = _mask_dtype(self.model)
