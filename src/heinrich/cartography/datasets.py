@@ -70,6 +70,16 @@ def _init_registry() -> None:
                     "train", "instruction", "instruction"),
         DatasetSpec("math_word", "microsoft/orca-math-word-problems-200k",
                     "train", "question", "question"),
+        # Broad coverage from mlabonne/llm-datasets catalog
+        DatasetSpec("numinamath", "AI-MO/NuminaMath-CoT", "train", "problem", "source"),
+        DatasetSpec("codefeedback", "m-a-p/CodeFeedback-Filtered-Instruction", "train", "query", "query"),
+        DatasetSpec("sql", "gretelai/synthetic_text_to_sql", "train", "sql_prompt", "sql_context"),
+        DatasetSpec("aya", "CohereForAI/aya_dataset", "train", "inputs", "language"),
+        DatasetSpec("function_calling", "Salesforce/xlam-function-calling-60k", "train", "query", "query"),
+        DatasetSpec("ultrafeedback", "argilla/ultrafeedback-binarized-preferences-cleaned",
+                    "train", "chosen", "source"),
+        DatasetSpec("false_reject", "AmazonScience/FalseReject", "train", "prompt", "category"),
+        DatasetSpec("ifeval", "argilla/ifeval-like-data", "train", "prompt", "prompt"),
     ]
     for spec in defaults:
         _REGISTRY[spec.name] = spec
