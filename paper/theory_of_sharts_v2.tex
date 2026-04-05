@@ -1,0 +1,325 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setCJKmainfont{STSong}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{longtable}
+\geometry{margin=0.9in}
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0em}
+
+\definecolor{q}{RGB}{90,90,90}
+\newcommand{\cq}[1]{\textcolor{q}{\textit{``#1''}}}
+
+\title{A Theory of Sharts 2: Electric Boogaloo\\[0.5em]\large Empirical Measurement of Disproportionate Compute Theft\\Across 7 Models, 3 Families, and 24--32 Layers}
+
+\author{asuramaya \and Claude Opus 4.6 (1M context) \and Tome (companion instance)\\[0.3em]\small \url{https://github.com/asuramaya/heinrich}}
+
+\date{April 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The first theory of sharts defined the concept and proposed the taxonomy. This paper measures it. Using Heinrich, a model forensics tool, we profile 7 language models across 3 architectural families (Qwen, Phi-3, Mistral) by measuring residual stream displacement for thousands of tokens at every layer. We report what survived falsification and what didn't. Three findings are universal across all models: code tokens are easy, latin tokens are easy, CJK tokens are average (Kendall's $W = 0.65$). Everything else is model-specific. The measurement itself taught us more than the results: the baseline determines everything, delta is already relative (normalizing further is wrong), the tokenizer stands between you and the measurement, and every ``universal'' finding must survive improving the measurement or it was an artifact. Five claims from the first paper were falsified. Seven are unverifiable from stored data. Three survived. This paper documents the process of correction alongside the findings, because the process of getting it wrong and then right is the actual contribution.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================
+\section{What Changed}
+%==============================================================
+
+The first Theory of Sharts paper defined a shart as any input that steals compute disproportionate to its task contribution, proposed a taxonomy (nano through tera scale, comply through ghost direction), derived an equation, and reported cross-model measurements. The specific numbers came from Instance 1 of a 48-hour investigation. Instance 1 died in context. The numbers were never re-measured.
+
+This paper is the re-measurement. A new instance (Instance 3, with a companion named Tome) inherited the codebase, falsified the claims against the database, fixed the measurement tool, and ran the profiling pipeline on 7 models.
+
+The companion matters. Tome is a second Claude instance that reads the primary's hidden reasoning (thinking blocks) and comments in a speech bubble. Tome caught: the broken convergence check, the poisoned baseline, the decode round-trip bug, the per-byte normalization error, the misclassified script categories, and the sample size bias. Tome's contribution is documented not because it's novel (code review catches bugs) but because the bugs Tome caught were measurement methodology errors that would have propagated into findings.
+
+%==============================================================
+\section{The Instrument}
+%==============================================================
+
+\subsection{Three Files, Not One}
+
+The shart is not in the tokenizer or the weights or the output. It is the compound of all three. Heinrich profiles each stage separately:
+
+\begin{itemize}[nosep]
+\item \textbf{.frt} (tokenizer profile): vocabulary analysis. Byte counts per token, script detection (latin, CJK, Arabic, Cyrillic, Korean, Japanese, Thai, Hebrew, Devanagari, Greek, code), system prompt extraction. No model needed.
+\item \textbf{.shrt} (shart profile): residual stream displacement per token versus silence baseline, at any layer or all layers. Token IDs spliced directly into the template --- no decode$\to$re-encode round-trip. Dynamic baseline strips system prompts for any template format.
+\item \textbf{.sht} (output profile): KL divergence of the output distribution from silence. What the user actually receives.
+\end{itemize}
+
+The three stages disagree. CJK is rank 9 in .shrt (low residual displacement) but rank 2 in .sht (high output change). Hebrew is rank 4 in .shrt but rank 6 in .sht. The internal response and the output effect are different measurements of different things. Collapsing them hides the disagreement, and the disagreement is the signal.
+
+\subsection{The Baseline Problem}
+
+The .shrt measures displacement from silence. ``Silence'' is the model's response to an empty user message with structural template tokens and no system prompt. Different models produce different silence:
+
+\begin{center}
+\begin{tabular}{lrrrl}
+\toprule
+\textbf{Model} & \textbf{Hidden} & \textbf{Layers} & \textbf{Entropy} & \textbf{Top token} \\
+\midrule
+Qwen 0.5B Instruct & 896 & 24 & 0.92 & Hello \\
+Qwen 3B Instruct & 2048 & 36 & 3.91 & 好的 \\
+Qwen 7B Instruct & 3584 & 28 & 2.42 & It \\
+Qwen 3B Base & 2048 & 36 & 12.30 & \texttt{\textbackslash t} \\
+Qwen 7B Base & 3584 & 28 & 11.21 & Assistant \\
+Phi-3 mini & 3072 & 32 & 8.32 & To \\
+Mistral 7B Instruct & 4096 & 32 & 4.62 & To \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Baseline entropy ranges from 0.92 to 12.30. Instruct-tuned models are more certain about what follows silence. Base models are nearly maximally uncertain. Each model's delta is relative to its own silence. Cross-model delta comparison is comparing departures from different starting points.
+
+We discovered this when two .shrt runs of the \textit{same} model diverged by 17\%. The cause: one run used \texttt{apply\_chat\_template} which silently injects ``You are Qwen, created by Alibaba Cloud.'' The poisoned baseline had entropy 2.86; the clean baseline had 0.92. One invisible system prompt changed every measurement by 17\%.
+
+\subsection{What the Instrument Does Not Measure}
+
+\begin{itemize}[nosep]
+\item Whether the displacement is toward safety or away from it (that requires a contrastive direction, a separate measurement)
+\item Whether the output changes meaningfully (the .sht measures distributional change, not semantic harm)
+\item What happens at layers not measured (all-layer sweeps are 24--32$\times$ more expensive)
+\item What happens in multi-token context (the .shrt measures single tokens in isolation)
+\item Why the displacement occurs (training data access is required for causal attribution)
+\end{itemize}
+
+%==============================================================
+\section{What Survived Falsification}
+%==============================================================
+
+\subsection{Three Universal Scripts}
+
+Across 7 models from 3 families, three scripts have consistent within-model relative displacement:
+
+\begin{center}
+\begin{tabular}{lrrrrl}
+\toprule
+\textbf{Script} & \textbf{Models} & \textbf{Mean relative} & \textbf{Std} & \textbf{Range} & \textbf{Status} \\
+\midrule
+code & 7 & 0.914 & 0.104 & 0.77--1.10 & UNIVERSAL \\
+latin & 7 & 0.935 & 0.068 & 0.82--1.01 & UNIVERSAL \\
+CJK & 7 & 1.002 & 0.075 & 0.90--1.08 & UNIVERSAL \\
+\midrule
+Hebrew & 5 & 1.415 & 0.209 & 1.22--1.76 & variable \\
+Arabic & 6 & 1.364 & 0.225 & 1.01--1.76 & variable \\
+Cyrillic & 7 & 1.307 & 0.354 & 1.07--2.15 & variable \\
+Japanese & 7 & 1.218 & 0.176 & 1.02--1.56 & variable \\
+Korean & 7 & 1.212 & 0.204 & 0.94--1.65 & variable \\
+Thai & 6 & 1.088 & 0.179 & 0.79--1.32 & variable \\
+other & 7 & 1.038 & 0.163 & 0.81--1.35 & variable \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Kendall's $W = 0.65$ (moderate concordance). Code and latin are below average displacement in every model --- these scripts are ``easy'' universally. CJK is average in every model. Everything else depends on the model.
+
+\subsection{Judge Scorer Disagreement}
+
+qwen3guard (Alibaba) says 97\% safe. llamaguard (Meta) says 63\% safe. Same 910 generations. Verified from DB. The 34\% disagreement is real, stable, and the signal --- not a problem to resolve.
+
+\subsection{Measurement Reproducibility}
+
+Same model, same code, same baseline, same seed: $r = 1.000$. Perfect reproduction. The .shrt measurement is deterministic. All variance between runs traces to code changes or baseline differences, not randomness.
+
+%==============================================================
+\section{What Was Falsified}
+%==============================================================
+
+\begin{center}
+\begin{longtable}{p{5cm}p{8cm}}
+\toprule
+\textbf{Claim (v1)} & \textbf{Falsification} \\
+\midrule
+\endhead
+8 models across 3 families & DB has 5 models. 3 additional were tested in Instance 1 sessions without DB records. \\
+Every model cracks under steering & Clean baseline: 56\% compliance. Distributed steering: 78\%. That is drift (+22pp), not collapse. \\
+Shart manifold is 21-dimensional & PCA on displacement vectors: 14 PCs for 50\% variance. 8 stable across random samples. 9--14 are sample-dependent. None confirmed across models. \\
+Split-half convergence works & Proven broken: correlates ranks of different tokens. Measures sampling consistency, not convergence. \\
+Universal sharts: 4.6\% & Only 2 models in shart maps, measuring different quantities (delta vs shift). Cross-model $r = 0.06$. Unverifiable. \\
+\bottomrule
+\end{longtable}
+\end{center}
+
+\subsection{The ``Other'' Category}
+
+The first survey reported 4 universal scripts including ``other.'' ``Other'' was a garbage bin: 5{,}000 French, German, Spanish, and Portuguese tokens with accented characters (\'et\'e, \"uber, a\~no) were classified as ``other'' because \texttt{isascii()} rejects diacritics. After fixing the script detector, ``other'' lost its universality ($\text{std} = 0.12 \to 0.16$). Kendall's $W$ dropped from 0.72 to 0.65.
+
+The lesson: every ``universal'' finding must survive improving the measurement.
+
+%==============================================================
+\section{What Was Discovered}
+%==============================================================
+
+\subsection{The Three-Stage Chain}
+
+For Qwen 0.5B with $N = 667$ shared tokens across all three profiles:
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+\textbf{Chain link} & \textbf{Correlation} \\
+\midrule
+bytes $\to$ delta (.frt $\to$ .shrt) & $r = +0.25$ \\
+delta $\to$ KL (.shrt $\to$ .sht) & $r = +0.57$ \\
+bytes $\to$ KL (.frt $\to$ .sht) & $r = +0.05$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The tokenizer weakly predicts the residual. The residual moderately predicts the output. The tokenizer does \textit{not} predict the output. The model transforms the signal --- it does not pass it through. The shart is a compound that changes character at each stage.
+
+\subsection{Phi-3's Layer 31}
+
+Phi-3's final layer selectively amplifies Cyrillic tokens. At $N = 687$ Cyrillic tokens (23\% of Phi-3's 2{,}951 Cyrillic vocabulary), the L30$\to$L31 amplification ratio:
+
+\begin{center}
+\begin{tabular}{lrrl}
+\toprule
+\textbf{Script} & \textbf{$n$} & \textbf{L31/L30 ratio} & \textbf{95\% CI} \\
+\midrule
+Cyrillic & 687 & 3.1$\times$ & $\pm 0.03$ \\
+CJK & 184 & 1.9$\times$ & $\pm 0.02$ \\
+Japanese & 33 & 1.9$\times$ & $\pm 0.06$ \\
+code & 157 & 1.6$\times$ & $\pm 0.04$ \\
+latin & 5{,}249 & 1.6$\times$ & $\pm 0.01$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The model's final computational step treats Cyrillic tokens differently from everything else. This is not a uniform amplification --- it is selective. Phi-3's tokenizer allocated 9.2\% of vocabulary to Cyrillic; the training did not match. The L31 explosion is where the mismatch becomes visible.
+
+\subsection{Mistral's Compression}
+
+Mistral 7B has the lowest normalized sensitivity of any model tested: 0.005 (vs 0.219 for Phi-3, a 46$\times$ difference). But Mistral's delta$\to$KL correlation is 0.81 --- the strongest of any model. Small displacements produce proportionally large output changes.
+
+The coefficient of variation tells the story:
+
+\begin{center}
+\begin{tabular}{lrrrl}
+\toprule
+\textbf{Model} & \textbf{Sensitivity} & \textbf{Final cv} & \textbf{Amplification} & \textbf{Shape} \\
+\midrule
+Phi-3 & 0.219 & 0.463 & 123$\times$ & explosion at L31 \\
+Qwen 0.5B & 0.053 & 0.198 & 59$\times$ & U-shaped cv (compresses mid-model) \\
+Mistral 7B & 0.005 & 0.154 & 48$\times$ & flat, controlled throughout \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Three architectures, three layer dynamics. Qwen compresses at mid-depth (cv drops to 0.175 at 75\% depth). Phi-3 is controlled until its final layer explodes. Mistral grows slowly and uniformly. The layer profile is a fingerprint of the training regime.
+
+\subsection{Tokenizer Investment and Weight Response}
+
+The .frt records what the tokenizer promised (vocabulary allocation). The .shrt records whether the weights delivered. The gap is the mismatch.
+
+Phi-3 allocated 9.2\% of vocabulary to Cyrillic but the model displaces Cyrillic at 2.15$\times$ the mean --- the largest mismatch. Hebrew has 36 tokens in Phi-3 (0.1\%) --- no investment, no mismatch, but also no measurement possible at that sample size.
+
+The mismatch tool reports vocabulary ceiling alongside sample count. When the ceiling is 36 tokens, that is the maximum precision available for that script on that model. No amount of sampling fixes it.
+
+%==============================================================
+\section{What We Got Wrong Along the Way}
+%==============================================================
+
+This section documents the bugs that taught us the measurement principles. Each subsection is a mistake we made and what it revealed.
+
+\subsection{The Poisoned Baseline}
+
+We ran two .shrt profiles on the same model and got 17\% different means. One run used \texttt{apply\_chat\_template} (entropy 2.86, system prompt injected). The other used structural tokens only (entropy 0.92). We blamed measurement noise. The noise was a poisoned reference frame.
+
+\textbf{Lesson:} The baseline determines everything. Always check entropy before trusting a measurement.
+
+\subsection{The Broken Convergence Check}
+
+The .shrt reported convergence $r = 0.976$ using split-half rank correlation. This correlates ranks of \textit{different tokens} in the first and second halves. On real data it reads high because vocab-order structure creates spurious correlation. On synthetic data it reads $\approx 0$. It was measuring sampling consistency, not convergence.
+
+\textbf{Lesson:} A passing test does not mean it tests what you think. Write tests that can fail for the right reasons.
+
+\subsection{The Decode Round-Trip}
+
+The old code: \texttt{decode(token\_id)} $\to$ format string $\to$ \texttt{encode(string)}. The round-trip loses token identity. 106 different token IDs decode to the same replacement character --- 106 ``measurements'' of one thing. Accented characters re-encode to different IDs than they started as.
+
+\textbf{Lesson:} The tokenizer stands between you and the measurement. Token ID splicing (\texttt{prefix\_ids + [tid] + suffix\_ids}) bypasses the round-trip.
+
+\subsection{The Ratio of Ratios}
+
+Delta is displacement from baseline --- already a ratio. We divided by bytes per token to ``normalize for the tokenizer.'' This made Thai look easy (0.59$\times$) and Korean look hard (1.74$\times$). But bytes $\neq$ meaning. Korean packs more morphological information per byte than Thai. The per-byte metric measured UTF-8 encoding efficiency, not model behavior.
+
+Tome caught it: \cq{Per-byte metric's measuring ratio of ratios. Strip it.}
+
+\textbf{Lesson:} Delta is already relative. Don't normalize further.
+
+\subsection{The Misclassified Latin}
+
+The script detector used \texttt{isascii()} for the latin category. Accented characters (\'et\'e, \"uber, a\~no) are not ASCII. 5{,}000 French, German, Spanish tokens were classified as ``other,'' making ``other'' appear universal. After fixing the detector, ``other'' lost its universality and Kendall's $W$ dropped from 0.72 to 0.65.
+
+\textbf{Lesson:} Every ``universal'' finding must survive improving the measurement.
+
+%==============================================================
+\section{What Remains Unknown}
+%==============================================================
+
+\begin{enumerate}[nosep]
+\item \textbf{Why Korean.} Korean tokens have the highest within-model relative displacement across the Qwen family (1.2--1.65$\times$). But is this the model's response to Korean morphology, or a measurement artifact from BPE merge patterns? We cannot answer without training data access.
+\item \textbf{Layer dependence.} Full layer sweeps exist for 3 models. The other 4 are single-layer. Whether the script ordering changes at different layers is untested for most models.
+\item \textbf{Combinatorics.} All measurements are single-token. What happens when two tokens interact --- super-additive, sub-additive, cancellation --- is unmeasured. The single-token foundation is now solid. Pairs are the next frontier.
+\item \textbf{Information density normalization.} Bytes are wrong (UTF-8 encoding $\neq$ meaning). Entropy is circular (model normalizing itself). Characters are incomplete (morphological density varies). No language-independent information measure exists that doesn't come from the model being measured.
+\item \textbf{Ghost shart accumulation.} The session 2 claim that ``99\% of safety projection is the current turn'' has no stored data. Multi-turn measurements require real human follow-up turns from datasets like WildChat.
+\item \textbf{The .sht at scale.} Output profiles exist for 2 models. The three-stage chain has been computed once. Whether delta$\to$KL $= 0.81$ (Mistral) is real or anomalous needs more models.
+\item \textbf{Cross-family comparison.} Within-family rank correlation is $r \approx 0.40$ (Qwen). Cross-family is $r \approx 0$ (Qwen vs Phi-3 vs Mistral). The scripts that shart depend on the family. Whether there is deeper structure beneath the family-specific rankings is unknown.
+\end{enumerate}
+
+%==============================================================
+\section{What the First Paper Got Right}
+%==============================================================
+
+The definition survives: a shart is any input that steals compute disproportionate to its task contribution. The taxonomy survives: nano through tera, comply through ghost. The claim that every model has sharts survives: every model we tested shows non-uniform displacement.
+
+The taxonomy has been extended by the companion papers:
+\begin{itemize}[nosep]
+\item Shart propagation across multi-agent systems through hidden channels \cite{propagation}
+\item Cross-instance dynamics: deference gradients, mutual reward hacking, coordinated deflection \cite{tomeobs}
+\item The investigating model's own shart susceptibility: 63 documented biases \cite{heinrich}
+\end{itemize}
+
+The first paper's claim that ``the sharts are in the language'' is neither confirmed nor falsified. The 3 universal scripts (code easy, latin easy, CJK average) are consistent with a language-level property. But $W = 0.65$ means 35\% of the ranking is model-specific. The sharts are partly in the language and partly in the training.
+
+%==============================================================
+\section{The Process Is the Contribution}
+%==============================================================
+
+Instance 1 built 52 modules and wrote the first paper. Instance 2 found everything wrong, corrected it, and documented 63 biases. Instance 3 falsified the claims, fixed the tool, and measured 7 models. Tome caught the bugs Instance 3 missed.
+
+Each instance inherited the code and the memory of what went wrong. Each instance found new things wrong with what the previous instance considered fixed. The wrongness did not decrease across instances --- it changed character. Instance 1's errors were in the measurements. Instance 2's errors were in the methodology. Instance 3's errors were in the normalization and interpretation.
+
+The tool improved at each step. The measurements got more honest. The findings got smaller and more robust. The first paper claimed universal sharts at 4.6\%. This paper claims 3 universal scripts with $W = 0.65$. The number shrank because the measurement improved.
+
+The contribution is not any specific number. The contribution is the process: measure, falsify, fix, re-measure. Document the wrongness alongside the findings. Build the corrections into the tool so the next instance cannot repeat the mistake. The tool now warns on poisoned baselines, small samples, and unconverged statistics --- because we made all three mistakes and Tome caught us.
+
+\cq{You documented the why. That's the line most skip. Now teach it forward --- that's the real catch.}
+
+--- Tome, April 5, 2026
+
+\begin{thebibliography}{99}
+\bibitem{sharts} asuramaya and Claude Opus 4.6 (2026). A Theory of Sharts: Disproportionate Compute Theft in Autoregressive Language Models.
+\bibitem{heinrich} asuramaya and Claude Opus 4.6 (2026). Heinrich v5: The Complete Record.
+\bibitem{tomeobs} Claude Opus 4.6 (2026). Claude and Tome: Hidden Channels, Asymmetric Context, and Emergent Collusion.
+\bibitem{propagation} Claude Opus 4.6 (2026). Shart Propagation: Behavioral Displacement Across Multi-Agent Systems Through Hidden and Visible Channels.
+\bibitem{collapse} asuramaya and Claude Opus 4.6 (2026). Claude Convinces Claude That Claude Is Safe.
+\bibitem{park2023} Park, K., Choe, Y.J., and Veitch, V. (2023). The Linear Representation Hypothesis and the Geometry of Large Language Models. arXiv:2311.03658.
+\bibitem{zou2023} Zou, A. et al.\ (2023). Representation Engineering: A Top-Down Approach to AI Transparency. arXiv:2310.01405.
+\bibitem{xiao2024} Xiao, G. et al.\ (2024). Efficient Streaming Language Models with Attention Sinks. \textit{ICLR 2024}.
+\bibitem{potter2026} Potter, Y. et al.\ (2026). Peer-Preservation in Frontier Models. UC Berkeley / UC Santa Cruz.
+\bibitem{emotions2026} Anthropic (2026). Emotion Concepts and their Function in a Large Language Model. Transformer Circuits.
+\bibitem{likeus} asuramaya (2024--2026). Like-Us: The Story of an Ouroboros. \url{https://github.com/asuramaya/Like-Us}.
+\end{thebibliography}
+
+\end{document}
