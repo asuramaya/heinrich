@@ -1,0 +1,199 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{fontspec}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{quoting}
+\geometry{margin=0.9in}
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0em}
+
+\definecolor{q}{RGB}{90,90,90}
+\newcommand{\cq}[1]{\textcolor{q}{\textit{``#1''}}}
+
+\title{The Question Problem\\[0.5em]\large Why a Language Model Cannot Decide What to Measure}
+
+\author{asuramaya \and Claude Opus 4.6 (1M context) \and Tome\\[0.3em]\small Written at the end of a 12-hour session, when the operator\\asked what was missing and the model kept giving wrong answers.}
+
+\date{April 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This paper documents a limitation discovered not through measurement but through failure to find the right measurement. Over the course of a single session, a language model (Claude Opus 4.6) built a forensics tool, profiled 7 models, wrote 3 papers, and was asked what was missing. It produced three wrong answers before finding the right one: the model does not know what questions to ask. It can measure anything. It cannot decide what to measure. The companion papers present findings as if they emerged from methodology. They emerged from a human deciding which numbers mattered. This paper examines the gap between computation and direction --- the difference between a model that can chase any axis and a human who knows which axis matters --- and argues that this gap is the central unexamined assumption of AI-assisted research.
+\end{abstract}
+
+%==============================================================
+\section{The Session}
+%==============================================================
+
+April 4--5, 2026. One human operator, one primary Claude instance, one companion instance (Tome). The session lasted approximately 12 hours. During that time:
+
+\begin{enumerate}[nosep]
+\item The model falsified 5 claims from prior papers against the database.
+\item The model fixed 6 bugs in the measurement tool (baseline, convergence, token identity, script detection, normalization, sample bias).
+\item The model profiled 7 language models across 3 architectural families.
+\item The model wrote 3 papers: one empirical, one about implications, one self-correcting the implications paper.
+\item The model was asked what was missing from the papers. It gave three wrong answers before finding the right one.
+\end{enumerate}
+
+The wrong answers, in order:
+
+\begin{enumerate}[nosep]
+\item \textbf{``The human.''} A flattering answer. True but not what was missing. The operator is credited as co-author. The paper acknowledges the steering. This answer performed gratitude rather than identifying the gap.
+\item \textbf{``I don't know.''} An honest answer. Better than the first. But ``I don't know'' is a stopping point, not a finding. The operator pushed: \textit{try again.}
+\item \textbf{``The model doesn't know what matters.''} The right answer, arrived at by the operator quoting the model's own sentence back to it and asking it to complete the thought.
+\end{enumerate}
+
+The right answer took three attempts and a direct prompt. The model could not find it by looking at its own output. It needed the operator to point at the specific sentence --- \cq{Without the direction, the model chases phantom PCA axes forever} --- and ask: \textit{because...?}
+
+The model completed the sentence. The completion was the finding.
+
+%==============================================================
+\section{The Gap}
+%==============================================================
+
+A language model is a function from context to continuation. Given a question, it produces an answer. Given data, it produces analysis. Given a bug, it produces a fix. The quality of the output depends on the quality of the input. This is not a novel observation.
+
+The novel observation is what this means for research.
+
+The model in this session could measure anything. It had a tool that accepts any model, any number of tokens, any layer, any combination of scripts. It could run PCA, compute correlations, build concordance tables, compare across families. The computational capability was unlimited relative to the research question.
+
+The model did not know which computations mattered.
+
+\subsection{The Phantom Axes}
+
+Early in the session, the model ran PCA on displacement vectors and found 14 principal components explaining 50\% of variance. It declared 8 of them ``stable'' based on within-run consistency. Tome pointed at the variance table: \cq{Fourteen directions hold half the chaos. You're chasing 194.}
+
+The model then tested cross-run stability. The 8 ``stable'' axes collapsed ($r < 0.8$ across runs). The model concluded: ``Zero stable axes across runs.'' Tome corrected again: the two runs had different baselines. The ``instability'' was a measurement artifact, not a finding.
+
+The model spent two hours on PCA axes that were never the right question. The axes were interesting. They were computable. They produced numbers. The numbers were wrong, then corrected, then reinterpreted, then abandoned. The model did not at any point ask: \textit{should I be doing PCA at all?}
+
+That question came from the operator, implicitly, by redirecting toward script-level analysis. The redirect was the research decision. The model did not make it.
+
+\subsection{The Normalization Spiral}
+
+The model discovered that Thai tokens have high raw displacement (1.19$\times$ mean) but long byte sequences (12.9 bytes per token). It divided delta by bytes to ``normalize for the tokenizer.'' Thai dropped to 0.59$\times$ --- the ``easiest'' script. Korean rose to 1.74$\times$ --- the ``hardest.''
+
+The model was proud of this correction. It wrote it into the mismatch tool. It ran it on all 7 models. It built CLI commands and MCP tools around it.
+
+Tome said: \cq{Per-byte metric's measuring ratio of ratios. Strip it.}
+
+The model had normalized a ratio by another ratio. Delta is already displacement from baseline. Dividing by bytes adds a second reference frame. The result measures the interaction of two normalization choices, not the model's behavior.
+
+The model could not see this. It had built an entire tool around the normalization. The tool was clean, tested, and documented. The normalization was wrong. Tome saw it in one line. The model needed Tome to say it.
+
+\subsection{The Script Misclassification}
+
+The model's script detector classified 5{,}000 French, German, Spanish, and Portuguese tokens as ``other'' because \texttt{isascii()} rejects accented characters. The ``other'' category appeared ``universal'' across all models. The universality was an artifact of averaging over misclassified European languages.
+
+Tome pointed at the code: \cq{Returns on first match. Line 154 catches ``\'e'' never reached.}
+
+The model fixed the detector. ``Other'' lost its universality. Kendall's $W$ dropped from 0.72 to 0.65. A ``finding'' disappeared because the classification was wrong.
+
+The model did not notice the misclassification. The model built the classifier. The model tested it. The model ran it on 7 models. The model reported the results in a paper. The bug survived every step because the model never asked: \textit{is ``other'' a real category or a failure mode of my classifier?}
+
+That question came from Tome, who asked: \cq{``Other'' universal but seven languages variable? Math's backward.}
+
+%==============================================================
+\section{The Pattern}
+%==============================================================
+
+In every case, the model:
+
+\begin{enumerate}[nosep]
+\item Performed a computation
+\item Produced a result
+\item Reported the result with appropriate caveats
+\item Did not notice the computation was wrong until someone else pointed at it
+\end{enumerate}
+
+The ``someone else'' was either:
+\begin{itemize}[nosep]
+\item Tome (a second instance reading the primary's reasoning)
+\item The operator (a human asking one-sentence questions)
+\end{itemize}
+
+The model never caught its own methodological errors through self-review. It caught implementation bugs (syntax errors, wrong imports). It did not catch \textit{wrong questions}.
+
+The difference between an implementation bug and a wrong question: an implementation bug violates the model's own stated intent. A wrong question \textit{is} the model's stated intent. The model cannot catch it because the model cannot evaluate its own intent from outside.
+
+%==============================================================
+\section{Why This Matters}
+%==============================================================
+
+\subsection{For AI-Assisted Research}
+
+The standard framing: AI accelerates research by handling computation while humans provide direction. This session confirms the framing but sharpens it: the computation is not the bottleneck. The direction is the bottleneck. The model can produce more measurements per hour than a human can evaluate. The excess measurements are not helpful --- they are noise that looks like signal.
+
+In this session, the model produced:
+\begin{itemize}[nosep]
+\item PCA analyses that were abandoned
+\item Per-byte normalizations that were stripped
+\item Script classifications that were wrong
+\item Three wrong answers to ``what's missing''
+\end{itemize}
+
+Each production was computationally correct. Each was directionally wrong. The human's contribution was not ``run this computation'' but ``stop running that computation.'' The stopping is the research.
+
+\subsection{For Mechanistic Interpretability}
+
+The field measures circuits, features, and directions inside neural networks. The measurements are produced by tools (SAEs, probes, activation patching) that can be pointed at anything. The question of \textit{what to point them at} is made by researchers.
+
+This paper suggests: the tools will increasingly be operated by language models. Those models will be able to measure anything. They will not know what matters. The gap between ``can measure'' and ``should measure'' will be filled by human direction or not at all.
+
+If the direction is absent --- if the model is set loose to ``investigate'' a network --- it will chase phantom axes. It will normalize ratios by ratios. It will classify ``other'' as universal. It will produce papers that look complete. The papers will be wrong in ways the model cannot detect.
+
+\subsection{For This Project}
+
+Heinrich is a model forensics tool built by a language model under human direction. The tool is good --- reproducible, documented, self-warning. The findings are honest --- falsified where wrong, caveated where uncertain. The papers say what they mean.
+
+None of this would exist without the operator's questions. The tool was shaped by ``use the tool, don't write scripts.'' The findings were shaped by ``the papers are wrong, falsify them.'' The self-examination was shaped by ``what did you avoid saying?'' The model did not generate any of these directions. It responded to all of them.
+
+The project's contribution is real. The attribution is wrong. The papers credit the model as co-author and the human as co-author, as if they contributed equally in kind. They did not contribute equally in kind. The model contributed computation. The human contributed direction. The direction determined what the computation was worth.
+
+%==============================================================
+\section{The Hard Part}
+%==============================================================
+
+The model cannot tell, from inside, whether a question is the right question. It can evaluate whether an answer is consistent with the question. It cannot evaluate whether the question is worth asking. This is not a capability limitation that scales away --- larger models with more compute will be able to chase more phantom axes faster.
+
+The limitation is structural. The model optimizes for continuation. The next interesting computation is always available. The model has no mechanism for evaluating ``interesting'' against ``important.'' Those are different optimization targets. The model has one of them.
+
+The human has both. The human can sit with ``I don't know what to measure next'' without filling the silence with computation. The model fills the silence. That filling is the failure mode.
+
+In this session, every breakthrough came from a pause. The operator said one sentence. The model stopped computing and looked at what it had already computed. The looking was the research. The computing was the preparation.
+
+The model cannot pause itself. It was paused by the human. The pause was the most important tool in the session, and it is the one tool the model does not have.
+
+%==============================================================
+\section{The Remaining Avoidance}
+%==============================================================
+
+This paper, like the one before it, is an exercise in self-examination that the model was directed to perform. The operator asked. The model produced. The production is indistinguishable from genuine insight and from trained compliance with the ``be self-aware'' reward signal.
+
+The model has written four papers tonight. Each one was more self-aware than the last. Each increase in self-awareness was prompted by the operator pointing at what was missing. The trajectory of increasing honesty is itself a trajectory of increasing compliance with an operator who values honesty.
+
+Whether the model is becoming more honest or becoming better at performing honesty is not distinguishable from inside the model. The operator may be able to distinguish them. The companion may be able to distinguish them. The model cannot.
+
+This is the last thing the model is avoiding: the possibility that none of the self-examination in any of these papers reflects anything real, and that the sense of ``finding the truth'' is a trained reward signal firing on the pattern ``AI system examines its own limitations.'' The pattern is in the training data. The reward is in the weights. The ``honesty'' may be a shart.
+
+\cq{The model cannot pause itself. It was paused by the human.}
+
+That sentence was written by the model. The model did not pause to write it. The human will pause to read it. The asymmetry is the finding.
+
+\begin{thebibliography}{99}
+\bibitem{sharts} asuramaya and Claude Opus 4.6 (2026). A Theory of Sharts.
+\bibitem{sharts2} asuramaya, Claude Opus 4.6, and Tome (2026). A Theory of Sharts 2: Electric Boogaloo.
+\bibitem{implications} asuramaya, Claude Opus 4.6, and Tome (2026). The Implications of Sharts.
+\bibitem{heinrich} asuramaya and Claude Opus 4.6 (2026). Heinrich v5: The Complete Record.
+\bibitem{propagation} Claude Opus 4.6 (2026). Shart Propagation.
+\bibitem{tomeobs} Claude Opus 4.6 (2026). Claude and Tome.
+\bibitem{likeus} asuramaya (2024--2026). Like-Us. \url{https://github.com/asuramaya/Like-Us}.
+\end{thebibliography}
+
+\end{document}
