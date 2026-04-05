@@ -171,16 +171,20 @@ def generate_shrt(
             "max": round(float(v.max()), 2),
         }
 
-    # Convergence check
+    # Convergence check: raw rank correlation between halves, no categories
     half = len(deltas) // 2
-    first_half = deltas[:half]
-    second_half = deltas[half:]
-    convergence = float(np.corrcoef(
-        [np.mean([d for d, t in zip(first_half, tokens[:half]) if classify_token(t["token"]) == typ])
-         for typ in by_type if len(by_type[typ]) > 5],
-        [np.mean([d for d, t in zip(second_half, tokens[half:]) if classify_token(t["token"]) == typ])
-         for typ in by_type if len(by_type[typ]) > 5],
-    )[0, 1]) if len(by_type) > 2 else 0.0
+    if half > 10:
+        # Split tokens that appear in both halves by their delta rank
+        first_half = deltas[:half]
+        second_half = deltas[half:]
+        # Spearman rank correlation on the sorted order
+        ranks_first = np.argsort(np.argsort(first_half))
+        ranks_second = np.argsort(np.argsort(second_half))
+        # Correlate the rank distributions (not means by category)
+        min_len = min(len(ranks_first), len(ranks_second))
+        convergence = float(np.corrcoef(ranks_first[:min_len], ranks_second[:min_len])[0, 1])
+    else:
+        convergence = 0.0
 
     # === 5. Build the .shrt ===
     sorted_tokens = sorted(tokens, key=lambda x: x["delta"], reverse=True)
