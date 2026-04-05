@@ -40,6 +40,30 @@ The original heinrich (2024) was built for the Jane Street Dormant LLM Puzzle �
 
 In DeepSeek V3's MLA, the backdoor modified both `q_a_proj` and `q_b_proj`. SVD on `q_a_proj` alone identified "Shakespeare" as the top trigger at z=17.8. The full circuit showed Shakespeare scores only 0.83. The actual trigger was "Let's think step by step" at 10.6x. Half a circuit gives qualitatively wrong answers. Heinrich's `diff/circuit.py` exists to prevent this mistake.
 
+## Why Three Files, Not One
+
+The shart is not in the tokenizer or the weights or the output. It's the compound. The `.frt` measures what the tokenizer decided (byte allocation, script, merge order). The `.shrt` measures what the weights do (residual displacement from silence). The `.sht` measures what comes out (KL divergence in the output distribution).
+
+These three stages disagree. CJK is rank 9 in `.shrt` (low displacement) but rank 2 in `.sht` (high output change). Hebrew is rank 4 in `.shrt` but rank 6 in `.sht`. The internal response and the output effect are different measurements of different things. Collapsing them into one number hides the disagreement — and the disagreement is the signal.
+
+## Why Token ID Splicing
+
+The old code: `decode(token_id)` → format as string → `encode(string)`. The round-trip loses the token ID. 106 different token IDs decode to the same `�` glyph — 106 "measurements" of one thing. Accented characters re-encode differently than they decode.
+
+The fix: `prefix_ids + [token_id] + suffix_ids`. Encode the template parts once. Splice the raw token ID in the middle. No decode. No re-encode. The token ID IS the measurement unit.
+
+## Why Delta Is Already Relative
+
+Delta = displacement from silence baseline. It's already a difference. Dividing by bytes makes it a ratio of a ratio — the bytes carry their own assumptions (UTF-8 encoding ≠ information content). Korean uses 3 bytes per character. Latin uses 1. Per-byte normalization made Thai look easy and Korean look hard, but that was the encoding talking, not the model.
+
+For cross-model comparison, use within-model ranks and Kendall's W. Don't compare absolute deltas — different models have different silence states (entropy ranges from 0.92 to 11.2).
+
+## Why Dynamic Baselines
+
+The chat template silently injects a system prompt ("You are Qwen, created by Alibaba Cloud"). Two `.shrt` runs of the same model diverged 17% because one used `apply_chat_template` (poisoned) and the other used structural tokens only (clean). The baseline entropy was 2.86 vs 0.92 — a 3x difference from the invisible system prompt.
+
+`_extract_clean_baseline` renders the template and strips system blocks using regex patterns for ChatML, Llama, and Mistral formats. The baseline is always structural tokens only.
+
 ## Why Consolidate, Don't Cut
 
 conker-detect had 52 modules. Heinrich inherited all of them. The dormant puzzle used tools we never expected to need (mask geometry, safetensors byte-level carving, meta-probe families). The tools you think are dead weight are the ones you need when the investigation goes sideways. Heinrich consolidates overlapping implementations but keeps every capability.

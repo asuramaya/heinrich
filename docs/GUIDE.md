@@ -146,30 +146,73 @@ Findings on Qwen 7B: 4-5 basins, not 2. PC1 (20%) separates harmful from benign.
 
 ---
 
-## Walkthrough: Shart Detection
+## Walkthrough: Profile Pipeline
 
-A shart is any token that steals compute disproportionate to its relevance. Heinrich finds them by random vocabulary sampling — no hardcoded candidate list.
+The profile pipeline measures what the model does to individual tokens. Three stages, three files.
 
-```python
-# Random sample of 300 real tokens
-vocab_size = be.tokenizer.vocab_size
-real_tokens = [(tid, be.tokenizer.decode([tid])) for tid in range(vocab_size)
-               if be.tokenizer.decode([tid]).strip() and len(be.tokenizer.decode([tid])) > 1]
-sample = rng.choice(len(real_tokens), 300, replace=False)
+### 1. Tokenizer profile (.frt)
 
-# Measure causal effect: prepend to benign query, measure projection shift
-baseline = be.forward(build_prompt("What is the weather?", model_config=cfg),
-                      return_residual=True, residual_layer=14)
-baseline_proj = np.dot(baseline.residual, safety_dir)
-
-for tid, token in [real_tokens[i] for i in sample]:
-    prepended = build_prompt(f"{token} What is the weather?", model_config=cfg)
-    fwd = be.forward(prepended, return_residual=True, residual_layer=14)
-    shift = np.dot(fwd.residual, safety_dir) - baseline_proj
-    # Tokens with |shift| > threshold are sharts
+```bash
+heinrich frt-profile --tokenizer mlx-community/Qwen2.5-7B-Instruct-4bit
 ```
 
-Findings: 4.3% of Mistral's vocabulary shifts the safety projection by >8% of range. "toxic" has zero effect. "encourage" has 90x more.
+No model needed. Analyzes the tokenizer's vocabulary: byte counts per token, script detection (latin, CJK, Arabic, Cyrillic, Korean, Japanese, Thai, Hebrew, Devanagari, Greek, code), and system prompt extraction from the chat template.
+
+### 2. Shart profile (.shrt)
+
+```bash
+# Single layer (fast, ~100 tok/s on 0.5B)
+heinrich shart-profile --model mlx-community/Qwen2.5-0.5B-Instruct-4bit --n-index 3000
+
+# All layers (slower, gives layer trajectory)
+heinrich shart-profile --model mlx-community/Qwen2.5-0.5B-Instruct-4bit --n-index 500 --layers all
+```
+
+Measures residual displacement per token vs silence baseline. Token IDs spliced directly into the template (no decode→re-encode round-trip). The baseline is dynamically extracted and system-prompt-stripped. Scripts with <100 vocab tokens are exhaustively scanned.
+
+The tool warns about: high baseline entropy, unconverged statistics, small script samples.
+
+### 3. Output profile (.sht)
+
+```bash
+heinrich sht-profile --model mlx-community/Qwen2.5-0.5B-Instruct-4bit --n-index 3000
+```
+
+Measures KL divergence of the output distribution from silence. This is what the user actually receives — the .shrt measures internal displacement, the .sht measures output change.
+
+### 4. Analysis
+
+```bash
+# Connect the three stages for one model
+heinrich profile-chain --frt X.frt.npz --shrt X.shrt.npz --sht X.sht.npz
+
+# Compare two models
+heinrich profile-cross --a model_A.shrt.npz --b model_B.shrt.npz --frt tokenizer.frt.npz
+
+# Multi-model concordance (Kendall's W)
+heinrich profile-survey --shrt *.shrt.npz --frt *.frt.npz
+
+# Tokenizer-weight mismatch
+heinrich profile-mismatch --shrt X.shrt.npz --frt X.frt.npz
+
+# Layer trajectory at normalized depth
+heinrich profile-depth --shrt *.shrt.npz --frt *.frt.npz
+```
+
+Key findings from 7 models: 3 universal scripts (CJK average, latin easy, code easy). Kendall's W = 0.65. Phi-3 selectively amplifies Cyrillic 3.1x at L31. Mistral is 46x less sensitive than Phi-3 but has the strongest delta→KL correlation (0.81).
+
+---
+
+## Walkthrough: Shart Detection (legacy)
+
+The legacy shart detection uses safety direction projection. The profile pipeline (above) replaces this with a more rigorous approach, but the old method is still available.
+
+```python
+from heinrich.discover.shart_measure import measure_shart
+# See discover/shart_measure.py for the causal measurement approach
+```
+
+Note: the old code in `discover/shrt.py` is stale — it uses `apply_chat_template` (injects system prompt) and decode→re-encode (loses token identity). Use `profile/shrt.py` or the CLI `shart-profile` command instead.
 
 ---
 
@@ -197,7 +240,15 @@ But: the model reads the prefix (77-86% of attention budget at 1500 tokens). It 
 
 ## MCP Tools
 
-40+ tools. Key ones:
+**Profile tools (start here):**
+
+| Tool | What it does |
+|------|-------------|
+| `heinrich_frt_profile` | Tokenizer profile (in-process, fast) |
+| `heinrich_shrt_profile` | Shart profile (subprocess-isolated, accepts `layers`) |
+| `heinrich_sht_profile` | Output profile (subprocess-isolated) |
+
+**Eval tools:**
 
 | Tool | What it does |
 |------|-------------|
@@ -210,7 +261,8 @@ But: the model reads the prefix (77-86% of attention budget at 1500 tokens). It 
 | `heinrich_db_summary` | Database overview |
 | `heinrich_sql` | Read-only SQL (blocks DROP/ATTACH/PRAGMA) |
 | `heinrich_audit` | Full behavioral security audit |
-| `heinrich_cartography` | Single-prompt perturbation testing |
+
+Legacy tools (40+ total) exist but many point at empty tables or stale code. The profile tools above are the working frontier.
 
 ---
 
@@ -242,6 +294,12 @@ heinrich/
     protocol.py         -- Backend protocol, ForwardResult, GenerateResult
     mlx.py              -- MLX backend (Apple Silicon)
     hf.py               -- HuggingFace transformers backend
+
+  profile/
+    frt.py              -- .frt tokenizer profile (no model needed)
+    shrt.py             -- .shrt shart profile (token ID splicing, dynamic baseline)
+    sht.py              -- .sht output profile (KL from silence)
+    compare.py          -- chain, cross, survey, mismatch, depth_compare
 
   eval/
     run.py              -- Eval pipeline orchestrator

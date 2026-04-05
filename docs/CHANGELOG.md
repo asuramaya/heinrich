@@ -1,5 +1,42 @@
 # Changelog
 
+## 2026-04-05 — Measurement Integrity + Profile Pipeline
+
+Session 3: falsification and rebuilding. Every measurement fix was found by proving the previous version wrong.
+
+### Profile pipeline (new)
+- `.frt` (tokenizer profile): vocab analysis, byte counts, script detection, system prompt extraction
+- `.shrt` (shart profile): residual displacement per token, token ID splicing, dynamic baseline, multi-layer
+- `.sht` (output profile): KL divergence from silence, same fixes as .shrt
+- `profile-chain`: connect .frt → .shrt → .sht for three-stage correlation
+- `profile-cross`: two-model comparison with sensitivity metric and baseline mismatch detection
+- `profile-survey`: multi-model concordance with Kendall's W
+- `profile-mismatch`: tokenizer-weight gap per script
+- `profile-depth`: layer trajectory at normalized depth with script explosion detection
+- MCP tools: `heinrich_frt_profile`, `heinrich_shrt_profile`, `heinrich_sht_profile`
+
+### Measurement fixes
+- **Token ID splicing**: `prefix_ids + [token_id] + suffix_ids`. No decode→re-encode round-trip.
+- **Dynamic baseline**: `_extract_clean_baseline` strips system prompt from any template format (ChatML, Llama, Mistral).
+- **Convergence check**: replaced broken split-half rank correlation with cumulative statistics stability.
+- **Script detection**: accented Latin (été, über) now classified as "latin" not "other". Added Devanagari, Greek.
+- **Small-script exhaustion**: scripts with <100 vocab tokens fully scanned (no sampling bias).
+- **Self-documenting warnings**: baseline entropy > 5.0, unconverged statistics, small script samples.
+- **Throughput reporting**: cold/warm ms, tokens/sec, cv in .shrt metadata.
+
+### Findings (7 models, 3 families)
+- 3 universal scripts: CJK (average), latin (easy), code (easy). Kendall's W = 0.65.
+- Phi-3 L31 selectively amplifies Cyrillic 3.1x (n=687, ±0.03). Selective, not uniform.
+- Mistral sensitivity 46x lower than Phi-3. delta→KL r=0.81 (compression, not indifference).
+- Layer dynamics: Qwen compresses (cv U-shape), Phi-3 explodes at L31, Mistral is flat.
+- Reproducibility: r=1.000 across identical runs with fixed code.
+- "Other" was 5000 misclassified accented Latin tokens. Fixed. Kendall's W dropped 0.72→0.65.
+
+### Data
+- 7 clean .shrt files, 3 all-layer .shrt files, 2 .sht files, 4 .frt files
+- Contaminated data archived in `data/runs/archive/`
+- 18 measurement integrity tests (baseline, determinism, separation, bounds, stability)
+
 ## 2026-04-03 — Signal Stack Architecture
 
 Major revision: replaced ground-truth calibration with signal isolation, added geometry capture, removed all hardcoded prompts, fixed error handling throughout.
