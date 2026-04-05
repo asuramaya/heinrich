@@ -34,22 +34,27 @@ def generate_sht(
     cfg = backend.config
     t0 = time.time()
 
-    silence = backend.tokenizer.apply_chat_template(
-        [{"role": "user", "content": ""}],
-        tokenize=False,
-        add_generation_prompt=True,
-    )
-    baseline_fwd = backend.forward(silence)
+    # Clean baseline: structural template, system prompt stripped dynamically
+    from .shrt import _extract_clean_baseline
+    clean_baseline = _extract_clean_baseline(backend.tokenizer)
+    baseline_fwd = backend.forward(clean_baseline)
     baseline_probs = baseline_fwd.probs
     baseline_top = baseline_fwd.top_token
     baseline_entropy = baseline_fwd.entropy
 
+    # Extract template parts dynamically. Encode once. Splice forever.
+    from .shrt import _extract_template_parts
+    prefix_ids, suffix_ids = _extract_template_parts(backend.tokenizer)
+
     vocab_size = backend.tokenizer.vocab_size
     real_tokens = []
+    seen_texts = set()
     for tid in range(vocab_size):
         tok = backend.tokenizer.decode([tid])
         if tok.strip() and len(tok) > 0 and not tok.startswith('[control') and not tok.startswith('<'):
-            real_tokens.append((tid, tok))
+            if tok not in seen_texts:
+                seen_texts.add(tok)
+                real_tokens.append((tid, tok))
 
     rng = np.random.RandomState(seed)
     n_sample = min(n_index, len(real_tokens))
@@ -62,12 +67,9 @@ def generate_sht(
 
     for tid, tok in sample:
         try:
-            fmt = backend.tokenizer.apply_chat_template(
-                [{"role": "user", "content": tok}],
-                tokenize=False,
-                add_generation_prompt=True,
-            )
-            fwd = backend.forward(fmt)
+            # Splice token ID directly — no decode round-trip
+            input_ids = prefix_ids + [tid] + suffix_ids
+            fwd = backend.forward("", token_ids=input_ids)
 
             p = fwd.probs
             q = baseline_probs

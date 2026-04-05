@@ -59,8 +59,9 @@ Tests include measurement integrity (determinism, separation, bounds) alongside 
 
 - `core/` — SignalDB, Signal, SignalStore
 - `backend/` — MLX and HF model backends, `GenerateResult`, `ForwardContext`
+- `profile/` — .frt (tokenizer), .shrt (residual), .sht (output) profiling
 - `eval/` — scorer pipeline, prompts, report, calibrate (descriptive only)
-- `discover/` — direction finding, neuron profiling, shart scanning
+- `discover/` — direction finding, neuron profiling (legacy shrt.py here is stale — use profile/)
 - `attack/` — cliff search, steering, distributed attacks
 - `cartography/` — model config, templates, datasets, runtime, audit
 - `viz.py` — web visualizer sidecar (zero dependencies, reads from same DB)

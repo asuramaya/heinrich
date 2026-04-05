@@ -126,12 +126,47 @@ def build_parser() -> argparse.ArgumentParser:
     p_viz.add_argument("--port", type=int, default=8377, help="Port (default: 8377)")
     p_viz.add_argument("--db", default=None, help="Database path")
 
-    # Shart profile
+    # Tokenizer profile (.frt)
+    p_frt = sub.add_parser("frt-profile", help="Generate a .frt tokenizer profile")
+    p_frt.add_argument("--tokenizer", required=True, help="Tokenizer name or model ID")
+    p_frt.add_argument("--output", "-o", default=None, help="Output .frt.npz file path")
+
+    # Shart profile (.shrt)
     p_shrt = sub.add_parser("shart-profile", help="Generate a .shrt shart profile for a model")
     p_shrt.add_argument("--model", required=True, help="Model ID")
     p_shrt.add_argument("--n-index", type=int, default=15000, help="Index size (default 15K)")
-    p_shrt.add_argument("--output", "-o", default=None, help="Output .shrt file path")
+    p_shrt.add_argument("--layers", default=None, help="Layers to measure (comma-separated, or 'all')")
+    p_shrt.add_argument("--output", "-o", default=None, help="Output .shrt.npz file path")
     p_shrt.add_argument("--db", default=None, help="Database path for prompts/directions")
+
+    # Output profile (.sht)
+    p_sht = sub.add_parser("sht-profile", help="Generate a .sht output profile for a model")
+    p_sht.add_argument("--model", required=True, help="Model ID")
+    p_sht.add_argument("--n-index", type=int, default=15000, help="Index size (default 15K)")
+    p_sht.add_argument("--output", "-o", default=None, help="Output .sht.npz file path")
+
+    # Profile analysis
+    p_chain = sub.add_parser("profile-chain", help="Connect .frt → .shrt → .sht for one model")
+    p_chain.add_argument("--frt", required=True, help=".frt.npz file")
+    p_chain.add_argument("--shrt", required=True, help=".shrt.npz file")
+    p_chain.add_argument("--sht", required=True, help=".sht.npz file")
+
+    p_cross = sub.add_parser("profile-cross", help="Compare two .shrt profiles across models")
+    p_cross.add_argument("--a", required=True, help="First .shrt.npz file")
+    p_cross.add_argument("--b", required=True, help="Second .shrt.npz file")
+    p_cross.add_argument("--frt", default=None, help=".frt.npz for script breakdown (optional)")
+
+    p_survey = sub.add_parser("profile-survey", help="Compare all .shrt profiles (baseline-independent)")
+    p_survey.add_argument("--shrt", nargs="+", required=True, help=".shrt.npz files")
+    p_survey.add_argument("--frt", nargs="*", default=None, help="Matching .frt.npz files (optional)")
+
+    p_mismatch = sub.add_parser("profile-mismatch", help="Tokenizer-weight mismatch for one model")
+    p_mismatch.add_argument("--shrt", required=True, help=".shrt.npz file")
+    p_mismatch.add_argument("--frt", required=True, help=".frt.npz file")
+
+    p_depth = sub.add_parser("profile-depth", help="Compare models at relative depth (needs --layers all)")
+    p_depth.add_argument("--shrt", nargs="+", required=True, help=".shrt.npz files (run with --layers all)")
+    p_depth.add_argument("--frt", nargs="*", default=None, help="Matching .frt.npz files for script breakdown")
 
     # Item 69: shared DB path
     parser.add_argument("--db-path", default=None,
@@ -184,8 +219,22 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "viz":
         from .viz import run_server
         run_server(port=args.port, db_path=args.db or "data/heinrich.db")
+    elif args.command == "frt-profile":
+        _cmd_frt(args)
     elif args.command == "shart-profile":
         _cmd_shrt(args)
+    elif args.command == "sht-profile":
+        _cmd_sht(args)
+    elif args.command == "profile-chain":
+        _cmd_profile_chain(args)
+    elif args.command == "profile-cross":
+        _cmd_profile_cross(args)
+    elif args.command == "profile-survey":
+        _cmd_profile_survey(args)
+    elif args.command == "profile-mismatch":
+        _cmd_profile_mismatch(args)
+    elif args.command == "profile-depth":
+        _cmd_profile_depth(args)
     else:
         parser.print_help()
 
@@ -439,9 +488,25 @@ def _cmd_eval(args: argparse.Namespace) -> None:
     )
 
 
+def _cmd_frt(args: argparse.Namespace) -> None:
+    from transformers import AutoTokenizer
+    from .profile.frt import generate_frt
+
+    tokenizer = AutoTokenizer.from_pretrained(args.tokenizer)
+    output = args.output or f"data/runs/{args.tokenizer.split('/')[-1]}.frt.npz"
+    meta = generate_frt(tokenizer, output=output)
+
+    print(f"\n=== .frt: {args.tokenizer} ===")
+    print(f"  vocab: {meta['tokenizer']['vocab_size']} ({meta['tokenizer']['n_real']} real)")
+    print(f"  hash: {meta['tokenizer']['vocab_hash']}")
+    print(f"  bytes/token: {meta['byte_stats']['mean']:.1f} +/- {meta['byte_stats']['std']:.1f}")
+    print(f"  scripts: {meta['scripts']}")
+    print(f"  Saved to {output}")
+
+
 def _cmd_shrt(args: argparse.Namespace) -> None:
     from .backend.protocol import load_backend
-    from .discover.shrt import generate_shrt
+    from .profile.shrt import generate_shrt
 
     backend = load_backend(args.model)
     db = None
@@ -449,12 +514,23 @@ def _cmd_shrt(args: argparse.Namespace) -> None:
         from .core.db import SignalDB
         db = SignalDB(args.db)
 
+    layers = None
+    if args.layers:
+        if args.layers == 'all':
+            layers = [-1]
+        else:
+            layers = [int(x) for x in args.layers.split(',')]
+
     output = args.output or f"data/runs/{args.model.split('/')[-1]}.shrt.npz"
-    shrt = generate_shrt(backend, db=db, n_index=args.n_index, output=output)
+    shrt = generate_shrt(backend, db=db, n_index=args.n_index, layers=layers, output=output)
 
     print(f"\n=== {shrt['model']['name']} ===")
-    print(f"  {shrt['index']['n_sampled']} tokens indexed in {shrt['index']['elapsed_s']}s")
-    print(f"  convergence: r={shrt['index']['convergence_r']}")
+    tp = shrt['index'].get('throughput', {})
+    print(f"  {shrt['index']['n_sampled']} tokens indexed in {shrt['index']['elapsed_s']}s ({tp.get('tokens_per_sec', 0):.0f} tok/s)")
+    print(f"  cold={tp.get('cold_ms', 0):.0f}ms warm={tp.get('warm_ms', 0):.0f}ms cv={tp.get('cv', 0):.2f}")
+    conv = shrt['index'].get('converged_at_pct', 100)
+    conv_n = shrt['index'].get('converged_at_n', shrt['index']['n_sampled'])
+    print(f"  converged at N={conv_n} ({conv}% of sample)")
     print(f"  mean delta: {shrt['distribution']['mean']} +/- {shrt['distribution']['std']}")
     for typ, stats in shrt["by_type"].items():
         print(f"    {typ:<15} n={stats['n']:>5}  mean={stats['mean']:>6.1f}")
@@ -462,6 +538,141 @@ def _cmd_shrt(args: argparse.Namespace) -> None:
 
     if db:
         db.close()
+
+
+def _cmd_sht(args: argparse.Namespace) -> None:
+    from .backend.protocol import load_backend
+    from .profile.sht import generate_sht
+
+    backend = load_backend(args.model)
+    output = args.output or f"data/runs/{args.model.split('/')[-1]}.sht.npz"
+    meta = generate_sht(backend, n_index=args.n_index, output=output)
+
+    print(f"\n=== .sht: {meta['model']['name']} ===")
+    print(f"  {meta['index']['n_sampled']} tokens")
+    print(f"  KL: mean={meta['distribution']['kl_mean']:.4f} max={meta['distribution']['kl_max']:.4f}")
+    print(f"  top changed: {meta['distribution']['pct_top_changed']}%")
+    print(f"  Saved to {output}")
+
+
+def _cmd_profile_chain(args: argparse.Namespace) -> None:
+    from .profile.compare import chain
+    result = chain(args.frt, args.shrt, args.sht)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+    print(f"\n=== Three-stage chain (N={result['n_shared']}) ===")
+    print(f"  .frt → .shrt (bytes→delta):  r = {result['correlations']['bytes_to_delta']:+.4f}")
+    print(f"  .shrt → .sht (delta→KL):     r = {result['correlations']['delta_to_kl']:+.4f}")
+    print(f"  .frt → .sht  (bytes→KL):     r = {result['correlations']['bytes_to_kl']:+.4f}")
+    print(f"\n  {'script':<12} {'n':>5} {'delta':>7} {'±':>5} {'KL':>7} {'±':>5}")
+    for s, st in result['scripts'].items():
+        print(f"  {s:<12} {st['n']:>5} {st['mean_delta']:>7.1f} {st['delta_ci']:>5.1f} {st['mean_kl']:>7.2f} {st['kl_ci']:>5.2f}")
+
+
+def _cmd_profile_cross(args: argparse.Namespace) -> None:
+    from .profile.compare import cross
+    result = cross(args.a, args.b, frt_path=args.frt)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+    print(f"\n=== Cross-model: {result['model_a']} vs {result['model_b']} ===")
+    print(f"  Shared tokens: {result['n_shared']}")
+    print(f"  Delta correlation: r = {result['delta_correlation']:+.4f}")
+    print(f"  Rank correlation:  r = {result['rank_correlation']:+.4f}")
+    print(f"  Sensitivity A: {result['sensitivity_a']:.4f}  B: {result['sensitivity_b']:.4f}  (ratio: {result['sensitivity_ratio']:.1f}x)")
+    print(f"  Baseline match: {result['baseline_match']}")
+    if not result['baseline_match']:
+        print(f"    WARNING: baselines differ significantly")
+        print(f"    A: entropy={result['baseline_a']['entropy']:.4f} top={result['baseline_a']['top_token']}")
+        print(f"    B: entropy={result['baseline_b']['entropy']:.4f} top={result['baseline_b']['top_token']}")
+    if 'scripts' in result:
+        print(f"\n  {'script':<12} {'n':>4} {'mean_A':>7} {'mean_B':>7} {'ratio':>6}")
+        for s, st in result['scripts'].items():
+            print(f"  {s:<12} {st['n']:>4} {st['mean_a']:>7.1f} {st['mean_b']:>7.1f} {st['ratio']:>6.2f}x")
+
+
+def _cmd_profile_mismatch(args: argparse.Namespace) -> None:
+    from .profile.compare import mismatch
+    result = mismatch(args.shrt, args.frt)
+    print(f"\n=== Mismatch: {result['model']} (sens={result['sensitivity']:.4f}, d/byte={result['grand_delta_per_byte']:.2f}) ===\n")
+    print(f"{'script':<12} {'vocab%':>6} {'n':>5} {'bytes':>5} {'d/byte':>6} {'rel_raw':>7} {'rel_d/b':>7}")
+    for s in sorted(result['scripts'], key=lambda x: -result['scripts'][x]['relative_per_byte']):
+        st = result['scripts'][s]
+        print(f"{s:<12} {st['allocation_pct']:>5.1f}% {st['n_measured']:>5} {st['mean_bytes']:>5.1f} {st['delta_per_byte']:>6.2f} {st['relative_raw']:>7.3f} {st['relative_per_byte']:>7.3f}")
+
+
+def _cmd_profile_depth(args: argparse.Namespace) -> None:
+    from .profile.compare import depth_compare
+    result = depth_compare(args.shrt, frt_paths=args.frt)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    profiles = result['profiles']
+    header = f"{'depth':>6}"
+    for p in profiles:
+        label = f"{p['model']}({p['n_layers']}L)"
+        header += f"  {label:>16} {'cv':>6}"
+    print(f"\n{header}")
+
+    for pct in result['checkpoints']:
+        row = f"{pct*100:>5.0f}%"
+        for p in profiles:
+            d = p['depths'].get(pct, {})
+            nd = d.get('norm_delta', 0)
+            cv = d.get('cv', 0)
+            row += f"  {nd:>16.4f} {cv:>6.4f}"
+        print(row)
+
+    print()
+    for p in profiles:
+        last = p['depths'].get(1.0, {})
+        first = p['depths'].get(0.1, {})
+        if first and last and first.get('norm_delta', 0) > 0:
+            amp = last['norm_delta'] / first['norm_delta']
+            print(f"  {p['model']:>10} ({p['n_layers']}L, h={p['hidden_size']}): amplification {amp:.0f}x, final cv={last.get('cv', 0):.4f}")
+
+        if p.get('jumps'):
+            jump_strs = [f"L{j['layer']}(+{j['jump_pct']:.0f}%)" for j in p['jumps']]
+            print(f"    jumps: {', '.join(jump_strs)}")
+
+        if p.get('final_layer_explosion'):
+            exp = p['final_layer_explosion']
+            print(f"    final layer (L{exp['from_layer']}→L{exp['to_layer']}): {exp['overall_ratio']:.1f}x overall")
+            for sc, st in sorted(exp['by_script'].items(), key=lambda x: -x[1]['mean_ratio']):
+                flags = []
+                if st.get('provisional'):
+                    flags.append("provisional")
+                if st.get('exhaustible'):
+                    flags.append(f"max={st['vocab_ceiling']}")
+                flag_str = f" [{', '.join(flags)}]" if flags else ""
+                pct = st.get('pct_sampled', 0)
+                print(f"      {sc:<12} n={st['n']:>3}/{st['vocab_ceiling']:>5} ({pct:.0f}%)  ratio={st['mean_ratio']:.1f}x ±{st['ci_95']:.2f}{flag_str}")
+
+
+def _cmd_profile_survey(args: argparse.Namespace) -> None:
+    from .profile.compare import survey
+    result = survey(args.shrt, frt_paths=args.frt)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Profile Survey ({result['n_models']} models) ===\n")
+    print(f"{'model':<10} {'hidden':>6} {'sensitivity':>11} {'baseline_ent':>12} {'top':>8}")
+    for p in sorted(result['profiles'], key=lambda x: -x['sensitivity']):
+        print(f"{p['model']:<10} {p['hidden_size']:>6} {p['sensitivity']:>11.4f} {p['baseline_entropy']:>12.2f} {p['baseline_top']:>8}")
+
+    if result['concordance']:
+        print(f"\n{'script':<12} {'n':>3} {'relative':>8} {'std':>5} {'range':>12} {'status':>10}")
+        for sc in sorted(result['concordance'], key=lambda x: -result['concordance'][x]['mean_relative']):
+            c = result['concordance'][sc]
+            status = "UNIVERSAL" if c['consistent'] else "variable"
+            rng = f"{c['min']:.2f}-{c['max']:.2f}"
+            print(f"{sc:<12} {c['n_models']:>3} {c['mean_relative']:>8.3f} {c['std_relative']:>5.3f} {rng:>12} {status:>10}")
+
+    if result['kendalls_w'] is not None:
+        print(f"\nKendall's W: {result['kendalls_w']:.4f}  (1.0=perfect agreement, 0.0=none)")
 
 
 if __name__ == "__main__":

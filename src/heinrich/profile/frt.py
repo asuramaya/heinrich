@@ -158,9 +158,13 @@ def _detect_script(text: str) -> str:
         if '\u0600' <= c <= '\u06ff': return "Arabic"
         if '\u0590' <= c <= '\u05ff': return "Hebrew"
         if '\u0400' <= c <= '\u04ff': return "Cyrillic"
+        if '\u0900' <= c <= '\u097f': return "Devanagari"
+        if '\u0370' <= c <= '\u03ff': return "Greek"
     if any(c in text for c in '{}()[];_\\\n\t\r'):
         return "code"
-    if text.strip().isascii():
+    # Latin includes ASCII and Latin-extended (accented characters)
+    stripped = text.strip()
+    if stripped and all(c.isascii() or '\u00c0' <= c <= '\u024f' for c in stripped):
         return "latin"
     return "other"
 

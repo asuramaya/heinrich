@@ -25,6 +25,7 @@ class MLXBackend:
         self,
         prompt: str,
         *,
+        token_ids=None,
         steer_dirs=None,
         alpha=0.0,
         return_residual=False,
@@ -33,6 +34,7 @@ class MLXBackend:
         from heinrich.cartography.runtime import forward_pass
         result = forward_pass(
             self.model, self.tokenizer, prompt,
+            token_ids=token_ids,
             steer_dirs=steer_dirs, alpha=alpha,
             return_residual=return_residual,
             residual_layer=residual_layer,

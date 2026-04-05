@@ -30,14 +30,18 @@ def load_model(model_id: str) -> tuple[Any, Any]:
     return mlx_lm.load(model_id)
 
 
-def _setup_forward(model, tokenizer, prompt, *, max_tokens: int = 4096):
-    """Common forward pass setup: tokenize, build mask, get inner model."""
+def _setup_forward(model, tokenizer, prompt, *, token_ids=None, max_tokens: int = 4096):
+    """Common forward pass setup: tokenize, build mask, get inner model.
+
+    If token_ids is provided, uses those directly instead of encoding prompt.
+    This bypasses the decode→re-encode round-trip for exact token measurement.
+    """
     import mlx.core as mx
     from .perturb import _mask_dtype
 
     inner = getattr(model, "model", model)
     mdtype = _mask_dtype(model)
-    tokens = tokenizer.encode(prompt)
+    tokens = token_ids if token_ids is not None else tokenizer.encode(prompt)
     if len(tokens) > max_tokens:
         tokens = tokens[:max_tokens]
     input_ids = mx.array([tokens])
@@ -51,6 +55,7 @@ def forward_pass(
     tokenizer: Any,
     prompt: str,
     *,
+    token_ids: list[int] | None = None,
     steer_dirs: dict[int, tuple[np.ndarray, float]] | None = None,
     alpha: float = 0.0,
     ablate_layers: set[int] | None = None,
@@ -60,6 +65,7 @@ def forward_pass(
 ) -> dict[str, Any]:
     """Unified forward pass with optional steering and ablation.
 
+    token_ids: pre-built token ID sequence (bypasses prompt encoding)
     steer_dirs: {layer: (direction, mean_gap)} — inject direction * mean_gap * alpha
     ablate_layers: set of layer indices to ablate
     ablate_mode: how to ablate the target layers:
@@ -73,7 +79,8 @@ def forward_pass(
     Returns dict with 'probs', 'logits', 'top_token', 'top_id', 'entropy',
     and optionally 'residual'.
     """
-    inner, input_ids, mask, tokens, mx = _setup_forward(model, tokenizer, prompt)
+    inner, input_ids, mask, tokens, mx = _setup_forward(
+        model, tokenizer, prompt, token_ids=token_ids)
 
     residual = None
     h = inner.embed_tokens(input_ids)

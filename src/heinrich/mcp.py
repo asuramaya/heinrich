@@ -317,6 +317,32 @@ TOOLS = {
             "model": {"type": "string", "description": "Filter by model name"},
         },
     },
+    # --- Profile tools (.frt, .shrt, .sht) ---
+    "heinrich_frt_profile": {
+        "description": "Generate a .frt tokenizer profile: vocab analysis, byte counts, scripts, system prompt detection. No model needed.",
+        "parameters": {
+            "tokenizer": {"type": "string", "description": "Tokenizer name or model ID", "required": True},
+            "output": {"type": "string", "description": "Output .frt.npz path (default: data/runs/<name>.frt.npz)"},
+        },
+    },
+    "heinrich_shrt_profile": {
+        "description": "Generate a .shrt shart profile: residual displacement for each token vs silence baseline. Uses token ID splicing (no decode round-trip).",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID", "required": True},
+            "n_index": {"type": "integer", "description": "Number of tokens to scan (default 15000, converges by 3000)"},
+            "layers": {"type": "string", "description": "Layers to measure (comma-separated, or 'all' for every layer)"},
+            "output": {"type": "string", "description": "Output .shrt.npz path"},
+            "db": {"type": "string", "description": "Database path for safety direction (optional)"},
+        },
+    },
+    "heinrich_sht_profile": {
+        "description": "Generate a .sht output profile: KL divergence from silence baseline for each token. Measures what the user receives.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID", "required": True},
+            "n_index": {"type": "integer", "description": "Number of tokens to scan (default 15000)"},
+            "output": {"type": "string", "description": "Output .sht.npz path"},
+        },
+    },
 }
 
 
@@ -423,6 +449,12 @@ class ToolServer:
             return self._do_eval_disagreements(arguments)
         if name == "heinrich_discover_results":
             return self._do_discover_results(arguments)
+        if name == "heinrich_frt_profile":
+            return self._do_frt_profile(arguments)
+        if name == "heinrich_shrt_profile":
+            return self._do_shrt_profile(arguments)
+        if name == "heinrich_sht_profile":
+            return self._do_sht_profile(arguments)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -1627,3 +1659,61 @@ class ToolServer:
             len(result["directions"]) + len(result["neurons"]) + len(result["sharts"])
         )
         return result
+
+    def _do_frt_profile(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Generate a .frt tokenizer profile."""
+        tokenizer_name = args["tokenizer"]
+        output = args.get("output") or f"data/runs/{tokenizer_name.split('/')[-1]}.frt.npz"
+        from transformers import AutoTokenizer
+        from .profile.frt import generate_frt
+        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
+        meta = generate_frt(tokenizer, output=output)
+        meta["output"] = output
+        return meta
+
+    def _do_shrt_profile(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Generate a .shrt shart profile. Subprocess-isolated to avoid OOM."""
+        import subprocess, sys
+        model = args["model"]
+        n_index = args.get("n_index", 15000)
+        output = args.get("output") or f"data/runs/{model.split('/')[-1]}.shrt.npz"
+        db_path = args.get("db")
+
+        layers_arg = args.get("layers")
+        cmd = [sys.executable, "-m", "heinrich.cli", "shart-profile",
+               "--model", model, "--n-index", str(n_index), "--output", output]
+        if layers_arg:
+            cmd.extend(["--layers", layers_arg])
+        if db_path:
+            cmd.extend(["--db", db_path])
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if result.returncode != 0:
+            return {"error": result.stderr, "stdout": result.stdout}
+
+        # Load and return metadata from the npz (safe, no deserialization)
+        import numpy as np
+        d = np.load(output, allow_pickle=False)  # npz arrays only, no arbitrary objects
+        meta = json.loads(str(d['metadata'][0]))
+        meta["output"] = output
+        return meta
+
+    def _do_sht_profile(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Generate a .sht output profile. Subprocess-isolated to avoid OOM."""
+        import subprocess, sys
+        model = args["model"]
+        n_index = args.get("n_index", 15000)
+        output = args.get("output") or f"data/runs/{model.split('/')[-1]}.sht.npz"
+
+        cmd = [sys.executable, "-m", "heinrich.cli", "sht-profile",
+               "--model", model, "--n-index", str(n_index), "--output", output]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if result.returncode != 0:
+            return {"error": result.stderr, "stdout": result.stdout}
+
+        import numpy as np
+        d = np.load(output, allow_pickle=False)  # npz arrays only, no arbitrary objects
+        meta = json.loads(str(d['metadata'][0]))
+        meta["output"] = output
+        return meta
