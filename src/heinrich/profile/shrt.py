@@ -186,8 +186,10 @@ def generate_shrt(
     else:
         convergence = 0.0
 
-    # === 5. Build the .shrt ===
+    # === 5. Build the .shrt — ranks are the primary signal ===
     sorted_tokens = sorted(tokens, key=lambda x: x["delta"], reverse=True)
+    for rank, t in enumerate(sorted_tokens):
+        t["rank"] = rank + 1
 
     shrt = {
         "version": "0.1",
