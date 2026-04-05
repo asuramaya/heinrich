@@ -327,10 +327,24 @@ def generate_shrt(
     for rank, t in enumerate(sorted_tokens):
         t["rank"] = rank + 1
 
+    # === Warnings: protect the next user ===
+    warnings = []
+    if baseline_entropy > 5.0:
+        warnings.append(f"High baseline entropy ({baseline_entropy:.2f}). "
+                        "Check if system prompt was stripped correctly.")
+    if convergence_pct > 80:
+        warnings.append(f"Not converged: statistics stabilize at {converged_at}/"
+                        f"{len(deltas)} tokens ({convergence_pct}% of sample).")
+    for typ, stats in type_stats.items():
+        if stats["n"] < 10 and stats["n"] > 0:
+            warnings.append(f"Script '{typ}' has only {stats['n']} tokens — "
+                            "treat results as provisional.")
+
     shrt = {
-        "version": "0.1",
+        "version": "0.2",
         "generated_at": time.time(),
         "elapsed_s": round(time.time() - t0),
+        "warnings": warnings,
 
         "model": {
             "name": cfg.model_type,
@@ -438,9 +452,22 @@ def generate_shrt(
 
 def load_shrt(path: str) -> dict:
     """Load a .shrt file. Returns dict with arrays and metadata.
-    Includes per-layer delta arrays (deltas_L{n}) if present."""
+    Includes per-layer delta arrays (deltas_L{n}) if present.
+    Warns if baseline looks suspicious."""
+    import warnings as _warnings
     d = np.load(path, allow_pickle=False)  # safe: npz arrays only
     meta = json.loads(str(d['metadata'][0]))
+
+    # Check baseline health
+    baseline_ent = meta.get('baseline', {}).get('entropy', 0)
+    if baseline_ent > 5.0:
+        _warnings.warn(
+            f"{path}: baseline entropy {baseline_ent:.2f} is high. "
+            f"System prompt may not have been stripped. "
+            f"Compare with caution.",
+            stacklevel=2,
+        )
+
     result = {
         "metadata": meta,
         "token_ids": d["token_ids"],
@@ -449,7 +476,6 @@ def load_shrt(path: str) -> dict:
         "vectors": d["vectors"],
         "layer": d["layer"],
     }
-    # Include per-layer delta arrays
     for key in d.files:
         if key.startswith("deltas_L"):
             result[key] = d[key]

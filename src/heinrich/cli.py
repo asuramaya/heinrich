@@ -534,6 +534,10 @@ def _cmd_shrt(args: argparse.Namespace) -> None:
     print(f"  mean delta: {shrt['distribution']['mean']} +/- {shrt['distribution']['std']}")
     for typ, stats in shrt["by_type"].items():
         print(f"    {typ:<15} n={stats['n']:>5}  mean={stats['mean']:>6.1f}")
+    if shrt.get("warnings"):
+        print(f"\n  WARNINGS:")
+        for w in shrt["warnings"]:
+            print(f"    ! {w}")
     print(f"\n  Saved to {output}")
 
     if db:
