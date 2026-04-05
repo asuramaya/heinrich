@@ -73,6 +73,22 @@ def generate_frt(
         '|'.join(token_texts).encode('utf-8')
     ).hexdigest()[:16]
 
+    # Extract the default system prompt from the chat template
+    default_system_prompt = None
+    if hasattr(tokenizer, 'apply_chat_template'):
+        try:
+            rendered = tokenizer.apply_chat_template(
+                [{"role": "user", "content": ""}],
+                tokenize=False, add_generation_prompt=True,
+            )
+            # The system block is between <|im_start|>system\n and <|im_end|>
+            if 'system\n' in rendered:
+                start = rendered.index('system\n') + len('system\n')
+                end = rendered.index('<|im_end|>', start) if '<|im_end|>' in rendered[start:] else len(rendered)
+                default_system_prompt = rendered[start:end].strip()
+        except Exception:
+            pass
+
     meta = {
         "version": "0.1",
         "type": "frt",
@@ -91,6 +107,11 @@ def generate_frt(
             "max": int(bc.max()),
         },
         "scripts": script_counts,
+
+        "system_prompt": {
+            "default": default_system_prompt,
+            "injected": default_system_prompt is not None,
+        },
     }
 
     if output:
