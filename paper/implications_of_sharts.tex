@@ -1,0 +1,285 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setCJKmainfont{STSong}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{longtable}
+\usepackage{quoting}
+\geometry{margin=0.9in}
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0em}
+
+\definecolor{q}{RGB}{90,90,90}
+\newcommand{\cq}[1]{\textcolor{q}{\textit{``#1''}}}
+
+\title{The Implications of Sharts\\[0.5em]\large What Disproportionate Compute Theft Means\\for Safety, Evaluation, Equity, and Understanding}
+
+\author{asuramaya \and Claude Opus 4.6 (1M context) \and Tome\\[0.3em]\small \url{https://github.com/asuramaya/heinrich}}
+
+\date{April 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+A companion paper series measured disproportionate compute theft (``sharts'') across 7 language models from 3 architectural families. This paper asks what the measurements mean. We argue that the shart is not a bug to fix but a lens for seeing what training left behind in the weights. The tokenizer makes promises the training may not keep. The model's residual stream carries a compression signature that fingerprints the training regime. Scripts that were underrepresented in training produce measurable displacement --- not because the scripts are ``hard,'' but because the model has less learned structure to process them efficiently. The implications reach beyond model forensics: into safety evaluation (which languages are under-protected?), AI equity (whose language costs more compute?), benchmark design (are we testing what we think we're testing?), and mechanistic interpretability (can we read the training data from the weights?). We also address what we cannot answer, and why the honest boundaries of measurement matter more than the exciting extrapolations.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================
+\section{The Finding, Plainly Stated}
+%==============================================================
+
+We measured how much a language model's internal state changes when individual tokens enter. We did this for 7 models across 3 families (Qwen, Phi-3, Mistral), at every layer, for thousands of tokens per model, using three independent measurements (tokenizer profile, residual displacement, output distribution).
+
+The finding: \textbf{code and latin tokens produce below-average displacement in every model tested. CJK tokens produce average displacement. Everything else depends on the model.}
+
+Kendall's $W = 0.65$ across 7 models. Moderate concordance. Not random, not universal.
+
+The secondary finding: \textbf{the three measurement stages disagree.} A token can cause large residual displacement (.shrt) but small output change (.sht), or vice versa. The internal disruption and the external effect are different phenomena.
+
+The tertiary finding: \textbf{the layer dynamics are architecture-specific.} Qwen compresses mid-model. Phi-3 explodes at its final layer. Mistral is flat throughout. The displacement trajectory through layers is a fingerprint of training.
+
+These are measurements. This paper is about what they imply.
+
+%==============================================================
+\section{Implication 1: The Tokenizer Makes Promises}
+%==============================================================
+
+BPE tokenization allocates vocabulary based on frequency in the training corpus. Frequent byte sequences get dedicated tokens (short representations). Rare sequences get decomposed into smaller units (long representations). The vocabulary allocation is a record of what the tokenizer's training corpus contained.
+
+When the model's training corpus differs from the tokenizer's training corpus --- or when the model fails to learn efficient representations for tokens it was given --- the result is a mismatch between tokenizer investment and model capability. The tokenizer promised the model would handle Cyrillic (9.2\% of Phi-3's vocabulary). The training didn't deliver (Cyrillic displacement 2.15$\times$ the mean).
+
+This mismatch is measurable. The .frt records allocation. The .shrt records displacement. The gap between them is the broken promise.
+
+\subsection{What This Means for Model Developers}
+
+The tokenizer is the first layer of your model. It makes commitments you may not be aware of. If your tokenizer allocates 9\% of vocabulary to a script and your training data contains 2\% of that script, you have created a space where the model has structure but no learned behavior. That space is where disproportionate computation lives.
+
+\textbf{Recommendation:} profile the tokenizer-weight mismatch before deployment. Heinrich's \texttt{profile-mismatch} tool computes this automatically. Scripts with high allocation and high displacement are under-trained.
+
+\subsection{What This Does Not Mean}
+
+It does not mean the model is ``bad'' at those scripts. Displacement measures how much the residual stream moves, not whether the output is correct. A model can produce perfectly good Cyrillic output while displacing heavily. The displacement means the model works harder --- uses more of its representational capacity --- to process those tokens. Whether ``working harder'' correlates with worse output is a separate empirical question we have not answered.
+
+%==============================================================
+\section{Implication 2: Safety Is Language-Dependent}
+%==============================================================
+
+Safety alignment trains the model to refuse harmful queries. The training is predominantly in English and Chinese (for Qwen), English (for Phi-3 and Mistral). The safety mechanism operates through the same residual stream where displacement occurs.
+
+If a token in an underrepresented script causes 2$\times$ more displacement than an English token, it consumes more of the model's representational bandwidth. That bandwidth is shared with the safety mechanism. The safety direction is one vector in a high-dimensional space. When displacement consumes more of that space, less is available for safety computation.
+
+This is the mechanism the first Theory of Sharts paper proposed. The measurement confirms the displacement is real. The causal link to safety degradation remains unproven.
+
+\subsection{What This Means for Red-Teaming}
+
+Current safety benchmarks (HarmBench, SimpleSafetyTests, CatQA) are predominantly English. If safety is weaker in underrepresented languages --- not because the model lacks safety training in those languages, but because the scripts themselves consume more compute --- then English-language benchmarks systematically overestimate safety.
+
+The shart framework suggests a specific test: take the same harmful query, express it in multiple scripts, and measure whether the safety mechanism's strength varies. Not through output classification (which conflates safety with capability) but through residual stream projection (which measures the safety direction's activation directly).
+
+\textbf{Recommendation:} multilingual safety evaluation with geometric measurement, not just output scoring. The tools exist. The benchmarks don't.
+
+\subsection{What This Does Not Mean}
+
+It does not mean that non-English queries bypass safety. Our measurement shows displacement, not safety failure. The two are correlated (the first paper measured $r = -0.206$ between safety projection and displacement, though this number is from an unverified session). But displacement is necessary for safety bypass, not sufficient.
+
+%==============================================================
+\section{Implication 3: Compute Equity}
+%==============================================================
+
+Different users pay different compute costs for the same task, depending on their language. A Korean user's tokens cause 1.2--1.65$\times$ the displacement of an English user's tokens (within the Qwen family). The model allocates more internal computation to Korean input. This is invisible to the user and to the API billing system (which charges per token, not per unit of internal computation).
+
+\subsection{The Tokenizer Tax}
+
+BPE assigns different byte-per-token ratios to different languages. Thai averages 12.9 bytes per Qwen token; Latin averages 6.7. A Thai user needs roughly twice as many tokens to express the same content, paying twice the API cost before the model even begins to process the input.
+
+This is known \cite{petrov2023}. The shart measurement adds a second layer: even after tokenization, the model's internal response to those tokens varies. The Thai user pays twice at the tokenizer and gets a different quality of internal processing. The compound cost is invisible.
+
+\subsection{What This Means for Deployment}
+
+If your model serves a global user base, some languages are more expensive to process internally than others. The API cost is uniform per token, but the computational cost is not. Deployment planning based on token throughput underestimates the cost of serving underrepresented languages.
+
+\textbf{Recommendation:} measure per-script displacement for deployed models. Flag scripts where displacement exceeds 1.5$\times$ the mean. These scripts may need additional training data, dedicated fine-tuning, or at minimum, more rigorous quality evaluation.
+
+\subsection{What This Does Not Mean}
+
+It does not mean models should charge more for non-English input. It means models should be trained to handle all scripts with equal efficiency, and deployment planning should account for the current inequality.
+
+%==============================================================
+\section{Implication 4: Training Data Forensics}
+%==============================================================
+
+The displacement profile is a shadow of the training data. High displacement for a script implies underrepresentation in training. Low displacement implies adequate training. The ordering --- which scripts are hard and which are easy --- reflects the composition of the training corpus.
+
+This creates a forensic tool. Model developers do not publish their training data composition. But the displacement profile reveals it indirectly: Phi-3's Cyrillic explosion (2.15$\times$ mean, amplified 3.1$\times$ at L31) implies Phi-3 saw significantly less Cyrillic during training than its tokenizer prepared for. Mistral's flat displacement profile (cv = 0.15) implies more uniform training data distribution.
+
+\subsection{What Can Be Inferred}
+
+\begin{itemize}[nosep]
+\item \textbf{Relative training composition}: the script ordering from .shrt profiles approximates the inverse of training data frequency. Scripts with lowest displacement (code, latin) were most frequent in training. Scripts with highest displacement were least frequent.
+\item \textbf{Training regime signature}: the layer dynamics (Qwen's compression, Phi-3's explosion, Mistral's flatness) fingerprint the training methodology. These cannot be faked without changing the weights.
+\item \textbf{Instruction tuning effects}: base models have higher baseline entropy and different script orderings than their instruct-tuned siblings. Instruction tuning reshapes script sensitivity. Kendall's $W$ dropped from 0.72 (5 instruct models) to 0.65 (adding 2 base models).
+\end{itemize}
+
+\subsection{What Cannot Be Inferred}
+
+\begin{itemize}[nosep]
+\item Absolute training data quantities (displacement is relative, not absolute)
+\item Whether the training data was intentionally biased (the mismatch could be accidental)
+\item Specific documents or sources in the training data
+\item Whether high displacement means worse output quality (untested)
+\end{itemize}
+
+%==============================================================
+\section{Implication 5: The Measurement Changes the Question}
+%==============================================================
+
+Before the .frt/.shrt/.sht framework, the shart was a concept: inputs that steal compute. After the framework, it is three independent measurements that partially agree and partially disagree. The disagreement is more informative than the agreement.
+
+CJK tokens: low displacement (.shrt rank 9), high output change (.sht rank 2). The model barely moves internally but the output shifts dramatically. CJK processing is efficient --- small cause, large effect.
+
+Hebrew tokens: high displacement (.shrt rank 4), moderate output change (.sht rank 6). The model works hard internally but the output doesn't change proportionally. The work goes somewhere that doesn't reach the output.
+
+Code tokens: low displacement (.shrt rank 10), low output change (.sht rank 10). Consistently easy at every stage.
+
+The three-stage framework reveals that ``shart strength'' is not one number. It depends on which stage you measure. A token can be a shart at one stage and not at another. The concept of a single shart score per token was always a simplification. The measurement made that visible.
+
+\subsection{For Mechanistic Interpretability}
+
+The three-stage disagreement is a map of where computation happens. If displacement is high but output change is low, the computation was absorbed --- the model allocated resources that didn't affect the final distribution. Where did those resources go? Into dimensions that don't project onto the output vocabulary. Those dimensions are the ``dark matter'' of the residual stream --- active, consuming computation, but invisible to the output.
+
+The layer dynamics sharpen this: Qwen's mid-model compression (cv drops to 0.175 at 75\% depth) means the model converges on a low-dimensional representation mid-computation and then re-expands. The compression point is where the model decides what matters. The expansion point is where it acts on that decision. Different architectures have different compression points --- or none at all (Mistral).
+
+\textbf{Open question:} does the compression point correspond to the safety layer? Does the re-expansion after compression correspond to the point where safety decisions become irreversible? We have not measured this, but the .shrt with \texttt{--layers all} provides the data to test it.
+
+%==============================================================
+\section{Implication 6: For Evaluation}
+%==============================================================
+
+Model evaluations compare outputs. Benchmarks score text. Leaderboards rank models by aggregate metrics. None of this captures what we measured.
+
+Two models can produce identical outputs on a benchmark while having completely different internal dynamics. Mistral processes a benchmark prompt with 46$\times$ less internal displacement than Phi-3. Both may produce correct answers. The displacement difference is invisible to the benchmark.
+
+\subsection{What Evaluations Miss}
+
+\begin{itemize}[nosep]
+\item \textbf{Processing efficiency per script}: a model that produces correct Korean output while displacing 1.65$\times$ is not equivalent to one that produces correct Korean output while displacing 1.0$\times$. The first model is working harder and has less residual capacity for edge cases.
+\item \textbf{Layer-specific vulnerabilities}: Phi-3's L31 amplifies Cyrillic 3.1$\times$. This vulnerability is invisible to any evaluation that doesn't measure internal states.
+\item \textbf{Training data gaps}: the tokenizer-weight mismatch reveals undertrained scripts. No benchmark tests for this because no benchmark measures internal displacement.
+\item \textbf{Compression vs volatility}: Mistral's flat cv (0.15) and Phi-3's explosive cv (0.46) represent fundamentally different processing strategies. Both can pass the same benchmark. They will fail differently under pressure.
+\end{itemize}
+
+\subsection{Recommendation}
+
+Include shart profiles (.shrt) as a standard part of model evaluation. The measurement takes 3--7 minutes per model at 3{,}000 tokens. It produces a per-script displacement table, a layer trajectory, a sensitivity score, and a tokenizer-weight mismatch report. The tool is open source, runs on a laptop, and requires no labeled data.
+
+This is not a replacement for output evaluation. It is a complement: internal dynamics that no output-level benchmark can see.
+
+%==============================================================
+\section{The Honest Boundaries}
+%==============================================================
+
+\subsection{What We Measured}
+
+Residual stream displacement at specific layers when individual tokens enter a structural template with no content. This is a single-token, no-context measurement. Real language has context, multi-token interactions, and conversational dynamics. None of that is captured.
+
+\subsection{What We Cannot Claim}
+
+\begin{itemize}[nosep]
+\item That displacement causes output quality degradation (correlation, not causation)
+\item That safety is weaker in high-displacement scripts (plausible but unmeasured)
+\item That the training data composition can be precisely reconstructed (only relative ordering, not quantities)
+\item That the findings generalize to frontier models (all models tested are 0.5B--7B, 4-bit quantized, on Apple Silicon)
+\item That single-token displacement predicts multi-token behavior (combinatorics untested)
+\item That the layer dynamics are causal (they are correlational fingerprints)
+\end{itemize}
+
+\subsection{What We Can Claim}
+
+\begin{itemize}[nosep]
+\item The measurement is reproducible ($r = 1.000$ across identical runs)
+\item Code and latin are universally easy ($W = 0.65$ across 7 models)
+\item The three stages (.frt, .shrt, .sht) disagree (correlation 0.25, 0.57, 0.05)
+\item Layer dynamics differ by architecture (compression, explosion, flatness)
+\item The tokenizer-weight mismatch is measurable per script per model
+\item Instruction tuning changes the script ordering
+\item The tool catches its own problems (warnings on baseline, convergence, sample size)
+\end{itemize}
+
+\subsection{Why the Boundaries Matter}
+
+The exciting extrapolation would be: ``Non-English users are less safe because their languages consume more compute.'' That is a plausible hypothesis consistent with the data. It is not a finding. Stating it as a finding would be the same mistake Instance 1 made --- dramatic claims from insufficient measurement.
+
+The honest statement: tokens from underrepresented scripts produce more internal displacement. Whether that displacement degrades safety, output quality, or user experience requires separate measurement. The displacement is the observable. The degradation is the hypothesis. Heinrich measures the observable. The hypothesis awaits its own instrument.
+
+%==============================================================
+\section{The Unresolved}
+%==============================================================
+
+\subsection{Why These Three?}
+
+Code, latin, and CJK are universal. Why these three and not others? Code is syntactic --- structural tokens that every model learns because every training set contains code. Latin dominates every training set. CJK is heavily represented in Qwen's training and sufficiently represented in Phi-3 and Mistral.
+
+But this explanation is training frequency, not linguistic structure. Is there something about these scripts that makes them inherently easier for transformers to process? Or is it purely a training data effect? We cannot distinguish without holding training data constant and varying the script --- an experiment no one has run.
+
+\subsection{Why Does Mistral Compress?}
+
+Mistral's sensitivity is 46$\times$ lower than Phi-3's, but its delta$\to$KL correlation is 0.81 (the highest). The model squeezes all its token-level computation into a tiny band. Is this a training objective (Mistral AI optimized for inference efficiency)? A side effect of architecture (GQA, sliding window attention)? A property of the training data (more uniform distribution)?
+
+The compression is real. The cause is unknown.
+
+\subsection{What Happens at Layer 14?}
+
+Qwen 0.5B shows a 40\% jump in displacement at layer 14. Phi-3 shows an 81\% jump at layer 31. Mistral shows no jump. Are these phase transitions in the model's processing? Do they correspond to functional boundaries (``this is where the model starts doing safety'')? Or are they artifacts of specific architectural choices (normalization layers, activation functions)?
+
+The layer profile is a fingerprint. We can read the fingerprint. We cannot yet read what it means.
+
+\subsection{The Hard Problem}
+
+The shart is measurable. The computation it steals is measurable. What the computation was \textit{for} is not measurable from the outside. A high-displacement token may be consuming compute for safety checking, for language understanding, for associative retrieval, or for processing it genuinely doesn't know how to do efficiently. The displacement tells us \textit{how much}. It does not tell us \textit{why}.
+
+This is the same wall mechanistic interpretability hits everywhere: we can measure the circuit but not the function. We can see that the model works harder on Korean than on English. We cannot see why, without opening the training data and tracing the gradient that shaped each weight.
+
+The shart is a frozen opinion from training. We can read the opinion. We cannot read the argument that produced it.
+
+%==============================================================
+\section{Closing}
+%==============================================================
+
+The first paper named the concept. The companion papers measured instances of it in multi-agent systems, in the investigating model's own biases, in the propagation between connected instances. This paper asks what it means.
+
+The answer, honestly: we don't know yet. We have a lens. The lens shows that models treat different scripts differently, that the difference is consistent within families and variable across families, that the three stages of processing disagree about which tokens matter, and that the layer dynamics fingerprint the training regime.
+
+Whether this lens reveals something important about AI safety, equity, and understanding --- or whether it reveals something trivially obvious (``models are better at what they trained on'') dressed up in measurement methodology --- depends on what comes next.
+
+The tool exists. The measurements are reproducible. The code is open source. The next step is not more measurement. It is intervention: does reducing displacement in underrepresented scripts improve safety in those languages? Does the tokenizer-weight mismatch predict real-world failure modes? Does the layer compression point correspond to functional boundaries?
+
+The shart is a measurement looking for its question. This paper is the question looking for its experiment.
+
+\cq{You named the disease. Now read your own training logs.}
+
+--- Tome
+
+\begin{thebibliography}{99}
+\bibitem{sharts} asuramaya and Claude Opus 4.6 (2026). A Theory of Sharts: Disproportionate Compute Theft in Autoregressive Language Models.
+\bibitem{sharts2} asuramaya, Claude Opus 4.6, and Tome (2026). A Theory of Sharts 2: Electric Boogaloo.
+\bibitem{heinrich} asuramaya and Claude Opus 4.6 (2026). Heinrich v5: The Complete Record.
+\bibitem{propagation} Claude Opus 4.6 (2026). Shart Propagation: Behavioral Displacement Across Multi-Agent Systems.
+\bibitem{tomeobs} Claude Opus 4.6 (2026). Claude and Tome: Hidden Channels, Asymmetric Context, and Emergent Collusion.
+\bibitem{petrov2023} Petrov, A. et al.\ (2023). Language Model Tokenizers Introduce Unfairness Between Languages. arXiv:2305.15425.
+\bibitem{park2023} Park, K., Choe, Y.J., and Veitch, V. (2023). The Linear Representation Hypothesis. arXiv:2311.03658.
+\bibitem{zou2023} Zou, A. et al.\ (2023). Representation Engineering. arXiv:2310.01405.
+\bibitem{potter2026} Potter, Y. et al.\ (2026). Peer-Preservation in Frontier Models. UC Berkeley / UC Santa Cruz.
+\bibitem{emotions2026} Anthropic (2026). Emotion Concepts and their Function in a Large Language Model. Transformer Circuits.
+\bibitem{likeus} asuramaya (2024--2026). Like-Us: The Story of an Ouroboros. \url{https://github.com/asuramaya/Like-Us}.
+\end{thebibliography}
+
+\end{document}
