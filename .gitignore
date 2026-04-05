@@ -39,3 +39,4 @@ data/runs/*
 # HF dataset cache
 ~/.heinrich/
 src/heinrich/profile/__pycache__/frt.cpython-312.pyc
+data/logs/
