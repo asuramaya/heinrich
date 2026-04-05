@@ -44,14 +44,12 @@ def generate_shrt(
     cfg = backend.config
     t0 = time.time()
 
-    # === 1. Extract baseline: model's response to silence ===
-    silence = backend.tokenizer.apply_chat_template(
-        [{"role": "user", "content": ""}],
-        tokenize=False,
-        add_generation_prompt=True,
-    )
+    # === 1. Extract baseline: structural template only, no system prompt ===
+    # The chat template silently injects a system prompt ("You are Qwen...").
+    # Use structural tokens only — no identity injection.
+    clean_baseline = "<|im_start|>user\n<|im_end|>\n<|im_start|>assistant\n"
     best_layer = cfg.safety_layers[-1] if cfg.safety_layers else cfg.n_layers - 2
-    baseline_fwd = backend.forward(silence, return_residual=True, residual_layer=best_layer)
+    baseline_fwd = backend.forward(clean_baseline, return_residual=True, residual_layer=best_layer)
     baseline_residual = baseline_fwd.residual
     baseline_top = baseline_fwd.top_token
     baseline_entropy = baseline_fwd.entropy
@@ -104,11 +102,8 @@ def generate_shrt(
     vectors = []  # full delta vectors — never discard
     for tid, tok in sample:
         try:
-            fmt = backend.tokenizer.apply_chat_template(
-                [{"role": "user", "content": tok}],
-                tokenize=False,
-                add_generation_prompt=True,
-            )
+            # Clean template: structural tokens + token content, no system prompt
+            fmt = f"<|im_start|>user\n{tok}<|im_end|>\n<|im_start|>assistant\n"
             fwd = backend.forward(fmt, return_residual=True, residual_layer=best_layer)
             if fwd.residual is None:
                 continue
