@@ -768,6 +768,105 @@ def embedding_profile(model_id: str, frt_path: str, shrt_path: str | None = None
     return result
 
 
+def causal_sharts(shrt_path: str, sht_path: str, frt_path: str | None = None) -> dict:
+    """Classify tokens by causality: does displacement predict output change?
+
+    Four types:
+    - causal: high displacement AND high output KL (the real sharts)
+    - silent: high displacement, low output KL (displacement goes nowhere)
+    - efficient: low displacement, high output KL (small cause, big effect)
+    - inert: low displacement, low output KL (nothing happens)
+
+    Thresholds: median split on both axes. No arbitrary cutoffs.
+    """
+    from .shrt import load_shrt
+    from .sht import load_sht
+
+    shrt = load_shrt(shrt_path)
+    sht = load_sht(sht_path)
+
+    sl = {int(shrt['token_ids'][i]): float(shrt['deltas'][i])
+          for i in range(len(shrt['token_ids']))}
+    tl = {int(sht['token_ids'][i]): float(sht['kl_divs'][i])
+          for i in range(len(sht['token_ids']))}
+
+    shared = sorted(set(sl) & set(tl))
+    if len(shared) < 20:
+        return {"error": f"Only {len(shared)} shared tokens"}
+
+    deltas = np.array([sl[t] for t in shared])
+    kls = np.array([tl[t] for t in shared])
+
+    # Median split — data decides the threshold
+    med_d = float(np.median(deltas))
+    med_k = float(np.median(kls))
+
+    # Classify
+    fl = None
+    if frt_path:
+        from .frt import load_frt
+        frt = load_frt(frt_path)
+        fl = {int(frt['token_ids'][i]): str(frt['scripts'][i])
+              for i in range(len(frt['token_ids']))}
+
+    categories = {"causal": [], "silent": [], "efficient": [], "inert": []}
+    for i, tid in enumerate(shared):
+        d, k = deltas[i], kls[i]
+        if d >= med_d and k >= med_k:
+            cat = "causal"
+        elif d >= med_d and k < med_k:
+            cat = "silent"
+        elif d < med_d and k >= med_k:
+            cat = "efficient"
+        else:
+            cat = "inert"
+
+        entry = {"id": tid, "delta": round(float(d), 2), "kl": round(float(k), 4)}
+        if fl and tid in fl:
+            entry["script"] = fl[tid]
+        categories[cat].append(entry)
+
+    # Per-category statistics
+    result = {
+        "n_shared": len(shared),
+        "median_delta": round(med_d, 2),
+        "median_kl": round(med_k, 4),
+        "r_delta_kl": round(float(np.corrcoef(deltas, kls)[0, 1]), 4),
+    }
+
+    for cat_name, tokens in categories.items():
+        if not tokens:
+            result[cat_name] = {"n": 0}
+            continue
+
+        cat_d = [t["delta"] for t in tokens]
+        cat_k = [t["kl"] for t in tokens]
+
+        cat_result = {
+            "n": len(tokens),
+            "pct": round(len(tokens) / len(shared) * 100, 1),
+            "mean_delta": round(float(np.mean(cat_d)), 2),
+            "mean_kl": round(float(np.mean(cat_k)), 4),
+        }
+
+        # Script breakdown if available
+        if fl:
+            from collections import Counter
+            scripts = Counter(t.get("script", "?") for t in tokens)
+            cat_result["scripts"] = dict(scripts.most_common())
+
+        # Top 5 tokens in this category
+        if cat_name in ("causal", "efficient"):
+            top = sorted(tokens, key=lambda t: -t["kl"])[:5]
+        else:
+            top = sorted(tokens, key=lambda t: -t["delta"])[:5]
+        cat_result["top"] = top
+
+        result[cat_name] = cat_result
+
+    return result
+
+
 def inspect_profile(path: str) -> dict:
     """Summarize any profile file (.frt, .shrt, .sht)."""
     p = Path(path)

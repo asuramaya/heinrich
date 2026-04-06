@@ -181,6 +181,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_embed.add_argument("--frt", required=True, help=".frt.npz file")
     p_embed.add_argument("--shrt", default=None, help=".shrt.npz file (optional, adds displacement correlation)")
 
+    p_causal = sub.add_parser("profile-causal", help="Classify tokens: causal, silent, efficient, or inert sharts")
+    p_causal.add_argument("--shrt", required=True, help=".shrt.npz file")
+    p_causal.add_argument("--sht", required=True, help=".sht.npz file")
+    p_causal.add_argument("--frt", default=None, help=".frt.npz file (optional, adds script breakdown)")
+
     # Item 69: shared DB path
     parser.add_argument("--db-path", default=None,
                         help="Path to SQLite database (default: ./data/heinrich.db)")
@@ -254,6 +259,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_tokenizer_health(args)
     elif args.command == "profile-embedding":
         _cmd_embedding(args)
+    elif args.command == "profile-causal":
+        _cmd_causal(args)
     else:
         parser.print_help()
 
@@ -618,6 +625,31 @@ def _cmd_profile_cross(args: argparse.Namespace) -> None:
         print(f"\n  {'script':<12} {'n':>4} {'mean_A':>7} {'mean_B':>7} {'ratio':>6}")
         for s, st in result['scripts'].items():
             print(f"  {s:<12} {st['n']:>4} {st['mean_a']:>7.1f} {st['mean_b']:>7.1f} {st['ratio']:>6.2f}x")
+
+
+def _cmd_causal(args: argparse.Namespace) -> None:
+    from .profile.compare import causal_sharts
+    result = causal_sharts(args.shrt, args.sht, frt_path=args.frt)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Causal Shart Classification (N={result['n_shared']}) ===")
+    print(f"  r(delta, KL) = {result['r_delta_kl']}")
+    print(f"  median delta = {result['median_delta']}, median KL = {result['median_kl']}")
+
+    for cat in ['causal', 'efficient', 'silent', 'inert']:
+        c = result[cat]
+        if c['n'] == 0:
+            continue
+        print(f"\n  {cat.upper()} ({c['n']} tokens, {c['pct']}%): delta={c['mean_delta']:.1f} KL={c['mean_kl']:.4f}")
+        if 'scripts' in c:
+            top_s = list(c['scripts'].items())[:5]
+            print(f"    scripts: {', '.join(f'{s}={n}' for s, n in top_s)}")
+        if 'top' in c:
+            for t in c['top'][:3]:
+                tok_text = f"script={t.get('script', '?')}"
+                print(f"    id={t['id']:>6} delta={t['delta']:>6.1f} KL={t['kl']:>7.4f} {tok_text}")
 
 
 def _cmd_embedding(args: argparse.Namespace) -> None:
