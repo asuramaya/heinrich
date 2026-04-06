@@ -19,6 +19,24 @@ from pathlib import Path
 import numpy as np
 
 
+def _write_checkpoint(path, tokens, vectors, layer_deltas, measure_layers, n_done, n_total):
+    """Write partial results to a checkpoint file. Overwrites previous checkpoint."""
+    try:
+        checkpoint = {
+            "n_done": n_done,
+            "n_total": n_total,
+            "n_tokens": len(tokens),
+            "token_ids": np.array([t["id"] for t in tokens], dtype=np.int32),
+            "deltas": np.array([t["delta"] for t in tokens], dtype=np.float32),
+        }
+        for layer in measure_layers:
+            if layer_deltas[layer]:
+                checkpoint[f"deltas_L{layer}"] = np.array(layer_deltas[layer], dtype=np.float32)
+        np.savez_compressed(path, **checkpoint)
+    except Exception:
+        pass  # checkpoint failure should never kill the run
+
+
 def _extract_clean_baseline(tokenizer) -> str:
     """Build a structural-only baseline from the model's own chat template.
 
@@ -199,6 +217,9 @@ def generate_shrt(
     vectors = []  # full delta vectors at primary layer — never discard
     layer_deltas = {layer: [] for layer in measure_layers}  # delta per layer per token
     token_times = []  # wall time per token for throughput reporting
+    checkpoint_interval = max(len(sample) // 10, 100)  # checkpoint every 10% or 100 tokens
+    checkpoint_path = (output + ".checkpoint") if output else None
+    n_processed = 0
 
     for tid, tok in sample:
         t_tok = time.time()
@@ -260,10 +281,24 @@ def generate_shrt(
             for layer in measure_layers:
                 layer_deltas[layer].append(token_layer_deltas[layer])
             token_times.append(time.time() - t_tok)
+            n_processed += 1
+
+            # Checkpoint: save partial results periodically
+            if checkpoint_path and n_processed % checkpoint_interval == 0:
+                _write_checkpoint(checkpoint_path, tokens, vectors, layer_deltas,
+                                  measure_layers, n_processed, len(sample))
         except Exception:
             pass
 
     elapsed_index = time.time() - t0
+
+    # Clean up checkpoint on successful completion
+    if checkpoint_path:
+        import os
+        try:
+            os.remove(checkpoint_path)
+        except OSError:
+            pass
 
     # === 4. Compute statistics ===
     deltas = np.array([t["delta"] for t in tokens])
