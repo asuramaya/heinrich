@@ -634,8 +634,8 @@ def _cmd_scatter(args: argparse.Namespace) -> None:
         print(f"Error: {result['error']}")
         return
 
-    print(f"\n=== Displacement x Output Scatter (N={result['n_shared']}) ===")
-    print(f"  r(delta, KL) = {result['r_delta_kl']}  (correlation, not causation)")
+    print(f"\n=== Displacement x Output: Two Measurements (N={result['n_shared']}) ===")
+    print(f"  r(delta, KL) = {result['r_delta_kl']}  (both are effects of the token, neither causes the other)")
     print(f"  median delta = {result['median_delta']}, median KL = {result['median_kl']}")
 
     for cat in ['high_both', 'high_kl', 'high_delta', 'low_both']:

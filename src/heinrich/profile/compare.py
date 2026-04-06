@@ -769,16 +769,13 @@ def embedding_profile(model_id: str, frt_path: str, shrt_path: str | None = None
 
 
 def displacement_output_scatter(shrt_path: str, sht_path: str, frt_path: str | None = None) -> dict:
-    """Scatter tokens across displacement × output change. Not causal —
-    correlational. Two measurements, four quadrants.
+    """Two measurements of the same tokens: residual displacement (.shrt)
+    and output KL divergence (.sht). Both are effects of the token entering.
+    Neither causes the other.
 
-    Quadrants (median split, data decides threshold):
-    - high_both: high displacement AND high output KL
-    - high_delta: high displacement, low output KL
-    - high_kl: low displacement, high output KL
-    - low_both: low displacement, low output KL
-
-    The labels describe the quadrant, not the mechanism.
+    Reports the joint distribution: where do tokens fall when measured
+    both ways? Median split into quadrants for summary statistics only —
+    the quadrants are a convenience, not a finding.
     """
     from .shrt import load_shrt
     from .sht import load_sht
