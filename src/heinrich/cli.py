@@ -172,6 +172,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_lscript.add_argument("--shrt", required=True, help=".shrt.npz file (run with --layers all)")
     p_lscript.add_argument("--frt", required=True, help=".frt.npz file")
 
+    p_health = sub.add_parser("profile-tokenizer-health", help="Where does the tokenizer break? Data first, no hypothesis.")
+    p_health.add_argument("--frt", required=True, help=".frt.npz file")
+    p_health.add_argument("--shrt", default=None, help=".shrt.npz file (optional, adds displacement context)")
+
     # Item 69: shared DB path
     parser.add_argument("--db-path", default=None,
                         help="Path to SQLite database (default: ./data/heinrich.db)")
@@ -241,6 +245,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_profile_depth(args)
     elif args.command == "profile-layer-scripts":
         _cmd_layer_scripts(args)
+    elif args.command == "profile-tokenizer-health":
+        _cmd_tokenizer_health(args)
     else:
         parser.print_help()
 
@@ -605,6 +611,32 @@ def _cmd_profile_cross(args: argparse.Namespace) -> None:
         print(f"\n  {'script':<12} {'n':>4} {'mean_A':>7} {'mean_B':>7} {'ratio':>6}")
         for s, st in result['scripts'].items():
             print(f"  {s:<12} {st['n']:>4} {st['mean_a']:>7.1f} {st['mean_b']:>7.1f} {st['ratio']:>6.2f}x")
+
+
+def _cmd_tokenizer_health(args: argparse.Namespace) -> None:
+    from .profile.compare import tokenizer_health
+    result = tokenizer_health(args.frt, shrt_path=args.shrt)
+
+    print(f"\n=== Tokenizer Health ({result['vocab_size']} tokens) ===\n")
+    print(f"  Clean (round-trip OK):    {result['n_clean']}")
+    print(f"  Collapsed (decode collision): {result['n_collapsed']} ({result['collision_groups']} groups)")
+    print(f"  Silent (empty decode):    {result['n_silent']}")
+
+    for group_name in ['clean', 'collapsed', 'silent']:
+        g = result.get(group_name)
+        if not g:
+            continue
+        print(f"\n  {group_name} (n={g['n']}):")
+        print(f"    mean ID: {g['mean_id']:.0f}  mean bytes: {g['mean_bytes']:.1f}")
+        if g.get('mean_delta') is not None:
+            print(f"    mean delta: {g['mean_delta']:.2f} (n={g['n_with_delta']})")
+        top_scripts = list(g['scripts'].items())[:5]
+        print(f"    scripts: {', '.join(f'{s}={n}' for s, n in top_scripts)}")
+
+    if result.get('largest_collisions'):
+        print(f"\n  Largest collisions:")
+        for c in result['largest_collisions'][:5]:
+            print(f"    {c['text']:<25} {c['n_ids']} IDs")
 
 
 def _cmd_layer_scripts(args: argparse.Namespace) -> None:

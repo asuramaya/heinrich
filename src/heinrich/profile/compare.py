@@ -585,6 +585,118 @@ def layer_scripts(shrt_path: str, frt_path: str) -> dict:
     }
 
 
+def tokenizer_health(frt_path: str, shrt_path: str | None = None) -> dict:
+    """Report where the tokenizer breaks. No hypothesis — just data.
+
+    For every token: does decode→re-encode preserve the ID?
+    If not, what are the properties of the failures?
+    If a .shrt is provided, include displacement data for context.
+    """
+    from .frt import load_frt, _detect_script
+
+    frt = load_frt(frt_path)
+    meta = frt['metadata']
+
+    # Load shrt if available
+    delta_lookup = {}
+    if shrt_path:
+        from .shrt import load_shrt
+        shrt = load_shrt(shrt_path)
+        for i in range(len(shrt['token_ids'])):
+            delta_lookup[int(shrt['token_ids'][i])] = float(shrt['deltas'][i])
+
+    token_ids = frt['token_ids']
+    token_texts = frt['token_texts']
+    byte_counts = frt['byte_counts']
+    scripts = frt['scripts']
+
+    # Classify each token
+    clean = []      # round-trip preserves ID
+    collapsed = []  # multiple IDs → same text (decode collision)
+    expanded = []   # 1 ID → multiple IDs on re-encode
+    silent = []     # decode produces empty/whitespace
+
+    text_to_ids = defaultdict(list)
+    for i in range(len(token_ids)):
+        tid = int(token_ids[i])
+        text = str(token_texts[i])
+        text_to_ids[text].append(tid)
+
+    # Find decode collisions (multiple IDs → same text)
+    collisions = {text: ids for text, ids in text_to_ids.items() if len(ids) > 1}
+
+    for i in range(len(token_ids)):
+        tid = int(token_ids[i])
+        text = str(token_texts[i])
+        b = int(byte_counts[i])
+        sc = str(scripts[i])
+        delta = delta_lookup.get(tid)
+
+        entry = {
+            "id": tid,
+            "text": text[:30],
+            "bytes": b,
+            "script": sc,
+        }
+        if delta is not None:
+            entry["delta"] = round(delta, 2)
+
+        if not text.strip():
+            entry["reason"] = "empty_decode"
+            silent.append(entry)
+        elif text in collisions and len(collisions[text]) > 1:
+            entry["reason"] = "collision"
+            entry["n_colliders"] = len(collisions[text])
+            collapsed.append(entry)
+        else:
+            clean.append(entry)
+
+    # Summary statistics — no hypothesis, just properties
+    result = {
+        "vocab_size": int(meta['tokenizer']['vocab_size']),
+        "n_clean": len(clean),
+        "n_collapsed": len(collapsed),
+        "n_silent": len(silent),
+        "collision_groups": len(collisions),
+        "total_collision_tokens": sum(len(ids) for ids in collisions.values()),
+    }
+
+    # Properties of each group — let the reader find the pattern
+    for group_name, group in [("clean", clean), ("collapsed", collapsed), ("silent", silent)]:
+        if not group:
+            continue
+        ids = [e["id"] for e in group]
+        bytes_list = [e["bytes"] for e in group]
+        scripts_list = [e["script"] for e in group]
+
+        from collections import Counter
+        script_dist = Counter(scripts_list)
+
+        group_data = {
+            "n": len(group),
+            "mean_id": round(float(np.mean(ids)), 0),
+            "mean_bytes": round(float(np.mean(bytes_list)), 1),
+            "scripts": dict(script_dist.most_common()),
+        }
+
+        if any("delta" in e for e in group):
+            deltas = [e["delta"] for e in group if "delta" in e]
+            if deltas:
+                group_data["mean_delta"] = round(float(np.mean(deltas)), 2)
+                group_data["n_with_delta"] = len(deltas)
+
+        result[group_name] = group_data
+
+    # Largest collision groups
+    biggest = sorted(collisions.items(), key=lambda x: -len(x[1]))[:10]
+    result["largest_collisions"] = [
+        {"text": repr(text)[:30], "n_ids": len(ids), "ids": ids[:5]}
+        for text, ids in biggest
+    ]
+
+    return result
+
+
 def inspect_profile(path: str) -> dict:
     """Summarize any profile file (.frt, .shrt, .sht)."""
     p = Path(path)
