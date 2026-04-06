@@ -743,6 +743,8 @@ def _cmd_decompose(args: argparse.Namespace) -> None:
     # Store: attn_frac[layer][script] = list of fractions
     attn_fracs = {l: defaultdict(list) for l in layers}
     mlp_fracs = {l: defaultdict(list) for l in layers}
+    attn_norms = {l: defaultdict(list) for l in layers}
+    mlp_norms = {l: defaultdict(list) for l in layers}
 
     for tid, tok in sample:
         input_ids = prefix_ids + [tid] + suffix_ids
@@ -783,6 +785,8 @@ def _cmd_decompose(args: argparse.Namespace) -> None:
                 if total > 1e-8:
                     attn_fracs[layer][script].append(attn_norm / total)
                     mlp_fracs[layer][script].append(mlp_norm / total)
+                    attn_norms[layer][script].append(attn_norm)
+                    mlp_norms[layer][script].append(mlp_norm)
             except Exception:
                 pass
 
@@ -804,6 +808,23 @@ def _cmd_decompose(args: argparse.Namespace) -> None:
             vals = mlp_fracs[layer].get(s, [])
             if len(vals) >= 5:
                 row += f"  {np.mean(vals):>7.1%}"
+            else:
+                row += f"  {'---':>7}"
+        print(row)
+
+    # Absolute norms: where the magnitude lives
+    print(f"\n{'layer':>5}", end='')
+    for s in all_scripts:
+        print(f"  {s[:6]:>7}", end='')
+    print("  (values = mean |attn| / mean |mlp|)")
+
+    for layer in layers:
+        row = f"L{layer:>3}"
+        for s in all_scripts:
+            a_vals = attn_norms[layer].get(s, [])
+            m_vals = mlp_norms[layer].get(s, [])
+            if len(a_vals) >= 5:
+                row += f"  {np.mean(a_vals):>3.1f}/{np.mean(m_vals):>3.1f}"
             else:
                 row += f"  {'---':>7}"
         print(row)
