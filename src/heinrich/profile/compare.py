@@ -697,6 +697,77 @@ def tokenizer_health(frt_path: str, shrt_path: str | None = None) -> dict:
     return result
 
 
+def embedding_profile(model_id: str, frt_path: str, shrt_path: str | None = None) -> dict:
+    """Examine the embedding table — the unexamined link between .frt and .shrt.
+
+    Reports: embedding norms per script, correlation with displacement,
+    norm distribution across the vocabulary. No hypothesis — data first.
+    """
+    from ..backend.protocol import load_backend
+    from .frt import load_frt
+
+    backend = load_backend(model_id)
+    inner = getattr(backend.model, 'model', backend.model)
+
+    import mlx.core as mx
+    embed = np.array(inner.embed_tokens.weight)  # [vocab_size, hidden_size]
+    norms = np.linalg.norm(embed, axis=1).astype(np.float32)
+
+    frt = load_frt(frt_path)
+    fl = {int(frt['token_ids'][i]): str(frt['scripts'][i])
+          for i in range(len(frt['token_ids']))}
+
+    # Per-script embedding norms
+    by_script = defaultdict(list)
+    for tid in range(len(norms)):
+        s = fl.get(tid)
+        if s and s not in ('special', 'unknown'):
+            by_script[s].append(float(norms[tid]))
+
+    script_norms = {}
+    for s in sorted(by_script, key=lambda x: -np.mean(by_script[x])):
+        vals = by_script[s]
+        if len(vals) >= 10:
+            script_norms[s] = {
+                "n": len(vals),
+                "mean_norm": round(float(np.mean(vals)), 4),
+                "std_norm": round(float(np.std(vals)), 4),
+            }
+
+    result = {
+        "model": model_id,
+        "embedding_shape": list(embed.shape),
+        "norm_mean": round(float(norms.mean()), 4),
+        "norm_std": round(float(norms.std()), 4),
+        "norm_min": round(float(norms.min()), 4),
+        "norm_max": round(float(norms.max()), 4),
+        "script_norms": script_norms,
+    }
+
+    # Correlation with displacement if .shrt available
+    if shrt_path:
+        from .shrt import load_shrt
+        shrt = load_shrt(shrt_path)
+        shrt_ids = shrt['token_ids']
+        shrt_deltas = shrt['deltas'].astype(np.float32)
+        embed_norms_matched = np.array([float(norms[tid]) for tid in shrt_ids])
+        r = float(np.corrcoef(embed_norms_matched, shrt_deltas)[0, 1])
+        result["r_norm_delta"] = round(r, 4)
+
+        # Per-script: does embedding norm predict delta within each script?
+        script_correlations = {}
+        for s in by_script:
+            s_mask = [fl.get(int(tid)) == s for tid in shrt_ids]
+            s_norms = embed_norms_matched[s_mask]
+            s_deltas = shrt_deltas[s_mask]
+            if len(s_norms) >= 20:
+                r_s = float(np.corrcoef(s_norms, s_deltas)[0, 1])
+                script_correlations[s] = round(r_s, 4)
+        result["script_norm_delta_r"] = script_correlations
+
+    return result
+
+
 def inspect_profile(path: str) -> dict:
     """Summarize any profile file (.frt, .shrt, .sht)."""
     p = Path(path)

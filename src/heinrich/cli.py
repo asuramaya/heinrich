@@ -176,6 +176,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_health.add_argument("--frt", required=True, help=".frt.npz file")
     p_health.add_argument("--shrt", default=None, help=".shrt.npz file (optional, adds displacement context)")
 
+    p_embed = sub.add_parser("profile-embedding", help="Examine the embedding table — the link between .frt and .shrt")
+    p_embed.add_argument("--model", required=True, help="Model ID")
+    p_embed.add_argument("--frt", required=True, help=".frt.npz file")
+    p_embed.add_argument("--shrt", default=None, help=".shrt.npz file (optional, adds displacement correlation)")
+
     # Item 69: shared DB path
     parser.add_argument("--db-path", default=None,
                         help="Path to SQLite database (default: ./data/heinrich.db)")
@@ -247,6 +252,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_layer_scripts(args)
     elif args.command == "profile-tokenizer-health":
         _cmd_tokenizer_health(args)
+    elif args.command == "profile-embedding":
+        _cmd_embedding(args)
     else:
         parser.print_help()
 
@@ -611,6 +618,29 @@ def _cmd_profile_cross(args: argparse.Namespace) -> None:
         print(f"\n  {'script':<12} {'n':>4} {'mean_A':>7} {'mean_B':>7} {'ratio':>6}")
         for s, st in result['scripts'].items():
             print(f"  {s:<12} {st['n']:>4} {st['mean_a']:>7.1f} {st['mean_b']:>7.1f} {st['ratio']:>6.2f}x")
+
+
+def _cmd_embedding(args: argparse.Namespace) -> None:
+    from .profile.compare import embedding_profile
+    result = embedding_profile(args.model, args.frt, shrt_path=args.shrt)
+
+    print(f"\n=== Embedding: {result['model']} ===")
+    print(f"  shape: {result['embedding_shape']}")
+    print(f"  norm: mean={result['norm_mean']:.4f} std={result['norm_std']:.4f} range=[{result['norm_min']:.4f}, {result['norm_max']:.4f}]")
+
+    if 'r_norm_delta' in result:
+        print(f"  r(embedding_norm, delta) = {result['r_norm_delta']}")
+
+    print(f"\n  {'script':<12} {'n':>5} {'mean_norm':>9} {'std':>7}", end='')
+    if 'script_norm_delta_r' in result:
+        print(f" {'r(norm,d)':>9}", end='')
+    print()
+
+    for s, data in sorted(result['script_norms'].items(), key=lambda x: -x[1]['mean_norm']):
+        print(f"  {s:<12} {data['n']:>5} {data['mean_norm']:>9.4f} {data['std_norm']:>7.4f}", end='')
+        if 'script_norm_delta_r' in result and s in result['script_norm_delta_r']:
+            print(f" {result['script_norm_delta_r'][s]:>+9.4f}", end='')
+        print()
 
 
 def _cmd_tokenizer_health(args: argparse.Namespace) -> None:
