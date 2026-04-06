@@ -176,6 +176,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_health.add_argument("--frt", required=True, help=".frt.npz file")
     p_health.add_argument("--shrt", default=None, help=".shrt.npz file (optional, adds displacement context)")
 
+    p_decompose = sub.add_parser("profile-decompose", help="Decompose displacement into attention vs MLP per layer per script")
+    p_decompose.add_argument("--model", required=True, help="Model ID")
+    p_decompose.add_argument("--frt", required=True, help=".frt.npz file")
+    p_decompose.add_argument("--n-index", type=int, default=500, help="Tokens to measure")
+    p_decompose.add_argument("--layers", default="all", help="Layers (comma-separated or 'all')")
+    p_decompose.add_argument("--output", "-o", default=None, help="Output .npz file")
+
     p_validate = sub.add_parser("profile-validate-ablation", help="Validate attention/MLP decomposition: does attn + mlp = full?")
     p_validate.add_argument("--model", required=True, help="Model ID")
     p_validate.add_argument("--layer", type=int, default=12, help="Layer to test")
@@ -261,6 +268,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_layer_scripts(args)
     elif args.command == "profile-tokenizer-health":
         _cmd_tokenizer_health(args)
+    elif args.command == "profile-decompose":
+        _cmd_decompose(args)
     elif args.command == "profile-validate-ablation":
         _cmd_validate_ablation(args)
     elif args.command == "profile-embedding":
@@ -656,6 +665,161 @@ def _cmd_scatter(args: argparse.Namespace) -> None:
             for t in c['top'][:3]:
                 tok_text = f"script={t.get('script', '?')}"
                 print(f"    id={t['id']:>6} delta={t['delta']:>6.1f} KL={t['kl']:>7.4f} {tok_text}")
+
+
+def _cmd_decompose(args: argparse.Namespace) -> None:
+    """Decompose displacement into attention and MLP fractions per layer per script."""
+    from .backend.protocol import load_backend
+    from .cartography.runtime import forward_pass
+    from .profile.shrt import _extract_clean_baseline, _extract_template_parts
+    from .profile.frt import load_frt, _detect_script
+    import numpy as np
+    import json
+    from collections import defaultdict
+
+    backend = load_backend(args.model)
+    cfg = backend.config
+
+    if args.layers == 'all':
+        layers = list(range(cfg.n_layers))
+    else:
+        layers = [int(x) for x in args.layers.split(',')]
+
+    frt = load_frt(args.frt)
+    fl = {int(frt['token_ids'][i]): str(frt['scripts'][i])
+          for i in range(len(frt['token_ids']))}
+
+    baseline = _extract_clean_baseline(backend.tokenizer)
+    prefix_ids, suffix_ids = _extract_template_parts(backend.tokenizer)
+
+    # Build token sample (same logic as .shrt)
+    real_tokens = []
+    seen_texts = set()
+    for tid in range(backend.tokenizer.vocab_size):
+        tok = backend.tokenizer.decode([tid])
+        if tok.strip() and len(tok) > 0 and not tok.startswith('[control') and not tok.startswith('<'):
+            if tok not in seen_texts:
+                seen_texts.add(tok)
+                real_tokens.append((tid, tok))
+
+    rng = np.random.RandomState(42)
+    n_sample = min(args.n_index, len(real_tokens))
+    sample_idx = set(rng.choice(len(real_tokens), n_sample, replace=False))
+
+    # Small-script exhaustion
+    script_pools = defaultdict(list)
+    for i, (tid, tok) in enumerate(real_tokens):
+        script_pools[_detect_script(tok)].append(i)
+    for script, indices in script_pools.items():
+        if 0 < len(indices) < 100:
+            sample_idx.update(indices)
+
+    sample = [real_tokens[i] for i in sorted(sample_idx)]
+    print(f"Decomposing {len(sample)} tokens x {len(layers)} layers...")
+
+    # For each layer: get baseline residuals under each ablation mode
+    # Pre-compute baselines per layer per mode
+    layer_baselines = {}
+    for layer in layers:
+        full = forward_pass(backend.model, backend.tokenizer, baseline,
+                           return_residual=True, residual_layer=layer)
+        skip = forward_pass(backend.model, backend.tokenizer, baseline,
+                           ablate_layers={layer}, ablate_mode="zero",
+                           return_residual=True, residual_layer=layer)
+        zero_attn = forward_pass(backend.model, backend.tokenizer, baseline,
+                                ablate_layers={layer}, ablate_mode="zero_attn",
+                                return_residual=True, residual_layer=layer)
+        zero_mlp = forward_pass(backend.model, backend.tokenizer, baseline,
+                               ablate_layers={layer}, ablate_mode="zero_mlp",
+                               return_residual=True, residual_layer=layer)
+        layer_baselines[layer] = {
+            "full": full["residual"],
+            "skip": skip["residual"],
+            "zero_attn": zero_attn["residual"],
+            "zero_mlp": zero_mlp["residual"],
+        }
+
+    # Per-token, per-layer decomposition
+    # Store: attn_frac[layer][script] = list of fractions
+    attn_fracs = {l: defaultdict(list) for l in layers}
+    mlp_fracs = {l: defaultdict(list) for l in layers}
+
+    for tid, tok in sample:
+        input_ids = prefix_ids + [tid] + suffix_ids
+        script = fl.get(tid, 'unknown')
+        if script in ('special', 'unknown'):
+            continue
+
+        for layer in layers:
+            try:
+                bl = layer_baselines[layer]
+
+                full = forward_pass(backend.model, backend.tokenizer, "",
+                                   token_ids=input_ids,
+                                   return_residual=True, residual_layer=layer)
+                zero_a = forward_pass(backend.model, backend.tokenizer, "",
+                                    token_ids=input_ids,
+                                    ablate_layers={layer}, ablate_mode="zero_attn",
+                                    return_residual=True, residual_layer=layer)
+                zero_m = forward_pass(backend.model, backend.tokenizer, "",
+                                    token_ids=input_ids,
+                                    ablate_layers={layer}, ablate_mode="zero_mlp",
+                                    return_residual=True, residual_layer=layer)
+                skip = forward_pass(backend.model, backend.tokenizer, "",
+                                   token_ids=input_ids,
+                                   ablate_layers={layer}, ablate_mode="zero",
+                                   return_residual=True, residual_layer=layer)
+
+                # Token's contribution at this layer
+                full_delta = full["residual"] - bl["full"]
+                attn_delta = zero_m["residual"] - bl["zero_mlp"]
+                mlp_delta = zero_a["residual"] - bl["zero_attn"]
+
+                full_norm = float(np.linalg.norm(full_delta))
+                attn_norm = float(np.linalg.norm(attn_delta))
+                mlp_norm = float(np.linalg.norm(mlp_delta))
+
+                total = attn_norm + mlp_norm
+                if total > 1e-8:
+                    attn_fracs[layer][script].append(attn_norm / total)
+                    mlp_fracs[layer][script].append(mlp_norm / total)
+            except Exception:
+                pass
+
+    # Report
+    all_scripts = set()
+    for l in layers:
+        all_scripts.update(attn_fracs[l].keys())
+    all_scripts = sorted(s for s in all_scripts if any(len(attn_fracs[l].get(s, [])) >= 5 for l in layers))
+
+    print(f"\n=== Attention / MLP Decomposition ({len(sample)} tokens) ===\n")
+    header = f"{'layer':>5}"
+    for s in all_scripts:
+        header += f"  {s[:6]:>7}"
+    print(header + "  (values = MLP fraction)")
+
+    for layer in layers:
+        row = f"L{layer:>3}"
+        for s in all_scripts:
+            vals = mlp_fracs[layer].get(s, [])
+            if len(vals) >= 5:
+                row += f"  {np.mean(vals):>7.1%}"
+            else:
+                row += f"  {'---':>7}"
+        print(row)
+
+    # Save if output specified
+    if args.output:
+        from pathlib import Path
+        Path(args.output).parent.mkdir(parents=True, exist_ok=True)
+        save_data = {"layers": np.array(layers)}
+        for s in all_scripts:
+            attn_arr = np.array([[np.mean(attn_fracs[l].get(s, [0])) for l in layers]])
+            mlp_arr = np.array([[np.mean(mlp_fracs[l].get(s, [0])) for l in layers]])
+            save_data[f"attn_{s}"] = attn_arr.astype(np.float32)
+            save_data[f"mlp_{s}"] = mlp_arr.astype(np.float32)
+        np.savez_compressed(args.output, **save_data)
+        print(f"\n  Saved to {args.output}")
 
 
 def _cmd_validate_ablation(args: argparse.Namespace) -> None:
