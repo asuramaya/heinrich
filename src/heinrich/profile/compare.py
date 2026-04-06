@@ -576,12 +576,45 @@ def layer_scripts(shrt_path: str, frt_path: str) -> dict:
                 "trajectory": relatives,
             }
 
+    # Detect crossings: where does one script's relative overtake another's?
+    crossings = []
+    scripts_with_traj = [s for s in script_trajectories
+                         if len(script_trajectories[s].get('trajectory', [])) >= 3]
+    for i, s1 in enumerate(scripts_with_traj):
+        for s2 in scripts_with_traj[i+1:]:
+            t1 = dict(script_trajectories[s1]['trajectory'])
+            t2 = dict(script_trajectories[s2]['trajectory'])
+            common_layers = sorted(set(t1) & set(t2))
+            if len(common_layers) < 3:
+                continue
+            # Check if s1 > s2 at start and s1 < s2 at end (or vice versa)
+            first = common_layers[0]
+            last = common_layers[-1]
+            if (t1[first] > t2[first] and t1[last] < t2[last]) or \
+               (t1[first] < t2[first] and t1[last] > t2[last]):
+                # Find the crossing layer
+                for j in range(len(common_layers) - 1):
+                    l_a = common_layers[j]
+                    l_b = common_layers[j + 1]
+                    if (t1[l_a] >= t2[l_a] and t1[l_b] < t2[l_b]) or \
+                       (t1[l_a] <= t2[l_a] and t1[l_b] > t2[l_b]):
+                        crossings.append({
+                            "scripts": (s1, s2),
+                            "cross_layer": l_b,
+                            "s1_before": round(t1[l_a], 3),
+                            "s2_before": round(t2[l_a], 3),
+                            "s1_after": round(t1[l_b], 3),
+                            "s2_after": round(t2[l_b], 3),
+                        })
+                        break
+
     return {
         "model": m['model']['name'],
         "n_layers": len(layers),
         "layers": layers,
         "layer_script_data": layer_script_data,
         "script_trajectories": script_trajectories,
+        "crossings": crossings,
     }
 
 

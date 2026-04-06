@@ -977,6 +977,12 @@ def _cmd_layer_scripts(args: argparse.Namespace) -> None:
             arrow = "flat"
         print(f"{sc:<12} {t['early']:>6.3f} {t['mid']:>6.3f} {t['late']:>6.3f} {t['range']:>6.3f}  {arrow}")
 
+    if result.get('crossings'):
+        print(f"\n  Crossings (where one script overtakes another):")
+        for c in result['crossings']:
+            s1, s2 = c['scripts']
+            print(f"    L{c['cross_layer']:>2}: {s1} crosses {s2} ({s1}:{c['s1_before']:.3f}→{c['s1_after']:.3f}, {s2}:{c['s2_before']:.3f}→{c['s2_after']:.3f})")
+
 
 def _cmd_profile_mismatch(args: argparse.Namespace) -> None:
     from .profile.compare import mismatch
