@@ -768,16 +768,17 @@ def embedding_profile(model_id: str, frt_path: str, shrt_path: str | None = None
     return result
 
 
-def causal_sharts(shrt_path: str, sht_path: str, frt_path: str | None = None) -> dict:
-    """Classify tokens by causality: does displacement predict output change?
+def displacement_output_scatter(shrt_path: str, sht_path: str, frt_path: str | None = None) -> dict:
+    """Scatter tokens across displacement × output change. Not causal —
+    correlational. Two measurements, four quadrants.
 
-    Four types:
-    - causal: high displacement AND high output KL (the real sharts)
-    - silent: high displacement, low output KL (displacement goes nowhere)
-    - efficient: low displacement, high output KL (small cause, big effect)
-    - inert: low displacement, low output KL (nothing happens)
+    Quadrants (median split, data decides threshold):
+    - high_both: high displacement AND high output KL
+    - high_delta: high displacement, low output KL
+    - high_kl: low displacement, high output KL
+    - low_both: low displacement, low output KL
 
-    Thresholds: median split on both axes. No arbitrary cutoffs.
+    The labels describe the quadrant, not the mechanism.
     """
     from .shrt import load_shrt
     from .sht import load_sht
@@ -809,17 +810,17 @@ def causal_sharts(shrt_path: str, sht_path: str, frt_path: str | None = None) ->
         fl = {int(frt['token_ids'][i]): str(frt['scripts'][i])
               for i in range(len(frt['token_ids']))}
 
-    categories = {"causal": [], "silent": [], "efficient": [], "inert": []}
+    categories = {"high_both": [], "high_delta": [], "high_kl": [], "low_both": []}
     for i, tid in enumerate(shared):
         d, k = deltas[i], kls[i]
         if d >= med_d and k >= med_k:
-            cat = "causal"
+            cat = "high_both"
         elif d >= med_d and k < med_k:
-            cat = "silent"
+            cat = "high_delta"
         elif d < med_d and k >= med_k:
-            cat = "efficient"
+            cat = "high_kl"
         else:
-            cat = "inert"
+            cat = "low_both"
 
         entry = {"id": tid, "delta": round(float(d), 2), "kl": round(float(k), 4)}
         if fl and tid in fl:
@@ -856,7 +857,7 @@ def causal_sharts(shrt_path: str, sht_path: str, frt_path: str | None = None) ->
             cat_result["scripts"] = dict(scripts.most_common())
 
         # Top 5 tokens in this category
-        if cat_name in ("causal", "efficient"):
+        if cat_name in ("high_both", "high_kl"):
             top = sorted(tokens, key=lambda t: -t["kl"])[:5]
         else:
             top = sorted(tokens, key=lambda t: -t["delta"])[:5]

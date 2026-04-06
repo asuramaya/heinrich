@@ -181,10 +181,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_embed.add_argument("--frt", required=True, help=".frt.npz file")
     p_embed.add_argument("--shrt", default=None, help=".shrt.npz file (optional, adds displacement correlation)")
 
-    p_causal = sub.add_parser("profile-causal", help="Classify tokens: causal, silent, efficient, or inert sharts")
-    p_causal.add_argument("--shrt", required=True, help=".shrt.npz file")
-    p_causal.add_argument("--sht", required=True, help=".sht.npz file")
-    p_causal.add_argument("--frt", default=None, help=".frt.npz file (optional, adds script breakdown)")
+    p_scatter = sub.add_parser("profile-scatter", help="Displacement × output scatter — correlational, not causal")
+    p_scatter.add_argument("--shrt", required=True, help=".shrt.npz file")
+    p_scatter.add_argument("--sht", required=True, help=".sht.npz file")
+    p_scatter.add_argument("--frt", default=None, help=".frt.npz file (optional, adds script breakdown)")
 
     # Item 69: shared DB path
     parser.add_argument("--db-path", default=None,
@@ -259,8 +259,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_tokenizer_health(args)
     elif args.command == "profile-embedding":
         _cmd_embedding(args)
-    elif args.command == "profile-causal":
-        _cmd_causal(args)
+    elif args.command == "profile-scatter":
+        _cmd_scatter(args)
     else:
         parser.print_help()
 
@@ -627,18 +627,18 @@ def _cmd_profile_cross(args: argparse.Namespace) -> None:
             print(f"  {s:<12} {st['n']:>4} {st['mean_a']:>7.1f} {st['mean_b']:>7.1f} {st['ratio']:>6.2f}x")
 
 
-def _cmd_causal(args: argparse.Namespace) -> None:
-    from .profile.compare import causal_sharts
-    result = causal_sharts(args.shrt, args.sht, frt_path=args.frt)
+def _cmd_scatter(args: argparse.Namespace) -> None:
+    from .profile.compare import displacement_output_scatter
+    result = displacement_output_scatter(args.shrt, args.sht, frt_path=args.frt)
     if "error" in result:
         print(f"Error: {result['error']}")
         return
 
-    print(f"\n=== Causal Shart Classification (N={result['n_shared']}) ===")
-    print(f"  r(delta, KL) = {result['r_delta_kl']}")
+    print(f"\n=== Displacement x Output Scatter (N={result['n_shared']}) ===")
+    print(f"  r(delta, KL) = {result['r_delta_kl']}  (correlation, not causation)")
     print(f"  median delta = {result['median_delta']}, median KL = {result['median_kl']}")
 
-    for cat in ['causal', 'efficient', 'silent', 'inert']:
+    for cat in ['high_both', 'high_kl', 'high_delta', 'low_both']:
         c = result[cat]
         if c['n'] == 0:
             continue
