@@ -117,7 +117,16 @@ def generate_shrt(
     if layers is None:
         measure_layers = [best_layer]
     elif layers == [-1]:
-        measure_layers = list(range(cfg.n_layers))
+        # For large models (>= 4096 hidden), use sampled layers to avoid OOM.
+        # 32 forward passes per token × 3K tokens on 7B models exceeds memory.
+        if cfg.hidden_size >= 4096:
+            # Sample 8 evenly-spaced layers plus first and last
+            n = cfg.n_layers
+            sampled = sorted(set([0, n//4, n//2, 3*n//4, n-1] +
+                                 [int(i * n / 8) for i in range(8)]))
+            measure_layers = sampled
+        else:
+            measure_layers = list(range(cfg.n_layers))
     else:
         measure_layers = layers
     primary_layer = measure_layers[0] if len(measure_layers) == 1 else best_layer
