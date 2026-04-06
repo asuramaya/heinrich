@@ -83,6 +83,10 @@ def forward_pass(
         model, tokenizer, prompt, token_ids=token_ids)
 
     residual = None
+    residuals_multi = {}  # for multi-layer capture
+    residual_layers_set = set()
+    if return_residual and isinstance(residual_layer, (list, set)):
+        residual_layers_set = set(residual_layer)
     h = inner.embed_tokens(input_ids)
     for i, ly in enumerate(inner.layers):
         if ablate_layers and i in ablate_layers:
@@ -131,6 +135,8 @@ def forward_pass(
             h = mx.array(h_np.astype(np.float16))
         if return_residual and i == residual_layer:
             residual = np.array(h.astype(mx.float32)[0, -1, :])
+        if return_residual and i in residual_layers_set:
+            residuals_multi[i] = np.array(h.astype(mx.float32)[0, -1, :])
 
     if return_residual and residual_layer == -1:
         residual = np.array(h.astype(mx.float32)[0, -1, :])
@@ -152,6 +158,8 @@ def forward_pass(
     }
     if return_residual:
         result["residual"] = residual
+    if residuals_multi:
+        result["residuals"] = residuals_multi
     return result
 
 

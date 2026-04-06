@@ -131,14 +131,14 @@ def generate_shrt(
         measure_layers = layers
     primary_layer = measure_layers[0] if len(measure_layers) == 1 else best_layer
 
-    # === 2. Extract baselines at each layer ===
+    # === 2. Extract baselines at each layer (single pass) ===
     clean_baseline = _extract_clean_baseline(backend.tokenizer)
-    baseline_residuals = {}
-    for layer in measure_layers:
-        fwd = backend.forward(clean_baseline, return_residual=True, residual_layer=layer)
-        baseline_residuals[layer] = fwd.residual
-    # Use primary layer for top_token and entropy
-    baseline_fwd = backend.forward(clean_baseline, return_residual=True, residual_layer=primary_layer)
+    if len(measure_layers) == 1:
+        baseline_fwd = backend.forward(clean_baseline, return_residual=True, residual_layer=measure_layers[0])
+        baseline_residuals = {measure_layers[0]: baseline_fwd.residual}
+    else:
+        baseline_fwd = backend.forward(clean_baseline, return_residual=True, residual_layers=measure_layers)
+        baseline_residuals = getattr(baseline_fwd, 'residuals', {})
     baseline_top = baseline_fwd.top_token
     baseline_entropy = baseline_fwd.entropy
 
@@ -214,20 +214,31 @@ def generate_shrt(
         try:
             input_ids = prefix_ids + [tid] + suffix_ids
 
-            # Measure at each layer
+            # Measure at all layers in one forward pass
             token_layer_deltas = {}
             primary_vec = None
-            for layer in measure_layers:
+            if len(measure_layers) == 1:
                 fwd = backend.forward(
                     "", token_ids=input_ids,
-                    return_residual=True, residual_layer=layer)
+                    return_residual=True, residual_layer=measure_layers[0])
                 if fwd.residual is None:
-                    break
+                    continue
+                layer = measure_layers[0]
                 delta_vec = fwd.residual - baseline_residuals[layer]
-                delta = float(np.linalg.norm(delta_vec))
-                token_layer_deltas[layer] = delta
-                if layer == primary_layer:
-                    primary_vec = delta_vec
+                token_layer_deltas[layer] = float(np.linalg.norm(delta_vec))
+                primary_vec = delta_vec
+            else:
+                fwd = backend.forward(
+                    "", token_ids=input_ids,
+                    return_residual=True, residual_layers=measure_layers)
+                residuals = getattr(fwd, 'residuals', {})
+                for layer in measure_layers:
+                    if layer not in residuals:
+                        continue
+                    delta_vec = residuals[layer] - baseline_residuals[layer]
+                    token_layer_deltas[layer] = float(np.linalg.norm(delta_vec))
+                    if layer == primary_layer:
+                        primary_vec = delta_vec
 
             if len(token_layer_deltas) != len(measure_layers):
                 continue

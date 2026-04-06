@@ -30,6 +30,7 @@ class MLXBackend:
         alpha=0.0,
         return_residual=False,
         residual_layer=-1,
+        residual_layers=None,
     ) -> ForwardResult:
         from heinrich.cartography.runtime import forward_pass
         result = forward_pass(
@@ -37,9 +38,9 @@ class MLXBackend:
             token_ids=token_ids,
             steer_dirs=steer_dirs, alpha=alpha,
             return_residual=return_residual,
-            residual_layer=residual_layer,
+            residual_layer=residual_layers if residual_layers else residual_layer,
         )
-        return ForwardResult(
+        fwd = ForwardResult(
             logits=result["logits"],
             probs=result["probs"],
             top_id=result["top_id"],
@@ -48,6 +49,9 @@ class MLXBackend:
             n_tokens=result["n_tokens"],
             residual=result.get("residual"),
         )
+        if "residuals" in result:
+            fwd.residuals = result["residuals"]
+        return fwd
 
     def generate(self, prompt, *, steer_dirs=None, alpha=0.0, max_tokens=30) -> str:
         """Generate text. Uses mlx_lm fast path when no steering needed."""
