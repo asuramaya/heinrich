@@ -168,6 +168,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_depth.add_argument("--shrt", nargs="+", required=True, help=".shrt.npz files (run with --layers all)")
     p_depth.add_argument("--frt", nargs="*", default=None, help="Matching .frt.npz files for script breakdown")
 
+    p_lscript = sub.add_parser("profile-layer-scripts", help="Script rankings at every layer (needs --layers all)")
+    p_lscript.add_argument("--shrt", required=True, help=".shrt.npz file (run with --layers all)")
+    p_lscript.add_argument("--frt", required=True, help=".frt.npz file")
+
     # Item 69: shared DB path
     parser.add_argument("--db-path", default=None,
                         help="Path to SQLite database (default: ./data/heinrich.db)")
@@ -235,6 +239,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_profile_mismatch(args)
     elif args.command == "profile-depth":
         _cmd_profile_depth(args)
+    elif args.command == "profile-layer-scripts":
+        _cmd_layer_scripts(args)
     else:
         parser.print_help()
 
@@ -501,7 +507,12 @@ def _cmd_frt(args: argparse.Namespace) -> None:
     print(f"  hash: {meta['tokenizer']['vocab_hash']}")
     print(f"  bytes/token: {meta['byte_stats']['mean']:.1f} +/- {meta['byte_stats']['std']:.1f}")
     print(f"  scripts: {meta['scripts']}")
-    print(f"  Saved to {output}")
+    print(f"  backend: {meta['tokenizer'].get('backend', '?')}, roundtrip failures: {meta['tokenizer'].get('roundtrip_failures', '?')}")
+    if meta.get("warnings"):
+        print(f"\n  WARNINGS:")
+        for w in meta["warnings"]:
+            print(f"    ! {w}")
+    print(f"\n  Saved to {output}")
 
 
 def _cmd_shrt(args: argparse.Namespace) -> None:
@@ -594,6 +605,30 @@ def _cmd_profile_cross(args: argparse.Namespace) -> None:
         print(f"\n  {'script':<12} {'n':>4} {'mean_A':>7} {'mean_B':>7} {'ratio':>6}")
         for s, st in result['scripts'].items():
             print(f"  {s:<12} {st['n']:>4} {st['mean_a']:>7.1f} {st['mean_b']:>7.1f} {st['ratio']:>6.2f}x")
+
+
+def _cmd_layer_scripts(args: argparse.Namespace) -> None:
+    from .profile.compare import layer_scripts
+    result = layer_scripts(args.shrt, args.frt)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Layer-Script Trajectories: {result['model']} ({result['n_layers']}L) ===\n")
+
+    # Show trajectory summary: how each script's relative displacement changes
+    print(f"{'script':<12} {'early':>6} {'mid':>6} {'late':>6} {'range':>6}  trajectory")
+    for sc in sorted(result['script_trajectories'],
+                     key=lambda x: -result['script_trajectories'][x]['range']):
+        t = result['script_trajectories'][sc]
+        # Simple trajectory description
+        if t['late'] > t['early'] + 0.1:
+            arrow = "rises"
+        elif t['late'] < t['early'] - 0.1:
+            arrow = "falls"
+        else:
+            arrow = "flat"
+        print(f"{sc:<12} {t['early']:>6.3f} {t['mid']:>6.3f} {t['late']:>6.3f} {t['range']:>6.3f}  {arrow}")
 
 
 def _cmd_profile_mismatch(args: argparse.Namespace) -> None:

@@ -508,6 +508,83 @@ def depth_compare(shrt_paths: list[str], frt_paths: list[str] | None = None,
     return {"checkpoints": checkpoints, "profiles": profiles}
 
 
+def layer_scripts(shrt_path: str, frt_path: str) -> dict:
+    """Per-script displacement at every layer. Shows how script rankings
+    change through the model's depth. Requires --layers all .shrt file."""
+    from .shrt import load_shrt
+    from .frt import load_frt
+
+    s = load_shrt(shrt_path)
+    m = s['metadata']
+    if 'layer_stats' not in m:
+        return {"error": "No layer data — run with --layers all"}
+
+    frt = load_frt(frt_path)
+    fl = {int(frt['token_ids'][i]): str(frt['scripts'][i])
+          for i in range(len(frt['token_ids']))}
+
+    layers = m['layers']
+    token_ids = s['token_ids']
+    scripts = [fl.get(int(tid), 'unknown') for tid in token_ids]
+
+    # For each layer, compute mean delta per script
+    layer_script_data = {}
+    for layer in layers:
+        key = f"deltas_L{layer}"
+        if key not in s:
+            continue
+        deltas = s[key].astype(np.float32)
+        grand_mean = float(deltas.mean())
+
+        by_script = defaultdict(list)
+        for i, sc in enumerate(scripts):
+            if sc not in ('special', 'unknown'):
+                by_script[sc].append(float(deltas[i]))
+
+        layer_data = {}
+        for sc, vals in by_script.items():
+            if len(vals) >= 5:
+                layer_data[sc] = {
+                    "n": len(vals),
+                    "mean": round(float(np.mean(vals)), 2),
+                    "relative": round(float(np.mean(vals)) / max(grand_mean, 1e-8), 3),
+                }
+        layer_script_data[layer] = layer_data
+
+    # Find rank changes: which scripts move most across layers?
+    all_scripts = set()
+    for ld in layer_script_data.values():
+        all_scripts.update(ld.keys())
+
+    script_trajectories = {}
+    for sc in sorted(all_scripts):
+        relatives = []
+        for layer in layers:
+            ld = layer_script_data.get(layer, {})
+            if sc in ld:
+                relatives.append((layer, ld[sc]['relative']))
+        if len(relatives) >= 3:
+            rels = [r for _, r in relatives]
+            script_trajectories[sc] = {
+                "n_layers": len(relatives),
+                "min_rel": round(min(rels), 3),
+                "max_rel": round(max(rels), 3),
+                "range": round(max(rels) - min(rels), 3),
+                "early": round(rels[0], 3) if rels else 0,
+                "mid": round(rels[len(rels)//2], 3) if rels else 0,
+                "late": round(rels[-1], 3) if rels else 0,
+                "trajectory": relatives,
+            }
+
+    return {
+        "model": m['model']['name'],
+        "n_layers": len(layers),
+        "layers": layers,
+        "layer_script_data": layer_script_data,
+        "script_trajectories": script_trajectories,
+    }
+
+
 def inspect_profile(path: str) -> dict:
     """Summarize any profile file (.frt, .shrt, .sht)."""
     p = Path(path)

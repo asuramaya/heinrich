@@ -73,6 +73,16 @@ def generate_frt(
         '|'.join(token_texts).encode('utf-8')
     ).hexdigest()[:16]
 
+    # Verify tokenizer round-trip integrity
+    # Encode→decode should be identity for at least basic tokens
+    roundtrip_failures = 0
+    for tid in [0, 1, 100, 1000, vocab_size // 2, vocab_size - 1]:
+        if tid < vocab_size:
+            text = tokenizer.decode([tid])
+            re_ids = tokenizer.encode(text)
+            if len(re_ids) != 1 or re_ids[0] != tid:
+                roundtrip_failures += 1
+
     # Extract the default system prompt from the chat template
     default_system_prompt = None
     if hasattr(tokenizer, 'apply_chat_template'):
@@ -89,16 +99,32 @@ def generate_frt(
         except Exception:
             pass
 
+    # Detect tokenizer backend
+    tokenizer_backend = "unknown"
+    if hasattr(tokenizer, 'is_fast'):
+        tokenizer_backend = "fast" if tokenizer.is_fast else "slow"
+
+    warnings = []
+    if roundtrip_failures > 0:
+        warnings.append(f"{roundtrip_failures} token IDs failed encode-decode round-trip. "
+                        "Tokenizer may behave differently than during training.")
+    if tokenizer_backend == "fast":
+        warnings.append("Using fast tokenizer (no PyTorch). Verify merge behavior "
+                        "matches the model's training tokenizer.")
+
     meta = {
-        "version": "0.1",
+        "version": "0.2",
         "type": "frt",
         "generated_at": time.time(),
         "elapsed_s": round(elapsed, 1),
+        "warnings": warnings,
         "tokenizer": {
             "vocab_size": vocab_size,
             "n_real": n_real,
             "n_special": n_special,
             "vocab_hash": vocab_hash,
+            "backend": tokenizer_backend,
+            "roundtrip_failures": roundtrip_failures,
         },
         "byte_stats": {
             "mean": round(float(bc.mean()), 2),
