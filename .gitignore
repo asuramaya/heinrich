@@ -40,3 +40,4 @@ data/runs/*
 ~/.heinrich/
 src/heinrich/profile/__pycache__/frt.cpython-312.pyc
 data/logs/
+__pycache__/
