@@ -101,10 +101,16 @@ def forward_pass(
                 h = h_before.astype(mx.float32) + delta * 0.5
                 h = h.astype(mx.float16)
             elif ablate_mode == "zero_attn":
-                # Skip attention contribution, keep MLP only
-                # h_post_attn = h (no attention added to residual)
-                h_post_attn = h
-                h = h_post_attn + ly.mlp(ly.post_attention_layernorm(h_post_attn))
+                # MLP only: run attention to get correct post-attn state,
+                # then discard the attention output but keep the MLP path intact.
+                # The MLP's layernorm must see (h + attn_out), not bare h.
+                h_normed = ly.input_layernorm(h)
+                attn_out = ly.self_attn(h_normed, mask=mask, cache=None)
+                if isinstance(attn_out, tuple):
+                    attn_out = attn_out[0]
+                h_post_attn = h + attn_out  # correct residual for layernorm
+                mlp_out = ly.mlp(ly.post_attention_layernorm(h_post_attn))
+                h = h + mlp_out  # add only MLP contribution to original h
             elif ablate_mode == "zero_mlp":
                 # Keep attention contribution, skip MLP
                 h_normed = ly.input_layernorm(h)

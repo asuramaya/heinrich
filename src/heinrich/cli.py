@@ -176,6 +176,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_health.add_argument("--frt", required=True, help=".frt.npz file")
     p_health.add_argument("--shrt", default=None, help=".shrt.npz file (optional, adds displacement context)")
 
+    p_validate = sub.add_parser("profile-validate-ablation", help="Validate attention/MLP decomposition: does attn + mlp = full?")
+    p_validate.add_argument("--model", required=True, help="Model ID")
+    p_validate.add_argument("--layer", type=int, default=12, help="Layer to test")
+
     p_embed = sub.add_parser("profile-embedding", help="Examine the embedding table — the link between .frt and .shrt")
     p_embed.add_argument("--model", required=True, help="Model ID")
     p_embed.add_argument("--frt", required=True, help=".frt.npz file")
@@ -257,6 +261,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_layer_scripts(args)
     elif args.command == "profile-tokenizer-health":
         _cmd_tokenizer_health(args)
+    elif args.command == "profile-validate-ablation":
+        _cmd_validate_ablation(args)
     elif args.command == "profile-embedding":
         _cmd_embedding(args)
     elif args.command == "profile-scatter":
@@ -650,6 +656,68 @@ def _cmd_scatter(args: argparse.Namespace) -> None:
             for t in c['top'][:3]:
                 tok_text = f"script={t.get('script', '?')}"
                 print(f"    id={t['id']:>6} delta={t['delta']:>6.1f} KL={t['kl']:>7.4f} {tok_text}")
+
+
+def _cmd_validate_ablation(args: argparse.Namespace) -> None:
+    """Validate that zero_attn + zero_mlp = full layer output."""
+    from .backend.protocol import load_backend
+    import numpy as np
+
+    backend = load_backend(args.model)
+    layer = args.layer
+
+    # Use the clean baseline template with a test token
+    from .profile.shrt import _extract_clean_baseline
+    baseline = _extract_clean_baseline(backend.tokenizer)
+
+    # Full forward
+    fwd_full = backend.forward(baseline, return_residual=True, residual_layer=layer)
+    h_full = fwd_full.residual
+
+    # Zero attention (MLP only)
+    from .cartography.runtime import forward_pass
+    result_zero_attn = forward_pass(
+        backend.model, backend.tokenizer, baseline,
+        ablate_layers={layer}, ablate_mode="zero_attn",
+        return_residual=True, residual_layer=layer)
+    h_zero_attn = result_zero_attn["residual"]
+
+    # Zero MLP (attention only)
+    result_zero_mlp = forward_pass(
+        backend.model, backend.tokenizer, baseline,
+        ablate_layers={layer}, ablate_mode="zero_mlp",
+        return_residual=True, residual_layer=layer)
+    h_zero_mlp = result_zero_mlp["residual"]
+
+    # No ablation at this layer — get pre-layer state
+    result_skip = forward_pass(
+        backend.model, backend.tokenizer, baseline,
+        ablate_layers={layer}, ablate_mode="zero",
+        return_residual=True, residual_layer=layer)
+    h_skip = result_skip["residual"]
+
+    # Decompose
+    attn_contrib = h_zero_mlp - h_skip   # what attention added
+    mlp_contrib = h_zero_attn - h_skip   # what MLP added
+    full_contrib = h_full - h_skip       # what the full layer added
+    reconstructed = attn_contrib + mlp_contrib
+
+    error = float(np.linalg.norm(full_contrib - reconstructed))
+    full_norm = float(np.linalg.norm(full_contrib))
+    rel_error = error / max(full_norm, 1e-8)
+
+    print(f"\n=== Ablation Validation: Layer {layer} ===")
+    print(f"  |full_contrib|:    {full_norm:.4f}")
+    print(f"  |attn_contrib|:    {float(np.linalg.norm(attn_contrib)):.4f}")
+    print(f"  |mlp_contrib|:     {float(np.linalg.norm(mlp_contrib)):.4f}")
+    print(f"  |reconstruction error|: {error:.6f}")
+    print(f"  relative error:    {rel_error:.6f}")
+    if rel_error < 0.01:
+        print(f"  PASS: decomposition is valid (error < 1%)")
+    elif rel_error < 0.05:
+        print(f"  WARN: decomposition has {rel_error*100:.1f}% error")
+    else:
+        print(f"  FAIL: decomposition error {rel_error*100:.1f}% — ablation modes are broken")
 
 
 def _cmd_embedding(args: argparse.Namespace) -> None:
