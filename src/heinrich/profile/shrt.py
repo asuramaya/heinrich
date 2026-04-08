@@ -215,53 +215,154 @@ def generate_shrt(
 
     tokens = []
     vectors = []  # full delta vectors at primary layer — never discard
+    kl_divs = []  # output KL divergence per token
+    output_entropies = []  # output entropy per token
+    byte_counts_arr = []  # tokenizer byte counts
+    scripts_arr = []  # script classification
     layer_deltas = {layer: [] for layer in measure_layers}  # delta per layer per token
     token_times = []  # wall time per token for throughput reporting
     checkpoint_interval = max(len(sample) // 10, 100)  # checkpoint every 10% or 100 tokens
     checkpoint_path = (output + ".checkpoint") if output else None
     n_processed = 0
 
+    # Baseline output distribution for KL computation
+    baseline_probs = np.array(baseline_fwd.probs) if hasattr(baseline_fwd, 'probs') else None
+
+    # === Fast path: KV cache for prefix reuse ===
+    # The prefix (template before token) is identical for every measurement.
+    # Compute it once, snapshot the KV cache, restore for each token.
+    use_cache = len(measure_layers) == 1 and not safety_dir
+    prefix_cache_snapshot = None
+    model_inner = getattr(backend.model, 'model', backend.model)
+
+    if use_cache:
+        try:
+            import mlx.core as mx
+            from mlx_lm.models.cache import make_prompt_cache
+            from mlx_lm.models.base import create_attention_mask
+            from ..cartography.runtime import _lm_head
+            from ..cartography.metrics import softmax as _softmax
+
+            cache = make_prompt_cache(model_inner)
+
+            # Process prefix tokens through all layers, filling cache
+            prefix_input = mx.array([prefix_ids])
+            h_prefix = model_inner.embed_tokens(prefix_input)
+            prefix_mask = create_attention_mask(h_prefix, cache[0])
+            for i, ly in enumerate(model_inner.layers):
+                h_prefix = ly(h_prefix, mask=prefix_mask, cache=cache[i])
+                if isinstance(h_prefix, tuple):
+                    h_prefix = h_prefix[0]
+            # Force computation before snapshot (MLX lazy eval synchronization)
+            _ = np.array(h_prefix[0, 0, 0])
+
+            # Snapshot: save each layer's KV cache state
+            prefix_cache_snapshot = []
+            for c in cache:
+                keys = mx.array(c.keys) if c.keys is not None else None
+                vals = mx.array(c.values) if c.values is not None else None
+                prefix_cache_snapshot.append((keys, vals, c.offset))
+        except Exception:
+            use_cache = False
+
     for tid, tok in sample:
         t_tok = time.time()
         try:
-            input_ids = prefix_ids + [tid] + suffix_ids
+            # Tokenizer metadata (no forward pass needed)
+            raw_bytes = tok.encode('utf-8', errors='replace')
+            token_bytes = len(raw_bytes)
+            token_script = _detect_script(tok)
 
-            # Measure at all layers in one forward pass
             token_layer_deltas = {}
             primary_vec = None
-            if len(measure_layers) == 1:
-                fwd = backend.forward(
-                    "", token_ids=input_ids,
-                    return_residual=True, residual_layer=measure_layers[0])
-                if fwd.residual is None:
+            token_kl = 0.0
+            token_entropy = 0.0
+            top_changed = False
+
+            if use_cache and prefix_cache_snapshot is not None:
+                # Fast path: restore prefix cache, process only token + suffix
+                for ci, c in enumerate(cache):
+                    keys, vals, offset = prefix_cache_snapshot[ci]
+                    if keys is not None:
+                        c.keys = keys
+                        c.values = vals
+                    c.offset = offset
+
+                remaining_ids = [tid] + suffix_ids
+                rem_input = mx.array([remaining_ids])
+                h = model_inner.embed_tokens(rem_input)
+                rem_mask = create_attention_mask(h, cache[0])
+
+                for i, ly in enumerate(model_inner.layers):
+                    h = ly(h, mask=rem_mask, cache=cache[i])
+                    if isinstance(h, tuple):
+                        h = h[0]
+                    if i == primary_layer:
+                        residual_h = np.array(h.astype(mx.float32)[0, -1, :])
+                        primary_vec = residual_h - baseline_residuals[primary_layer]
+
+                if primary_vec is None:
                     continue
-                layer = measure_layers[0]
-                delta_vec = fwd.residual - baseline_residuals[layer]
-                token_layer_deltas[layer] = float(np.linalg.norm(delta_vec))
-                primary_vec = delta_vec
+                token_layer_deltas[primary_layer] = float(np.linalg.norm(primary_vec))
+                primary_delta = token_layer_deltas[primary_layer]
+
+                h_normed = model_inner.norm(h)
+                logits = np.array(_lm_head(backend.model, h_normed).astype(mx.float32)[0, -1, :])
+                probs = _softmax(logits)
+                top_id = int(np.argmax(probs))
+                top_changed = backend.tokenizer.decode([top_id]) != baseline_top
+
+                if baseline_probs is not None:
+                    p_mask = probs > 1e-12
+                    token_kl = float(np.sum(probs[p_mask] * np.log(probs[p_mask] / np.maximum(baseline_probs[p_mask], 1e-12))))
+                    token_entropy = float(-np.sum(probs * np.log2(probs + 1e-12)))
             else:
-                fwd = backend.forward(
-                    "", token_ids=input_ids,
-                    return_residual=True, residual_layers=measure_layers)
-                residuals = getattr(fwd, 'residuals', {})
-                for layer in measure_layers:
-                    if layer not in residuals:
+                # Slow path: full forward pass (multi-layer or safety direction)
+                input_ids = prefix_ids + [tid] + suffix_ids
+
+                if len(measure_layers) == 1:
+                    fwd = backend.forward(
+                        "", token_ids=input_ids,
+                        return_residual=True, residual_layer=measure_layers[0])
+                    if fwd.residual is None:
                         continue
-                    delta_vec = residuals[layer] - baseline_residuals[layer]
+                    layer = measure_layers[0]
+                    delta_vec = fwd.residual - baseline_residuals[layer]
                     token_layer_deltas[layer] = float(np.linalg.norm(delta_vec))
-                    if layer == primary_layer:
-                        primary_vec = delta_vec
+                    primary_vec = delta_vec
+                else:
+                    fwd = backend.forward(
+                        "", token_ids=input_ids,
+                        return_residual=True, residual_layers=measure_layers)
+                    residuals = getattr(fwd, 'residuals', {})
+                    for layer in measure_layers:
+                        if layer not in residuals:
+                            continue
+                        delta_vec = residuals[layer] - baseline_residuals[layer]
+                        token_layer_deltas[layer] = float(np.linalg.norm(delta_vec))
+                        if layer == primary_layer:
+                            primary_vec = delta_vec
 
-            if len(token_layer_deltas) != len(measure_layers):
-                continue
+                if len(token_layer_deltas) != len(measure_layers):
+                    continue
 
-            primary_delta = token_layer_deltas.get(primary_layer,
-                            token_layer_deltas[measure_layers[0]])
+                primary_delta = token_layer_deltas.get(primary_layer,
+                                token_layer_deltas[measure_layers[0]])
+
+                if baseline_probs is not None and hasattr(fwd, 'probs'):
+                    p = np.array(fwd.probs)
+                    q = baseline_probs
+                    p_mask = p > 1e-12
+                    token_kl = float(np.sum(p[p_mask] * np.log(p[p_mask] / np.maximum(q[p_mask], 1e-12))))
+                    token_entropy = float(-np.sum(p * np.log2(p + 1e-12)))
+
+                top_changed = fwd.top_token != baseline_top
+
             entry = {
                 "id": tid,
                 "token": tok,
                 "delta": round(primary_delta, 2),
-                "top_changed": fwd.top_token != baseline_top,
+                "top_changed": top_changed,
             }
 
             # Per-layer deltas
@@ -278,6 +379,12 @@ def generate_shrt(
             tokens.append(entry)
             if primary_vec is not None:
                 vectors.append(primary_vec.astype(np.float16))
+            else:
+                vectors.append(np.zeros(cfg.hidden_size, dtype=np.float16))
+            kl_divs.append(token_kl)
+            output_entropies.append(token_entropy)
+            byte_counts_arr.append(token_bytes)
+            scripts_arr.append(token_script)
             for layer in measure_layers:
                 layer_deltas[layer].append(token_layer_deltas[layer])
             token_times.append(time.time() - t_tok)
@@ -288,7 +395,8 @@ def generate_shrt(
                 _write_checkpoint(checkpoint_path, tokens, vectors, layer_deltas,
                                   measure_layers, n_processed, len(sample))
         except Exception:
-            pass
+            if n_processed == 0 and use_cache:
+                use_cache = False  # fall back to slow path
 
     elapsed_index = time.time() - t0
 
@@ -387,7 +495,7 @@ def generate_shrt(
                             "treat results as provisional.")
 
     shrt = {
-        "version": "0.2",
+        "version": "0.3",
         "generated_at": time.time(),
         "elapsed_s": round(time.time() - t0),
         "warnings": warnings,
@@ -479,6 +587,10 @@ def generate_shrt(
             "token_ids": token_ids_arr,
             "token_texts": np.array([t["token"] for t in tokens]),
             "deltas": np.array([t["delta"] for t in tokens], dtype=np.float32),
+            "kl_divs": np.array(kl_divs, dtype=np.float32),
+            "output_entropies": np.array(output_entropies, dtype=np.float32),
+            "byte_counts": np.array(byte_counts_arr, dtype=np.int16),
+            "scripts": np.array(scripts_arr),
             "layer": np.array(measure_layers),
         }
 
@@ -522,6 +634,10 @@ def load_shrt(path: str) -> dict:
         "vectors": d["vectors"],
         "layer": d["layer"],
     }
+    # v0.3 arrays (backwards compatible)
+    for key in ["kl_divs", "output_entropies", "byte_counts", "scripts"]:
+        if key in d.files:
+            result[key] = d[key]
     for key in d.files:
         if key.startswith("deltas_L"):
             result[key] = d[key]

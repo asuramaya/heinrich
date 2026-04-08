@@ -1,0 +1,12 @@
+{
+  "mcpServers": {
+    "heinrich": {
+      "command": "python3",
+      "args": ["-m", "heinrich.mcp_transport"],
+      "cwd": "/Users/asuramaya/Code/heinrich",
+      "env": {
+        "PYTHONPATH": "/Users/asuramaya/Code/heinrich/src"
+      }
+    }
+  }
+}

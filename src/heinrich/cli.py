@@ -171,6 +171,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_lscript = sub.add_parser("profile-layer-scripts", help="Script rankings at every layer (needs --layers all)")
     p_lscript.add_argument("--shrt", required=True, help=".shrt.npz file (run with --layers all)")
     p_lscript.add_argument("--frt", required=True, help=".frt.npz file")
+    p_lscript.add_argument("--safety-shrt", default=None, help=".shrt.npz with discovered safety direction (for crossing overlap test)")
 
     p_health = sub.add_parser("profile-tokenizer-health", help="Where does the tokenizer break? Data first, no hypothesis.")
     p_health.add_argument("--frt", required=True, help=".frt.npz file")
@@ -196,6 +197,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_scatter.add_argument("--shrt", required=True, help=".shrt.npz file")
     p_scatter.add_argument("--sht", required=True, help=".sht.npz file")
     p_scatter.add_argument("--frt", default=None, help=".frt.npz file (optional, adds script breakdown)")
+
+    p_within = sub.add_parser("profile-within-script", help="Within-script dispersion: tests partial knowledge hypothesis at token level")
+    p_within.add_argument("--shrt", required=True, help=".shrt.npz file")
+    p_within.add_argument("--frt", required=True, help=".frt.npz file")
+
+    p_dirs = sub.add_parser("profile-directions", help="Directional analysis of displacement vectors: coherence, separation, safety projection")
+    p_dirs.add_argument("--shrt", required=True, help=".shrt.npz file (must contain vectors)")
+    p_dirs.add_argument("--frt", required=True, help=".frt.npz file")
+    p_dirs.add_argument("--safety-shrt", default=None, help=".shrt.npz with discovered safety direction")
+
+    p_codeanat = sub.add_parser("profile-code-anatomy", help="Decompose 'code' tokens: do structural, keywords, operators fall the same?")
+    p_codeanat.add_argument("--shrt", required=True, help=".shrt.npz file")
+    p_codeanat.add_argument("--frt", required=True, help=".frt.npz file")
+    p_codeanat.add_argument("--all-layers", default=None, help="All-layers .shrt.npz file for per-layer trajectories")
+
+    p_trd = sub.add_parser("trd-profile", help="Generate a .trd per-head thread map from .shrt vectors + o_proj weights")
+    p_trd.add_argument("--model", required=True, help="Model ID")
+    p_trd.add_argument("--shrt", required=True, help=".shrt.npz file with displacement vectors")
+    p_trd.add_argument("--frt", required=True, help=".frt.npz file")
+    p_trd.add_argument("--layers", default=None, help="Layers to decompose (comma-separated, default: 6 evenly spaced)")
+    p_trd.add_argument("--output", "-o", default=None, help="Output .trd.npz file path")
+
+    p_matrix = sub.add_parser("profile-matrix", help="Data coverage matrix: what measurements exist per model")
+    p_matrix.add_argument("--data-dir", default="data/runs", help="Directory containing .npz files")
 
     # Item 69: shared DB path
     parser.add_argument("--db-path", default=None,
@@ -276,6 +301,16 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_embedding(args)
     elif args.command == "profile-scatter":
         _cmd_scatter(args)
+    elif args.command == "profile-within-script":
+        _cmd_within_script(args)
+    elif args.command == "trd-profile":
+        _cmd_trd(args)
+    elif args.command == "profile-matrix":
+        _cmd_matrix(args)
+    elif args.command == "profile-directions":
+        _cmd_directions(args)
+    elif args.command == "profile-code-anatomy":
+        _cmd_code_anatomy(args)
     else:
         parser.print_help()
 
@@ -667,6 +702,212 @@ def _cmd_scatter(args: argparse.Namespace) -> None:
                 print(f"    id={t['id']:>6} delta={t['delta']:>6.1f} KL={t['kl']:>7.4f} {tok_text}")
 
 
+def _cmd_within_script(args: argparse.Namespace) -> None:
+    """Within-script dispersion and correlations."""
+    from .profile.compare import within_script_analysis
+    result = within_script_analysis(args.shrt, args.frt)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Within-Script Dispersion: {result['model']} (N={result['n_shared']}) ===")
+
+    print(f"\n  {'script':<12} {'n':>5} {'mean_d':>8} {'std_d':>8} {'cv':>7} {'r(bytes)':>9} {'r(id)':>7}")
+    print(f"  {'-'*60}")
+    for s, data in result['scripts'].items():
+        print(f"  {s:<12} {data['n']:>5} {data['mean_delta']:>8.2f} {data['std_delta']:>8.2f} "
+              f"{data['cv']:>7.4f} {data['r_bytes_delta']:>9.4f} {data['r_id_delta']:>7.4f}")
+
+    if result['r_script_mean_vs_cv'] is not None:
+        print(f"\n  r(script_mean, script_cv) = {result['r_script_mean_vs_cv']}")
+
+    print(f"\n  Byte-count bins:")
+    print(f"\n  {'bytes':>5} {'n':>6} {'mean_d':>8} {'std_d':>8} {'cv':>7}")
+    print(f"  {'-'*36}")
+    for b, data in result['byte_bins'].items():
+        flag = " *" if data.get('provisional') else ""
+        print(f"  {b:>5} {data['n']:>6} {data['mean_delta']:>8.2f} {data['std_delta']:>8.2f} {data['cv']:>7.4f}{flag}")
+    if any(d.get('provisional') for d in result['byte_bins'].values()):
+        print(f"  (* n < 20)")
+
+    print(f"\n  Within-script by byte count:")
+    for s, data in result['scripts'].items():
+        if not data.get('by_byte_count'):
+            continue
+        bins = data['by_byte_count']
+        if len(bins) < 2:
+            continue
+        print(f"\n  {s}:")
+        for b, bd in sorted(bins.items()):
+            print(f"    {b} bytes: n={bd['n']:>4} mean_delta={bd['mean_delta']:>7.2f} std={bd['std_delta']:>7.2f}")
+
+
+def _cmd_trd(args: argparse.Namespace) -> None:
+    """Generate .trd per-head thread map."""
+    from .backend.protocol import load_backend
+    from .profile.trd import generate_trd
+
+    backend = load_backend(args.model)
+
+    layers = None
+    if args.layers:
+        layers = [int(x) for x in args.layers.split(',')]
+
+    output = args.output or f"data/runs/{args.model.split('/')[-1]}.trd.npz"
+    result = generate_trd(
+        backend.model, args.shrt, args.frt,
+        layers=layers, output=output,
+    )
+
+    print(f"\n=== .trd: {result['model']['name']} ({result['n_tokens']} tokens x "
+          f"{len(result['layers'])} layers x {result['model']['n_heads']} heads) ===")
+
+    for layer_str, summary in result['layer_summaries'].items():
+        print(f"\n  L{layer_str}:")
+        top = summary['top_heads']
+        top_str = ', '.join('H{}={:.1f}'.format(h['head'], h['mean_contrib']) for h in top)
+        print(f"    top heads: {top_str}")
+
+        for s, sh in summary['script_heads'].items():
+            top_h = sh['top_heads']
+            h_str = ', '.join('H{}={:.3f}'.format(h['head'], h['fraction']) for h in top_h)
+            print(f"    {s:<12} n={sh['n']:>4} entropy={sh['head_entropy']:.2f}  {h_str}")
+
+
+def _cmd_matrix(args: argparse.Namespace) -> None:
+    """Data coverage matrix."""
+    from .profile.compare import data_matrix
+    result = data_matrix(args.data_dir)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Data Matrix: {result['data_dir']} ({result['n_models']} models) ===\n")
+    print(f"  {'model':<12} {'h':>5} {'L':>3} {'frt':>4} {'shrt':>5} {'N':>6} "
+          f"{'vecs':>5} {'dir':>4} {'allL':>5} {'N_L':>5} {'sht':>4} {'N_s':>5} {'dec':>4}")
+    print(f"  {'-'*75}")
+    for name in sorted(result['coverage']):
+        c = result['coverage'][name]
+        def yn(v): return 'Y' if v else '-'
+        dir_str = f"L{c['dir_layer']}" if c['direction'] else '-'
+        print(f"  {name:<12} {c['hidden']:>5} {c['layers']:>3} "
+              f"{yn(c['frt']):>4} {yn(c['shrt']):>5} {c['shrt_n']:>6} "
+              f"{yn(c['vectors']):>5} {dir_str:>4} {yn(c['all_layers']):>5} {c['alllayers_n']:>5} "
+              f"{yn(c['sht']):>4} {c['sht_n']:>5} {yn(c['decompose']):>4}")
+
+    print(f"\n  h=hidden  L=layers  N=tokens sampled  vecs=displacement vectors")
+    print(f"  dir=safety direction (layer)  allL=all-layer sweep  dec=attn/mlp decompose")
+
+
+def _cmd_directions(args: argparse.Namespace) -> None:
+    """Directional analysis of displacement vectors."""
+    from .profile.compare import displacement_directions
+    result = displacement_directions(args.shrt, args.frt,
+                                     safety_shrt_path=getattr(args, 'safety_shrt', None))
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Displacement Directions: {result['model']} "
+          f"(hidden={result['hidden_size']}, N={result['n_tokens']}) ===")
+
+    print(f"\n  Within-script coherence (do tokens from the same script displace in the same direction?):")
+    print(f"  {'script':<12} {'n':>5} {'coherence':>10} {'pairwise':>9} {'|mean_vec|':>10}")
+    print(f"  {'-'*50}")
+    for s in sorted(result['script_coherence'],
+                    key=lambda x: -result['script_coherence'][x]['coherence_to_mean']):
+        c = result['script_coherence'][s]
+        print(f"  {s:<12} {c['n']:>5} {c['coherence_to_mean']:>10.4f} "
+              f"{c['pairwise_cosine']:>9.4f} {c['mean_vec_norm']:>10.2f}")
+
+    excluded = result.get('scripts_excluded', {})
+    if excluded:
+        print(f"\n  excluded (n < 5): {', '.join(f'{s}={n}' for s, n in excluded.items())}")
+
+    print(f"\n  mean within-script coherence: {result['mean_within_coherence']}")
+    print(f"  mean between-script cosine:   {result['mean_between_cosine']}")
+
+    # Between-script separation matrix (top pairs)
+    sep = result['between_script_cosine']
+    if sep:
+        sorted_pairs = sorted(sep.items(), key=lambda x: -abs(x[1]))
+        print(f"\n  Between-script cosine (most aligned pairs):")
+        for pair, cos in sorted_pairs[:10]:
+            print(f"    {pair:<25} {cos:>7.4f}")
+        print(f"  ...")
+        print(f"  Between-script cosine (most orthogonal pairs):")
+        for pair, cos in sorted_pairs[-5:]:
+            print(f"    {pair:<25} {cos:>7.4f}")
+
+    pca = result.get('pca', {})
+    if 'pc1_variance_pct' in pca:
+        print(f"\n  PCA on displacement vectors ({pca['n_vectors']} vectors):")
+        print(f"    PC1: {pca['pc1_variance_pct']}%  PC2: {pca['pc2_variance_pct']}%  PC3: {pca['pc3_variance_pct']}%")
+        print(f"    top 10: {pca['top_10_pct']}")
+        for pct, n in pca['pcs_for_threshold'].items():
+            print(f"    {float(pct)*100:.0f}% variance: {n} PCs")
+
+        if pca.get('script_pc1_projections'):
+            print(f"\n  Per-script PC1 projection:")
+            print(f"  {'script':<12} {'n':>5} {'mean_pc1':>9} {'std_pc1':>8}")
+            print(f"  {'-'*36}")
+            for s in sorted(pca['script_pc1_projections'],
+                           key=lambda x: -pca['script_pc1_projections'][x]['mean_pc1']):
+                p = pca['script_pc1_projections'][s]
+                print(f"  {s:<12} {p['n']:>5} {p['mean_pc1']:>9.2f} {p['std_pc1']:>8.2f}")
+
+    if result.get('safety_layer') is not None:
+        print(f"\n  Safety direction: layer {result['safety_layer']}")
+        if result.get('safety_note'):
+            print(f"  {result['safety_note']}")
+
+
+def _cmd_code_anatomy(args: argparse.Namespace) -> None:
+    """Code token subcategory displacement and layer trajectories."""
+    from .profile.compare import code_anatomy
+    result = code_anatomy(args.shrt, args.frt,
+                          all_layers_shrt_path=getattr(args, 'all_layers', None))
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Code Anatomy: {result['model']} ({result['n_code_measured']} measured / {result['n_code_vocab']} in vocab) ===")
+    print(f"  Grand mean delta: {result['grand_mean_delta']}")
+
+    print(f"\n  Code subcategories:")
+    print(f"  {'category':<14} {'measured':>8} {'vocab':>6} {'cover%':>7} {'mean_d':>8} {'relative':>9} {'examples'}")
+    print(f"  {'-'*80}")
+    for cat, data in result['code_subcategories'].items():
+        examples = ' '.join(data['examples'][:4])
+        mean_d = f"{data['mean_delta']:>8.2f}" if data.get('mean_delta') is not None else f"{'---':>8}"
+        rel = f"{data['relative']:>9.3f}" if data.get('relative') is not None else f"{'---':>9}"
+        print(f"  {cat:<14} {data['n_measured']:>8} {data['n_vocab']:>6} {data['coverage_pct']:>6.1f}% {mean_d} {rel} {examples}")
+
+    print(f"\n  Other scripts:")
+    print(f"  {'script':<14} {'n':>5} {'mean_d':>8} {'relative':>9}")
+    print(f"  {'-'*40}")
+    for s, data in result['context_scripts'].items():
+        print(f"  {s:<14} {data['n']:>5} {data['mean_delta']:>8.2f} {data['relative']:>9.3f}")
+
+    if 'code_trajectories' in result:
+        print(f"\n  Layer trajectories (code):")
+        print(f"  {'category':<14} {'n':>5} {'early':>6} {'mid':>6} {'late':>6} {'range':>6} {'late<early'}")
+        print(f"  {'-'*60}")
+        for cat, data in result['code_trajectories'].items():
+            falls = "yes" if data['falls'] else "no"
+            print(f"  {cat:<14} {data['n_tokens']:>5} {data['early']:>6.3f} {data['mid']:>6.3f} "
+                  f"{data['late']:>6.3f} {data['range']:>6.3f} {falls}")
+
+        if 'script_trajectories' in result:
+            print(f"\n  Layer trajectories (other scripts):")
+            print(f"  {'script':<14} {'n':>5} {'early':>6} {'late':>6} {'range':>6} {'late<early'}")
+            print(f"  {'-'*50}")
+            for s, data in result['script_trajectories'].items():
+                falls = "yes" if data['falls'] else "no"
+                print(f"  {s:<14} {data['n_tokens']:>5} {data['early']:>6.3f} "
+                      f"{data['late']:>6.3f} {data['range']:>6.3f} {falls}")
+
+
 def _cmd_decompose(args: argparse.Namespace) -> None:
     """Decompose displacement into attention and MLP fractions per layer per script."""
     from .backend.protocol import load_backend
@@ -956,7 +1197,8 @@ def _cmd_tokenizer_health(args: argparse.Namespace) -> None:
 
 def _cmd_layer_scripts(args: argparse.Namespace) -> None:
     from .profile.compare import layer_scripts
-    result = layer_scripts(args.shrt, args.frt)
+    result = layer_scripts(args.shrt, args.frt,
+                           safety_shrt_path=getattr(args, 'safety_shrt', None))
     if "error" in result:
         print(f"Error: {result['error']}")
         return
@@ -982,6 +1224,38 @@ def _cmd_layer_scripts(args: argparse.Namespace) -> None:
         for c in result['crossings']:
             s1, s2 = c['scripts']
             print(f"    L{c['cross_layer']:>2}: {s1} crosses {s2} ({s1}:{c['s1_before']:.3f}→{c['s1_after']:.3f}, {s2}:{c['s2_before']:.3f}→{c['s2_after']:.3f})")
+
+    sig = result.get('crossing_significance', {})
+    if sig.get('n_crossings', 0) >= 2:
+        print(f"\n  Crossing significance:")
+        print(f"    {sig['n_crossings']} crossings across {sig['n_script_pairs']} script pairs, {sig['n_layers']} layers")
+        print(f"    crossing rate: {sig['crossing_rate']} (fraction of pairs that cross)")
+        for ws in [2, 3, 4]:
+            key = f"window_{ws}"
+            if key in sig:
+                w = sig[key]
+                print(f"    best {ws}-layer window: L{w['best_window'][0]}-L{w['best_window'][1]}, "
+                      f"{w['crossings_in_window']} crossings (expected {w['expected_if_uniform']} if uniform, "
+                      f"ratio {w['ratio']}x)")
+        if 'by_layer' in sig:
+            layers_with = [(l, n) for l, n in sig['by_layer'].items() if n > 0]
+            if layers_with:
+                print(f"    per-layer: {', '.join(f'L{l}={n}' for l, n in layers_with)}")
+
+        sl = sig.get('safety_layer', {})
+        if sl.get('layer') is not None:
+            print(f"\n  Safety layer overlap (discovered L{sl['layer']}, accuracy {sl['accuracy']}):")
+            print(f"    crossings at safety layer: {sl['crossings_at_layer']}")
+            print(f"    crossings in ±1 window {sl['window']}: {sl['crossings_in_window']} "
+                  f"(expected {sl['expected_if_uniform']} if uniform, ratio {sl['ratio']}x)")
+            if sl['scripts_crossing']:
+                for sc in sl['scripts_crossing']:
+                    s1, s2 = sc['scripts']
+                    print(f"      L{sc['layer']}: {s1} crosses {s2}")
+            else:
+                print(f"    no crossings at or near the safety layer")
+        elif sl.get('status') == 'not discovered':
+            print(f"\n  Safety layer: {sl['note']}")
 
 
 def _cmd_profile_mismatch(args: argparse.Namespace) -> None:
@@ -1051,15 +1325,26 @@ def _cmd_profile_survey(args: argparse.Namespace) -> None:
         return
 
     print(f"\n=== Profile Survey ({result['n_models']} models) ===\n")
-    print(f"{'model':<10} {'hidden':>6} {'sensitivity':>11} {'baseline_ent':>12} {'top':>8}")
-    for p in sorted(result['profiles'], key=lambda x: -x['sensitivity']):
-        print(f"{p['model']:<10} {p['hidden_size']:>6} {p['sensitivity']:>11.4f} {p['baseline_entropy']:>12.2f} {p['baseline_top']:>8}")
+    has_dim = any(p.get('dimensionality') for p in result['profiles'])
+    if has_dim:
+        print(f"{'model':<10} {'hidden':>6} {'sens':>7} {'bl_ent':>7} {'PC1%':>5} {'PCs@50%':>7} {'PCs@80%':>7}")
+        for p in sorted(result['profiles'], key=lambda x: -x['sensitivity']):
+            d = p.get('dimensionality', {})
+            pc1 = f"{d['pc1_pct']:>5.1f}" if d.get('pc1_pct') else f"{'---':>5}"
+            p50 = f"{d['pcs_50']:>7}" if d.get('pcs_50') else f"{'---':>7}"
+            p80 = f"{d['pcs_80']:>7}" if d.get('pcs_80') else f"{'---':>7}"
+            print(f"{p['model']:<10} {p['hidden_size']:>6} {p['sensitivity']:>7.4f} "
+                  f"{p['baseline_entropy']:>7.2f} {pc1} {p50} {p80}")
+    else:
+        print(f"{'model':<10} {'hidden':>6} {'sensitivity':>11} {'baseline_ent':>12} {'top':>8}")
+        for p in sorted(result['profiles'], key=lambda x: -x['sensitivity']):
+            print(f"{p['model']:<10} {p['hidden_size']:>6} {p['sensitivity']:>11.4f} {p['baseline_entropy']:>12.2f} {p['baseline_top']:>8}")
 
     if result['concordance']:
         print(f"\n{'script':<12} {'n':>3} {'relative':>8} {'std':>5} {'range':>12} {'status':>10}")
         for sc in sorted(result['concordance'], key=lambda x: -result['concordance'][x]['mean_relative']):
             c = result['concordance'][sc]
-            status = "UNIVERSAL" if c['consistent'] else "variable"
+            status = "std<0.15" if c['std_below_0.15'] else "std>=0.15"
             rng = f"{c['min']:.2f}-{c['max']:.2f}"
             print(f"{sc:<12} {c['n_models']:>3} {c['mean_relative']:>8.3f} {c['std_relative']:>5.3f} {rng:>12} {status:>10}")
 

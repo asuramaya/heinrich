@@ -229,6 +229,34 @@ def survey(shrt_paths: list[str], frt_paths: list[str] | None = None) -> dict:
                         "relative_per_byte": round(mean_dpb / max(grand_dpb, 1e-8), 3),
                     }
 
+        # Displacement dimensionality from vectors
+        vectors = s.get('vectors')
+        dim_fingerprint = {}
+        if vectors is not None and len(vectors) >= 20:
+            vecs = vectors.astype(np.float32)
+            # Filter to non-special tokens
+            if frt_paths and i < len(frt_paths):
+                keep = [j for j in range(len(s['token_ids']))
+                        if fl.get(int(s['token_ids'][j]), ('unknown',))[0]
+                        not in ('special', 'unknown')]
+            else:
+                keep = list(range(len(vecs)))
+            if len(keep) >= 20:
+                vecs_filtered = vecs[keep]
+                centered = vecs_filtered - vecs_filtered.mean(axis=0)
+                _, S_vals, _ = np.linalg.svd(centered, full_matrices=False)
+                variance = S_vals ** 2
+                total_var = float(variance.sum())
+                cumulative = np.cumsum(variance) / total_var
+
+                dim_fingerprint = {
+                    "pc1_pct": round(float(cumulative[0]) * 100, 1),
+                    "pc2_pct": round(float(variance[1] / total_var) * 100, 1) if len(variance) > 1 else 0,
+                    "pcs_50": int(np.searchsorted(cumulative, 0.5)) + 1,
+                    "pcs_80": int(np.searchsorted(cumulative, 0.8)) + 1,
+                    "pcs_90": int(np.searchsorted(cumulative, 0.9)) + 1,
+                }
+
         profiles.append({
             "path": path,
             "model": m['model']['name'],
@@ -239,6 +267,7 @@ def survey(shrt_paths: list[str], frt_paths: list[str] | None = None) -> dict:
             "baseline_top": m['baseline']['top_token'],
             "mean_delta": round(float(deltas.mean()), 1),
             "sensitivity": round(float(deltas.mean()) / h, 4),
+            "dimensionality": dim_fingerprint,
             "scripts": scripts_breakdown,
         })
 
@@ -263,7 +292,7 @@ def survey(shrt_paths: list[str], frt_paths: list[str] | None = None) -> dict:
                     "std_relative": round(float(np.std(relatives)), 3),
                     "min": round(float(np.min(relatives)), 3),
                     "max": round(float(np.max(relatives)), 3),
-                    "consistent": float(np.std(relatives)) < 0.15,
+                    "std_below_0.15": float(np.std(relatives)) < 0.15,
                 }
 
         # Kendall's W across models that have script data
@@ -508,9 +537,15 @@ def depth_compare(shrt_paths: list[str], frt_paths: list[str] | None = None,
     return {"checkpoints": checkpoints, "profiles": profiles}
 
 
-def layer_scripts(shrt_path: str, frt_path: str) -> dict:
+def layer_scripts(shrt_path: str, frt_path: str,
+                  safety_shrt_path: str | None = None) -> dict:
     """Per-script displacement at every layer. Shows how script rankings
-    change through the model's depth. Requires --layers all .shrt file."""
+    change through the model's depth. Requires --layers all .shrt file.
+
+    If safety_shrt_path is provided (a .shrt with discovered safety direction),
+    the crossing significance analysis tests overlap at that model's discovered
+    safety layer specifically, not at hardcoded ranges.
+    """
     from .shrt import load_shrt
     from .frt import load_frt
 
@@ -518,6 +553,19 @@ def layer_scripts(shrt_path: str, frt_path: str) -> dict:
     m = s['metadata']
     if 'layer_stats' not in m:
         return {"error": "No layer data — run with --layers all"}
+
+    # Try to get discovered safety layer from metadata or separate .shrt
+    safety_layer = None
+    safety_accuracy = None
+    if safety_shrt_path:
+        safety_shrt = load_shrt(safety_shrt_path)
+        sm = safety_shrt['metadata']
+        if sm.get('direction', {}).get('available'):
+            safety_layer = sm['direction']['layer']
+            safety_accuracy = sm['direction']['accuracy']
+    elif m.get('direction', {}).get('available'):
+        safety_layer = m['direction']['layer']
+        safety_accuracy = m['direction']['accuracy']
 
     frt = load_frt(frt_path)
     fl = {int(frt['token_ids'][i]): str(frt['scripts'][i])
@@ -608,22 +656,101 @@ def layer_scripts(shrt_path: str, frt_path: str) -> dict:
                         })
                         break
 
+    # Crossing density: how many crossings, where do they cluster
+    n_total_layers = len(layers)
+    n_scripts = len(scripts_with_traj)
+    n_pairs = n_scripts * (n_scripts - 1) // 2
+    n_crossings = len(crossings)
+
+    crossing_significance = {
+        "n_crossings": n_crossings,
+        "n_script_pairs": n_pairs,
+        "n_layers": n_total_layers,
+        "crossing_rate": round(n_crossings / max(n_pairs, 1), 3),
+    }
+
+    if n_crossings >= 2:
+        cross_layers = [c['cross_layer'] for c in crossings]
+        from collections import Counter
+        layer_counts = Counter(cross_layers)
+
+        # For each window of K layers, count how many crossings fall in it
+        # Test windows of size 2, 3, 4 (matching the L14-17 claim = 4-layer window)
+        for window_size in [2, 3, 4]:
+            best_window = None
+            best_count = 0
+            for start_idx in range(n_total_layers - window_size + 1):
+                window_layers = set(layers[start_idx:start_idx + window_size])
+                count = sum(1 for cl in cross_layers if cl in window_layers)
+                if count > best_count:
+                    best_count = count
+                    best_window = (layers[start_idx], layers[start_idx + window_size - 1])
+
+            # Expected crossings in a random K-layer window if crossings were uniform
+            expected = n_crossings * window_size / n_total_layers
+            crossing_significance[f"window_{window_size}"] = {
+                "best_window": best_window,
+                "crossings_in_window": best_count,
+                "expected_if_uniform": round(expected, 2),
+                "ratio": round(best_count / max(expected, 0.01), 2),
+            }
+
+        # Per-layer crossing density
+        crossing_significance["by_layer"] = {
+            str(layer): count for layer, count in sorted(layer_counts.items())
+        }
+
+        # Safety layer overlap test (model-specific, not hardcoded)
+        if safety_layer is not None:
+            # Count crossings at the safety layer and its immediate neighbors
+            safety_window = {safety_layer - 1, safety_layer, safety_layer + 1}
+            safety_crossings = sum(1 for cl in cross_layers if cl in safety_window)
+            expected_3 = n_crossings * 3 / n_total_layers
+            at_safety = layer_counts.get(safety_layer, 0)
+
+            # What scripts cross at or near the safety layer?
+            safety_crossing_scripts = [
+                c for c in crossings if c['cross_layer'] in safety_window
+            ]
+
+            crossing_significance["safety_layer"] = {
+                "layer": safety_layer,
+                "accuracy": safety_accuracy,
+                "crossings_at_layer": at_safety,
+                "crossings_in_window": safety_crossings,
+                "window": sorted(l for l in safety_window if l in set(layers)),
+                "expected_if_uniform": round(expected_3, 2),
+                "ratio": round(safety_crossings / max(expected_3, 0.01), 2),
+                "scripts_crossing": [
+                    {"scripts": c["scripts"], "layer": c["cross_layer"]}
+                    for c in safety_crossing_scripts
+                ],
+            }
+        else:
+            crossing_significance["safety_layer"] = {
+                "status": "not discovered",
+                "note": "Run discovery pipeline or provide --safety-shrt with discovered direction",
+            }
+
     return {
         "model": m['model']['name'],
         "n_layers": len(layers),
         "layers": layers,
+        "safety_layer": safety_layer,
+        "safety_accuracy": safety_accuracy,
         "layer_script_data": layer_script_data,
         "script_trajectories": script_trajectories,
         "crossings": crossings,
+        "crossing_significance": crossing_significance,
     }
 
 
 def tokenizer_health(frt_path: str, shrt_path: str | None = None) -> dict:
-    """Report where the tokenizer breaks. No hypothesis — just data.
+    """Tokenizer round-trip analysis.
 
     For every token: does decode→re-encode preserve the ID?
-    If not, what are the properties of the failures?
-    If a .shrt is provided, include displacement data for context.
+    Groups tokens into clean, collapsed (decode collision), and silent (empty decode).
+    If a .shrt is provided, includes displacement per group.
     """
     from .frt import load_frt, _detect_script
 
@@ -684,7 +811,7 @@ def tokenizer_health(frt_path: str, shrt_path: str | None = None) -> dict:
         else:
             clean.append(entry)
 
-    # Summary statistics — no hypothesis, just properties
+    # Summary statistics per group
     result = {
         "vocab_size": int(meta['tokenizer']['vocab_size']),
         "n_clean": len(clean),
@@ -731,10 +858,10 @@ def tokenizer_health(frt_path: str, shrt_path: str | None = None) -> dict:
 
 
 def embedding_profile(model_id: str, frt_path: str, shrt_path: str | None = None) -> dict:
-    """Examine the embedding table — the unexamined link between .frt and .shrt.
+    """Embedding table norms per script, with optional displacement correlation.
 
-    Reports: embedding norms per script, correlation with displacement,
-    norm distribution across the vocabulary. No hypothesis — data first.
+    Reports: embedding norms per script, norm distribution across the vocabulary.
+    If .shrt provided, computes r(embedding_norm, delta) overall and per script.
     """
     from ..backend.protocol import load_backend
     from .frt import load_frt
@@ -787,7 +914,7 @@ def embedding_profile(model_id: str, frt_path: str, shrt_path: str | None = None
         r = float(np.corrcoef(embed_norms_matched, shrt_deltas)[0, 1])
         result["r_norm_delta"] = round(r, 4)
 
-        # Per-script: does embedding norm predict delta within each script?
+        # Per-script r(embedding_norm, delta)
         script_correlations = {}
         for s in by_script:
             s_mask = [fl.get(int(tid)) == s for tid in shrt_ids]
@@ -802,13 +929,11 @@ def embedding_profile(model_id: str, frt_path: str, shrt_path: str | None = None
 
 
 def displacement_output_scatter(shrt_path: str, sht_path: str, frt_path: str | None = None) -> dict:
-    """Two measurements of the same tokens: residual displacement (.shrt)
-    and output KL divergence (.sht). Both are effects of the token entering.
-    Neither causes the other.
+    """Joint distribution of residual displacement (.shrt) and output KL
+    divergence (.sht) for shared tokens.
 
-    Reports the joint distribution: where do tokens fall when measured
-    both ways? Median split into quadrants for summary statistics only —
-    the quadrants are a convenience, not a finding.
+    Reports r(delta, KL), median-split quadrants, and per-quadrant
+    script breakdown if .frt provided.
     """
     from .shrt import load_shrt
     from .sht import load_sht
@@ -896,6 +1021,708 @@ def displacement_output_scatter(shrt_path: str, sht_path: str, frt_path: str | N
         result[cat_name] = cat_result
 
     return result
+
+
+def within_script_analysis(shrt_path: str, frt_path: str) -> dict:
+    """Within-script dispersion and correlations.
+
+    For each script: cv(delta), r(byte_count, delta), r(token_id, delta),
+    and displacement broken down by byte count.
+
+    Also: global displacement by byte-count bin, and r(script_mean, script_cv).
+    """
+    from .shrt import load_shrt
+    from .frt import load_frt
+
+    shrt = load_shrt(shrt_path)
+    frt = load_frt(frt_path)
+
+    # Build lookups
+    frt_data = {}
+    for i in range(len(frt['token_ids'])):
+        tid = int(frt['token_ids'][i])
+        frt_data[tid] = {
+            'script': str(frt['scripts'][i]),
+            'bytes': int(frt['byte_counts'][i]),
+            'chars': int(frt['char_counts'][i]),
+        }
+
+    shrt_data = {}
+    for i in range(len(shrt['token_ids'])):
+        tid = int(shrt['token_ids'][i])
+        shrt_data[tid] = float(shrt['deltas'][i])
+
+    shared = set(frt_data) & set(shrt_data)
+    if len(shared) < 50:
+        return {"error": f"Only {len(shared)} shared tokens"}
+
+    # Group by script
+    by_script = defaultdict(lambda: {'deltas': [], 'bytes': [], 'chars': [], 'ids': []})
+    for tid in shared:
+        f = frt_data[tid]
+        s = f['script']
+        if s in ('special', 'unknown'):
+            continue
+        by_script[s]['deltas'].append(shrt_data[tid])
+        by_script[s]['bytes'].append(f['bytes'])
+        by_script[s]['chars'].append(f['chars'])
+        by_script[s]['ids'].append(tid)
+
+    c = lambda x, y: round(float(np.corrcoef(x, y)[0, 1]), 4) if np.std(x) > 0 and np.std(y) > 0 else 0.0
+
+    scripts = {}
+    for s in sorted(by_script, key=lambda x: -np.mean(by_script[x]['deltas'])):
+        data = by_script[s]
+        deltas = np.array(data['deltas'], dtype=np.float32)
+        bytes_ = np.array(data['bytes'], dtype=np.float32)
+        ids = np.array(data['ids'], dtype=np.float32)
+        n = len(deltas)
+        if n < 10:
+            continue
+
+        mean_d = float(deltas.mean())
+        std_d = float(deltas.std())
+        cv = std_d / mean_d if mean_d > 1e-8 else 0.0
+
+        # Within-script correlations
+        r_bytes = c(bytes_, deltas)
+        r_id = c(ids, deltas)
+
+        # Quartile analysis: split by byte count within this script
+        byte_vals = sorted(set(bytes_))
+        quartiles = {}
+        if len(byte_vals) >= 2:
+            for bv in byte_vals[:8]:  # cap at 8 distinct byte values
+                mask = bytes_ == bv
+                if mask.sum() >= 5:
+                    q_deltas = deltas[mask]
+                    quartiles[int(bv)] = {
+                        "n": int(mask.sum()),
+                        "mean_delta": round(float(q_deltas.mean()), 2),
+                        "std_delta": round(float(q_deltas.std()), 2),
+                    }
+
+        scripts[s] = {
+            "n": n,
+            "mean_delta": round(mean_d, 2),
+            "std_delta": round(std_d, 2),
+            "cv": round(cv, 4),
+            "r_bytes_delta": r_bytes,
+            "r_id_delta": r_id,
+            "by_byte_count": quartiles,
+        }
+
+    # Global byte-count bins
+    all_deltas = []
+    all_bytes = []
+    for tid in shared:
+        f = frt_data[tid]
+        if f['script'] in ('special', 'unknown'):
+            continue
+        all_deltas.append(shrt_data[tid])
+        all_bytes.append(f['bytes'])
+
+    all_deltas = np.array(all_deltas, dtype=np.float32)
+    all_bytes = np.array(all_bytes, dtype=np.float32)
+
+    byte_bins = {}
+    for b in range(1, 9):
+        if b < 8:
+            mask = all_bytes == b
+        else:
+            mask = all_bytes >= 8
+            b = "8+"
+        count = int(mask.sum())
+        if count >= 3:
+            bd = all_deltas[mask]
+            byte_bins[str(b)] = {
+                "n": count,
+                "mean_delta": round(float(bd.mean()), 2),
+                "std_delta": round(float(bd.std()), 2),
+                "cv": round(float(bd.std() / bd.mean()) if bd.mean() > 1e-8 else 0, 4),
+                "provisional": count < 20,
+            }
+
+    # r(mean, cv) across scripts
+    script_means = []
+    script_cvs = []
+    for s, data in scripts.items():
+        if data['n'] >= 20:
+            script_means.append(data['mean_delta'])
+            script_cvs.append(data['cv'])
+
+    r_mean_cv = c(np.array(script_means), np.array(script_cvs)) if len(script_means) >= 3 else None
+
+    return {
+        "model": shrt['metadata']['model']['name'],
+        "n_shared": len(shared),
+        "scripts": scripts,
+        "byte_bins": byte_bins,
+        "r_script_mean_vs_cv": r_mean_cv,
+    }
+
+
+def displacement_directions(shrt_path: str, frt_path: str,
+                            safety_shrt_path: str | None = None) -> dict:
+    """Directional analysis of displacement vectors.
+
+    (1) Within-script cosine coherence: mean pairwise cosine similarity
+        of displacement vectors within each script.
+    (2) Between-script separation: cosine similarity of mean displacement
+        vectors across scripts.
+    (3) Safety direction projection: per-token dot product with the
+        discovered safety direction, grouped by script.
+    """
+    from .shrt import load_shrt
+    from .frt import load_frt
+
+    shrt = load_shrt(shrt_path)
+    frt = load_frt(frt_path)
+
+    vectors = shrt['vectors'].astype(np.float32)
+    token_ids = shrt['token_ids']
+    hidden_size = vectors.shape[1] if len(vectors.shape) > 1 else 0
+
+    if hidden_size == 0:
+        return {"error": "No vectors in .shrt file"}
+
+    # Build script lookup
+    fl = {int(frt['token_ids'][i]): str(frt['scripts'][i])
+          for i in range(len(frt['token_ids']))}
+
+    # Group vector indices by script
+    script_indices = defaultdict(list)
+    for i in range(len(token_ids)):
+        tid = int(token_ids[i])
+        s = fl.get(tid, 'unknown')
+        if s in ('special', 'unknown'):
+            continue
+        script_indices[s].append(i)
+
+    # (1) Within-script cosine coherence
+    # For each script: mean pairwise cosine of displacement vectors
+    # For large groups, sample pairs to keep computation bounded
+    script_coherence = {}
+    script_mean_vecs = {}
+    scripts_excluded = {}
+    for s, indices in sorted(script_indices.items()):
+        if len(indices) < 5:
+            scripts_excluded[s] = len(indices)
+            continue
+        vecs = vectors[indices]
+        # Normalize
+        norms = np.linalg.norm(vecs, axis=1, keepdims=True)
+        norms = np.maximum(norms, 1e-8)
+        vecs_normed = vecs / norms
+
+        # Mean direction
+        mean_vec = vecs.mean(axis=0)
+        mean_norm = float(np.linalg.norm(mean_vec))
+        script_mean_vecs[s] = mean_vec
+
+        # Mean cosine with mean direction (efficient proxy for pairwise)
+        if mean_norm > 1e-8:
+            mean_dir = mean_vec / mean_norm
+            cosines_to_mean = vecs_normed @ mean_dir
+            coherence = float(cosines_to_mean.mean())
+        else:
+            coherence = 0.0
+
+        # Also compute pairwise for small scripts (exact)
+        n = len(indices)
+        if n <= 200:
+            gram = vecs_normed @ vecs_normed.T
+            # Upper triangle, excluding diagonal
+            triu_mask = np.triu(np.ones((n, n), dtype=bool), k=1)
+            pairwise_mean = float(gram[triu_mask].mean())
+        else:
+            # Sample 5000 random pairs
+            rng = np.random.RandomState(42)
+            i1 = rng.randint(0, n, size=5000)
+            i2 = rng.randint(0, n, size=5000)
+            mask = i1 != i2
+            i1, i2 = i1[mask], i2[mask]
+            cosines = (vecs_normed[i1] * vecs_normed[i2]).sum(axis=1)
+            pairwise_mean = float(cosines.mean())
+
+        script_coherence[s] = {
+            "n": n,
+            "coherence_to_mean": round(coherence, 4),
+            "pairwise_cosine": round(pairwise_mean, 4),
+            "mean_vec_norm": round(mean_norm, 2),
+        }
+
+    # (2) Between-script separation
+    # Cosine similarity of mean displacement vectors
+    script_names = sorted(s for s in script_mean_vecs if s in script_coherence)
+    separation = {}
+    for i, s1 in enumerate(script_names):
+        for s2 in script_names[i+1:]:
+            v1 = script_mean_vecs[s1]
+            v2 = script_mean_vecs[s2]
+            n1 = np.linalg.norm(v1)
+            n2 = np.linalg.norm(v2)
+            if n1 > 1e-8 and n2 > 1e-8:
+                cos = float(np.dot(v1, v2) / (n1 * n2))
+            else:
+                cos = 0.0
+            separation[f"{s1}:{s2}"] = round(cos, 4)
+
+    # Summary: mean within-script coherence vs mean between-script cosine
+    mean_within = float(np.mean([v['pairwise_cosine']
+                                 for v in script_coherence.values()])) if script_coherence else 0
+    mean_between = float(np.mean(list(separation.values()))) if separation else 0
+
+    # PCA on displacement vectors: how many dimensions does the shart occupy?
+    # If PC1 explains >80%, displacement is effectively one-dimensional.
+    all_vecs = vectors[np.array([i for indices in script_indices.values()
+                                 for i in indices])]
+    if len(all_vecs) >= 20:
+        centered = all_vecs - all_vecs.mean(axis=0)
+        # Use SVD on centered data (more stable than covariance eigendecomp)
+        # Compute top-k singular values only — full SVD on [15000, 896] is fine
+        U, S, Vt = np.linalg.svd(centered, full_matrices=False)
+        variance = S ** 2
+        total_var = float(variance.sum())
+        cumulative = np.cumsum(variance) / total_var
+
+        # How many PCs for 50%, 80%, 90%, 95%?
+        pca_thresholds = {}
+        for pct in [0.5, 0.8, 0.9, 0.95]:
+            n_pcs = int(np.searchsorted(cumulative, pct)) + 1
+            pca_thresholds[str(pct)] = n_pcs
+
+        pca = {
+            "n_vectors": len(all_vecs),
+            "pc1_variance_pct": round(float(cumulative[0]) * 100, 2),
+            "pc2_variance_pct": round(float(variance[1] / total_var) * 100, 2) if len(variance) > 1 else 0,
+            "pc3_variance_pct": round(float(variance[2] / total_var) * 100, 2) if len(variance) > 2 else 0,
+            "pcs_for_threshold": pca_thresholds,
+            "top_10_pct": [round(float(v / total_var) * 100, 2) for v in variance[:10]],
+        }
+
+        # Per-script: project onto PC1, report mean projection
+        pc1 = Vt[0]
+        script_pc1 = {}
+        for s, indices in sorted(script_indices.items()):
+            if len(indices) < 5:
+                continue
+            vecs_s = vectors[indices]
+            projections = vecs_s @ pc1
+            script_pc1[s] = {
+                "n": len(indices),
+                "mean_pc1": round(float(projections.mean()), 2),
+                "std_pc1": round(float(projections.std()), 2),
+            }
+        pca["script_pc1_projections"] = script_pc1
+    else:
+        pca = {"error": "too few vectors for PCA"}
+
+    result = {
+        "model": shrt['metadata']['model']['name'],
+        "hidden_size": hidden_size,
+        "n_tokens": len(token_ids),
+        "script_coherence": script_coherence,
+        "scripts_excluded": scripts_excluded,
+        "between_script_cosine": separation,
+        "mean_within_coherence": round(mean_within, 4),
+        "mean_between_cosine": round(mean_between, 4),
+        "pca": pca,
+    }
+
+    # (3) Safety direction projection
+    safety_dir = None
+    safety_layer = None
+    if safety_shrt_path:
+        safety_shrt = load_shrt(safety_shrt_path)
+        sm = safety_shrt['metadata']
+        if sm.get('direction', {}).get('available'):
+            safety_layer = sm['direction']['layer']
+            # The safety direction should be in the vectors or stored separately
+            # Check if the .shrt has safety_shift pre-computed in metadata
+    elif (shrt['metadata'].get('direction') or {}).get('available'):
+        safety_layer = shrt['metadata']['direction']['layer']
+
+    # Try to load safety direction from the DB blob naming convention
+    # or compute from the vectors if safety shifts are in the token data
+    # For now: if individual tokens have safety_shift in the metadata,
+    # extract from there; otherwise check for direction in vectors
+    top_sharts = shrt['metadata'].get('top_sharts', [])
+    has_safety_shift = any('safety_shift' in t for t in top_sharts)
+
+    if has_safety_shift and safety_layer is not None:
+        # Safety shifts are pre-computed per token in metadata
+        # But they're only in top/bottom sharts, not all tokens
+        # We need to recompute from vectors + direction
+        pass
+
+    # If we have vectors and the shrt was run with a safety direction,
+    # the direction vector itself isn't stored in the .shrt —
+    # it's in the DB. We can compute mean direction of known-harmful tokens
+    # as a proxy, but that's interpretation. Instead, report what we have.
+    if safety_layer is not None:
+        result["safety_layer"] = safety_layer
+        result["safety_note"] = ("Safety direction vector is in the DB, "
+                                 "not in the .shrt file. Run with --db to project.")
+
+    return result
+
+
+def code_anatomy(shrt_path: str, frt_path: str,
+                 all_layers_shrt_path: str | None = None) -> dict:
+    """Subcategorize 'code' tokens and report displacement per subcategory.
+
+    Categories: structural ({} () [] ;), operators (= + - * /),
+    keywords (def class return if), whitespace, identifiers, mixed.
+
+    Reports vocab counts, measured counts, displacement, and per-layer
+    trajectories if all-layers shrt is provided.
+    """
+    from .shrt import load_shrt
+    from .frt import load_frt
+
+    shrt = load_shrt(shrt_path)
+    frt = load_frt(frt_path)
+
+    # Build lookups
+    frt_texts = {}
+    frt_scripts = {}
+    for i in range(len(frt['token_ids'])):
+        tid = int(frt['token_ids'][i])
+        frt_texts[tid] = str(frt['token_texts'][i])
+        frt_scripts[tid] = str(frt['scripts'][i])
+
+    shrt_deltas = {}
+    for i in range(len(shrt['token_ids'])):
+        tid = int(shrt['token_ids'][i])
+        shrt_deltas[tid] = float(shrt['deltas'][i])
+
+    shared = set(frt_texts) & set(shrt_deltas)
+
+    # Classify code tokens
+    _STRUCTURAL = set('{}()[];')
+    _OPERATORS = {'=', '==', '!=', '<', '>', '<=', '>=', '+', '-', '*', '/',
+                  '%', '&', '|', '^', '~', '<<', '>>', '**', '//', '+=',
+                  '-=', '*=', '/=', '&&', '||', '!', '?', ':', '::', '=>',
+                  '->', '...', '.', ','}
+    _KEYWORDS = {'def', 'function', 'class', 'return', 'if', 'else', 'elif',
+                 'for', 'while', 'do', 'break', 'continue', 'import', 'from',
+                 'export', 'const', 'let', 'var', 'int', 'float', 'str',
+                 'bool', 'void', 'null', 'None', 'true', 'false', 'True',
+                 'False', 'try', 'except', 'catch', 'finally', 'throw',
+                 'raise', 'async', 'await', 'yield', 'lambda', 'with', 'as',
+                 'in', 'not', 'and', 'or', 'is', 'new', 'delete', 'typeof',
+                 'instanceof', 'switch', 'case', 'default', 'enum', 'struct',
+                 'trait', 'impl', 'pub', 'fn', 'mut', 'self', 'super',
+                 'static', 'final', 'abstract', 'interface', 'extends',
+                 'implements', 'override', 'virtual', 'template', 'namespace',
+                 'using', 'package', 'private', 'protected', 'public',
+                 'require', 'include', 'pragma', 'ifdef', 'endif', 'define',
+                 'print', 'println', 'printf', 'fmt', 'log', 'console'}
+
+    def _classify_code(text: str) -> str:
+        stripped = text.strip()
+        if not stripped:
+            if any(c in text for c in '\n\t\r'):
+                return 'whitespace'
+            if text and all(c == ' ' for c in text):
+                return 'whitespace'
+            return 'whitespace'
+        if stripped in _STRUCTURAL:
+            return 'structural'
+        if stripped in _OPERATORS:
+            return 'operators'
+        if stripped in _KEYWORDS:
+            return 'keywords'
+        # Check if it looks like a keyword prefix/suffix (partial BPE)
+        if stripped.isalpha() and len(stripped) <= 3:
+            return 'mixed'
+        if stripped.startswith('_') or stripped.startswith('__'):
+            return 'identifiers'
+        if stripped.isalpha():
+            return 'identifiers'
+        return 'mixed'
+
+    # First pass: classify ALL code tokens in the full .frt vocabulary
+    # This shows whether small n is sampling bias or structural absence in BPE
+    vocab_cats = defaultdict(lambda: {'count': 0, 'examples': []})
+    for tid, text in frt_texts.items():
+        if frt_scripts.get(tid) == 'code':
+            cat = _classify_code(text)
+            vocab_cats[cat]['count'] += 1
+            if len(vocab_cats[cat]['examples']) < 5:
+                vocab_cats[cat]['examples'].append(repr(text)[:30])
+
+    # Second pass: collect measured code tokens by subcategory
+    by_cat = defaultdict(lambda: {'deltas': [], 'ids': [], 'texts': []})
+    # Also collect non-code scripts for context
+    by_script = defaultdict(lambda: {'deltas': []})
+
+    for tid in shared:
+        script = frt_scripts.get(tid, 'unknown')
+        delta = shrt_deltas[tid]
+
+        if script == 'code':
+            text = frt_texts[tid]
+            cat = _classify_code(text)
+            by_cat[cat]['deltas'].append(delta)
+            by_cat[cat]['ids'].append(tid)
+            by_cat[cat]['texts'].append(text)
+        elif script not in ('special', 'unknown'):
+            by_script[script]['deltas'].append(delta)
+
+    # Summary per code subcategory
+    grand_mean = float(np.mean([shrt_deltas[t] for t in shared
+                                if frt_scripts.get(t) not in ('special', 'unknown')]))
+
+    categories = {}
+    for cat in sorted(by_cat, key=lambda x: -np.mean(by_cat[x]['deltas']) if by_cat[x]['deltas'] else 0):
+        data = by_cat[cat]
+        if len(data['deltas']) < 3:
+            continue
+        deltas = np.array(data['deltas'], dtype=np.float32)
+        vc = vocab_cats.get(cat, {'count': 0})
+        categories[cat] = {
+            "n_measured": len(deltas),
+            "n_vocab": vc['count'],
+            "coverage_pct": round(len(deltas) / max(vc['count'], 1) * 100, 1),
+            "mean_delta": round(float(deltas.mean()), 2),
+            "std_delta": round(float(deltas.std()), 2),
+            "relative": round(float(deltas.mean()) / max(grand_mean, 1e-8), 3),
+            "examples": [repr(t)[:20] for t in data['texts'][:8]],
+        }
+
+    # Report categories that exist in vocab but have no measured tokens
+    for cat, vc in vocab_cats.items():
+        if cat not in categories and vc['count'] > 0:
+            categories[cat] = {
+                "n_measured": 0,
+                "n_vocab": vc['count'],
+                "coverage_pct": 0.0,
+                "mean_delta": None,
+                "examples": vc['examples'],
+                "note": "exists in vocab but not in .shrt sample",
+            }
+
+    # Context: non-code scripts for comparison
+    context_scripts = {}
+    for s in sorted(by_script, key=lambda x: -np.mean(by_script[x]['deltas'])):
+        deltas = np.array(by_script[s]['deltas'], dtype=np.float32)
+        if len(deltas) >= 10:
+            context_scripts[s] = {
+                "n": len(deltas),
+                "mean_delta": round(float(deltas.mean()), 2),
+                "relative": round(float(deltas.mean()) / max(grand_mean, 1e-8), 3),
+            }
+
+    total_code_vocab = sum(vc['count'] for vc in vocab_cats.values())
+    result = {
+        "model": shrt['metadata']['model']['name'],
+        "n_code_measured": sum(len(by_cat[c]['deltas']) for c in by_cat),
+        "n_code_vocab": total_code_vocab,
+        "grand_mean_delta": round(grand_mean, 2),
+        "code_subcategories": categories,
+        "context_scripts": context_scripts,
+    }
+
+    # Per-layer trajectory if all-layers shrt available
+    if all_layers_shrt_path:
+        als = load_shrt(all_layers_shrt_path)
+        meta = als['metadata']
+        if 'layers' not in meta:
+            result["layer_error"] = "No layer data in all-layers file"
+            return result
+
+        layers = meta['layers']
+        al_ids = als['token_ids']
+
+        # Build token_id -> index map for the all-layers file
+        al_idx = {int(al_ids[i]): i for i in range(len(al_ids))}
+
+        # For each code subcategory, compute trajectory
+        cat_trajectories = {}
+        for cat, data in by_cat.items():
+            if len(data['deltas']) < 5:
+                continue
+            # Find token indices present in the all-layers file
+            cat_indices = [al_idx[tid] for tid in data['ids'] if tid in al_idx]
+            if len(cat_indices) < 5:
+                continue
+
+            trajectory = []
+            for layer in layers:
+                key = f"deltas_L{layer}"
+                if key not in als:
+                    continue
+                layer_deltas = als[key].astype(np.float32)
+                # Grand mean at this layer for normalization
+                layer_grand = float(layer_deltas.mean())
+                # This subcategory's mean at this layer
+                cat_deltas_at_layer = layer_deltas[cat_indices]
+                cat_mean = float(cat_deltas_at_layer.mean())
+                relative = cat_mean / max(layer_grand, 1e-8)
+                trajectory.append((layer, round(relative, 3)))
+
+            if trajectory:
+                rels = [r for _, r in trajectory]
+                cat_trajectories[cat] = {
+                    "n_tokens": len(cat_indices),
+                    "early": round(rels[0], 3) if rels else 0,
+                    "mid": round(rels[len(rels) // 2], 3) if rels else 0,
+                    "late": round(rels[-1], 3) if rels else 0,
+                    "range": round(max(rels) - min(rels), 3) if rels else 0,
+                    "falls": rels[-1] < rels[0] - 0.05,
+                    "trajectory": trajectory,
+                }
+
+        # Also compute non-code script trajectories for context
+        script_trajectories = {}
+        for s, sdata in by_script.items():
+            if len(sdata['deltas']) < 10:
+                continue
+            s_ids = [tid for tid in shared if frt_scripts.get(tid) == s]
+            s_indices = [al_idx[tid] for tid in s_ids if tid in al_idx]
+            if len(s_indices) < 10:
+                continue
+
+            trajectory = []
+            for layer in layers:
+                key = f"deltas_L{layer}"
+                if key not in als:
+                    continue
+                layer_deltas = als[key].astype(np.float32)
+                layer_grand = float(layer_deltas.mean())
+                s_mean = float(layer_deltas[s_indices].mean())
+                relative = s_mean / max(layer_grand, 1e-8)
+                trajectory.append((layer, round(relative, 3)))
+
+            if trajectory:
+                rels = [r for _, r in trajectory]
+                script_trajectories[s] = {
+                    "n_tokens": len(s_indices),
+                    "early": round(rels[0], 3),
+                    "late": round(rels[-1], 3),
+                    "range": round(max(rels) - min(rels), 3),
+                    "falls": rels[-1] < rels[0] - 0.05,
+                }
+
+        result["code_trajectories"] = cat_trajectories
+        result["script_trajectories"] = script_trajectories
+
+    return result
+
+
+def data_matrix(data_dir: str) -> dict:
+    """Scan data directory for .frt, .shrt, .sht files.
+    Report per-model coverage: what measurements exist, what's missing.
+    """
+    from .shrt import load_shrt
+    from .frt import load_frt
+
+    p = Path(data_dir)
+    if not p.is_dir():
+        return {"error": f"Not a directory: {data_dir}"}
+
+    shrt_files = sorted(p.glob("*.shrt.npz"))
+    sht_files = sorted(p.glob("*.sht.npz"))
+    frt_files = sorted(p.glob("*.frt.npz"))
+    decompose_files = sorted(p.glob("*decompose*.npz"))
+
+    models = {}
+
+    for f in shrt_files:
+        try:
+            s = load_shrt(str(f))
+            m = s['metadata']
+            arch = m['model']['name']
+            h = m['model']['hidden_size']
+            nl = m['model']['n_layers']
+            name = f"{arch}_{h}_{nl}L"
+            if name not in models:
+                models[name] = {
+                    "hidden_size": h,
+                    "n_layers": nl,
+                    "shrt_files": [], "frt_file": None,
+                    "sht_files": [], "decompose_file": None,
+                }
+            models[name]["shrt_files"].append({
+                "file": f.name,
+                "n_sampled": m['index']['n_sampled'],
+                "has_vectors": 'vectors' in s,
+                "has_direction": bool((m.get('direction') or {}).get('available')),
+                "direction_layer": (m.get('direction') or {}).get('layer'),
+                "has_layer_data": 'layer_stats' in m,
+                "n_layers_measured": len(m.get('layers', [])) if m.get('layers') else 1,
+                "baseline_entropy": m['baseline']['entropy'],
+            })
+        except Exception:
+            pass
+
+    for f in frt_files:
+        try:
+            frt = load_frt(str(f))
+            m = frt['metadata']
+            vocab_hash = m['tokenizer']['vocab_hash']
+            # Match frt to models by vocab_hash if stored in shrt,
+            # or by filename heuristic: strip punctuation and check overlap
+            fname_clean = f.name.lower().replace('-', '').replace('_', '').replace('.', '')
+            for model_name in models:
+                # Extract arch name (before first _digit)
+                arch_part = model_name.split('_')[0].lower().replace('-', '')
+                if arch_part in fname_clean:
+                    # For same-arch models (qwen2_896 vs qwen2_2048),
+                    # only match if no frt assigned yet or vocab matches
+                    if models[model_name]["frt_file"] is None:
+                        models[model_name]["frt_file"] = f.name
+            # Note: same frt may match multiple models (same tokenizer family)
+        except Exception:
+            pass
+
+    for f in sht_files:
+        try:
+            from .sht import load_sht
+            s = load_sht(str(f))
+            m = s['metadata']
+            arch = m['model']['name']
+            h_s = m['model']['hidden_size']
+            nl_s = m['model']['n_layers']
+            name = f"{arch}_{h_s}_{nl_s}L"
+            if name in models:
+                models[name]["sht_files"].append({
+                    "file": f.name, "n_sampled": m['index']['n_sampled'],
+                })
+        except Exception:
+            pass
+
+    for f in decompose_files:
+        for model_name in models:
+            if model_name.lower().replace('-', '')[:5] in f.name.lower():
+                models[model_name]["decompose_file"] = f.name
+                break
+
+    coverage = {}
+    for name, data in models.items():
+        shrt_list = data.get("shrt_files", [])
+        single = [s for s in shrt_list if not s.get("has_layer_data")]
+        alllayer = [s for s in shrt_list if s.get("has_layer_data")]
+
+        coverage[name] = {
+            "hidden": data.get("hidden_size"),
+            "layers": data.get("n_layers"),
+            "frt": bool(data.get("frt_file")),
+            "shrt": bool(single),
+            "shrt_n": max((s["n_sampled"] for s in single), default=0),
+            "vectors": any(s.get("has_vectors") for s in single),
+            "direction": any(s.get("has_direction") for s in shrt_list),
+            "dir_layer": next((s["direction_layer"] for s in shrt_list if s.get("has_direction")), None),
+            "all_layers": bool(alllayer),
+            "alllayers_n": max((s["n_sampled"] for s in alllayer), default=0),
+            "sht": bool(data.get("sht_files")),
+            "sht_n": max((s["n_sampled"] for s in data.get("sht_files", [])), default=0),
+            "decompose": bool(data.get("decompose_file")),
+        }
+
+    return {"data_dir": data_dir, "n_models": len(coverage), "coverage": coverage}
 
 
 def inspect_profile(path: str) -> dict:
