@@ -193,8 +193,17 @@ def template_overhead(template_mri: str, raw_mri: str) -> dict:
         if t_key not in t or r_key not in r:
             continue
 
-        t_state = t[t_key][t_indices].astype(np.float32)
-        r_state = r[r_key][r_indices].astype(np.float32)
+        t_delta = t[t_key][t_indices].astype(np.float32)
+        r_delta = r[r_key][r_indices].astype(np.float32)
+
+        # Reconstruct absolute states using stored baselines
+        t_bl_key = f"baseline_exit_L{i}"
+        r_bl_key = f"baseline_exit_L{i}"
+        t_bl = t.get(t_bl_key, np.zeros(t_delta.shape[1], dtype=np.float32)).astype(np.float32)
+        r_bl = r.get(r_bl_key, np.zeros(r_delta.shape[1], dtype=np.float32)).astype(np.float32)
+
+        t_state = t_delta + t_bl  # absolute template state
+        r_state = r_delta + r_bl  # absolute raw state (r_bl is zero for raw mode)
 
         t_norms = np.linalg.norm(t_state, axis=1)
         r_norms = np.linalg.norm(r_state, axis=1)
