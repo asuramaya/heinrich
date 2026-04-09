@@ -237,6 +237,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_capture.add_argument("--n-index", type=int, default=None, help="Number of tokens (default: full vocabulary)")
     p_capture.add_argument("--output", "-o", required=True, help="Output .shrt.npz file")
     p_capture.add_argument("--naked", action="store_true", help="Naked mode: single token, BOS baseline, no template")
+    p_capture.add_argument("--raw", action="store_true", help="Raw mode: token alone, no BOS, no baseline. Absolute state.")
 
     p_basin = sub.add_parser("profile-basin", help="Map basin structure along a direction: where are attractors, where is void?")
     p_basin.add_argument("--model", required=True, help="Model ID")
@@ -836,7 +837,8 @@ def _cmd_total_capture(args: argparse.Namespace) -> None:
 
     backend = load_backend(args.model)
     result = total_capture(backend, n_index=args.n_index, output=args.output,
-                           naked=getattr(args, 'naked', False))
+                           naked=getattr(args, 'naked', False),
+                           raw=getattr(args, 'raw', False))
     print(f"\n  {result['capture']['n_tokens']} tokens x {result['capture']['n_layers']} layers x 2 positions")
     print(f"  {result['elapsed_s']}s elapsed")
 

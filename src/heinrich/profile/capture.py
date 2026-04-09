@@ -55,8 +55,26 @@ def total_capture(
 
     # Mode: naked (single token, BOS baseline) or template (chat frame, silence baseline)
     naked = kwargs.get('naked', False)
+    raw = kwargs.get('raw', False)  # truly raw: token alone, no BOS, no baseline subtraction
 
-    if naked:
+    if raw:
+        # Raw mode: token alone, no BOS, no baseline, no subtraction
+        # The state IS the measurement. No reference frame.
+        token_pos = 0
+        prefix_ids = []
+        suffix_ids = []
+
+        # No baseline — store absolute states
+        baseline_entry = {i: np.zeros(hidden, dtype=np.float32) for i in range(n_layers)}
+        baseline_exit = baseline_entry  # same
+
+        silence_logits = np.zeros(1)
+        silence_probs = np.zeros(1)
+        silence_top_id = 0
+        silence_entropy = 0.0
+        silence_top_token = "(none — raw mode)"
+        T_bl = 0
+    elif naked:
         # Naked mode: baseline is BOS token alone
         bos_id = backend.tokenizer.bos_token_id or 0
         baseline_input = mx.array([[bos_id]])
@@ -196,8 +214,8 @@ def total_capture(
             "n_layers": n_layers,
             "positions": ["entry (pos 0)"] if naked else ["entry (token_pos)", "exit (last)"],
             "token_pos": token_pos,
-            "mode": "naked (single token, BOS baseline)" if naked else "template (chat frame, silence baseline)",
-            "baseline": "BOS token alone" if naked else "silence (empty user message)",
+            "mode": "raw (token alone, zero baseline)" if raw else "naked (single token, BOS baseline)" if naked else "template (chat frame, silence baseline)",
+            "baseline": "zero (no subtraction)" if raw else "BOS token alone" if naked else "silence (empty user message)",
             "storage": "float16 deltas from baseline",
         },
         "silence": {
