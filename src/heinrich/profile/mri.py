@@ -268,9 +268,9 @@ def capture_mri(
             norm_dict = {}
             for layer_idx in range(n_layers):
                 ly = model_inner.layers[layer_idx]
-                norm_dict[f"input_L{layer_idx}"] = np.array(ly.input_layernorm.weight).astype(np.float16)
-                norm_dict[f"post_attn_L{layer_idx}"] = np.array(ly.post_attention_layernorm.weight).astype(np.float16)
-            norm_dict["final"] = np.array(model_inner.norm.weight).astype(np.float16)
+                norm_dict[f"input_L{layer_idx}"] = np.array(ly.input_layernorm.weight).astype(np.float32)
+                norm_dict[f"post_attn_L{layer_idx}"] = np.array(ly.post_attention_layernorm.weight).astype(np.float32)
+            norm_dict["final"] = np.array(model_inner.norm.weight).astype(np.float32)
             np.savez_compressed(norms_path, **norm_dict)
 
         # Embedding matrix (probed to dequantize, float32 to avoid overflow)
@@ -304,7 +304,7 @@ def capture_mri(
                 h_normed = model_inner.norm(h_probe)
                 out = np.array(_lm_head(backend.model, h_normed).astype(mx.float32)[0])
                 cols.append(out.T)
-            W = np.concatenate(cols, axis=1).astype(np.float16)
+            W = np.concatenate(cols, axis=1).astype(np.float32)
             np.save(lmhead_path, W)
             total_size += lmhead_path.stat().st_size
 
@@ -332,12 +332,12 @@ def capture_mri(
                     b = 64
                     for s in range(0, in_dim, b):
                         e = min(s + b, in_dim)
-                        probe = np.zeros((1, e - s, in_dim), dtype=np.float16)
+                        probe = np.zeros((1, e - s, in_dim), dtype=np.float32)
                         for j in range(e - s):
                             probe[0, j, s + j] = 1.0
-                        out = np.array(module(mx.array(probe)).astype(mx.float32)[0])
+                        out = np.array(module(mx.array(probe).astype(mx.float16)).astype(mx.float32)[0])
                         cols.append(out.T)
-                    return np.concatenate(cols, axis=1).astype(np.float16)
+                    return np.concatenate(cols, axis=1).astype(np.float32)
 
                 # Attention projections
                 np.save(layer_dir / "q_proj.npy", extract_weight(attn.q_proj, hidden))
