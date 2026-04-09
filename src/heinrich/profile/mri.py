@@ -1,19 +1,26 @@
 """The .mri file — complete model residual image.
 
-One file per model per capture mode. Contains everything:
+One directory per model per capture mode. Contains everything:
   - Tokenizer atoms (raw bytes, merge ranks, decoded text)
   - Residual state at entry and exit positions, every layer
   - Baselines (the reference frame)
+  - All model weights (embedding, norms, projections, lm_head)
   - Discovered directions (safety, comply, any others)
   - Capture provenance (mode, seed, template, model config)
 
-No separate .frt, .shrt, .sht, .trd needed. One file. One load.
+No separate .frt, .shrt, .sht, .trd needed. One directory. One load_mri().
 Analysis tools compute everything from stored data.
 
 Modes:
   template — chat frame, silence baseline
   naked   — single token, BOS baseline
   raw     — single token, no BOS, absolute state (zero baseline)
+
+Architecture note: the MRI capture uses the Backend protocol for weight
+extraction, baseline computation, and tokenizer access. The per-token
+state capture uses an optimized batched loop with deferred GPU sync.
+Future: migrate the hot loop to backend.capture_all_positions() when
+that method supports token_ids, batching, and deferred sync.
 """
 from __future__ import annotations
 
@@ -496,130 +503,80 @@ def backfill_mri(backend, mri_path: str) -> dict:
 
 
 def load_mri(path: str) -> dict:
-    """Load measurement data. Handles both .mri directories and legacy .shrt.npz files.
+    """Load a .mri directory. The only measurement format.
 
-    This is the ONLY load function analysis tools should call.
-    Returns a consistent dict regardless of source format.
+    Legacy .shrt.npz and .frt.npz files must be recaptured as .mri.
+    This function only accepts .mri directories.
     """
     p = Path(path)
 
-    # === .mri directory format ===
-    if p.is_dir():
-        with open(p / "metadata.json") as f:
-            meta = json.load(f)
+    if not p.is_dir():
+        raise ValueError(
+            f"Not an MRI directory: {path}. "
+            f"Legacy .shrt.npz/.frt.npz files must be recaptured using 'heinrich mri'."
+        )
 
-        tokens = np.load(p / "tokens.npz", allow_pickle=False)
-        result = {
-            "metadata": meta,
-            "path": str(p),
-            "token_ids": tokens["token_ids"],
-            "token_texts": tokens["token_texts"],
-        }
-        for key in tokens.files:
-            result[key] = tokens[key]
+    if not (p / "metadata.json").exists():
+        raise ValueError(f"Missing metadata.json in {path}. Not a valid MRI directory.")
 
-        baselines_path = p / "baselines.npz"
-        if baselines_path.exists():
-            baselines = np.load(baselines_path, allow_pickle=False)
-            for key in baselines.files:
-                result[f"baseline_{key}"] = baselines[key]
+    with open(p / "metadata.json") as f:
+        meta = json.load(f)
 
-        n_layers = meta["model"]["n_layers"]
-        for i in range(n_layers):
-            entry_path = p / f"L{i:02d}_entry.npy"
-            exit_path = p / f"L{i:02d}_exit.npy"
-            if entry_path.exists():
-                result[f"entry_L{i}"] = np.load(entry_path, mmap_mode='r')
-            if exit_path.exists():
-                result[f"exit_L{i}"] = np.load(exit_path, mmap_mode='r')
-
-        dir_dir = p / "directions"
-        if dir_dir.exists():
-            for npy in dir_dir.glob("*.npy"):
-                result[f"direction_{npy.stem}"] = np.load(npy)
-
-        lmhead_path = p / "lmhead.npy"
-        if lmhead_path.exists():
-            result["lmhead"] = np.load(lmhead_path, mmap_mode='r')
-        lmhead_raw_path = p / "lmhead_raw.npy"
-        if lmhead_raw_path.exists():
-            result["lmhead_raw"] = np.load(lmhead_raw_path, mmap_mode='r')
-
-        # Embedding matrix
-        embed_path = p / "embedding.npy"
-        if embed_path.exists():
-            result["embedding"] = np.load(embed_path, mmap_mode='r')
-
-        # Norm weights
-        norms_path = p / "norms.npz"
-        if norms_path.exists():
-            norms = np.load(norms_path, allow_pickle=False)
-            for key in norms.files:
-                result[f"norm_{key}"] = norms[key]
-
-        # Legacy o_proj directory
-        oproj_dir = p / "oproj"
-        if oproj_dir.exists():
-            for npy in sorted(oproj_dir.glob("L*.npy")):
-                layer_idx = int(npy.stem[1:])
-                result[f"oproj_L{layer_idx}"] = np.load(npy, mmap_mode='r')
-
-        # Full projection weights per layer
-        weights_dir = p / "weights"
-        if weights_dir.exists():
-            for layer_d in sorted(weights_dir.glob("L*")):
-                if not layer_d.is_dir():
-                    continue
-                layer_idx = int(layer_d.name[1:])
-                for npy in layer_d.glob("*.npy"):
-                    key = f"{npy.stem}_L{layer_idx}"
-                    result[key] = np.load(npy, mmap_mode='r')
-
-        return result
-
-    # === Legacy .shrt.npz format (v0.2, v0.3, v0.4) ===
-    d = np.load(str(p), allow_pickle=False)
-    meta = json.loads(str(d['metadata'][0]))
-
-    import warnings
-    baseline_ent = meta.get('baseline', {}).get('entropy', 0)
-    if baseline_ent > 5.0:
-        warnings.warn(f"{path}: baseline entropy {baseline_ent:.2f} is high.", stacklevel=2)
-
+    tokens = np.load(p / "tokens.npz", allow_pickle=False)
     result = {
         "metadata": meta,
         "path": str(p),
-        "token_ids": d["token_ids"],
-        "token_texts": d["token_texts"],
+        "token_ids": tokens["token_ids"],
+        "token_texts": tokens["token_texts"],
     }
+    for key in tokens.files:
+        result[key] = tokens[key]
 
-    # Map legacy arrays to consistent keys
-    if "vectors" in d.files:
-        # v0.2/v0.3: vectors at primary layer = exit vectors
-        layer = meta.get('baseline', {}).get('layer', meta.get('layers', [0])[0] if meta.get('layers') else 0)
-        result[f"exit_L{layer}"] = d["vectors"]
-        result["vectors"] = d["vectors"]  # backwards compat
+    baselines_path = p / "baselines.npz"
+    if baselines_path.exists():
+        baselines = np.load(baselines_path, allow_pickle=False)
+        for key in baselines.files:
+            result[f"baseline_{key}"] = baselines[key]
 
-    if "deltas" in d.files:
-        result["deltas"] = d["deltas"]
+    n_layers = meta["model"]["n_layers"]
+    for i in range(n_layers):
+        entry_path = p / f"L{i:02d}_entry.npy"
+        exit_path = p / f"L{i:02d}_exit.npy"
+        if entry_path.exists():
+            result[f"entry_L{i}"] = np.load(entry_path, mmap_mode='r')
+        if exit_path.exists():
+            result[f"exit_L{i}"] = np.load(exit_path, mmap_mode='r')
 
-    # v0.3 arrays
-    for key in ["kl_divs", "output_entropies", "byte_counts", "scripts",
-                 "raw_bytes", "raw_bytes_lengths", "merge_ranks"]:
-        if key in d.files:
-            result[key] = d[key]
+    dir_dir = p / "directions"
+    if dir_dir.exists():
+        for npy in dir_dir.glob("*.npy"):
+            result[f"direction_{npy.stem}"] = np.load(npy)
 
-    # Per-layer deltas (v0.2 all-layers)
-    for key in d.files:
-        if key.startswith("deltas_L"):
-            result[key] = d[key]
-        elif key.startswith("entry_L") or key.startswith("exit_L"):
-            result[key] = d[key]
-        elif key.startswith("baseline_"):
-            result[key] = d[key]
+    lmhead_path = p / "lmhead.npy"
+    if lmhead_path.exists():
+        result["lmhead"] = np.load(lmhead_path, mmap_mode='r')
+    lmhead_raw_path = p / "lmhead_raw.npy"
+    if lmhead_raw_path.exists():
+        result["lmhead_raw"] = np.load(lmhead_raw_path, mmap_mode='r')
 
-    # Layer array
-    if "layer" in d.files:
-        result["layer"] = d["layer"]
+    embed_path = p / "embedding.npy"
+    if embed_path.exists():
+        result["embedding"] = np.load(embed_path, mmap_mode='r')
+
+    norms_path = p / "norms.npz"
+    if norms_path.exists():
+        norms = np.load(norms_path, allow_pickle=False)
+        for key in norms.files:
+            result[f"norm_{key}"] = norms[key]
+
+    weights_dir = p / "weights"
+    if weights_dir.exists():
+        for layer_d in sorted(weights_dir.glob("L*")):
+            if not layer_d.is_dir():
+                continue
+            layer_idx = int(layer_d.name[1:])
+            for npy in layer_d.glob("*.npy"):
+                key = f"{npy.stem}_L{layer_idx}"
+                result[key] = np.load(npy, mmap_mode='r')
 
     return result

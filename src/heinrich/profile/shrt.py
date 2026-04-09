@@ -609,13 +609,22 @@ def generate_shrt(
 
 
 def load_shrt(path: str) -> dict:
-    """Load measurement data. Delegates to load_mri which handles all formats.
-
-    Accepts .shrt.npz files (v0.2, v0.3, v0.4) and .mri directories.
-    Returns consistent dict with all available arrays.
-    """
-    from .mri import load_mri
-    return load_mri(path)
+    """Legacy loader for .shrt.npz files. Use load_mri() for .mri directories."""
+    import warnings as _warnings
+    d = np.load(path, allow_pickle=False)  # npz only, no arbitrary objects
+    meta = json.loads(str(d['metadata'][0]))
+    baseline_ent = meta.get('baseline', {}).get('entropy', 0)
+    if baseline_ent > 5.0:
+        _warnings.warn(f"{path}: baseline entropy {baseline_ent:.2f} is high.", stacklevel=2)
+    result = {"metadata": meta, "token_ids": d["token_ids"], "token_texts": d["token_texts"],
+              "deltas": d["deltas"], "vectors": d["vectors"], "layer": d["layer"]}
+    for key in ["kl_divs", "output_entropies", "byte_counts", "scripts"]:
+        if key in d.files:
+            result[key] = d[key]
+    for key in d.files:
+        if key.startswith("deltas_L"):
+            result[key] = d[key]
+    return result
 
 
 if __name__ == "__main__":
