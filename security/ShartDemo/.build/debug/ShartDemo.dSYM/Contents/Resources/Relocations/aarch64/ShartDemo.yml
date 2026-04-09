@@ -1,5 +1,0 @@
----
-triple:          'arm64-apple-darwin'
-binary-path:     '/private/tmp/ShartDemo/.build/arm64-apple-macosx/debug/ShartDemo'
-relocations:     []
-...
