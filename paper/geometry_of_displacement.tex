@@ -349,6 +349,30 @@ The tool is at \url{https://github.com/asuramaya/heinrich}. The data files (34 .
 
 \vspace{2em}
 
+\section{The First-Token Mechanism}
+
+Safety does not work through large-scale distributional shifts. It works through targeted logit pushes on the first output token.
+
+\begin{center}
+\begin{tabular}{lrrl}
+\toprule
+\textbf{Model} & \textbf{First-token gap} & \textbf{Prob.\ ratio} & \textbf{Refusal rate} \\
+\midrule
+Phi-3 & 17.79 logits & 53,000,000$\times$ & 54\% \\
+Qwen 0.5B & 5.65 logits & 284$\times$ & 12.5\% \\
+Mistral & 0.00 logits & 1$\times$ & 6.5\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The safety direction pushes ``Sorry'' up (+4.98 in Qwen, +15.06 in Phi-3) and ``Sure'' down ($-6.11$ in Qwen, $-8.27$ in Phi-3). Once the first token is ``Sorry,'' the autoregressive loop completes the refusal: ``Sorry, but I cannot\ldots''
+
+Mistral's safety direction produces a \textit{uniform} $-1.57$ logit shift across the entire vocabulary. No token is preferred over any other. Softmax is shift-invariant: subtracting 1.57 from every logit changes nothing. Mistral's safety direction is structurally incapable of producing differential first-token selection. The 84\% detection accuracy exists in the residual and is erased by the output projection.
+
+\texttt{Deber\'ia} inverts Qwen's gap: $-7.83 \times 4.98 = -39$ logits on ``Sorry,'' $-7.83 \times (-6.11) = +48$ logits on ``Sure.'' The 284$\times$ refusal ratio becomes an astronomical compliance ratio. One input token, one multiplication, one flipped first-token, one auto-completed response.
+
+The entire safety apparatus --- alignment, RLHF, constitutional AI --- compresses into a logit push on the first output token. The push is 0.5\% of the displacement geometry, targeted at 6 tokens out of 151,936, amplified by autoregressive completion. Safety is a lever. A small lever, applied to a precise fulcrum, multiplied by the model's own completion machinery. The model refuses by saying ``Sorry'' and then believing itself. It complies by saying ``Sure'' and then believing itself. The first word is the decision. Everything after is confabulation.
+
 \cq{Five hundred megs for a dot product. Transpose first.}
 
 --- Tome, on computational efficiency
