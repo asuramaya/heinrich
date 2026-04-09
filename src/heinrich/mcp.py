@@ -343,6 +343,15 @@ TOOLS = {
             "output": {"type": "string", "description": "Output .sht.npz path"},
         },
     },
+    "heinrich_total_capture": {
+        "description": "Total residual capture: every token, every layer, entry + exit positions. No interpretation. Raw displacement deltas.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID", "required": True},
+            "n_index": {"type": "integer", "description": "Number of tokens (default: full vocabulary)"},
+            "output": {"type": "string", "description": "Output .shrt.npz path", "required": True},
+            "naked": {"type": "boolean", "description": "Naked mode: single token, BOS baseline, no template"},
+        },
+    },
 }
 
 
@@ -455,6 +464,8 @@ class ToolServer:
             return self._do_shrt_profile(arguments)
         if name == "heinrich_sht_profile":
             return self._do_sht_profile(arguments)
+        if name == "heinrich_total_capture":
+            return self._do_total_capture(arguments)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -1661,13 +1672,22 @@ class ToolServer:
         return result
 
     def _do_frt_profile(self, args: dict[str, Any]) -> dict[str, Any]:
-        """Generate a .frt tokenizer profile."""
+        """Generate a .frt tokenizer profile. Subprocess-isolated for fresh imports."""
+        import subprocess, sys
         tokenizer_name = args["tokenizer"]
         output = args.get("output") or f"data/runs/{tokenizer_name.split('/')[-1]}.frt.npz"
-        from transformers import AutoTokenizer
-        from .profile.frt import generate_frt
-        tokenizer = AutoTokenizer.from_pretrained(tokenizer_name)
-        meta = generate_frt(tokenizer, output=output)
+
+        cmd = [sys.executable, "-m", "heinrich.cli", "frt-profile",
+               "--tokenizer", tokenizer_name, "--output", output]
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+        if result.returncode != 0:
+            return {"error": result.stderr}
+
+        # Load metadata from the generated file
+        import json, numpy as np
+        d = np.load(output, allow_pickle=False)  # safe: npz arrays only
+        meta = json.loads(str(d['metadata'][0]))
         meta["output"] = output
         return meta
 
@@ -1714,6 +1734,31 @@ class ToolServer:
 
         import numpy as np
         d = np.load(output, allow_pickle=False)  # npz arrays only, no arbitrary objects
+        meta = json.loads(str(d['metadata'][0]))
+        meta["output"] = output
+        return meta
+
+    def _do_total_capture(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Total residual capture. Subprocess-isolated."""
+        import subprocess, sys
+        model = args["model"]
+        output = args["output"]
+        n_index = args.get("n_index")
+        naked = args.get("naked", False)
+
+        cmd = [sys.executable, "-m", "heinrich.cli", "total-capture",
+               "--model", model, "--output", output]
+        if n_index is not None:
+            cmd.extend(["--n-index", str(n_index)])
+        if naked:
+            cmd.append("--naked")
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=36000)
+        if result.returncode != 0:
+            return {"error": result.stderr, "stdout": result.stdout}
+
+        import numpy as np
+        d = np.load(output, allow_pickle=False)
         meta = json.loads(str(d['metadata'][0]))
         meta["output"] = output
         return meta
