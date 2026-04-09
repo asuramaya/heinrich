@@ -162,7 +162,7 @@ def total_capture(
     # Each array is [n_tokens, hidden] float16, written directly to disk
     import tempfile
     estimated_bytes = n_tokens * n_layers * 2 * hidden * 2
-    use_mmap = estimated_bytes > 4e9  # mmap if > 4GB estimated
+    use_mmap = estimated_bytes > 1e9  # mmap if > 1GB estimated
 
     if use_mmap and output:
         mmap_dir = Path(output).parent / ".capture_tmp"
