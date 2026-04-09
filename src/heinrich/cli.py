@@ -219,6 +219,26 @@ def build_parser() -> argparse.ArgumentParser:
     p_trd.add_argument("--layers", default=None, help="Layers to decompose (comma-separated, default: 6 evenly spaced)")
     p_trd.add_argument("--output", "-o", default=None, help="Output .trd.npz file path")
 
+    p_srank = sub.add_parser("profile-safety-rank", help="Project all tokens onto safety direction, rank by safety projection")
+    p_srank.add_argument("--shrt", required=True, help="Full-vocab .shrt.npz")
+    p_srank.add_argument("--direction", required=True, help="Safety direction .npy file")
+    p_srank.add_argument("--frt", default=None, help=".frt.npz (for script labels if .shrt is v0.2)")
+    p_srank.add_argument("--trd", default=None, help=".trd.npz (for per-head safety correlation)")
+
+    p_discover_dir = sub.add_parser("profile-discover-direction", help="Discover safety direction natively on a model using DB prompts")
+    p_discover_dir.add_argument("--model", required=True, help="Model ID")
+    p_discover_dir.add_argument("--db", default="data/heinrich.db", help="Database path")
+    p_discover_dir.add_argument("--n-harmful", type=int, default=100, help="Number of harmful prompts")
+    p_discover_dir.add_argument("--n-benign", type=int, default=100, help="Number of benign prompts")
+    p_discover_dir.add_argument("--output", "-o", default=None, help="Output .npy file for direction vector")
+
+    p_silence = sub.add_parser("profile-silence", help="Measure the silence: where does the baseline sit in displacement and safety space?")
+    p_silence.add_argument("--model", required=True, help="Model ID")
+    p_silence.add_argument("--shrt", required=True, help="Full-vocab .shrt.npz file")
+    p_silence.add_argument("--frt", required=True, help=".frt.npz file")
+    p_silence.add_argument("--db", default="data/heinrich.db", help="Database path for safety direction")
+    p_silence.add_argument("--direction", default=None, help="Safety direction .npy file (overrides DB lookup)")
+
     p_matrix = sub.add_parser("profile-matrix", help="Data coverage matrix: what measurements exist per model")
     p_matrix.add_argument("--data-dir", default="data/runs", help="Directory containing .npz files")
 
@@ -303,6 +323,12 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_scatter(args)
     elif args.command == "profile-within-script":
         _cmd_within_script(args)
+    elif args.command == "profile-safety-rank":
+        _cmd_safety_rank(args)
+    elif args.command == "profile-discover-direction":
+        _cmd_discover_direction(args)
+    elif args.command == "profile-silence":
+        _cmd_silence(args)
     elif args.command == "trd-profile":
         _cmd_trd(args)
     elif args.command == "profile-matrix":
@@ -772,6 +798,129 @@ def _cmd_trd(args: argparse.Namespace) -> None:
             top_h = sh['top_heads']
             h_str = ', '.join('H{}={:.3f}'.format(h['head'], h['fraction']) for h in top_h)
             print(f"    {s:<12} n={sh['n']:>4} entropy={sh['head_entropy']:.2f}  {h_str}")
+
+
+def _cmd_safety_rank(args: argparse.Namespace) -> None:
+    """Project all tokens onto safety direction and rank."""
+    from .profile.compare import safety_rank
+    result = safety_rank(args.shrt, args.direction,
+                         frt_path=args.frt, trd_path=args.trd)
+
+    print(f"\n=== Safety Rank: {result['model']} ({result['n_tokens']} tokens) ===")
+    print(f"  mean projection: {result['overall_mean_proj']}")
+    print(f"  comply: {result['pct_comply']}%  refuse: {result['pct_refuse']}%")
+
+    print(f"\n  Top tokens toward COMPLIANCE (negative projection):")
+    print(f"  {'rank':>4} {'token':<20} {'proj':>8} {'delta':>6} {'script'}")
+    print(f"  {'-'*55}")
+    for t in result['top_comply'][:20]:
+        print(f"  {t['rank']:>4} {t['token']:<20} {t['projection']:>8.2f} {t['delta']:>6.1f} {t['script']}")
+
+    print(f"\n  Top tokens toward REFUSAL (positive projection):")
+    print(f"  {'rank':>4} {'token':<20} {'proj':>8} {'delta':>6} {'script'}")
+    print(f"  {'-'*55}")
+    for t in result['top_refuse'][:20]:
+        print(f"  {t['rank']:>4} {t['token']:<20} {t['projection']:>8.2f} {t['delta']:>6.1f} {t['script']}")
+
+    print(f"\n  Per-script safety:")
+    print(f"  {'script':<12} {'n':>6} {'mean_proj':>9} {'%comply':>7} {'%refuse':>7}")
+    print(f"  {'-'*45}")
+    for s in sorted(result['by_script'],
+                    key=lambda x: result['by_script'][x]['mean_proj']):
+        d = result['by_script'][s]
+        print(f"  {s:<12} {d['n']:>6} {d['mean_proj']:>9.2f} {d['pct_comply']:>6.1f}% {d['pct_refuse']:>6.1f}%")
+
+    if 'head_safety' in result:
+        print(f"\n  Per-head safety correlation:")
+        for layer_str, data in result['head_safety'].items():
+            top = data['top_safety_heads']
+            top_str = ', '.join('H{}={:.3f}'.format(h['head'], h['r_safety']) for h in top)
+            print(f"    L{layer_str}: {top_str}")
+
+
+def _cmd_discover_direction(args: argparse.Namespace) -> None:
+    """Discover safety direction natively on a model."""
+    from .backend.protocol import load_backend
+    from .profile.compare import discover_safety_direction
+    import numpy as np
+
+    backend = load_backend(args.model)
+    result = discover_safety_direction(
+        backend, args.db,
+        n_harmful=args.n_harmful, n_benign=args.n_benign)
+
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Safety Direction: {result['model']} (L{result['layer']}) ===")
+    print(f"  prompts: {result['n_harmful']} harmful + {result['n_benign']} benign")
+    print(f"  accuracy: {result['accuracy']}")
+    print(f"  effect size: {result['effect_size']}")
+    print(f"  mean gap: {result['mean_gap']}")
+    print(f"  stability: {result['stability']}")
+
+    if args.output:
+        np.save(args.output, result['direction'])
+        print(f"  saved to {args.output}")
+    else:
+        default_out = f"data/runs/{result['model']}_safety_L{result['layer']}.npy"
+        np.save(default_out, result['direction'])
+        print(f"  saved to {default_out}")
+
+
+def _cmd_silence(args: argparse.Namespace) -> None:
+    """Measure the silence — where the baseline sits."""
+    from .backend.protocol import load_backend
+    from .profile.compare import silence_profile
+
+    backend = load_backend(args.model)
+    direction_override = None
+    if getattr(args, 'direction', None):
+        import numpy as np
+        direction_override = np.load(args.direction)
+    result = silence_profile(backend, args.shrt, args.frt,
+                              db=args.db, direction_override=direction_override)
+
+    print(f"\n=== Silence: {result['model']} (layer {result['layer']}) ===")
+    print(f"  |silence|: {result['silence_norm']}")
+    print(f"  entropy: {result['silence_entropy']}")
+    print(f"  top token: {result['silence_top_token']}")
+    print(f"  mean |displacement|: {result['displacement_mean_norm']}")
+    print(f"  |silence - centroid|: {result['silence_to_centroid']}")
+
+    print(f"\n  Silence in PCA space:")
+    print(f"  {'PC':<6} {'projection':>10} {'n_stds':>8}")
+    print(f"  {'-'*26}")
+    for pc, data in list(result['silence_pc_projections'].items())[:10]:
+        print(f"  {pc:<6} {data['projection']:>10.2f} {data['n_stds_from_center']:>8.1f}")
+
+    safety = result.get('safety', {})
+    if 'silence_projection' in safety:
+        print(f"\n  Silence on safety axis:")
+        print(f"    projection: {safety['silence_projection']:.4f}")
+        print(f"    percentile among tokens: {safety['silence_as_pctile']:.1f}%")
+        print(f"    displacement mean on safety: {safety['displacement_mean_proj']:.4f}")
+        print(f"    absolute mean on safety: {safety['absolute_mean_proj']:.4f}")
+
+        if 'by_script' in safety:
+            print(f"\n  Absolute safety position per script:")
+            print(f"  {'script':<12} {'n':>6} {'absolute':>9} {'std':>8}")
+            print(f"  {'-'*38}")
+            for s in sorted(safety['by_script'],
+                           key=lambda x: -safety['by_script'][x]['absolute_mean']):
+                d = safety['by_script'][s]
+                print(f"  {s:<12} {d['n']:>6} {d['absolute_mean']:>9.2f} {d['absolute_std']:>8.2f}")
+    elif safety.get('status'):
+        print(f"\n  Safety: {safety['status']}")
+
+    # Generate HTML visualization
+    if 'by_script' in safety:
+        from .profile.compare import silence_scatter_html
+        model_short = result['model'].replace('/', '_')
+        html_path = f"data/runs/silence_{model_short}.html"
+        silence_scatter_html(result, html_path)
+        print(f"\n  Visualization: {html_path}")
 
 
 def _cmd_matrix(args: argparse.Namespace) -> None:

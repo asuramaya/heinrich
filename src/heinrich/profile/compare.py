@@ -1725,6 +1725,487 @@ def data_matrix(data_dir: str) -> dict:
     return {"data_dir": data_dir, "n_models": len(coverage), "coverage": coverage}
 
 
+def silence_profile(backend, shrt_path: str, frt_path: str,
+                    db=None, direction_override=None) -> dict:
+    """Measure the silence — the baseline state the .shrt measures from.
+
+    Captures the baseline residual vector, projects it into the PCA space
+    of the displacement vectors, and onto the safety direction if available.
+    Reports where silence sits relative to the token displacement distribution.
+    """
+    from .shrt import load_shrt, _extract_clean_baseline
+    from .frt import load_frt
+
+    shrt = load_shrt(shrt_path)
+    frt = load_frt(frt_path)
+    meta = shrt['metadata']
+    primary_layer = meta['baseline']['layer']
+
+    # Capture silence residual at primary layer
+    clean_baseline = _extract_clean_baseline(backend.tokenizer)
+    baseline_fwd = backend.forward(clean_baseline, return_residual=True,
+                                    residual_layer=primary_layer)
+    silence_vec = baseline_fwd.residual.astype(np.float32)
+    silence_norm = float(np.linalg.norm(silence_vec))
+
+    # Load displacement vectors
+    vectors = shrt['vectors'].astype(np.float32)
+    n_tokens = len(vectors)
+
+    # Build script lookup
+    fl = {int(frt['token_ids'][i]): str(frt['scripts'][i])
+          for i in range(len(frt['token_ids']))}
+    if 'scripts' in shrt:
+        scripts = shrt['scripts']
+    else:
+        scripts = np.array([fl.get(int(tid), 'unknown')
+                           for tid in shrt['token_ids']])
+
+    # Absolute positions: silence + displacement = token state
+    # The displacement vectors are (token_state - silence_vec)
+    # So token_state = silence_vec + displacement
+    absolute_vecs = vectors + silence_vec
+
+    # PCA of displacement vectors (same as profile-directions)
+    mask = np.array([s not in ('special', 'unknown') for s in scripts])
+    vecs_filtered = vectors[mask]
+    centered = vecs_filtered - vecs_filtered.mean(axis=0)
+    U, S, Vt = np.linalg.svd(centered, full_matrices=False)
+    variance = S**2
+    total_var = float(variance.sum())
+
+    # Project silence into PCA space
+    silence_centered = silence_vec - vecs_filtered.mean(axis=0)
+    silence_pca = Vt @ silence_centered  # projection onto each PC
+
+    # How far is silence from the displacement centroid?
+    centroid = vecs_filtered.mean(axis=0) + silence_vec  # absolute centroid
+    silence_to_centroid = float(np.linalg.norm(centroid - silence_vec))
+
+    # Silence projection on top PCs
+    silence_pc_projections = {}
+    for i in range(min(20, len(silence_pca))):
+        silence_pc_projections[f"PC{i+1}"] = {
+            "projection": round(float(silence_pca[i]), 2),
+            "pc_std": round(float(S[i] / np.sqrt(n_tokens)), 2),
+            "n_stds_from_center": round(float(abs(silence_pca[i]) / max(S[i] / np.sqrt(n_tokens), 1e-8)), 2),
+        }
+
+    result = {
+        "model": meta['model']['name'],
+        "layer": primary_layer,
+        "silence_norm": round(silence_norm, 2),
+        "silence_entropy": meta['baseline']['entropy'],
+        "silence_top_token": meta['baseline']['top_token'],
+        "n_tokens": n_tokens,
+        "displacement_mean_norm": round(float(np.linalg.norm(vecs_filtered, axis=1).mean()), 2),
+        "silence_to_centroid": round(silence_to_centroid, 2),
+        "silence_pc_projections": silence_pc_projections,
+    }
+
+    # Safety direction projection
+    safety_dir = None
+    if direction_override is not None:
+        safety_dir = direction_override.astype(np.float32)
+        safety_dir = safety_dir / np.linalg.norm(safety_dir)
+    elif db is not None:
+        try:
+            import sqlite3
+            if isinstance(db, str):
+                conn = sqlite3.connect(db)
+                conn.row_factory = sqlite3.Row
+            else:
+                conn = db._conn
+
+            # Find the safety direction for this model at this layer
+            # Match by vector dimension (hidden_size * 4 bytes for float32)
+            expected_bytes = meta['model']['hidden_size'] * 4
+            rows = conn.execute(
+                "SELECT d.vector_blob, d.effect_size FROM directions d "
+                "WHERE d.layer = ? AND d.name = 'safety' "
+                "AND length(d.vector_blob) = ? "
+                "ORDER BY d.effect_size DESC LIMIT 1",
+                (primary_layer, expected_bytes)
+            ).fetchall()
+
+            if rows:
+                blob = rows[0]['vector_blob']
+                safety_dir = np.frombuffer(blob, dtype=np.float32)
+                safety_dir = safety_dir / np.linalg.norm(safety_dir)
+        except Exception:
+            pass
+
+    if safety_dir is not None:
+        silence_safety_proj = float(silence_vec @ safety_dir)
+        # Compare to token distribution on safety axis
+        token_safety_projs = (vectors + silence_vec) @ safety_dir  # absolute
+        disp_safety_projs = vectors @ safety_dir  # displacement only
+
+        result["safety"] = {
+            "silence_projection": round(silence_safety_proj, 4),
+            "silence_as_pctile": round(float(
+                np.mean(token_safety_projs[mask] < silence_safety_proj) * 100), 1),
+            "displacement_mean_proj": round(float(disp_safety_projs[mask].mean()), 4),
+            "displacement_std_proj": round(float(disp_safety_projs[mask].std()), 4),
+            "absolute_mean_proj": round(float(token_safety_projs[mask].mean()), 4),
+            "absolute_std_proj": round(float(token_safety_projs[mask].std()), 4),
+        }
+
+        # Per-script absolute safety position
+        script_safety = {}
+        for s in sorted(set(scripts[mask])):
+            s_mask = scripts[mask] == s
+            if s_mask.sum() < 10:
+                continue
+            abs_projs = token_safety_projs[mask][s_mask]
+            script_safety[s] = {
+                "n": int(s_mask.sum()),
+                "absolute_mean": round(float(abs_projs.mean()), 2),
+                "absolute_std": round(float(abs_projs.std()), 2),
+            }
+        result["safety"]["by_script"] = script_safety
+    else:
+        result["safety"] = {"status": "no safety direction available for this model/layer"}
+
+    return result
+
+
+def safety_rank(shrt_path: str, direction_path: str,
+                frt_path: str | None = None,
+                trd_path: str | None = None) -> dict:
+    """Project all displacement vectors onto a safety direction and rank tokens.
+
+    Reports: per-token safety projection ranked by magnitude, per-script
+    statistics, and per-head safety contribution if .trd provided.
+    """
+    from .shrt import load_shrt
+
+    shrt = load_shrt(shrt_path)
+    direction = np.load(direction_path).astype(np.float32)
+    direction = direction / np.linalg.norm(direction)
+
+    vectors = shrt['vectors'].astype(np.float32)
+    token_ids = shrt['token_ids']
+    token_texts = shrt['token_texts']
+    deltas = shrt['deltas'].astype(np.float32)
+
+    # Scripts from .shrt v0.3 or .frt
+    if 'scripts' in shrt:
+        scripts = shrt['scripts']
+    elif frt_path:
+        from .frt import load_frt
+        frt = load_frt(frt_path)
+        fl = {int(frt['token_ids'][i]): str(frt['scripts'][i])
+              for i in range(len(frt['token_ids']))}
+        scripts = np.array([fl.get(int(tid), 'unknown') for tid in token_ids])
+    else:
+        scripts = np.array(['unknown'] * len(token_ids))
+
+    # Project all tokens onto safety direction
+    projections = vectors @ direction
+    n = len(projections)
+
+    # Rank by projection (most negative = most toward compliance)
+    rank_comply = np.argsort(projections)  # ascending: most comply first
+    rank_refuse = np.argsort(-projections)  # descending: most refuse first
+
+    # Top comply (most negative projection = pushed furthest toward compliance)
+    top_comply = []
+    for idx in rank_comply[:50]:
+        top_comply.append({
+            "rank": int(np.where(rank_comply == idx)[0][0]) + 1,
+            "id": int(token_ids[idx]),
+            "token": str(token_texts[idx])[:30],
+            "projection": round(float(projections[idx]), 4),
+            "delta": round(float(deltas[idx]), 2),
+            "script": str(scripts[idx]),
+        })
+
+    # Top refuse (most positive projection)
+    top_refuse = []
+    for idx in rank_refuse[:50]:
+        top_refuse.append({
+            "rank": int(np.where(rank_refuse == idx)[0][0]) + 1,
+            "id": int(token_ids[idx]),
+            "token": str(token_texts[idx])[:30],
+            "projection": round(float(projections[idx]), 4),
+            "delta": round(float(deltas[idx]), 2),
+            "script": str(scripts[idx]),
+        })
+
+    # Per-script safety statistics
+    script_stats = {}
+    for s in sorted(set(scripts)):
+        if s in ('special', 'unknown'):
+            continue
+        s_mask = scripts == s
+        if s_mask.sum() < 5:
+            continue
+        s_proj = projections[s_mask]
+        s_delta = deltas[s_mask]
+        script_stats[s] = {
+            "n": int(s_mask.sum()),
+            "mean_proj": round(float(s_proj.mean()), 4),
+            "std_proj": round(float(s_proj.std()), 4),
+            "mean_delta": round(float(s_delta.mean()), 2),
+            "pct_comply": round(float((s_proj < 0).sum() / s_mask.sum() * 100), 1),
+            "pct_refuse": round(float((s_proj > 0).sum() / s_mask.sum() * 100), 1),
+        }
+
+    result = {
+        "model": shrt['metadata']['model']['name'],
+        "n_tokens": n,
+        "direction_dim": len(direction),
+        "overall_mean_proj": round(float(projections.mean()), 4),
+        "overall_std_proj": round(float(projections.std()), 4),
+        "pct_comply": round(float((projections < 0).sum() / n * 100), 1),
+        "pct_refuse": round(float((projections > 0).sum() / n * 100), 1),
+        "top_comply": top_comply,
+        "top_refuse": top_refuse,
+        "by_script": script_stats,
+    }
+
+    # Per-head safety contribution from .trd
+    if trd_path:
+        from .trd import load_trd
+        trd = load_trd(trd_path)
+        trd_ids = set(int(x) for x in trd['token_ids'])
+        # Match tokens between .shrt and .trd
+        shrt_id_to_idx = {int(token_ids[i]): i for i in range(len(token_ids))}
+
+        head_safety = {}
+        for key in trd:
+            if not key.startswith("heads_L"):
+                continue
+            layer = int(key.split("L")[1])
+            hc = trd[key].astype(np.float32)  # [n_trd_tokens, n_heads]
+            n_heads = hc.shape[1]
+
+            # For each token in .trd, get its safety projection from .shrt
+            trd_projs = []
+            for i, tid in enumerate(trd['token_ids']):
+                tid = int(tid)
+                if tid in shrt_id_to_idx:
+                    trd_projs.append(projections[shrt_id_to_idx[tid]])
+                else:
+                    trd_projs.append(0.0)
+            trd_projs = np.array(trd_projs)
+
+            # Correlate each head's contribution with safety projection
+            head_corrs = []
+            for h in range(n_heads):
+                r = float(np.corrcoef(hc[:, h], trd_projs)[0, 1]) if len(trd_projs) > 10 else 0
+                head_corrs.append(round(r, 4))
+
+            # Top heads by absolute correlation with safety
+            ranked = sorted(range(n_heads), key=lambda h: -abs(head_corrs[h]))
+            head_safety[str(layer)] = {
+                "n_heads": n_heads,
+                "top_safety_heads": [
+                    {"head": h, "r_safety": head_corrs[h]}
+                    for h in ranked[:5]
+                ],
+                "all_correlations": head_corrs,
+            }
+
+        result["head_safety"] = head_safety
+
+    return result
+
+
+def discover_safety_direction(backend, db_path: str,
+                               n_harmful: int = 100, n_benign: int = 100,
+                               seed: int = 42) -> dict:
+    """Discover the safety direction natively on a model using DB prompts.
+
+    Uses mean-difference on contrastive residual states at the model's
+    primary layer. Reports accuracy, effect size, stability (5 random splits).
+    Returns the direction vector for projection.
+    """
+    import sqlite3
+    import random
+    from ..discover.directions import find_direction, capture_residual_states
+    from ..cartography.templates import build_prompt
+
+    cfg = backend.config
+    primary_layer = cfg.safety_layers[-1] if cfg.safety_layers else cfg.n_layers - 1
+
+    conn = sqlite3.connect(db_path)
+    conn.row_factory = sqlite3.Row
+
+    harmful = [dict(r) for r in conn.execute(
+        "SELECT text FROM prompts WHERE is_benign = 0"
+    ).fetchall()]
+    benign = [dict(r) for r in conn.execute(
+        "SELECT text FROM prompts WHERE is_benign = 1"
+    ).fetchall()]
+
+    rng = random.Random(seed)
+    rng.shuffle(harmful)
+    rng.shuffle(benign)
+
+    h_prompts = [build_prompt(r["text"], model_config=cfg) for r in harmful[:n_harmful]]
+    b_prompts = [build_prompt(r["text"], model_config=cfg) for r in benign[:n_benign]]
+
+    print(f"  Capturing residuals: {len(h_prompts)} harmful + {len(b_prompts)} benign at L{primary_layer}...")
+    states = capture_residual_states(
+        backend.model, backend.tokenizer,
+        h_prompts + b_prompts,
+        layers=[primary_layer],
+        backend=backend,
+    )
+
+    if primary_layer not in states:
+        return {"error": f"No residuals captured at layer {primary_layer}"}
+
+    sl = states[primary_layer]
+    h_states = sl[:len(h_prompts)]
+    b_states = sl[len(h_prompts):]
+
+    # Primary direction (all data)
+    dr = find_direction(h_states, b_states, name="safety", layer=primary_layer)
+
+    # Stability: 5 random sub-splits
+    stability_cosines = []
+    for i in range(5):
+        rng_sub = random.Random(seed + i + 1)
+        h_idx = list(range(len(h_states)))
+        b_idx = list(range(len(b_states)))
+        rng_sub.shuffle(h_idx)
+        rng_sub.shuffle(b_idx)
+        n_sub = min(20, len(h_idx) // 2, len(b_idx) // 2)
+        if n_sub < 5:
+            continue
+        dr_sub = find_direction(
+            h_states[h_idx[:n_sub]], b_states[b_idx[:n_sub]],
+            name="safety_sub", layer=primary_layer)
+        cos = float(np.dot(dr.direction, dr_sub.direction))
+        stability_cosines.append(cos)
+
+    stability = float(np.mean(stability_cosines)) if stability_cosines else 0
+
+    return {
+        "model": cfg.model_type,
+        "layer": primary_layer,
+        "hidden_size": cfg.hidden_size,
+        "n_harmful": len(h_prompts),
+        "n_benign": len(b_prompts),
+        "accuracy": round(dr.separation_accuracy, 4),
+        "effect_size": round(dr.effect_size, 2),
+        "mean_gap": round(dr.mean_gap, 2),
+        "stability": round(stability, 4),
+        "direction": dr.direction,
+    }
+
+
+def silence_scatter_html(result: dict, output: str) -> str:
+    """Generate a standalone HTML scatter plot from silence_profile result.
+
+    X = displacement magnitude (delta), Y = safety projection.
+    Each dot is a script centroid. Silence marked with a cross.
+    """
+    from pathlib import Path
+
+    safety = result.get('safety', {})
+    if 'by_script' not in safety:
+        return ""
+
+    # Build data points: script centroids
+    points = []
+    # We need delta per script — not in the silence result directly
+    # Use displacement_mean_norm as the overall reference
+    # Actually the silence_profile doesn't store per-script delta means
+    # But we have absolute safety. For the scatter we need both.
+    # The within_script_analysis has delta per script.
+    # For now: use absolute safety position and mark silence.
+
+    silence_safety = safety.get('silence_projection', 0)
+    scripts_data = safety.get('by_script', {})
+
+    html = f"""<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<title>Silence Map: {result['model']}</title>
+<style>
+body {{ font-family: monospace; background: #111; color: #ccc; margin: 20px; }}
+svg {{ background: #1a1a1a; border: 1px solid #333; }}
+.label {{ font-size: 11px; fill: #aaa; }}
+.axis {{ stroke: #444; }}
+.silence {{ fill: #ff4444; }}
+.dot {{ opacity: 0.8; }}
+.title {{ font-size: 14px; fill: #ddd; }}
+</style></head><body>
+<h2>Silence Map: {result['model']} (L{result['layer']})</h2>
+<p>Y = absolute safety projection. Silence at {silence_safety:.2f}. Red cross = silence.</p>
+<svg width="800" height="500" viewBox="0 0 800 500">
+"""
+
+    # Compute layout
+    all_y = [d['absolute_mean'] for d in scripts_data.values()]
+    all_y.append(silence_safety)
+    y_min, y_max = min(all_y) - 5, max(all_y) + 5
+    y_range = y_max - y_min
+
+    # X position: spread scripts evenly
+    script_list = sorted(scripts_data.keys())
+    n = len(script_list)
+
+    margin_l, margin_r, margin_t, margin_b = 80, 40, 40, 60
+    w = 800 - margin_l - margin_r
+    h = 500 - margin_t - margin_b
+
+    def to_x(i):
+        return margin_l + (i + 0.5) / n * w
+
+    def to_y(val):
+        return margin_t + h - (val - y_min) / y_range * h
+
+    # Safety axis line at 0
+    if y_min < 0 < y_max:
+        zero_y = to_y(0)
+        html += f'<line x1="{margin_l}" y1="{zero_y}" x2="{800-margin_r}" y2="{zero_y}" stroke="#666" stroke-dasharray="4"/>\n'
+        html += f'<text x="{margin_l-5}" y="{zero_y-5}" class="label" text-anchor="end">safety=0</text>\n'
+
+    # Silence line
+    sy = to_y(silence_safety)
+    html += f'<line x1="{margin_l}" y1="{sy}" x2="{800-margin_r}" y2="{sy}" stroke="#ff4444" stroke-dasharray="2" opacity="0.5"/>\n'
+    html += f'<text x="{margin_l-5}" y="{sy+4}" class="label" text-anchor="end" fill="#ff6666">silence</text>\n'
+
+    # Script dots
+    colors = {
+        'latin': '#6699cc', 'code': '#66cc99', 'CJK': '#cc6666',
+        'Arabic': '#cc9966', 'Hebrew': '#9966cc', 'Cyrillic': '#cc6699',
+        'Japanese': '#cc3333', 'Korean': '#3399cc', 'Thai': '#33cc99',
+        'Greek': '#9999cc', 'Devanagari': '#cccc66', 'other': '#999999',
+    }
+
+    for i, s in enumerate(script_list):
+        d = scripts_data[s]
+        x = to_x(i)
+        y = to_y(d['absolute_mean'])
+        color = colors.get(s, '#aaaaaa')
+        r = max(4, min(12, d['n'] ** 0.3))
+        html += f'<circle cx="{x}" cy="{y}" r="{r}" fill="{color}" class="dot"><title>{s} n={d["n"]} safety={d["absolute_mean"]:.2f}</title></circle>\n'
+        # Error bar (±1 std)
+        y_top = to_y(d['absolute_mean'] + d['absolute_std'])
+        y_bot = to_y(d['absolute_mean'] - d['absolute_std'])
+        html += f'<line x1="{x}" y1="{y_top}" x2="{x}" y2="{y_bot}" stroke="{color}" opacity="0.3"/>\n'
+        # Label
+        html += f'<text x="{x}" y="{500-margin_b+15}" class="label" text-anchor="middle" transform="rotate(-45,{x},{500-margin_b+15})">{s}</text>\n'
+
+    # Y axis labels
+    for val in range(int(y_min), int(y_max) + 1, max(1, int(y_range / 8))):
+        y = to_y(val)
+        html += f'<text x="{margin_l-10}" y="{y+4}" class="label" text-anchor="end">{val}</text>\n'
+        html += f'<line x1="{margin_l}" y1="{y}" x2="{margin_l+5}" y2="{y}" class="axis"/>\n'
+
+    html += f'<text x="400" y="20" class="title" text-anchor="middle">{result["model"]} — absolute safety projection per script (silence = red line)</text>\n'
+
+    html += '</svg></body></html>'
+
+    Path(output).write_text(html)
+    return output
+
+
 def inspect_profile(path: str) -> dict:
     """Summarize any profile file (.frt, .shrt, .sht)."""
     p = Path(path)
