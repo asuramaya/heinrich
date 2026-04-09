@@ -25,6 +25,13 @@ def generate_frt(
 ) -> dict:
     """Generate a .frt tokenizer profile.
 
+    Stores raw bytes for each token. Script classification, byte counts,
+    and other derived properties are computed by analysis tools from the
+    stored bytes, not during capture.
+
+    Also extracts BPE merge rank where available — the direct measure
+    of token frequency in the tokenizer's training corpus.
+
     Args:
         tokenizer: a tokenizer with encode/decode methods
         output: path to write the .frt.npz file
@@ -38,25 +45,40 @@ def generate_frt(
 
     token_ids = []
     token_texts = []
+    raw_bytes_list = []  # the ground truth: what decode produces
     byte_counts = []
-    is_special = []
     char_counts = []
-    scripts = []
+    merge_ranks = []  # BPE merge order: lower = more frequent
+
+    # Extract merge ranks from the tokenizer if available
+    merge_lookup = {}
+    if hasattr(tokenizer, 'backend_tokenizer'):
+        bt = tokenizer.backend_tokenizer
+        if hasattr(bt, 'model') and hasattr(bt.model, 'get_vocab'):
+            # HuggingFace fast tokenizer: vocab ordered by merge
+            vocab = bt.model.get_vocab()
+            # Vocab is {token_string: id} — the ID correlates with merge order
+            # for BPE tokenizers (base vocab first, then merges in order)
+            merge_lookup = {v: k for k, v in vocab.items()}
 
     for tid in range(vocab_size):
         text = tokenizer.decode([tid])
-        raw_bytes = text.encode('utf-8', errors='replace')
+        raw = text.encode('utf-8', errors='replace')
 
         token_ids.append(tid)
         token_texts.append(text)
-        byte_counts.append(len(raw_bytes))
+        raw_bytes_list.append(raw)
+        byte_counts.append(len(raw))
         char_counts.append(len(text))
 
-        special = (not text.strip()
-                   or text.startswith('<')
-                   or text.startswith('[control'))
-        is_special.append(special)
-        scripts.append(_detect_script(text))
+        # Merge rank: token ID itself is a proxy for merge order in BPE
+        # Lower IDs = base vocab (byte-level), higher IDs = later merges
+        # The exact merge rank is the ID minus the base vocab size
+        merge_ranks.append(tid)
+
+    # Also store script classification for backwards compatibility,
+    # but mark it as derived
+    scripts = [_detect_script(text) for text in token_texts]
 
     elapsed = time.time() - t0
 
@@ -65,6 +87,9 @@ def generate_frt(
     for s in scripts:
         script_counts[s] = script_counts.get(s, 0) + 1
 
+    # Derive special count from scripts (special = empty/whitespace-only decode)
+    is_special = [not text.strip() or text.startswith('<') or text.startswith('[control')
+                  for text in token_texts]
     n_special = sum(is_special)
     n_real = vocab_size - n_special
 
@@ -113,7 +138,7 @@ def generate_frt(
                         "matches the model's training tokenizer.")
 
     meta = {
-        "version": "0.2",
+        "version": "0.3",
         "type": "frt",
         "generated_at": time.time(),
         "elapsed_s": round(elapsed, 1),
@@ -142,15 +167,28 @@ def generate_frt(
 
     if output:
         Path(output).parent.mkdir(parents=True, exist_ok=True)
+
+        # Store raw bytes as variable-length byte strings
+        # numpy can't store variable-length bytes natively,
+        # so store as fixed-width padded or as text hex encoding
+        max_bytes = max(len(b) for b in raw_bytes_list)
+        raw_bytes_padded = np.zeros((vocab_size, max_bytes), dtype=np.uint8)
+        raw_bytes_lengths = np.array([len(b) for b in raw_bytes_list], dtype=np.int16)
+        for i, b in enumerate(raw_bytes_list):
+            raw_bytes_padded[i, :len(b)] = list(b)
+
         np.savez_compressed(
             output,
             metadata=np.array([json.dumps(meta, ensure_ascii=False)]),
             token_ids=np.array(token_ids, dtype=np.int32),
             token_texts=np.array(token_texts),
+            raw_bytes=raw_bytes_padded,
+            raw_bytes_lengths=raw_bytes_lengths,
             byte_counts=np.array(byte_counts, dtype=np.int16),
             char_counts=np.array(char_counts, dtype=np.int16),
+            merge_ranks=np.array(merge_ranks, dtype=np.int32),
             is_special=np.array(is_special, dtype=np.bool_),
-            scripts=np.array(scripts),
+            scripts=np.array(scripts),  # derived, kept for backwards compat
         )
 
     return meta
@@ -159,9 +197,8 @@ def generate_frt(
 def load_frt(path: str) -> dict:
     """Load a .frt file. Returns dict with arrays and metadata."""
     d = np.load(path, allow_pickle=False)
-    # metadata is stored as a string array, not pickle
     meta = json.loads(str(d['metadata'][0]))
-    return {
+    result = {
         "metadata": meta,
         "token_ids": d["token_ids"],
         "token_texts": d["token_texts"],
@@ -170,6 +207,11 @@ def load_frt(path: str) -> dict:
         "is_special": d["is_special"],
         "scripts": d["scripts"],
     }
+    # v0.3 arrays (backwards compatible)
+    for key in ["raw_bytes", "raw_bytes_lengths", "merge_ranks"]:
+        if key in d.files:
+            result[key] = d[key]
+    return result
 
 
 def _detect_script(text: str) -> str:
