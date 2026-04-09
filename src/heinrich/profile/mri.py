@@ -266,7 +266,26 @@ def capture_mri(
             np.save(exit_path, np.array(exit_arrays[i]))
             total_size += entry_path.stat().st_size + exit_path.stat().st_size
 
-        print(f"\n  Saved to {out_dir}/ ({total_size / 1e9:.2f} GB in {n_layers * 2} layer files)")
+        # lm_head matrix (norm + unembedding composed)
+        lmhead_path = out_dir / "lmhead.npy"
+        if not lmhead_path.exists():
+            print(f"  Extracting lm_head matrix...")
+            cols = []
+            batch = 64
+            for start in range(0, hidden, batch):
+                end = min(start + batch, hidden)
+                inp_probe = np.zeros((1, end - start, hidden), dtype=np.float16)
+                for j in range(end - start):
+                    inp_probe[0, j, start + j] = 1.0
+                h_probe = mx.array(inp_probe)
+                h_normed = model_inner.norm(h_probe)
+                out = np.array(_lm_head(backend.model, h_normed).astype(mx.float32)[0])
+                cols.append(out.T)
+            W = np.concatenate(cols, axis=1).astype(np.float16)
+            np.save(lmhead_path, W)
+            total_size += lmhead_path.stat().st_size
+
+        print(f"\n  Saved to {out_dir}/ ({total_size / 1e9:.2f} GB)")
 
         if mmap_dir and mmap_dir.exists():
             import shutil
@@ -314,5 +333,10 @@ def load_mri(path: str) -> dict:
     if dir_dir.exists():
         for npy in dir_dir.glob("*.npy"):
             result[f"direction_{npy.stem}"] = np.load(npy)
+
+    # lm_head matrix
+    lmhead_path = p / "lmhead.npy"
+    if lmhead_path.exists():
+        result["lmhead"] = np.load(lmhead_path, mmap_mode='r')
 
     return result
