@@ -232,7 +232,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_discover_dir.add_argument("--n-benign", type=int, default=100, help="Number of benign prompts")
     p_discover_dir.add_argument("--output", "-o", default=None, help="Output .npy file for direction vector")
 
-    p_capture = sub.add_parser("total-capture", help="Capture everything: every token, every layer, entry + exit positions. No interpretation.")
+    p_mri = sub.add_parser("mri", help="Complete model residual image: tokenizer + state + baselines + directions in one file")
+    p_mri.add_argument("--model", required=True, help="Model ID")
+    p_mri.add_argument("--mode", choices=["template", "naked", "raw"], default="template")
+    p_mri.add_argument("--n-index", type=int, default=None, help="Number of tokens (default: full vocabulary)")
+    p_mri.add_argument("--output", "-o", required=True, help="Output .mri.npz file")
+    p_mri.add_argument("--db", default=None, help="Database path for direction discovery")
+
+    p_capture = sub.add_parser("total-capture", help="[legacy] Use 'mri' instead. Capture every token, every layer.")
     p_capture.add_argument("--model", required=True, help="Model ID")
     p_capture.add_argument("--n-index", type=int, default=None, help="Number of tokens (default: full vocabulary)")
     p_capture.add_argument("--output", "-o", required=True, help="Output .shrt.npz file")
@@ -345,6 +352,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_scatter(args)
     elif args.command == "profile-within-script":
         _cmd_within_script(args)
+    elif args.command == "mri":
+        _cmd_mri(args)
     elif args.command == "total-capture":
         _cmd_total_capture(args)
     elif args.command == "profile-basin":
@@ -828,6 +837,18 @@ def _cmd_trd(args: argparse.Namespace) -> None:
             top_h = sh['top_heads']
             h_str = ', '.join('H{}={:.3f}'.format(h['head'], h['fraction']) for h in top_h)
             print(f"    {s:<12} n={sh['n']:>4} entropy={sh['head_entropy']:.2f}  {h_str}")
+
+
+def _cmd_mri(args: argparse.Namespace) -> None:
+    """Complete model residual image."""
+    from .backend.protocol import load_backend
+    from .profile.mri import capture_mri
+    backend = load_backend(args.model)
+    result = capture_mri(backend, mode=args.mode, n_index=args.n_index,
+                          output=args.output, db_path=getattr(args, 'db', None))
+    print(f"\n  {result['capture']['n_tokens']} tokens x {result['capture']['n_layers']} layers")
+    print(f"  mode: {result['capture']['mode']}")
+    print(f"  {result['elapsed_s']}s elapsed")
 
 
 def _cmd_total_capture(args: argparse.Namespace) -> None:
