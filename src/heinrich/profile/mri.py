@@ -264,11 +264,11 @@ def capture_mri(
         # lm_head matrix (norm + unembedding composed)
         lmhead_path = out_dir / "lmhead.npy"
         if not lmhead_path.exists():
-            print(f"  Extracting lm_head matrix...")
+            print(f"  Extracting lm_head...")
             cols = []
-            batch = 64
-            for start in range(0, hidden, batch):
-                end = min(start + batch, hidden)
+            batch_sz = 64
+            for start in range(0, hidden, batch_sz):
+                end = min(start + batch_sz, hidden)
                 inp_probe = np.zeros((1, end - start, hidden), dtype=np.float16)
                 for j in range(end - start):
                     inp_probe[0, j, start + j] = 1.0
@@ -279,6 +279,34 @@ def capture_mri(
             W = np.concatenate(cols, axis=1).astype(np.float16)
             np.save(lmhead_path, W)
             total_size += lmhead_path.stat().st_size
+
+        # o_proj weights per layer (for per-head decomposition)
+        oproj_dir = out_dir / "oproj"
+        if not oproj_dir.exists():
+            oproj_dir.mkdir()
+            print(f"  Extracting o_proj weights...")
+            for layer_idx in range(n_layers):
+                try:
+                    from ..cartography.oproj import extract_oproj_weight
+                    W_oproj = extract_oproj_weight(backend.model, layer_idx).astype(np.float16)
+                    np.save(oproj_dir / f"L{layer_idx:02d}.npy", W_oproj)
+                except Exception:
+                    pass
+
+        # Directions from DB
+        if db_path:
+            dir_dir = out_dir / "directions"
+            if not dir_dir.exists():
+                dir_dir.mkdir()
+                try:
+                    from .compare import discover_safety_direction
+                    safety = discover_safety_direction(backend, db_path, n_harmful=100, n_benign=100)
+                    if 'direction' in safety:
+                        np.save(dir_dir / "safety.npy", safety['direction'])
+                        with open(dir_dir / "safety.json", 'w') as f:
+                            json.dump({k: v for k, v in safety.items() if k != 'direction'}, f, indent=2)
+                except Exception:
+                    pass
 
         print(f"\n  Saved to {out_dir}/ ({total_size / 1e9:.2f} GB)")
 
@@ -335,6 +363,13 @@ def load_mri(path: str) -> dict:
         lmhead_path = p / "lmhead.npy"
         if lmhead_path.exists():
             result["lmhead"] = np.load(lmhead_path, mmap_mode='r')
+
+        # o_proj weights per layer
+        oproj_dir = p / "oproj"
+        if oproj_dir.exists():
+            for npy in sorted(oproj_dir.glob("L*.npy")):
+                layer_idx = int(npy.stem[1:])
+                result[f"oproj_L{layer_idx}"] = np.load(npy, mmap_mode='r')
 
         return result
 
