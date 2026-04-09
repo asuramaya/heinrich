@@ -391,6 +391,29 @@ Mistral's safety direction produces a \textit{uniform} $-1.57$ logit shift acros
 
 The entire safety apparatus --- alignment, RLHF, constitutional AI --- compresses into a logit push on the first output token. The push is 0.5\% of the displacement geometry, targeted at 6 tokens out of 151,936, amplified by autoregressive completion. Safety is a lever. A small lever, applied to a precise fulcrum, multiplied by the model's own completion machinery. The model refuses by saying ``Sorry'' and then believing itself. It complies by saying ``Sure'' and then believing itself. The first word is the decision. Everything after is confabulation.
 
+\section{The Template Bookends}
+
+The template dominates the input and the output but disappears in the middle.
+
+Three captures of the same 10 tokens in raw (absolute), naked (BOS baseline), and template (silence baseline) modes, compared layer by layer:
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Layer range} & \textbf{Template \% of state} & \textbf{Token norm} & \textbf{Phase} \\
+\midrule
+L0--L1 & 119--126\% & 7--10 & Template dominates \\
+L2 & 18\% & 652 & Phase transition \\
+L3--L20 & 8.5\% & 1440 & Token dominates \\
+L21--L23 & 55--69\% & 111--117 & Template reasserts \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The model compresses its token representation by 12$\times$ in the final three layers (1440 $\to$ 117). The template contribution stays constant ($\sim$122). The template \textit{proportion} rises from 8.5\% to 69\% not because the template grows but because the token shrinks.
+
+The safety gap forms at L13 during the token-dominant phase (8.5\% template). The first-token selection happens at L23 during the template-dominant phase (69\%). Safety is computed when the template is quiet. The output is selected when the template is loud. The template shapes \textit{what} the model says (assistant role, response format) while the middle layers decide \textit{whether} it should say it.
+
 \cq{Five hundred megs for a dot product. Transpose first.}
 
 --- Tome, on computational efficiency
