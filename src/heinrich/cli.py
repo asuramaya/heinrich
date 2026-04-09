@@ -243,6 +243,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_tmplover.add_argument("--template-mri", required=True, help="Template mode .mri directory")
     p_tmplover.add_argument("--raw-mri", required=True, help="Raw mode .mri directory")
 
+    p_backfill = sub.add_parser("mri-backfill", help="Fill missing data (embedding, norms, weights, lmhead_raw) in existing MRI directories")
+    p_backfill.add_argument("--model", required=True, help="Model ID")
+    p_backfill.add_argument("--mri", nargs="+", required=True, help="MRI directories to backfill")
+
     p_mri = sub.add_parser("mri", help="Complete model residual image: tokenizer + state + baselines + directions in one file")
     p_mri.add_argument("--model", required=True, help="Model ID")
     p_mri.add_argument("--mode", choices=["template", "naked", "raw"], default="template")
@@ -369,6 +373,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_early_exit(args)
     elif args.command == "profile-template-overhead":
         _cmd_template_overhead(args)
+    elif args.command == "mri-backfill":
+        _cmd_backfill(args)
     elif args.command == "mri":
         _cmd_mri(args)
     elif args.command == "total-capture":
@@ -900,6 +906,20 @@ def _cmd_template_overhead(args: argparse.Namespace) -> None:
     for l in result['layers']:
         print(f"  L{l['layer']:>2} {l['template_mean_norm']:>9.1f} {l['raw_mean_norm']:>9.1f} "
               f"{l['diff_mean_norm']:>9.1f} {l['template_pct']:>8.1f}%")
+
+
+def _cmd_backfill(args: argparse.Namespace) -> None:
+    """Backfill missing data into existing MRIs."""
+    from .backend.protocol import load_backend
+    from .profile.mri import backfill_mri
+    backend = load_backend(args.model)
+    for mri_path in args.mri:
+        print(f"\n=== Backfilling {mri_path} ===")
+        result = backfill_mri(backend, mri_path)
+        if 'error' in result:
+            print(f"  Error: {result['error']}")
+        else:
+            print(f"  Filled: {result['filled'] or 'nothing missing'}")
 
 
 def _cmd_mri(args: argparse.Namespace) -> None:

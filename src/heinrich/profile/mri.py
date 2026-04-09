@@ -289,7 +289,24 @@ def capture_mri(
             np.save(embed_path, embed_weights)
             total_size += embed_path.stat().st_size
 
-        # lm_head matrix (norm + unembedding composed)
+        # Raw lm_head (without norm, for logit lens at intermediate layers)
+        lmhead_raw_path = out_dir / "lmhead_raw.npy"
+        if not lmhead_raw_path.exists():
+            print(f"  Extracting raw lm_head (no norm)...")
+            cols = []
+            batch_lm = 64
+            for s in range(0, hidden, batch_lm):
+                e = min(s + batch_lm, hidden)
+                probe = np.zeros((1, e - s, hidden), dtype=np.float32)
+                for j in range(e - s):
+                    probe[0, j, s + j] = 1.0
+                out = np.array(_lm_head(backend.model, mx.array(probe).astype(mx.float16)).astype(mx.float32)[0])
+                cols.append(out.T)
+            W_raw_lm = np.concatenate(cols, axis=1).astype(np.float32)
+            np.save(lmhead_raw_path, W_raw_lm)
+            total_size += lmhead_raw_path.stat().st_size
+
+        # lm_head matrix (norm + unembedding composed, for final-layer quick analysis)
         lmhead_path = out_dir / "lmhead.npy"
         if not lmhead_path.exists():
             print(f"  Extracting lm_head...")
@@ -379,6 +396,105 @@ def capture_mri(
     return metadata
 
 
+def backfill_mri(backend, mri_path: str) -> dict:
+    """Fill missing data in an existing MRI directory.
+
+    Loads the model once, extracts whatever is missing (embedding, norms,
+    lm_head_raw, weights), writes to the MRI directory. Doesn't recapture
+    layer states — those are already stored.
+    """
+    import mlx.core as mx
+    from ..cartography.runtime import _lm_head
+
+    p = Path(mri_path)
+    if not p.is_dir():
+        return {"error": f"Not an MRI directory: {mri_path}"}
+
+    with open(p / "metadata.json") as f:
+        meta = json.load(f)
+
+    cfg = backend.config
+    model_inner = getattr(backend.model, 'model', backend.model)
+    hidden = cfg.hidden_size
+    n_layers = cfg.n_layers
+    filled = []
+
+    # Embedding
+    if not (p / "embedding.npy").exists():
+        print(f"  Backfilling embedding...")
+        vocab = cfg.vocab_size
+        vecs = []
+        for s in range(0, vocab, 256):
+            e = min(s + 256, vocab)
+            ids = mx.array([[i] for i in range(s, e)])
+            v = np.array(model_inner.embed_tokens(ids).astype(mx.float32)[:, 0, :])
+            vecs.append(v)
+        np.save(p / "embedding.npy", np.concatenate(vecs, axis=0).astype(np.float32))
+        filled.append("embedding")
+
+    # Norms
+    if not (p / "norms.npz").exists():
+        print(f"  Backfilling norms...")
+        nd = {}
+        for i in range(n_layers):
+            ly = model_inner.layers[i]
+            nd[f"input_L{i}"] = np.array(ly.input_layernorm.weight).astype(np.float32)
+            nd[f"post_attn_L{i}"] = np.array(ly.post_attention_layernorm.weight).astype(np.float32)
+        nd["final"] = np.array(model_inner.norm.weight).astype(np.float32)
+        np.savez_compressed(p / "norms.npz", **nd)
+        filled.append("norms")
+
+    # Raw lm_head (without norm)
+    if not (p / "lmhead_raw.npy").exists():
+        print(f"  Backfilling lmhead_raw...")
+        cols = []
+        for s in range(0, hidden, 64):
+            e = min(s + 64, hidden)
+            probe = np.zeros((1, e - s, hidden), dtype=np.float32)
+            for j in range(e - s):
+                probe[0, j, s + j] = 1.0
+            out = np.array(_lm_head(backend.model, mx.array(probe).astype(mx.float16)).astype(mx.float32)[0])
+            cols.append(out.T)
+        np.save(p / "lmhead_raw.npy", np.concatenate(cols, axis=1).astype(np.float32))
+        filled.append("lmhead_raw")
+
+    # Weights
+    if not (p / "weights").exists():
+        print(f"  Backfilling projection weights...")
+        weights_dir = p / "weights"
+        weights_dir.mkdir()
+        for layer_idx in range(n_layers):
+            ly = model_inner.layers[layer_idx]
+            layer_dir = weights_dir / f"L{layer_idx:02d}"
+            layer_dir.mkdir()
+
+            def extract_weight(module, in_dim):
+                cols = []
+                for s in range(0, in_dim, 64):
+                    e = min(s + 64, in_dim)
+                    probe = np.zeros((1, e - s, in_dim), dtype=np.float32)
+                    for j in range(e - s):
+                        probe[0, j, s + j] = 1.0
+                    out = np.array(module(mx.array(probe).astype(mx.float16)).astype(mx.float32)[0])
+                    cols.append(out.T)
+                return np.concatenate(cols, axis=1).astype(np.float32)
+
+            np.save(layer_dir / "q_proj.npy", extract_weight(ly.self_attn.q_proj, hidden))
+            np.save(layer_dir / "k_proj.npy", extract_weight(ly.self_attn.k_proj, hidden))
+            np.save(layer_dir / "v_proj.npy", extract_weight(ly.self_attn.v_proj, hidden))
+            np.save(layer_dir / "o_proj.npy", extract_weight(ly.self_attn.o_proj, hidden))
+            np.save(layer_dir / "gate_proj.npy", extract_weight(ly.mlp.gate_proj, hidden))
+            np.save(layer_dir / "up_proj.npy", extract_weight(ly.mlp.up_proj, hidden))
+            mlp_dim = np.load(layer_dir / "gate_proj.npy").shape[0]
+            np.save(layer_dir / "down_proj.npy", extract_weight(ly.mlp.down_proj, mlp_dim))
+
+            if (layer_idx + 1) % 8 == 0:
+                print(f"    L{layer_idx} done")
+        filled.append("weights")
+
+    return {"filled": filled, "path": str(p)}
+
+
 def load_mri(path: str) -> dict:
     """Load measurement data. Handles both .mri directories and legacy .shrt.npz files.
 
@@ -425,6 +541,9 @@ def load_mri(path: str) -> dict:
         lmhead_path = p / "lmhead.npy"
         if lmhead_path.exists():
             result["lmhead"] = np.load(lmhead_path, mmap_mode='r')
+        lmhead_raw_path = p / "lmhead_raw.npy"
+        if lmhead_raw_path.exists():
+            result["lmhead_raw"] = np.load(lmhead_raw_path, mmap_mode='r')
 
         # Embedding matrix
         embed_path = p / "embedding.npy"
