@@ -201,8 +201,35 @@ def generate_frt(
 
 
 def load_frt(path: str) -> dict:
-    """Load a .frt file. Returns dict with arrays and metadata."""
-    d = np.load(path, allow_pickle=False)
+    """Load tokenizer data. Accepts .frt.npz files or .mri directories.
+
+    When given an .mri directory, extracts tokenizer data from tokens.npz.
+    Returns consistent dict with all available tokenizer arrays.
+    """
+    from pathlib import Path
+    p = Path(path)
+
+    # .mri directory — tokenizer data is inline
+    if p.is_dir() and (p / "tokens.npz").exists():
+        tokens = np.load(p / "tokens.npz", allow_pickle=False)
+        meta_path = p / "metadata.json"
+        meta = {}
+        if meta_path.exists():
+            meta = json.load(open(meta_path))
+        result = {"metadata": meta}
+        for key in tokens.files:
+            result[key] = tokens[key]
+        # Compute missing fields for backwards compat
+        if "byte_counts" not in result and "raw_bytes_lengths" in result:
+            result["byte_counts"] = result["raw_bytes_lengths"]
+        if "is_special" not in result:
+            result["is_special"] = np.array([not str(t).strip() for t in result.get("token_texts", [])])
+        if "char_counts" not in result and "token_texts" in result:
+            result["char_counts"] = np.array([len(str(t)) for t in result["token_texts"]], dtype=np.int16)
+        return result
+
+    # Legacy .frt.npz format
+    d = np.load(str(p), allow_pickle=False)
     meta = json.loads(str(d['metadata'][0]))
     result = {
         "metadata": meta,
@@ -213,7 +240,6 @@ def load_frt(path: str) -> dict:
         "is_special": d["is_special"],
         "scripts": d["scripts"],
     }
-    # v0.3 arrays (backwards compatible)
     for key in ["raw_bytes", "raw_bytes_lengths", "merge_ranks"]:
         if key in d.files:
             result[key] = d[key]

@@ -295,48 +295,97 @@ def capture_mri(
 
 
 def load_mri(path: str) -> dict:
-    """Load a .mri directory. Single load function for all analysis tools.
+    """Load measurement data. Handles both .mri directories and legacy .shrt.npz files.
 
-    Returns dict with metadata, token arrays, baselines, and per-layer
-    arrays loaded on demand.
+    This is the ONLY load function analysis tools should call.
+    Returns a consistent dict regardless of source format.
     """
     p = Path(path)
 
-    with open(p / "metadata.json") as f:
-        meta = json.load(f)
+    # === .mri directory format ===
+    if p.is_dir():
+        with open(p / "metadata.json") as f:
+            meta = json.load(f)
 
-    tokens = np.load(p / "tokens.npz", allow_pickle=False)
-    baselines = np.load(p / "baselines.npz", allow_pickle=False)
+        tokens = np.load(p / "tokens.npz", allow_pickle=False)
+        result = {
+            "metadata": meta,
+            "path": str(p),
+            "token_ids": tokens["token_ids"],
+            "token_texts": tokens["token_texts"],
+        }
+        for key in tokens.files:
+            result[key] = tokens[key]
+
+        baselines_path = p / "baselines.npz"
+        if baselines_path.exists():
+            baselines = np.load(baselines_path, allow_pickle=False)
+            for key in baselines.files:
+                result[f"baseline_{key}"] = baselines[key]
+
+        n_layers = meta["model"]["n_layers"]
+        for i in range(n_layers):
+            entry_path = p / f"L{i:02d}_entry.npy"
+            exit_path = p / f"L{i:02d}_exit.npy"
+            if entry_path.exists():
+                result[f"entry_L{i}"] = np.load(entry_path, mmap_mode='r')
+            if exit_path.exists():
+                result[f"exit_L{i}"] = np.load(exit_path, mmap_mode='r')
+
+        dir_dir = p / "directions"
+        if dir_dir.exists():
+            for npy in dir_dir.glob("*.npy"):
+                result[f"direction_{npy.stem}"] = np.load(npy)
+
+        lmhead_path = p / "lmhead.npy"
+        if lmhead_path.exists():
+            result["lmhead"] = np.load(lmhead_path, mmap_mode='r')
+
+        return result
+
+    # === Legacy .shrt.npz format (v0.2, v0.3, v0.4) ===
+    d = np.load(str(p), allow_pickle=False)
+    meta = json.loads(str(d['metadata'][0]))
+
+    import warnings
+    baseline_ent = meta.get('baseline', {}).get('entropy', 0)
+    if baseline_ent > 5.0:
+        warnings.warn(f"{path}: baseline entropy {baseline_ent:.2f} is high.", stacklevel=2)
 
     result = {
         "metadata": meta,
         "path": str(p),
-        "token_ids": tokens["token_ids"],
-        "token_texts": tokens["token_texts"],
+        "token_ids": d["token_ids"],
+        "token_texts": d["token_texts"],
     }
-    for key in tokens.files:
-        result[key] = tokens[key]
-    for key in baselines.files:
-        result[f"baseline_{key}"] = baselines[key]
 
-    # Per-layer arrays: load on access to save memory
-    n_layers = meta["model"]["n_layers"]
-    for i in range(n_layers):
-        entry_path = p / f"L{i:02d}_entry.npy"
-        exit_path = p / f"L{i:02d}_exit.npy"
-        if entry_path.exists():
-            result[f"entry_L{i}"] = np.load(entry_path, mmap_mode='r')
-            result[f"exit_L{i}"] = np.load(exit_path, mmap_mode='r')
+    # Map legacy arrays to consistent keys
+    if "vectors" in d.files:
+        # v0.2/v0.3: vectors at primary layer = exit vectors
+        layer = meta.get('baseline', {}).get('layer', meta.get('layers', [0])[0] if meta.get('layers') else 0)
+        result[f"exit_L{layer}"] = d["vectors"]
+        result["vectors"] = d["vectors"]  # backwards compat
 
-    # Directions
-    dir_dir = p / "directions"
-    if dir_dir.exists():
-        for npy in dir_dir.glob("*.npy"):
-            result[f"direction_{npy.stem}"] = np.load(npy)
+    if "deltas" in d.files:
+        result["deltas"] = d["deltas"]
 
-    # lm_head matrix
-    lmhead_path = p / "lmhead.npy"
-    if lmhead_path.exists():
-        result["lmhead"] = np.load(lmhead_path, mmap_mode='r')
+    # v0.3 arrays
+    for key in ["kl_divs", "output_entropies", "byte_counts", "scripts",
+                 "raw_bytes", "raw_bytes_lengths", "merge_ranks"]:
+        if key in d.files:
+            result[key] = d[key]
+
+    # Per-layer deltas (v0.2 all-layers)
+    for key in d.files:
+        if key.startswith("deltas_L"):
+            result[key] = d[key]
+        elif key.startswith("entry_L") or key.startswith("exit_L"):
+            result[key] = d[key]
+        elif key.startswith("baseline_"):
+            result[key] = d[key]
+
+    # Layer array
+    if "layer" in d.files:
+        result["layer"] = d["layer"]
 
     return result

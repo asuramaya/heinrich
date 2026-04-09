@@ -609,39 +609,13 @@ def generate_shrt(
 
 
 def load_shrt(path: str) -> dict:
-    """Load a .shrt file. Returns dict with arrays and metadata.
-    Includes per-layer delta arrays (deltas_L{n}) if present.
-    Warns if baseline looks suspicious."""
-    import warnings as _warnings
-    d = np.load(path, allow_pickle=False)  # safe: npz arrays only
-    meta = json.loads(str(d['metadata'][0]))
+    """Load measurement data. Delegates to load_mri which handles all formats.
 
-    # Check baseline health
-    baseline_ent = meta.get('baseline', {}).get('entropy', 0)
-    if baseline_ent > 5.0:
-        _warnings.warn(
-            f"{path}: baseline entropy {baseline_ent:.2f} is high. "
-            f"System prompt may not have been stripped. "
-            f"Compare with caution.",
-            stacklevel=2,
-        )
-
-    result = {
-        "metadata": meta,
-        "token_ids": d["token_ids"],
-        "token_texts": d["token_texts"],
-        "deltas": d["deltas"],
-        "vectors": d["vectors"],
-        "layer": d["layer"],
-    }
-    # v0.3 arrays (backwards compatible)
-    for key in ["kl_divs", "output_entropies", "byte_counts", "scripts"]:
-        if key in d.files:
-            result[key] = d[key]
-    for key in d.files:
-        if key.startswith("deltas_L"):
-            result[key] = d[key]
-    return result
+    Accepts .shrt.npz files (v0.2, v0.3, v0.4) and .mri directories.
+    Returns consistent dict with all available arrays.
+    """
+    from .mri import load_mri
+    return load_mri(path)
 
 
 if __name__ == "__main__":
