@@ -161,7 +161,7 @@ def capture_mri(
     scripts = np.array([_detect_script(tok) for _, tok in sample])
 
     # === Capture ===
-    batch_size = 32 if mode in ("raw", "naked") else 1
+    batch_size = 32  # all modes batchable — template has fixed length
     t_start = time.time()
 
     for batch_start in range(0, n_tokens, batch_size):
@@ -170,18 +170,13 @@ def capture_mri(
         B = len(batch)
 
         if mode in ("raw", "naked"):
-            # Batchable: each input is [tid] alone
             inp = mx.array([[tid] for tid, _ in batch])  # [B, 1]
             mask = None
         else:
-            # Template: each input has different content, process one at a time
-            # (could batch if all same length, but template+token is variable)
-            tid, tok = batch[0]
-            input_ids = prefix_ids + [tid] + suffix_ids
-            inp = mx.array([input_ids])
-            T = len(input_ids)
+            # Template: [prefix + tid + suffix] — same length for every token
+            inp = mx.array([prefix_ids + [tid] + suffix_ids for tid, _ in batch])  # [B, seq_len]
+            T = inp.shape[1]
             mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
-            B = 1
 
         h = model_inner.embed_tokens(inp)
         entry_mlx = []
