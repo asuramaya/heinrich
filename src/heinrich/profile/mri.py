@@ -273,11 +273,19 @@ def capture_mri(
             norm_dict["final"] = np.array(model_inner.norm.weight).astype(np.float16)
             np.savez_compressed(norms_path, **norm_dict)
 
-        # Embedding matrix
+        # Embedding matrix (probed to dequantize, float32 to avoid overflow)
         embed_path = out_dir / "embedding.npy"
         if not embed_path.exists():
             print(f"  Extracting embedding matrix...")
-            embed_weights = np.array(model_inner.embed_tokens.weight).astype(np.float16)
+            vocab = cfg.vocab_size
+            embed_vecs = []
+            batch_e = 256
+            for s in range(0, vocab, batch_e):
+                e = min(s + batch_e, vocab)
+                ids = mx.array([[i] for i in range(s, e)])  # [batch, 1]
+                vecs = np.array(model_inner.embed_tokens(ids).astype(mx.float32)[:, 0, :])  # [batch, hidden]
+                embed_vecs.append(vecs)
+            embed_weights = np.concatenate(embed_vecs, axis=0).astype(np.float32)  # float32, not float16
             np.save(embed_path, embed_weights)
             total_size += embed_path.stat().st_size
 
