@@ -224,6 +224,9 @@ def total_capture(
         for i in range(n_layers):
             save_dict[f"entry_L{i}"] = entry_arrays[i]
             save_dict[f"exit_L{i}"] = exit_arrays[i]
+            # Store baseline (the trained frame or BOS state) at every layer
+            save_dict[f"baseline_entry_L{i}"] = baseline_entry[i].astype(np.float16)
+            save_dict[f"baseline_exit_L{i}"] = baseline_exit[i].astype(np.float16)
 
         np.savez_compressed(output, **save_dict)
         file_size = Path(output).stat().st_size / 1e9
