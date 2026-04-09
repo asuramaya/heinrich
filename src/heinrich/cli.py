@@ -232,6 +232,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_discover_dir.add_argument("--n-benign", type=int, default=100, help="Number of benign prompts")
     p_discover_dir.add_argument("--output", "-o", default=None, help="Output .npy file for direction vector")
 
+    p_layerimp = sub.add_parser("profile-layer-importance", help="Rank layers by contribution to output state (reads MRI, no model needed)")
+    p_layerimp.add_argument("--mri", required=True, help=".mri directory")
+
+    p_earlyexit = sub.add_parser("profile-early-exit", help="Find tokens resolved before the final layer (reads MRI)")
+    p_earlyexit.add_argument("--mri", required=True, help=".mri directory")
+    p_earlyexit.add_argument("--threshold", type=float, default=95.0, help="Cosine similarity threshold (%)")
+
+    p_tmplover = sub.add_parser("profile-template-overhead", help="Measure template vs content contribution per layer")
+    p_tmplover.add_argument("--template-mri", required=True, help="Template mode .mri directory")
+    p_tmplover.add_argument("--raw-mri", required=True, help="Raw mode .mri directory")
+
     p_mri = sub.add_parser("mri", help="Complete model residual image: tokenizer + state + baselines + directions in one file")
     p_mri.add_argument("--model", required=True, help="Model ID")
     p_mri.add_argument("--mode", choices=["template", "naked", "raw"], default="template")
@@ -352,6 +363,12 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_scatter(args)
     elif args.command == "profile-within-script":
         _cmd_within_script(args)
+    elif args.command == "profile-layer-importance":
+        _cmd_layer_importance(args)
+    elif args.command == "profile-early-exit":
+        _cmd_early_exit(args)
+    elif args.command == "profile-template-overhead":
+        _cmd_template_overhead(args)
     elif args.command == "mri":
         _cmd_mri(args)
     elif args.command == "total-capture":
@@ -837,6 +854,52 @@ def _cmd_trd(args: argparse.Namespace) -> None:
             top_h = sh['top_heads']
             h_str = ', '.join('H{}={:.3f}'.format(h['head'], h['fraction']) for h in top_h)
             print(f"    {s:<12} n={sh['n']:>4} entropy={sh['head_entropy']:.2f}  {h_str}")
+
+
+def _cmd_layer_importance(args: argparse.Namespace) -> None:
+    """Rank layers by contribution — no model needed."""
+    from .profile.efficiency import layer_importance
+    result = layer_importance(args.mri)
+    print(f"\n=== Layer Importance: {result['model']} ({result['n_tokens']} tokens) ===\n")
+    print(f"  {'L':>3} {'mean_delta':>10} {'std':>8} {'rank'}")
+    ranked = sorted(result['contributions'], key=lambda x: x.get('mean_delta', 0))
+    for c in result['contributions']:
+        rank_pos = ranked.index(c) + 1
+        prunable = '*' if c['layer'] in result['prunable_layers'] else ''
+        print(f"  L{c['layer']:>2} {c.get('mean_delta',0):>10.2f} {c.get('std_delta',0):>8.2f} {rank_pos:>3}{prunable}")
+    print(f"\n  Prunable (bottom 25%): {result['prunable_layers']}")
+    print(f"  Threshold: {result['prune_threshold']}")
+
+
+def _cmd_early_exit(args: argparse.Namespace) -> None:
+    """Find tokens that can exit early — no model needed."""
+    from .profile.efficiency import early_exit_analysis
+    result = early_exit_analysis(args.mri, threshold_pct=args.threshold)
+    if 'error' in result:
+        print(f"Error: {result['error']}")
+        return
+    print(f"\n=== Early Exit: {result['model']} ({result['n_tokens']} tokens, {result['threshold_pct']}% threshold) ===\n")
+    print(f"  Mean exit layer: {result['mean_exit_layer']} / {result['n_layers']-1}")
+    print(f"  Tokens exiting early: {result['pct_early_exit']}%")
+    if result.get('script_exit'):
+        print(f"\n  {'script':<12} {'n':>6} {'mean_exit':>9} {'%early':>7}")
+        for s in sorted(result['script_exit'], key=lambda x: result['script_exit'][x]['mean_exit_layer']):
+            d = result['script_exit'][s]
+            print(f"  {s:<12} {d['n']:>6} {d['mean_exit_layer']:>9.1f} {d['pct_early']:>6.1f}%")
+
+
+def _cmd_template_overhead(args: argparse.Namespace) -> None:
+    """Template vs content contribution — no model needed."""
+    from .profile.efficiency import template_overhead
+    result = template_overhead(args.template_mri, args.raw_mri)
+    if 'error' in result:
+        print(f"Error: {result['error']}")
+        return
+    print(f"\n=== Template Overhead: {result['model']} ({result['n_shared']} shared tokens) ===\n")
+    print(f"  {'L':>3} {'template':>9} {'raw':>9} {'diff':>9} {'overhead%':>9}")
+    for l in result['layers']:
+        print(f"  L{l['layer']:>2} {l['template_mean_norm']:>9.1f} {l['raw_mean_norm']:>9.1f} "
+              f"{l['diff_mean_norm']:>9.1f} {l['template_pct']:>8.1f}%")
 
 
 def _cmd_mri(args: argparse.Namespace) -> None:
