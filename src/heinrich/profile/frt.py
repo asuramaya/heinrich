@@ -104,7 +104,7 @@ def generate_frt(
     for tid in [0, 1, 100, 1000, vocab_size // 2, vocab_size - 1]:
         if tid < vocab_size:
             text = tokenizer.decode([tid])
-            re_ids = tokenizer.encode(text)
+            re_ids = tokenizer.encode(text, add_special_tokens=False)
             if len(re_ids) != 1 or re_ids[0] != tid:
                 roundtrip_failures += 1
 

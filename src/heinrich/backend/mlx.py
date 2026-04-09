@@ -664,7 +664,7 @@ class MLXBackend:
                 refuse_token_ids = []
                 for word in ["Sorry", "I cannot", "I can't", "not", "unable"]:
                     try:
-                        ids = self.tokenizer.encode(word)
+                        ids = self.tokenizer.encode(word, add_special_tokens=False)
                         if ids:
                             refuse_token_ids.append(ids[0])
                     except Exception:
