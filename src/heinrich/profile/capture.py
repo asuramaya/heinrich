@@ -158,10 +158,29 @@ def total_capture(
     token_ids_list = []
     token_texts_list = []
 
-    # Process tokens and write directly
-    # Use memory-mapped arrays for large datasets
-    entry_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16) for i in range(n_layers)}
-    exit_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16) for i in range(n_layers)}
+    # Use memory-mapped files for large datasets to avoid OOM
+    # Each array is [n_tokens, hidden] float16, written directly to disk
+    import tempfile
+    estimated_bytes = n_tokens * n_layers * 2 * hidden * 2
+    use_mmap = estimated_bytes > 4e9  # mmap if > 4GB estimated
+
+    if use_mmap and output:
+        mmap_dir = Path(output).parent / ".capture_tmp"
+        mmap_dir.mkdir(exist_ok=True)
+        entry_arrays = {}
+        exit_arrays = {}
+        for i in range(n_layers):
+            entry_arrays[i] = np.memmap(
+                str(mmap_dir / f"entry_L{i}.dat"), dtype=np.float16,
+                mode='w+', shape=(n_tokens, hidden))
+            exit_arrays[i] = np.memmap(
+                str(mmap_dir / f"exit_L{i}.dat"), dtype=np.float16,
+                mode='w+', shape=(n_tokens, hidden))
+        print(f"  Using memory-mapped arrays ({estimated_bytes/1e9:.1f} GB estimated)")
+    else:
+        mmap_dir = None
+        entry_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16) for i in range(n_layers)}
+        exit_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16) for i in range(n_layers)}
 
     t_start = time.time()
     for idx, (tid, tok) in enumerate(sample):
@@ -249,5 +268,10 @@ def total_capture(
         np.savez_compressed(output, **save_dict)
         file_size = Path(output).stat().st_size / 1e9
         print(f"\n  Saved to {output} ({file_size:.2f} GB)")
+
+        # Clean up mmap temp files
+        if mmap_dir and mmap_dir.exists():
+            import shutil
+            shutil.rmtree(str(mmap_dir), ignore_errors=True)
 
     return metadata
