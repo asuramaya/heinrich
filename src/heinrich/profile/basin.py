@@ -193,13 +193,13 @@ def first_token_profile(
     # Per-token analysis
     refuse_pushes = {}
     for tok in refuse_tokens:
-        ids = backend.tokenizer.encode(tok)
+        ids = backend.tokenizer.encode(tok, add_special_tokens=False)
         if ids:
             refuse_pushes[tok] = round(float(logits[ids[0]]), 4)
 
     comply_pushes = {}
     for tok in comply_tokens:
-        ids = backend.tokenizer.encode(tok)
+        ids = backend.tokenizer.encode(tok, add_special_tokens=False)
         if ids:
             comply_pushes[tok] = round(float(logits[ids[0]]), 4)
 
