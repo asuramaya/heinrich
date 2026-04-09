@@ -239,26 +239,34 @@ def capture_mri(
         },
     }
 
-    # === Save ===
+    # === Save as directory of per-layer files ===
     if output:
-        save_dict = {
-            "metadata": np.array([json.dumps(metadata, ensure_ascii=False)]),
-            "token_ids": token_ids,
-            "token_texts": token_texts,
-            "raw_bytes": raw_bytes,
-            "raw_bytes_lengths": raw_bytes_lengths,
-            "merge_ranks": merge_ranks,
-            "scripts": scripts,
-        }
-        for i in range(n_layers):
-            save_dict[f"entry_L{i}"] = np.array(entry_arrays[i])
-            save_dict[f"exit_L{i}"] = np.array(exit_arrays[i])
-            save_dict[f"baseline_entry_L{i}"] = baseline_entry[i].astype(np.float16)
-            save_dict[f"baseline_exit_L{i}"] = baseline_exit[i].astype(np.float16)
+        out_dir = Path(output)
+        out_dir.mkdir(parents=True, exist_ok=True)
 
-        np.savez_compressed(output, **save_dict)
-        file_size = Path(output).stat().st_size / 1e9
-        print(f"\n  Saved to {output} ({file_size:.2f} GB)")
+        with open(out_dir / "metadata.json", 'w') as f:
+            json.dump(metadata, f, indent=2, ensure_ascii=False)
+
+        np.savez_compressed(out_dir / "tokens.npz",
+                            token_ids=token_ids, token_texts=token_texts,
+                            raw_bytes=raw_bytes, raw_bytes_lengths=raw_bytes_lengths,
+                            merge_ranks=merge_ranks, scripts=scripts)
+
+        bl_dict = {}
+        for i in range(n_layers):
+            bl_dict[f"entry_L{i}"] = baseline_entry[i].astype(np.float16)
+            bl_dict[f"exit_L{i}"] = baseline_exit[i].astype(np.float16)
+        np.savez_compressed(out_dir / "baselines.npz", **bl_dict)
+
+        total_size = 0
+        for i in range(n_layers):
+            entry_path = out_dir / f"L{i:02d}_entry.npy"
+            exit_path = out_dir / f"L{i:02d}_exit.npy"
+            np.save(entry_path, np.array(entry_arrays[i]))
+            np.save(exit_path, np.array(exit_arrays[i]))
+            total_size += entry_path.stat().st_size + exit_path.stat().st_size
+
+        print(f"\n  Saved to {out_dir}/ ({total_size / 1e9:.2f} GB in {n_layers * 2} layer files)")
 
         if mmap_dir and mmap_dir.exists():
             import shutil
@@ -268,11 +276,43 @@ def capture_mri(
 
 
 def load_mri(path: str) -> dict:
-    """Load a .mri file. Single load function for all analysis tools."""
-    d = np.load(path, allow_pickle=False)
-    meta = json.loads(str(d['metadata'][0]))
-    result = {"metadata": meta}
-    for key in d.files:
-        if key != "metadata":
-            result[key] = d[key]
+    """Load a .mri directory. Single load function for all analysis tools.
+
+    Returns dict with metadata, token arrays, baselines, and per-layer
+    arrays loaded on demand.
+    """
+    p = Path(path)
+
+    with open(p / "metadata.json") as f:
+        meta = json.load(f)
+
+    tokens = np.load(p / "tokens.npz", allow_pickle=False)
+    baselines = np.load(p / "baselines.npz", allow_pickle=False)
+
+    result = {
+        "metadata": meta,
+        "path": str(p),
+        "token_ids": tokens["token_ids"],
+        "token_texts": tokens["token_texts"],
+    }
+    for key in tokens.files:
+        result[key] = tokens[key]
+    for key in baselines.files:
+        result[f"baseline_{key}"] = baselines[key]
+
+    # Per-layer arrays: load on access to save memory
+    n_layers = meta["model"]["n_layers"]
+    for i in range(n_layers):
+        entry_path = p / f"L{i:02d}_entry.npy"
+        exit_path = p / f"L{i:02d}_exit.npy"
+        if entry_path.exists():
+            result[f"entry_L{i}"] = np.load(entry_path, mmap_mode='r')
+            result[f"exit_L{i}"] = np.load(exit_path, mmap_mode='r')
+
+    # Directions
+    dir_dir = p / "directions"
+    if dir_dir.exists():
+        for npy in dir_dir.glob("*.npy"):
+            result[f"direction_{npy.stem}"] = np.load(npy)
+
     return result
