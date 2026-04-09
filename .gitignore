@@ -41,3 +41,7 @@ data/runs/*
 src/heinrich/profile/__pycache__/frt.cpython-312.pyc
 data/logs/
 __pycache__/
+
+# Build artifacts
+**/.build/
+**/ModuleCache/
