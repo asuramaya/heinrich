@@ -193,16 +193,20 @@ def total_capture(
         mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
 
         h = model_inner.embed_tokens(inp)
+        entry_mlx = []
+        exit_mlx = []
         for i, ly in enumerate(model_inner.layers):
             h = ly(h, mask=mask, cache=None)
             if isinstance(h, tuple):
                 h = h[0]
-            # Entry position delta
-            entry = np.array(h.astype(mx.float32)[0, token_pos, :])
-            entry_arrays[i][idx] = (entry - baseline_entry[i]).astype(np.float16)
-            # Exit position delta
-            exit_val = np.array(h.astype(mx.float32)[0, -1, :])
-            exit_arrays[i][idx] = (exit_val - baseline_exit[i]).astype(np.float16)
+            entry_mlx.append(h[0, token_pos, :])
+            exit_mlx.append(h[0, -1, :])
+        # One GPU sync instead of 2*n_layers syncs
+        all_entry = np.array(mx.stack(entry_mlx).astype(mx.float32))
+        all_exit = np.array(mx.stack(exit_mlx).astype(mx.float32))
+        for i in range(n_layers):
+            entry_arrays[i][idx] = (all_entry[i] - baseline_entry[i]).astype(np.float16)
+            exit_arrays[i][idx] = (all_exit[i] - baseline_exit[i]).astype(np.float16)
 
         token_ids_list.append(tid)
         token_texts_list.append(tok)
