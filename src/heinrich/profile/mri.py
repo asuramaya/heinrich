@@ -161,16 +161,27 @@ def capture_mri(
     scripts = np.array([_detect_script(tok) for _, tok in sample])
 
     # === Capture ===
+    batch_size = 32 if mode in ("raw", "naked") else 1
     t_start = time.time()
-    for idx, (tid, tok) in enumerate(sample):
-        if mode in ("raw", "naked"):
-            input_ids = [tid]
-        else:
-            input_ids = prefix_ids + [tid] + suffix_ids
 
-        inp = mx.array([input_ids])
-        T = len(input_ids)
-        mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
+    for batch_start in range(0, n_tokens, batch_size):
+        batch_end = min(batch_start + batch_size, n_tokens)
+        batch = sample[batch_start:batch_end]
+        B = len(batch)
+
+        if mode in ("raw", "naked"):
+            # Batchable: each input is [tid] alone
+            inp = mx.array([[tid] for tid, _ in batch])  # [B, 1]
+            mask = None
+        else:
+            # Template: each input has different content, process one at a time
+            # (could batch if all same length, but template+token is variable)
+            tid, tok = batch[0]
+            input_ids = prefix_ids + [tid] + suffix_ids
+            inp = mx.array([input_ids])
+            T = len(input_ids)
+            mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
+            B = 1
 
         h = model_inner.embed_tokens(inp)
         entry_mlx = []
@@ -178,20 +189,24 @@ def capture_mri(
         for i, ly in enumerate(model_inner.layers):
             h = ly(h, mask=mask, cache=None)
             if isinstance(h, tuple): h = h[0]
-            entry_mlx.append(h[0, token_pos, :])  # stays in MLX, no sync
-            exit_mlx.append(h[0, -1, :])
-        # One sync: stack all layers, convert to numpy once
-        all_entry = np.array(mx.stack(entry_mlx).astype(mx.float32))  # [n_layers, hidden]
-        all_exit = np.array(mx.stack(exit_mlx).astype(mx.float32))
-        for i in range(n_layers):
-            entry_arrays[i][idx] = (all_entry[i] - baseline_entry[i]).astype(np.float16)
-            exit_arrays[i][idx] = (all_exit[i] - baseline_exit[i]).astype(np.float16)
+            entry_mlx.append(h[:, token_pos, :])  # [B, hidden]
+            exit_mlx.append(h[:, -1, :])
 
-        if (idx + 1) % 1000 == 0:
+        # One sync for entire batch
+        all_entry = np.array(mx.stack(entry_mlx).astype(mx.float32))  # [n_layers, B, hidden]
+        all_exit = np.array(mx.stack(exit_mlx).astype(mx.float32))
+
+        for b in range(B):
+            idx = batch_start + b
+            for i in range(n_layers):
+                entry_arrays[i][idx] = (all_entry[i, b] - baseline_entry[i]).astype(np.float16)
+                exit_arrays[i][idx] = (all_exit[i, b] - baseline_exit[i]).astype(np.float16)
+
+        if (batch_end) % 1000 < batch_size or batch_end == n_tokens:
             elapsed = time.time() - t_start
-            rate = (idx + 1) / elapsed
-            remaining = (n_tokens - idx - 1) / rate
-            print(f"  {idx+1}/{n_tokens} ({rate:.0f} tok/s, ~{remaining/60:.0f}m remaining)")
+            rate = batch_end / max(elapsed, 0.01)
+            remaining = (n_tokens - batch_end) / max(rate, 1)
+            print(f"  {batch_end}/{n_tokens} ({rate:.0f} tok/s, ~{remaining/60:.0f}m remaining)")
 
     elapsed = time.time() - t0
 
