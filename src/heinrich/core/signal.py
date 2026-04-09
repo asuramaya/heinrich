@@ -17,6 +17,7 @@ class Signal:
     target: str
     value: float
     metadata: dict[str, Any] = field(default_factory=dict)
+    stream: str | None = None
 
 
 class SignalStore:
@@ -50,6 +51,7 @@ class SignalStore:
         kind: str | None = None,
         source: str | None = None,
         model: str | None = None,
+        stream: str | None = ...,
     ) -> list[Signal]:
         out = list(self._signals)
         if kind is not None:
@@ -58,6 +60,8 @@ class SignalStore:
             out = [s for s in out if s.source == source]
         if model is not None:
             out = [s for s in out if s.model == model]
+        if stream is not ...:
+            out = [s for s in out if s.stream == stream]
         return out
 
     def top(self, k: int = 10) -> list[Signal]:

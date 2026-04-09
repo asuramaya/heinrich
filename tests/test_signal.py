@@ -76,3 +76,40 @@ def test_signal_store_summary():
     assert summary["total"] == 15
     assert summary["by_kind"]["hash"] == 10
     assert summary["by_kind"]["config"] == 5
+
+
+def test_signal_stream_defaults_to_none():
+    s = Signal("a", "s", "m", "t", 1.0, {})
+    assert s.stream is None
+
+
+def test_signal_stream_set_explicitly():
+    s = Signal("a", "s", "m", "t", 1.0, {}, stream="encoder")
+    assert s.stream == "encoder"
+
+
+def test_signal_store_filter_by_stream():
+    store = SignalStore()
+    store.add(Signal("dir", "discover", "whisper", "japanese.L4", 0.95, {}, stream="encoder"))
+    store.add(Signal("dir", "discover", "whisper", "japanese.L2", 0.87, {}, stream="decoder"))
+    store.add(Signal("dir", "discover", "whisper", "safety.L8", 0.91, {}))  # no stream
+
+    assert len(store.filter(stream="encoder")) == 1
+    assert len(store.filter(stream="decoder")) == 1
+    assert len(store.filter(stream=None)) == 1
+    assert len(store.filter()) == 3  # no stream filter = all signals
+
+
+def test_signal_stream_survives_json_roundtrip():
+    store = SignalStore()
+    store.add(Signal("dir", "discover", "whisper", "japanese.L4", 0.95, {}, stream="encoder"))
+    store.add(Signal("shart", "audit", "llama", "bomb", 12.3, {}))  # no stream
+    data = store.to_json()
+    restored = SignalStore.from_json(data)
+    assert len(restored) == 2
+    encoder_signals = restored.filter(stream="encoder")
+    assert len(encoder_signals) == 1
+    assert encoder_signals[0].target == "japanese.L4"
+    unqualified = restored.filter(stream=None)
+    assert len(unqualified) == 1
+    assert unqualified[0].target == "bomb"

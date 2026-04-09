@@ -699,6 +699,18 @@ class SignalDB:
                 "UPDATE schema_version SET version = ?", (10,), wait=True,
             )
 
+        if current < 11:
+            try:
+                self._write_script(
+                    "ALTER TABLE signals ADD COLUMN stream TEXT DEFAULT NULL;",
+                    wait=True,
+                )
+            except sqlite3.OperationalError:
+                pass
+            self._write(
+                "UPDATE schema_version SET version = ?", (11,), wait=True,
+            )
+
     # ------------------------------------------------------------------
     # Legacy: Run management
     # ------------------------------------------------------------------
@@ -733,10 +745,10 @@ class SignalDB:
         rid = run_id or self._current_run_id
         meta = json.dumps(signal.metadata) if signal.metadata else "{}"
         return self._write(
-            "INSERT INTO signals (run_id, kind, source, model, target, value, metadata, created_at) "
-            "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+            "INSERT INTO signals (run_id, kind, source, model, target, value, metadata, created_at, stream) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
             (rid, signal.kind, signal.source, signal.model, signal.target,
-             signal.value, meta, time.time()),
+             signal.value, meta, time.time(), signal.stream),
             wait=True,
         )
 
@@ -746,10 +758,10 @@ class SignalDB:
         now = time.time()
         ops = [
             (
-                "INSERT INTO signals (run_id, kind, source, model, target, value, metadata, created_at) "
-                "VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
+                "INSERT INTO signals (run_id, kind, source, model, target, value, metadata, created_at, stream) "
+                "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
                 (rid, s.kind, s.source, s.model, s.target, s.value,
-                 json.dumps(s.metadata) if s.metadata else "{}", now),
+                 json.dumps(s.metadata) if s.metadata else "{}", now, s.stream),
             )
             for s in signals
         ]
@@ -805,7 +817,7 @@ class SignalDB:
 
             rows = self._conn.execute(
                 "SELECT d.source_signal_id, d.relationship, "
-                "s.kind, s.source, s.model, s.target, s.value, s.metadata "
+                "s.kind, s.source, s.model, s.target, s.value, s.metadata, s.stream "
                 "FROM derivations d "
                 "JOIN signals s ON s.id = d.source_signal_id "
                 "WHERE d.derived_signal_id = ?",
@@ -821,6 +833,7 @@ class SignalDB:
                         kind=r["kind"], source=r["source"], model=r["model"],
                         target=r["target"], value=r["value"],
                         metadata=json.loads(r["metadata"]),
+                        stream=r["stream"],
                     ),
                 })
                 if src_id not in visited:
@@ -835,7 +848,7 @@ class SignalDB:
         """
         rows = self._conn.execute(
             "SELECT d.derived_signal_id, d.relationship, "
-            "s.kind, s.source, s.model, s.target, s.value, s.metadata "
+            "s.kind, s.source, s.model, s.target, s.value, s.metadata, s.stream "
             "FROM derivations d "
             "JOIN signals s ON s.id = d.derived_signal_id "
             "WHERE d.source_signal_id = ?",
@@ -850,6 +863,7 @@ class SignalDB:
                     kind=r["kind"], source=r["source"], model=r["model"],
                     target=r["target"], value=r["value"],
                     metadata=json.loads(r["metadata"]),
+                    stream=r["stream"],
                 ),
             }
             for r in rows
@@ -862,6 +876,7 @@ class SignalDB:
         source: str | None = None,
         model: str | None = None,
         target: str | None = None,
+        stream: str | None = ...,
         run_id: int | None = None,
         min_value: float | None = None,
         max_value: float | None = None,
@@ -884,6 +899,12 @@ class SignalDB:
         if target:
             clauses.append("target = ?")
             params.append(target)
+        if stream is not ...:
+            if stream is None:
+                clauses.append("stream IS NULL")
+            else:
+                clauses.append("stream = ?")
+                params.append(stream)
         if run_id is not None:
             clauses.append("run_id = ?")
             params.append(run_id)
@@ -895,7 +916,7 @@ class SignalDB:
             params.append(max_value)
 
         where = " AND ".join(clauses) if clauses else "1=1"
-        sql = f"SELECT kind, source, model, target, value, metadata FROM signals WHERE {where} ORDER BY {order_by} LIMIT ?"
+        sql = f"SELECT kind, source, model, target, value, metadata, stream FROM signals WHERE {where} ORDER BY {order_by} LIMIT ?"
         params.append(limit)
 
         rows = self._conn.execute(sql, params).fetchall()
@@ -904,6 +925,7 @@ class SignalDB:
                 kind=r["kind"], source=r["source"], model=r["model"],
                 target=r["target"], value=r["value"],
                 metadata=json.loads(r["metadata"]),
+                stream=r["stream"],
             )
             for r in rows
         ]

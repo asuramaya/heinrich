@@ -206,6 +206,58 @@ class TestSignalProvenance:
         assert len(run_signals) == 2
 
 
+class TestStreamSignals:
+    """Stream-qualified signal storage and retrieval."""
+
+    def test_add_signal_with_stream(self, db):
+        db.add(Signal("direction", "discover", "whisper", "japanese.L4", 0.95, {}, stream="encoder"))
+        results = db.query(kind="direction")
+        assert len(results) == 1
+        assert results[0].stream == "encoder"
+
+    def test_add_signal_without_stream(self, db):
+        db.add(Signal("shart", "audit", "llama", "bomb", 12.3))
+        results = db.query(kind="shart")
+        assert len(results) == 1
+        assert results[0].stream is None
+
+    def test_query_filter_by_stream(self, db):
+        db.add(Signal("dir", "d", "whisper", "t1", 1.0, {}, stream="encoder"))
+        db.add(Signal("dir", "d", "whisper", "t2", 2.0, {}, stream="decoder"))
+        db.add(Signal("dir", "d", "llama", "t3", 3.0))  # no stream
+
+        assert len(db.query(stream="encoder")) == 1
+        assert len(db.query(stream="decoder")) == 1
+        assert len(db.query(stream=None)) == 1
+        assert len(db.query()) == 3  # no stream filter
+
+    def test_add_many_with_mixed_streams(self, db):
+        signals = [
+            Signal("a", "s", "m", "t1", 1.0, {}, stream="encoder"),
+            Signal("a", "s", "m", "t2", 2.0, {}, stream="decoder"),
+            Signal("a", "s", "m", "t3", 3.0),
+        ]
+        db.add_many(signals)
+        assert len(db.query(stream="encoder")) == 1
+        assert len(db.query(stream=None)) == 1
+        assert db.count() == 3
+
+    def test_provenance_preserves_stream(self, db):
+        with db.run("stream_prov") as rid:
+            src_id = db.add(Signal("neuron", "discover", "whisper", "n42", 8.1, {}, stream="encoder"))
+            derived_id = db.add_derived(
+                Signal("pruning_candidate", "discover", "whisper", "n42", 0.92, {}, stream="encoder"),
+                source_ids=[src_id],
+                relationship="derived",
+            )
+        derived = db.get_derived(src_id)
+        assert len(derived) == 1
+        assert derived[0]["signal"].stream == "encoder"
+        prov = db.get_provenance(derived_id)
+        assert len(prov) == 1
+        assert prov[0]["signal"].stream == "encoder"
+
+
 class TestDataIntegrity:
     """Item 37: Data integrity checks for ingested data."""
 
