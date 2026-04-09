@@ -1,13 +1,14 @@
-"""Model profiling: .frt (tokenizer), .shrt (weights), .sht (output), .trd (threads).
+"""Model profiling instruments.
 
-The full digestive tract of a language model:
-  frt  → the atoms the tokenizer produces
-  shrt → the model's response to each atom
-  sht  → the output distribution the user receives
-  trd  → the per-head threads that carry each atom through the layers
+  frt     → tokenizer atoms: raw bytes, merge ranks, decoded text
+  shrt    → displacement from silence: vectors + KL at primary layer
+  sht     → output distribution change (absorbed into shrt v0.3)
+  trd     → per-head attribution via o_proj projection
+  capture → total state: entry + exit at every layer, naked or template
 
-Four stages. Four files. Four measurements.
-The tokenizer farts out atoms. The model sharts on them.
-What comes out is the shit. The thread is how it got there.
+  compare → all analysis: PCA, coherence, directions, safety rank, survey
+  basin   → attractor mapping, first-token profiling, lm_head decomposition
+
+The capture stores state. The analysis interprets it. Separate concerns.
 """
 from __future__ import annotations

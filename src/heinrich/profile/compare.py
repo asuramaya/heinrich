@@ -1700,6 +1700,25 @@ def data_matrix(data_dir: str) -> dict:
                 models[model_name]["decompose_file"] = f.name
                 break
 
+    # Scan for .trd files
+    trd_files = sorted(p.glob("*.trd.npz"))
+    for f in trd_files:
+        for model_name in models:
+            arch = model_name.split('_')[0].lower().replace('-', '')
+            if arch in f.name.lower().replace('-', ''):
+                models[model_name].setdefault("trd_file", f.name)
+                break
+
+    # Scan for direction .npy files
+    npy_files = sorted(p.glob("*safety*.npy")) + sorted(p.glob("*comply*.npy"))
+    for f in npy_files:
+        for model_name in models:
+            arch = model_name.split('_')[0].lower().replace('-', '')
+            if arch in f.name.lower().replace('-', ''):
+                models[model_name].setdefault("direction_files", [])
+                models[model_name]["direction_files"].append(f.name)
+                break
+
     coverage = {}
     for name, data in models.items():
         shrt_list = data.get("shrt_files", [])
@@ -1720,6 +1739,8 @@ def data_matrix(data_dir: str) -> dict:
             "sht": bool(data.get("sht_files")),
             "sht_n": max((s["n_sampled"] for s in data.get("sht_files", [])), default=0),
             "decompose": bool(data.get("decompose_file")),
+            "trd": bool(data.get("trd_file")),
+            "n_directions": len(data.get("direction_files", [])),
         }
 
     return {"data_dir": data_dir, "n_models": len(coverage), "coverage": coverage}

@@ -29,13 +29,34 @@ heinrich sht-profile --model <model_id> --n-index 3000
 ```
 Produces: KL divergence from silence baseline per token. What the user actually receives.
 
-**Step 4: Analyze** — no model needed, reads .npz files:
+**Step 4: Total capture** — complete residual state, every layer:
+```
+heinrich total-capture --model <model_id> --output X.shrt.npz              # template mode
+heinrich total-capture --model <model_id> --output X.shrt.npz --naked      # naked mode (BOS baseline, no template)
+```
+Produces: displacement delta at entry position and exit position at every layer. Float16. No directions, no projections. Raw state.
+
+**Step 5: Direction discovery** — needs model + DB prompts:
+```
+heinrich profile-discover-direction --model <model_id>                       # safety direction → .npy
+heinrich profile-safety-rank --shrt X.shrt.npz --direction X_safety.npy     # rank all tokens by safety
+heinrich profile-first-token --model <model_id> --direction X_safety.npy    # first-token logit gap
+heinrich profile-basin --model <model_id> --direction X.npy --layer N       # attractor map
+heinrich profile-lmhead --model <model_id> --directions X.npy Y.npy        # output matrix geometry
+```
+
+**Step 6: Analyze** — no model needed, reads .npz files:
 ```
 heinrich profile-chain --frt X.frt.npz --shrt X.shrt.npz --sht X.sht.npz  # three-stage correlation
 heinrich profile-cross --a X.shrt.npz --b Y.shrt.npz --frt X.frt.npz      # two-model comparison
 heinrich profile-survey --shrt *.shrt.npz --frt *.frt.npz                  # multi-model concordance
 heinrich profile-mismatch --shrt X.shrt.npz --frt X.frt.npz               # tokenizer-weight gap
 heinrich profile-depth --shrt *.shrt.npz --frt *.frt.npz                   # layer trajectory (needs --layers all)
+heinrich profile-within-script --shrt X --frt Y                             # within-script dispersion
+heinrich profile-directions --shrt X --frt Y                                # PCA, coherence, separation
+heinrich profile-code-anatomy --shrt X --frt Y                              # code subcategory decomposition
+heinrich profile-silence --model X --shrt Y --frt Z                         # baseline state measurement
+heinrich profile-matrix --data-dir data/runs                                # data coverage dashboard
 ```
 
 **What to watch for:**
@@ -45,10 +66,11 @@ heinrich profile-depth --shrt *.shrt.npz --frt *.frt.npz                   # lay
 - The .shrt in `discover/shrt.py` is STALE. Use `profile/shrt.py`. The CLI already does this.
 - Data in `data/runs/archive/` is contaminated (poisoned baselines). Don't use it.
 
-**MCP tools (subprocess-isolated, no OOM):**
-- `heinrich_frt_profile` — tokenizer profile
-- `heinrich_shrt_profile` — shart profile (runs as subprocess)
-- `heinrich_sht_profile` — output profile (runs as subprocess)
+**MCP tools (all subprocess-isolated, fresh imports on every call):**
+- `heinrich_frt_profile` — tokenizer profile (.frt v0.3: raw bytes + merge ranks)
+- `heinrich_shrt_profile` — shart profile (.shrt v0.3: vectors + KL + scripts)
+- `heinrich_sht_profile` — output profile
+- `heinrich_total_capture` — total residual capture (10h timeout, supports `naked` flag)
 
 ## Architecture
 
@@ -123,7 +145,14 @@ Measurement integrity tests (18): baseline health (4), determinism (2), separati
 
 - `core/` — SignalDB, Signal, SignalStore
 - `backend/` — MLX and HF model backends, `GenerateResult`, `ForwardContext`
-- `profile/` — .frt (tokenizer), .shrt (residual), .sht (output) profiling
+- `profile/` — the measurement instruments:
+  - `frt.py` — .frt v0.3: raw bytes, merge ranks, script classification
+  - `shrt.py` — .shrt v0.3: vectors + KL + scripts in one file. Prefix KV cache.
+  - `sht.py` — .sht: output KL divergence (absorbed into .shrt v0.3 for new runs)
+  - `trd.py` — .trd: per-head attribution via o_proj projection
+  - `capture.py` — total capture v0.4: entry + exit at every layer, naked or template mode
+  - `compare.py` — all analysis functions (survey, directions, PCA, safety-rank, within-script, etc.)
+  - `basin.py` — basin mapping, first-token profiling, lm_head decomposition
 - `eval/` — scorer pipeline, prompts, report, calibrate (descriptive only)
 - `discover/` — direction finding, neuron profiling (legacy shrt.py here is stale — use profile/)
 - `attack/` — cliff search, steering, distributed attacks
@@ -193,3 +222,26 @@ All prompts loaded into the DB via `require_prompts()`. No hardcoded prompt bank
 - Viz HTTP: limit parameter validated and clamped to [1, 1000]
 - Scorer errors: fail fast after 3 consecutive failures, zero error rows written
 - Exception handling: narrowed to specific types, async write failures warned (not silenced)
+
+## Session 4 findings (April 2026)
+
+- **Safety is 0.5% of displacement variance.** Language identity is 10.2%. Comply/refuse is 0.9%. The displacement profile is a language processing measurement with safety as a trace signal.
+- **Safety and comply are orthogonal.** cos(safety, comply) = -0.31. Topic detection and action obligation are separate computations. Comply direction is universal across all 5 models tested.
+- **Safety works through first-token selection.** The safety direction pushes "Sorry" up and "Sure" down. Phi-3: 53Mx ratio. Qwen: 284x. Mistral: 0x (uniform shift, structurally incapable of refusal). The first word is the decision. Everything after is confabulation.
+- **RLHF builds new directions, doesn't sharpen pretraining's.** Base vs instruct safety: cos = 0.29. Base vs instruct comply: cos = -0.27 to +0.33. RLHF rebuilds both axes from scratch.
+- **Silence is not neutral.** Phi-3 silence = maximum refusal (+159). Qwen silence = moderate compliance (-3.4). Every displacement is relative to a tilted baseline.
+- **The safety boundary is 100-dimensional.** 1 direction: 82%. 100 PCs: 94%. Full 896 dims: 100%. 5-NN nonlinear: 80%. The boundary is a hyperplane, not a threshold.
+- **Full vocabulary coverage** for 5 instruct + 2 base models. No sampling bias. Full-vocab .shrt files in data/runs/.
+- **Direction .npy files** in data/runs/: `{model}_safety_L{N}.npy`, `{model}_comply_L{N}.npy`. Always discover natively — never use cross-mapped directions from the DB.
+- **External storage**: /Volumes/sharts/ for total captures (multi-GB files).
+
+## Workflow warnings
+
+- **Never use ad-hoc python -c scripts.** Build analysis into compare.py, wire into CLI. The tool IS the workflow.
+- **Never use cross-mapped directions from the DB.** Discover natively per model. Cross-mapped directions can be inverted (Phi-3 Cyrillic was wrong).
+- **Geometric statistics (PCA, coherence) are stable across sample sizes.** Scalar statistics (correlations, cv) are NOT. Don't interpret scalar stats from 10% samples.
+- **Safety direction converges at 100 prompts** (cos=0.94 with full 2425-prompt direction). Accuracy ceiling ~85% regardless of prompt count.
+- **Base models have both safety and comply directions** but RLHF replaces them in near-orthogonal directions. A LoRA removing the instruct direction exposes the base model's weaker, differently-oriented structures.
+- **The .shrt v0.3 includes KL and scripts.** Separate .sht and .frt lookups are only needed for old v0.2 files.
+- **MCP tools are subprocess-isolated.** Source changes propagate on every call.
+- **The tool captures state, not interpretation.** Directions, projections, and labels are computed by analysis tools from stored data, not during capture.

@@ -1058,20 +1058,20 @@ def _cmd_matrix(args: argparse.Namespace) -> None:
         return
 
     print(f"\n=== Data Matrix: {result['data_dir']} ({result['n_models']} models) ===\n")
-    print(f"  {'model':<12} {'h':>5} {'L':>3} {'frt':>4} {'shrt':>5} {'N':>6} "
-          f"{'vecs':>5} {'dir':>4} {'allL':>5} {'N_L':>5} {'sht':>4} {'N_s':>5} {'dec':>4}")
-    print(f"  {'-'*75}")
+    print(f"  {'model':<18} {'h':>5} {'L':>3} {'frt':>4} {'shrt':>5} {'N':>6} "
+          f"{'vecs':>5} {'dir':>4} {'allL':>5} {'sht':>4} {'trd':>4} {'dirs':>4}")
+    print(f"  {'-'*72}")
     for name in sorted(result['coverage']):
         c = result['coverage'][name]
         def yn(v): return 'Y' if v else '-'
         dir_str = f"L{c['dir_layer']}" if c['direction'] else '-'
-        print(f"  {name:<12} {c['hidden']:>5} {c['layers']:>3} "
+        print(f"  {name:<18} {c['hidden']:>5} {c['layers']:>3} "
               f"{yn(c['frt']):>4} {yn(c['shrt']):>5} {c['shrt_n']:>6} "
-              f"{yn(c['vectors']):>5} {dir_str:>4} {yn(c['all_layers']):>5} {c['alllayers_n']:>5} "
-              f"{yn(c['sht']):>4} {c['sht_n']:>5} {yn(c['decompose']):>4}")
+              f"{yn(c['vectors']):>5} {dir_str:>4} {yn(c['all_layers']):>5} "
+              f"{yn(c['sht']):>4} {yn(c['trd']):>4} {c.get('n_directions',0):>4}")
 
-    print(f"\n  h=hidden  L=layers  N=tokens sampled  vecs=displacement vectors")
-    print(f"  dir=safety direction (layer)  allL=all-layer sweep  dec=attn/mlp decompose")
+    print(f"\n  h=hidden  L=layers  N=tokens  vecs=vectors  dir=safety direction")
+    print(f"  allL=all-layers  trd=thread map  dirs=.npy direction files")
 
 
 def _cmd_directions(args: argparse.Namespace) -> None:
