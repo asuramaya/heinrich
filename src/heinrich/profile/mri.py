@@ -261,6 +261,14 @@ def capture_mri(
             np.save(exit_path, np.array(exit_arrays[i]))
             total_size += entry_path.stat().st_size + exit_path.stat().st_size
 
+        # Embedding matrix
+        embed_path = out_dir / "embedding.npy"
+        if not embed_path.exists():
+            print(f"  Extracting embedding matrix...")
+            embed_weights = np.array(model_inner.embed_tokens.weight).astype(np.float16)
+            np.save(embed_path, embed_weights)
+            total_size += embed_path.stat().st_size
+
         # lm_head matrix (norm + unembedding composed)
         lmhead_path = out_dir / "lmhead.npy"
         if not lmhead_path.exists():
@@ -363,6 +371,11 @@ def load_mri(path: str) -> dict:
         lmhead_path = p / "lmhead.npy"
         if lmhead_path.exists():
             result["lmhead"] = np.load(lmhead_path, mmap_mode='r')
+
+        # Embedding matrix
+        embed_path = p / "embedding.npy"
+        if embed_path.exists():
+            result["embedding"] = np.load(embed_path, mmap_mode='r')
 
         # o_proj weights per layer
         oproj_dir = p / "oproj"
