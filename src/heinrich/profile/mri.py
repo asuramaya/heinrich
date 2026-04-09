@@ -261,6 +261,18 @@ def capture_mri(
             np.save(exit_path, np.array(exit_arrays[i]))
             total_size += entry_path.stat().st_size + exit_path.stat().st_size
 
+        # Layer norm weights (small, 2 per layer + final norm)
+        norms_path = out_dir / "norms.npz"
+        if not norms_path.exists():
+            print(f"  Extracting norm weights...")
+            norm_dict = {}
+            for layer_idx in range(n_layers):
+                ly = model_inner.layers[layer_idx]
+                norm_dict[f"input_L{layer_idx}"] = np.array(ly.input_layernorm.weight).astype(np.float16)
+                norm_dict[f"post_attn_L{layer_idx}"] = np.array(ly.post_attention_layernorm.weight).astype(np.float16)
+            norm_dict["final"] = np.array(model_inner.norm.weight).astype(np.float16)
+            np.savez_compressed(norms_path, **norm_dict)
+
         # Embedding matrix
         embed_path = out_dir / "embedding.npy"
         if not embed_path.exists():
@@ -376,6 +388,13 @@ def load_mri(path: str) -> dict:
         embed_path = p / "embedding.npy"
         if embed_path.exists():
             result["embedding"] = np.load(embed_path, mmap_mode='r')
+
+        # Norm weights
+        norms_path = p / "norms.npz"
+        if norms_path.exists():
+            norms = np.load(norms_path, allow_pickle=False)
+            for key in norms.files:
+                result[f"norm_{key}"] = norms[key]
 
         # o_proj weights per layer
         oproj_dir = p / "oproj"
