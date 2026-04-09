@@ -62,7 +62,9 @@ def generate_frt(
             merge_lookup = {v: k for k, v in vocab.items()}
 
     for tid in range(vocab_size):
-        text = tokenizer.decode([tid])
+        text = tokenizer.decode([tid], skip_special_tokens=True,
+                                clean_up_tokenization_spaces=False)
+        text_raw = tokenizer.decode([tid])  # unfiltered, for provenance
         raw = text.encode('utf-8', errors='replace')
 
         token_ids.append(tid)
@@ -70,6 +72,10 @@ def generate_frt(
         raw_bytes_list.append(raw)
         byte_counts.append(len(raw))
         char_counts.append(len(text))
+
+        # Track if this token differs under skip_special_tokens
+        # (control tokens decode to [control_N] without the flag)
+        is_control = (text != text_raw)
 
         # Merge rank: token ID itself is a proxy for merge order in BPE
         # Lower IDs = base vocab (byte-level), higher IDs = later merges
@@ -87,9 +93,9 @@ def generate_frt(
     for s in scripts:
         script_counts[s] = script_counts.get(s, 0) + 1
 
-    # Derive special count from scripts (special = empty/whitespace-only decode)
-    is_special = [not text.strip() or text.startswith('<') or text.startswith('[control')
-                  for text in token_texts]
+    # Derive special: empty decode, or control tokens that decode differently
+    # with skip_special_tokens
+    is_special = [not text.strip() for text in token_texts]
     n_special = sum(is_special)
     n_real = vocab_size - n_special
 
