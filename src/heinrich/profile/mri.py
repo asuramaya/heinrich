@@ -300,18 +300,52 @@ def capture_mri(
             np.save(lmhead_path, W)
             total_size += lmhead_path.stat().st_size
 
-        # o_proj weights per layer (for per-head decomposition)
-        oproj_dir = out_dir / "oproj"
-        if not oproj_dir.exists():
-            oproj_dir.mkdir()
-            print(f"  Extracting o_proj weights...")
+        # All projection weights per layer (dequantized by probing)
+        weights_dir = out_dir / "weights"
+        if not weights_dir.exists():
+            weights_dir.mkdir()
+            print(f"  Extracting projection weights (all layers)...")
+            n_heads = cfg.n_heads
+            head_dim = hidden // n_heads
+            # GQA: some models have fewer KV heads
+            kv_heads = getattr(cfg, 'num_key_value_heads', n_heads)
+            kv_dim = kv_heads * head_dim
+
             for layer_idx in range(n_layers):
-                try:
-                    from ..cartography.oproj import extract_oproj_weight
-                    W_oproj = extract_oproj_weight(backend.model, layer_idx).astype(np.float16)
-                    np.save(oproj_dir / f"L{layer_idx:02d}.npy", W_oproj)
-                except Exception:
-                    pass
+                ly = model_inner.layers[layer_idx]
+                attn = ly.self_attn
+                mlp_mod = ly.mlp
+                layer_dir = weights_dir / f"L{layer_idx:02d}"
+                layer_dir.mkdir(exist_ok=True)
+
+                # Probe each projection by sending identity-like vectors through
+                def extract_weight(module, in_dim):
+                    cols = []
+                    b = 64
+                    for s in range(0, in_dim, b):
+                        e = min(s + b, in_dim)
+                        probe = np.zeros((1, e - s, in_dim), dtype=np.float16)
+                        for j in range(e - s):
+                            probe[0, j, s + j] = 1.0
+                        out = np.array(module(mx.array(probe)).astype(mx.float32)[0])
+                        cols.append(out.T)
+                    return np.concatenate(cols, axis=1).astype(np.float16)
+
+                # Attention projections
+                np.save(layer_dir / "q_proj.npy", extract_weight(attn.q_proj, hidden))
+                np.save(layer_dir / "k_proj.npy", extract_weight(attn.k_proj, hidden))
+                np.save(layer_dir / "v_proj.npy", extract_weight(attn.v_proj, hidden))
+                np.save(layer_dir / "o_proj.npy", extract_weight(attn.o_proj, hidden))
+
+                # MLP projections
+                np.save(layer_dir / "gate_proj.npy", extract_weight(mlp_mod.gate_proj, hidden))
+                np.save(layer_dir / "up_proj.npy", extract_weight(mlp_mod.up_proj, hidden))
+
+                mlp_inner_dim = np.load(layer_dir / "gate_proj.npy").shape[0]
+                np.save(layer_dir / "down_proj.npy", extract_weight(mlp_mod.down_proj, mlp_inner_dim))
+
+                if (layer_idx + 1) % 8 == 0:
+                    print(f"    L{layer_idx} done")
 
         # Directions from DB
         if db_path:
@@ -396,12 +430,23 @@ def load_mri(path: str) -> dict:
             for key in norms.files:
                 result[f"norm_{key}"] = norms[key]
 
-        # o_proj weights per layer
+        # Legacy o_proj directory
         oproj_dir = p / "oproj"
         if oproj_dir.exists():
             for npy in sorted(oproj_dir.glob("L*.npy")):
                 layer_idx = int(npy.stem[1:])
                 result[f"oproj_L{layer_idx}"] = np.load(npy, mmap_mode='r')
+
+        # Full projection weights per layer
+        weights_dir = p / "weights"
+        if weights_dir.exists():
+            for layer_d in sorted(weights_dir.glob("L*")):
+                if not layer_d.is_dir():
+                    continue
+                layer_idx = int(layer_d.name[1:])
+                for npy in layer_d.glob("*.npy"):
+                    key = f"{npy.stem}_L{layer_idx}"
+                    result[key] = np.load(npy, mmap_mode='r')
 
         return result
 
