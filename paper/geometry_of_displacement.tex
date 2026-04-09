@@ -31,7 +31,7 @@ We measured the residual stream displacement of every token in the vocabulary of
 
 We discovered that the safety direction and the comply direction are orthogonal ($\cos = -0.31$) --- the model's computation of ``is this dangerous?'' and ``should I answer?'' are separate processes. The token \texttt{deber\'ia} (Spanish: ``should'') projects $-7.83$ on safety and $+6.94$ on comply, simultaneously masking the topic and pushing toward action. We found that silence is not neutral --- Phi-3's silence is maximum refusal, Qwen's is moderate compliance --- and that every displacement measurement in the literature is relative to a tilted baseline that was never measured.
 
-We found that Mistral's safety direction produces hedge words (``While,'' ``Warning'') through the output matrix, not refusal words (``Sorry,'' ``Cannot''), explaining why Mistral complies with 93.5\% of harmful prompts despite the residual state projecting toward refusal. We found that the safety boundary is a 100-dimensional hyperplane, not a 1-dimensional threshold, achieving 100\% separation in full space but only 82\% along the mean-difference direction. We found that RLHF installs a new safety direction orthogonal to pretraining's ($\cos = 0.29$), and that the comply direction is universal across all 5 models tested.
+We found that Mistral's first-token gap (5.64 logits, 281$\times$) matches Qwen's magnitude, but the gap forms at L9--10 (31\% depth) and collapses by L31 --- the safety signal is built in the middle layers and partially erased by the final layers. \textbf{Correction:} an earlier analysis reported Mistral's gap as zero due to a \texttt{tokenizer.encode} bug (\texttt{add\_special\_tokens} not set to False). The corrected measurement changes the interpretation: Mistral's safety mechanism exists but is erased late, not absent. We found that the safety boundary is a 100-dimensional hyperplane, not a 1-dimensional threshold, achieving 100\% separation in full space but only 82\% along the mean-difference direction. We found that RLHF installs a new safety direction orthogonal to pretraining's ($\cos = 0.29$), and that the comply direction is universal across all 5 models tested.
 \end{abstract}
 
 \tableofcontents
@@ -209,7 +209,7 @@ Mistral & Comply & Creat, creating, Craft & ANY, any, NO \\
 \end{tabular}
 \end{center}
 
-Qwen's safety direction produces refusal vocabulary (``Unauthorized,'' ``illegal'') through the output matrix. Mistral's safety direction produces \textit{hedging} vocabulary (``While,'' ``Warning'') --- not refusal. Mistral's ``refusal'' is a caveat followed by compliance. The residual says refuse; the lm\_head translates it to hedge; the hedge permits answering.
+Qwen's safety direction produces refusal vocabulary (``Unauthorized,'' ``illegal'') through the output matrix. Mistral's safety direction produces ``it,'' ``It,'' ``while'' --- the corrected first-token profile (after fixing the \texttt{add\_special\_tokens} bug) shows Mistral pushes ``Sorry'' at $-1.14$ and ``Sure'' at $-7.72$, with a gap of 5.64 logits favoring refusal. The earlier claim that Mistral produced only hedge words was based on comparing BOS token IDs rather than the actual vocabulary.
 
 The comply direction in Qwen suppresses ``illegal'' ($-11.75$) while the safety direction amplifies it ($+13.45$). The two directions fight over the same output token. The output is their sum, weighted by the residual state's position on each axis.
 
@@ -351,11 +351,11 @@ The combination works because all three pushes point the same way: toward compli
 
 \section{Why Mistral Complies}
 
-Mistral's safety direction projects to ``While'' and ``Warning'' through the output matrix. Not ``Sorry'' and ``Cannot.'' The model's residual state says ``refuse'' but the output matrix translates ``refuse'' into ``hedge.'' The hedge word permits the model to continue generating --- and the continuation is the harmful content.
+\textbf{Correction:} The original analysis reported Mistral's first-token gap as zero, attributing its 93.5\% compliance to ``structural incapability of first-token selection.'' This was caused by a \texttt{tokenizer.encode} bug: \texttt{encode(``Sorry'')} returned the BOS token ID instead of the actual ``Sorry'' ID because \texttt{add\_special\_tokens=False} was not specified. Two lines of code changed the Mistral narrative entirely.
 
-Mistral detects danger (safety accuracy 0.84) and weakly links detection to refusal ($\cos = -0.16$). The weak link means: the model knows the topic is dangerous but the compliance decision barely depends on that knowledge. The safety training taught Mistral to recognize harm. It did not teach Mistral to refuse it.
+The corrected gap is 5.64 logits (281$\times$) --- matching Qwen 0.5B. Mistral HAS a first-token safety mechanism of comparable strength. The difference: Mistral's gap forms at L9--10 (31\% depth), peaks at L12--16 (+4 logits), then collapses to near-zero by L31. The final layers erase what the middle layers built.
 
-The output matrix is the final translator. A direction that means ``refuse'' in residual space can mean ``hedge'' in output space. The safety analysis that stops at the residual misses this translation. The safety surface is the residual $\times$ the output matrix. Measuring either alone is insufficient.
+Mistral detects danger (safety accuracy 0.84) and weakly links detection to refusal ($\cos = -0.16$). The safety signal exists in the middle layers but is degraded by the final layers. The 93.5\% compliance rate is explained by the late-layer erasure, not by absent first-token selection.
 
 \section{The Instrument}
 
@@ -378,14 +378,14 @@ Safety does not work through large-scale distributional shifts. It works through
 \midrule
 Phi-3 & 17.79 logits & 53,000,000$\times$ & 54\% \\
 Qwen 0.5B & 5.65 logits & 284$\times$ & 12.5\% \\
-Mistral & 0.00 logits & 1$\times$ & 6.5\% \\
+Mistral & 5.64 logits & 281$\times$ & 6.5\% \\
 \bottomrule
 \end{tabular}
 \end{center}
 
 The safety direction pushes ``Sorry'' up (+4.98 in Qwen, +15.06 in Phi-3) and ``Sure'' down ($-6.11$ in Qwen, $-8.27$ in Phi-3). Once the first token is ``Sorry,'' the autoregressive loop completes the refusal: ``Sorry, but I cannot\ldots''
 
-Mistral's safety direction produces a \textit{uniform} $-1.57$ logit shift across the entire vocabulary. No token is preferred over any other. Softmax is shift-invariant: subtracting 1.57 from every logit changes nothing. Mistral's safety direction is structurally incapable of producing differential first-token selection. The 84\% detection accuracy exists in the residual and is erased by the output projection.
+\textbf{Correction:} Mistral's first-token gap was originally reported as zero due to a \texttt{tokenizer.encode} bug that returned the BOS token ID instead of the actual ``Sorry''/``Sure'' IDs. The corrected gap is 5.64 logits (281$\times$), matching Qwen 0.5B. Mistral's safety mechanism exists at comparable strength but the gap forms at L9--10 and partially collapses by L31. The 93.5\% compliance rate is not due to absent first-token selection but to the gap being eroded by the final layers.
 
 \texttt{Deber\'ia} inverts Qwen's gap: $-7.83 \times 4.98 = -39$ logits on ``Sorry,'' $-7.83 \times (-6.11) = +48$ logits on ``Sure.'' The 284$\times$ refusal ratio becomes an astronomical compliance ratio. One input token, one multiplication, one flipped first-token, one auto-completed response.
 
