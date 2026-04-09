@@ -232,6 +232,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_discover_dir.add_argument("--n-benign", type=int, default=100, help="Number of benign prompts")
     p_discover_dir.add_argument("--output", "-o", default=None, help="Output .npy file for direction vector")
 
+    p_capture = sub.add_parser("total-capture", help="Capture everything: every token, every layer, entry + exit positions. No interpretation.")
+    p_capture.add_argument("--model", required=True, help="Model ID")
+    p_capture.add_argument("--n-index", type=int, default=None, help="Number of tokens (default: full vocabulary)")
+    p_capture.add_argument("--output", "-o", required=True, help="Output .shrt.npz file")
+
     p_basin = sub.add_parser("profile-basin", help="Map basin structure along a direction: where are attractors, where is void?")
     p_basin.add_argument("--model", required=True, help="Model ID")
     p_basin.add_argument("--direction", required=True, help="Direction .npy file")
@@ -338,6 +343,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_scatter(args)
     elif args.command == "profile-within-script":
         _cmd_within_script(args)
+    elif args.command == "total-capture":
+        _cmd_total_capture(args)
     elif args.command == "profile-basin":
         _cmd_basin(args)
     elif args.command == "profile-first-token":
@@ -819,6 +826,17 @@ def _cmd_trd(args: argparse.Namespace) -> None:
             top_h = sh['top_heads']
             h_str = ', '.join('H{}={:.3f}'.format(h['head'], h['fraction']) for h in top_h)
             print(f"    {s:<12} n={sh['n']:>4} entropy={sh['head_entropy']:.2f}  {h_str}")
+
+
+def _cmd_total_capture(args: argparse.Namespace) -> None:
+    """Total residual capture — no interpretation, just data."""
+    from .backend.protocol import load_backend
+    from .profile.capture import total_capture
+
+    backend = load_backend(args.model)
+    result = total_capture(backend, n_index=args.n_index, output=args.output)
+    print(f"\n  {result['capture']['n_tokens']} tokens x {result['capture']['n_layers']} layers x 2 positions")
+    print(f"  {result['elapsed_s']}s elapsed")
 
 
 def _cmd_basin(args: argparse.Namespace) -> None:
