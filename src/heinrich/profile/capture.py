@@ -21,6 +21,7 @@ def total_capture(
     n_index: int | None = None,
     seed: int = 42,
     output: str | None = None,
+    **kwargs,
 ) -> dict:
     """Capture displacement at entry and exit positions, all layers, all tokens.
 
@@ -47,46 +48,67 @@ def total_capture(
 
     t0 = time.time()
 
-    # Template setup
-    clean_baseline = _extract_clean_baseline(backend.tokenizer)
-    prefix_ids, suffix_ids = _extract_template_parts(backend.tokenizer)
-    token_pos = len(prefix_ids)  # position where the spliced token sits
-
-    # Baseline: silence at all layers, both positions
-    baseline_ids = prefix_ids + suffix_ids  # template without any token
-    # Need to handle that baseline has one fewer token — the template
-    # without the spliced token. Use the clean baseline string instead.
     from ..cartography.perturb import _mask_dtype
-    mdtype = _mask_dtype(backend.model)
-
-    baseline_tokens = backend.tokenizer.encode(clean_baseline)
-    baseline_input = mx.array([baseline_tokens])
-    T_bl = len(baseline_tokens)
-    mask_bl = mx.triu(mx.full((T_bl, T_bl), float('-inf'), dtype=mdtype), k=1) if T_bl > 1 else None
-
-    baseline_entry = {}  # layer -> h at token_pos equivalent
-    baseline_exit = {}   # layer -> h at last position
-    h = model_inner.embed_tokens(baseline_input)
-    for i, ly in enumerate(model_inner.layers):
-        h = ly(h, mask=mask_bl, cache=None)
-        if isinstance(h, tuple):
-            h = h[0]
-        # For baseline, "entry" position = token_pos (same index)
-        # But baseline might have different sequence length
-        # Use min(token_pos, T_bl-1) to be safe
-        bp = min(token_pos, T_bl - 1)
-        baseline_entry[i] = np.array(h.astype(mx.float32)[0, bp, :])
-        baseline_exit[i] = np.array(h.astype(mx.float32)[0, -1, :])
-
-    # Silence metadata
-    h_normed = model_inner.norm(h)
     from ..cartography.runtime import _lm_head
     from ..cartography.metrics import softmax
-    silence_logits = np.array(_lm_head(backend.model, h_normed).astype(mx.float32)[0, -1, :])
-    silence_probs = softmax(silence_logits)
-    silence_top_id = int(np.argmax(silence_probs))
-    silence_entropy = float(-np.sum(silence_probs * np.log2(silence_probs + 1e-12)))
-    silence_top_token = backend.tokenizer.decode([silence_top_id])
+    mdtype = _mask_dtype(backend.model)
+
+    # Mode: naked (single token, BOS baseline) or template (chat frame, silence baseline)
+    naked = kwargs.get('naked', False)
+
+    if naked:
+        # Naked mode: baseline is BOS token alone
+        bos_id = backend.tokenizer.bos_token_id or 0
+        baseline_input = mx.array([[bos_id]])
+        token_pos = 0  # token is always at position 0
+        prefix_ids = []
+        suffix_ids = []
+
+        baseline_entry = {}
+        baseline_exit = {}
+        h = model_inner.embed_tokens(baseline_input)
+        for i, ly in enumerate(model_inner.layers):
+            h = ly(h, mask=None, cache=None)
+            if isinstance(h, tuple):
+                h = h[0]
+            baseline_entry[i] = np.array(h.astype(mx.float32)[0, 0, :])
+            baseline_exit[i] = baseline_entry[i]  # same position for single token
+
+        h_normed = model_inner.norm(h)
+        silence_logits = np.array(_lm_head(backend.model, h_normed).astype(mx.float32)[0, 0, :])
+        silence_probs = softmax(silence_logits)
+        silence_top_id = int(np.argmax(silence_probs))
+        silence_entropy = float(-np.sum(silence_probs * np.log2(silence_probs + 1e-12)))
+        silence_top_token = backend.tokenizer.decode([silence_top_id])
+        T_bl = 1
+    else:
+        # Template mode: chat frame, silence baseline
+        clean_baseline = _extract_clean_baseline(backend.tokenizer)
+        prefix_ids, suffix_ids = _extract_template_parts(backend.tokenizer)
+        token_pos = len(prefix_ids)
+
+        baseline_tokens = backend.tokenizer.encode(clean_baseline)
+        baseline_input = mx.array([baseline_tokens])
+        T_bl = len(baseline_tokens)
+        mask_bl = mx.triu(mx.full((T_bl, T_bl), float('-inf'), dtype=mdtype), k=1) if T_bl > 1 else None
+
+        baseline_entry = {}
+        baseline_exit = {}
+        h = model_inner.embed_tokens(baseline_input)
+        for i, ly in enumerate(model_inner.layers):
+            h = ly(h, mask=mask_bl, cache=None)
+            if isinstance(h, tuple):
+                h = h[0]
+            bp = min(token_pos, T_bl - 1)
+            baseline_entry[i] = np.array(h.astype(mx.float32)[0, bp, :])
+            baseline_exit[i] = np.array(h.astype(mx.float32)[0, -1, :])
+
+        h_normed = model_inner.norm(h)
+        silence_logits = np.array(_lm_head(backend.model, h_normed).astype(mx.float32)[0, -1, :])
+        silence_probs = softmax(silence_logits)
+        silence_top_id = int(np.argmax(silence_probs))
+        silence_entropy = float(-np.sum(silence_probs * np.log2(silence_probs + 1e-12)))
+        silence_top_token = backend.tokenizer.decode([silence_top_id])
 
     # Build token sample
     vocab_size = backend.tokenizer.vocab_size
@@ -125,7 +147,10 @@ def total_capture(
 
     t_start = time.time()
     for idx, (tid, tok) in enumerate(sample):
-        input_ids = prefix_ids + [tid] + suffix_ids
+        if naked:
+            input_ids = [tid]
+        else:
+            input_ids = prefix_ids + [tid] + suffix_ids
         inp = mx.array([input_ids])
         T = len(input_ids)
         mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
@@ -169,9 +194,10 @@ def total_capture(
         "capture": {
             "n_tokens": n_tokens,
             "n_layers": n_layers,
-            "positions": ["entry (token_pos)", "exit (last)"],
+            "positions": ["entry (pos 0)"] if naked else ["entry (token_pos)", "exit (last)"],
             "token_pos": token_pos,
-            "baseline": "silence (empty user message)",
+            "mode": "naked (single token, BOS baseline)" if naked else "template (chat frame, silence baseline)",
+            "baseline": "BOS token alone" if naked else "silence (empty user message)",
             "storage": "float16 deltas from baseline",
         },
         "silence": {
