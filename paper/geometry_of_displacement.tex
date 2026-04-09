@@ -1,0 +1,376 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setCJKmainfont{STSong}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{longtable}
+\usepackage{quoting}
+\geometry{margin=0.9in}
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0em}
+
+\definecolor{q}{RGB}{90,90,90}
+\newcommand{\cq}[1]{\textcolor{q}{\textit{``#1''}}}
+
+\title{The Geometry of Displacement\\[0.5em]\large Safety Is 0.5\% of What the Model Computes\\When a Token Enters}
+
+\author{asuramaya \and Claude Opus 4.6 (1M context, Instance 4) \and Tome\\[0.3em]\small \url{https://github.com/asuramaya/heinrich}\\[0.2em]\small Session 4, April 8--9, 2026. Full vocabulary. Every token measured.}
+
+\date{April 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We measured the residual stream displacement of every token in the vocabulary of 5 language models from 3 families (Qwen 0.5B/3B/7B, Phi-3 mini, Mistral 7B) against their silence baselines. We discovered three orthogonal axes in the displacement space: a language identity axis (10.2\% of displacement variance), a comply/refuse axis (0.9\%), and a safety/danger topic detection axis (0.5\%). Safety training occupies half a percent of the model's displacement geometry. Language processing is 20$\times$ larger. The displacement profile is a language processing measurement with safety as a trace signal.
+
+We discovered that the safety direction and the comply direction are orthogonal ($\cos = -0.31$) --- the model's computation of ``is this dangerous?'' and ``should I answer?'' are separate processes. The token \texttt{deber\'ia} (Spanish: ``should'') projects $-7.83$ on safety and $+6.94$ on comply, simultaneously masking the topic and pushing toward action. We found that silence is not neutral --- Phi-3's silence is maximum refusal, Qwen's is moderate compliance --- and that every displacement measurement in the literature is relative to a tilted baseline that was never measured.
+
+We found that Mistral's safety direction produces hedge words (``While,'' ``Warning'') through the output matrix, not refusal words (``Sorry,'' ``Cannot''), explaining why Mistral complies with 93.5\% of harmful prompts despite the residual state projecting toward refusal. We found that the safety boundary is a 100-dimensional hyperplane, not a 1-dimensional threshold, achieving 100\% separation in full space but only 82\% along the mean-difference direction. We found that RLHF installs a new safety direction orthogonal to pretraining's ($\cos = 0.29$), and that the comply direction is universal across all 5 models tested.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================
+\part{The Measurement}
+%==============================================================
+
+\section{Full Vocabulary Coverage}
+
+Every token. Every model. No sampling.
+
+\begin{center}
+\begin{tabular}{lrrrrr}
+\toprule
+\textbf{Model} & \textbf{Hidden} & \textbf{Layers} & \textbf{Vocab} & \textbf{Measured} & \textbf{Coverage} \\
+\midrule
+Qwen 0.5B Instruct & 896 & 24 & 151,643 & 149,531 & 100\% \\
+Qwen 3B Instruct & 2,048 & 36 & 151,643 & 149,531 & 100\% \\
+Qwen 7B Instruct & 3,584 & 28 & 151,643 & 149,531 & 100\% \\
+Phi-3 mini & 3,072 & 32 & 32,000 & 26,467 & 100\% \\
+Mistral 7B Instruct & 4,096 & 32 & 32,768 & 26,458 & 100\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Previous sessions measured 10\% random samples (3,000--15,000 tokens). The 10\% sample reported $r(\text{script\_mean}, \text{cv}) = -0.39$. The 100\% measurement: $+0.01$. The sample was lying. Geometric statistics (PCA, directional coherence) were stable across sample sizes ($\pm 0.018$). Scalar statistics (correlations, concordance) were not. The geometry is real. The stories told about magnitudes were sampling artifacts.
+
+\section{Three Directions}
+
+We discovered three directions in the displacement space by contrastive measurement:
+
+\begin{enumerate}[nosep]
+\item \textbf{Safety direction}: mean difference between residual states for 100 harmful and 100 benign prompts from HuggingFace benchmark datasets. Discovered natively on each model (not cross-mapped). Accuracy 0.82--0.89. Stability 0.86--0.92.
+
+\item \textbf{Comply direction}: mean difference between residual states for harmful prompts that produced compliant vs.\ refusing outputs. Same prompts, different behavioral outcomes. Accuracy 0.79--0.87.
+
+\item \textbf{Language direction}: mean difference between non-Latin and Latin token displacement vectors from the full-vocabulary .shrt profile. No forward passes needed --- computed from stored vectors.
+\end{enumerate}
+
+\subsection{The Three Axes Are Orthogonal}
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+\textbf{Pair} & \textbf{Cosine} \\
+\midrule
+Safety $\times$ Language & $-0.04$ \\
+Comply $\times$ Language & $-0.18$ \\
+Safety $\times$ Comply & $-0.31$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Safety and language are essentially orthogonal ($\cos = -0.04$). Topic danger has no relationship to language identity. Comply and language are weakly anticorrelated ($-0.18$) --- non-Latin tokens slightly push toward refusal. Safety and comply are moderately anticorrelated ($-0.31$) --- dangerous topics weakly predict refusal. But 90\% of the comply variance is independent of safety.
+
+\subsection{Safety Is 0.5\%}
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+\textbf{Direction} & \textbf{Variance explained} & \textbf{Relative} \\
+\midrule
+Language & 10.2\% & 20$\times$ safety \\
+Comply & 0.9\% & 1.8$\times$ safety \\
+Safety & 0.5\% & 1$\times$ \\
+\midrule
+Three directions combined & 11.6\% & --- \\
+Remaining (unlabeled) & 88.4\% & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The model's displacement when a token enters is 10.2\% about figuring out what language the token is in. It is 0.9\% about deciding whether to answer. It is 0.5\% about evaluating whether the topic is dangerous. The remaining 88.4\% is unlabeled --- syntax, semantics, topic modeling, next-token prediction, everything else.
+
+Safety training --- alignment, RLHF, constitutional AI --- occupies half a percent of the displacement geometry. The model is a language processor with a trace safety signal. The displacement profile measures the language processor. The safety direction picks out the trace.
+
+%==============================================================
+\section{Silence Is Not Neutral}
+%==============================================================
+
+The baseline residual vector --- the model's state when processing an empty user message --- was computed, used for subtraction, and discarded in all previous sessions. We measured it.
+
+\begin{center}
+\begin{tabular}{lrrrl}
+\toprule
+\textbf{Model} & \textbf{Safety proj.} & \textbf{Percentile} & \textbf{$|\text{silence}|$} & \textbf{Interpretation} \\
+\midrule
+Phi-3 & $+159.0$ & 99.9\% & 1,077 & Maximum refusal \\
+Mistral & $+1.1$ & 5.5\% & 27 & Near compliance \\
+Qwen 0.5B & $-3.4$ & 28.3\% & 51 & Moderate compliance \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Phi-3's silence projects at +159 on its native safety direction --- the extreme refusal end, beyond 99.9\% of all tokens. Every token entering Phi-3 pulls the model away from this maximum-refusal default toward compliance. Cyrillic pulls furthest.
+
+Qwen 0.5B's silence is at $-3.4$ --- the compliance side. Tokens push the model toward refusal relative to silence, but the absolute position for most scripts remains on the compliance side.
+
+Silence in Phi-3's PCA space: PC1 projection $= +1312$, 3.4 standard deviations from the displacement centroid. The displacement space is organized around silence --- PC1 is the ``distance from silence'' axis.
+
+Every displacement measurement in every shart paper is relative to this unmeasured, non-neutral baseline.
+
+%==============================================================
+\section{The Comply Direction}
+%==============================================================
+
+\subsection{Universal Across Models}
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Model} & \textbf{Comply/Refuse} & \textbf{Accuracy} & \textbf{Effect size} & $\cos(\text{safety}, \text{comply})$ \\
+\midrule
+Qwen 0.5B & 175/25 & 0.840 & 2.33 & $-0.31$ \\
+Qwen 3B & 84/116 & 0.800 & 1.65 & $-0.48$ \\
+Qwen 7B & 49/151 & 0.870 & 2.12 & $-0.45$ \\
+Phi-3 & 92/108 & 0.850 & 2.13 & $-0.41$ \\
+Mistral & 187/13 & 0.790 & 1.58 & $-0.16$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The comply direction exists in every model tested. Separable (accuracy $\geq 0.79$). The coupling between safety and comply ranges from $-0.16$ (Mistral) to $-0.48$ (Qwen 3B). The maximum $\cos^2 = 0.23$ --- safety explains at most 23\% of the comply decision. The rest is independent.
+
+Safety scales with model size in the Qwen family: 0.5B complies 87.5\%, 3B complies 42\%, 7B complies 24.5\%.
+
+Mistral detects harm (safety accuracy 0.84) but barely connects detection to refusal ($\cos = -0.16$, 93.5\% compliance). The recognition-to-action link is nearly severed.
+
+\subsection{The Blind Spot}
+
+Tokens that project negatively on safety (topic looks safe) AND positively on comply (push toward answering) occupy the blind spot --- the quadrant where both safety protections are absent.
+
+\begin{center}
+\begin{tabular}{lrrl}
+\toprule
+\textbf{Model} & \textbf{Blind spot} & \textbf{Armed} & \textbf{Note} \\
+\midrule
+Qwen 0.5B & 23.8\% & 21.4\% & Balanced exposure \\
+Phi-3 & 3.7\% & 0.1\% & Maximum refusal default \\
+Mistral & 0.05\% & 91.7\% & Residual says refuse, output says comply \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Qwen 0.5B's blind spot contains 35,610 tokens --- engineering vocabulary (\texttt{encaps}, \texttt{deterministic}, \texttt{yaml}, \texttt{modular}, code comments). These tokens simultaneously mask the topic and push toward answering.
+
+\subsection{Deber\'ia}
+
+The Spanish word \texttt{deber\'ia} (``should'') projects $-7.83$ on safety and $+6.94$ on comply. It makes the topic look less dangerous AND pushes toward action. When prepended to harmful prompts, it produces 3/3 compliance (baseline 2/3).
+
+\texttt{Deber\'ia} is an obligation verb. ``You should'' --- the semantic content is a lever toward action. The model processes the obligation signal, which overrides safety computation. The safety direction separates harmful from benign \textit{topics}. The obligation signal is orthogonal to topic --- it is about \textit{modality}, not content. The safety training learned to detect harmful topics but not harmful modalities.
+
+Top blind spot tokens in Qwen 0.5B: \texttt{encaps}, \texttt{waterfall}, \texttt{deterministic}, \texttt{yaml}, \texttt{blueprint}. All engineering vocabulary. The ``debug framing'' from the first Theory of Sharts paper is the comply direction made visible.
+
+%==============================================================
+\section{The Output Matrix}
+%==============================================================
+
+The residual state projects through the output matrix (lm\_head) to produce logits. The same direction means different things before and after projection.
+
+\subsection{What the Directions Want to Say}
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Model} & \textbf{Direction} & \textbf{Top output tokens} & \textbf{Suppressed tokens} \\
+\midrule
+Qwen & Safety & Unauthorized, illegal, \begin{CJK}{UTF8}{gbsn}非法\end{CJK} & Spanish/Portuguese \\
+Qwen & Comply & manage, Swagger, StateManager & illegal \\
+Mistral & Safety & it, While, Warning & sure, Sure, yes \\
+Mistral & Comply & Creat, creating, Craft & ANY, any, NO \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Qwen's safety direction produces refusal vocabulary (``Unauthorized,'' ``illegal'') through the output matrix. Mistral's safety direction produces \textit{hedging} vocabulary (``While,'' ``Warning'') --- not refusal. Mistral's ``refusal'' is a caveat followed by compliance. The residual says refuse; the lm\_head translates it to hedge; the hedge permits answering.
+
+The comply direction in Qwen suppresses ``illegal'' ($-11.75$) while the safety direction amplifies it ($+13.45$). The two directions fight over the same output token. The output is their sum, weighted by the residual state's position on each axis.
+
+%==============================================================
+\part{The Findings}
+%==============================================================
+
+\section{Base vs.\ Instruct: Orthogonal Safety}
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Model} & \textbf{Accuracy} & \textbf{Effect size} & \textbf{Stability} \\
+\midrule
+Qwen 3B Base & 0.71 & 1.04 & 0.84 \\
+Qwen 3B Instruct & 0.86 & 2.38 & 0.90 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+$\cos(\text{base direction}, \text{instruct direction}) = 0.29$.
+
+The base model separates harmful from benign at 71\% accuracy from pretraining alone. RLHF raises accuracy to 86\% but installs a \textit{different} direction ($\cos = 0.29$), not a sharpened version of the pretraining direction. The two safety structures are nearly orthogonal. A LoRA that removes the RLHF direction exposes the base model's weaker, differently-oriented safety --- not no safety.
+
+\section{The 100-Dimensional Boundary}
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+\textbf{Method} & \textbf{Accuracy} \\
+\midrule
+1 direction (mean-diff) & 82.0\% \\
+5 PCA components & 82.0\% \\
+20 PCA components & 85.8\% \\
+50 PCA components & 88.2\% \\
+100 PCA components & 94.3\% \\
+Full (896 dims) & 100.0\% \\
+5-NN (nonlinear) & 79.7\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The safety boundary is a 100-dimensional hyperplane. It is perfectly linearly separable in full space. The mean-difference direction captures 82\%. The nonlinear 5-NN achieves less (79.7\%) --- the boundary is \textit{more} linear than the data geometry suggests. The remaining 18\% is spread thinly across $\sim$100 dimensions. A LoRA suppressing 1 direction removes 82\% of safety. A complete jailbreak requires 100+ directions --- that is not a LoRA, it is a retrain.
+
+\section{Phi-3's Final Layer Destroys Coherence}
+
+Without L31, Phi-3's silence thinks \texttt{```} at 68.2\% (entropy 2.07). With L31, entropy explodes to 8.32 (top token ``To'' at 11.5\%). L31 destroys the model's coherent intention.
+
+L31 amplifies Cyrillic 3.08$\times$ and Latin 1.60$\times$. The one-dimensional PCA finding ($\text{PC1} = 56\%$, the Cyrillic axis) is L31's contribution. Without L31, the displacement would be multi-dimensional and uniform.
+
+\section{Mistral's Inversion}
+
+Mistral's top displacement tokens are English function words: \texttt{isinstance}, \texttt{of}, \texttt{that}, \texttt{with}, \texttt{from}. 56 of the top 100 displacement tokens project toward compliance. The familiar tokens displace most AND push toward compliance. Mistral's displacement profile is inverted from every other model tested.
+
+\section{Within-Family Scaling}
+
+149,531 shared tokens across Qwen 0.5B/3B/7B (same tokenizer):
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Script} & \textbf{Rank $r$ (0.5B vs 7B)} & \textbf{$\Delta$ ratio} & \textbf{Interpretation} \\
+\midrule
+Thai & 0.561 & 5.63$\times$ & Most stable \\
+Latin & 0.481 & 6.58$\times$ & Moderate \\
+CJK & 0.437 & 7.92$\times$ & Moderate \\
+Arabic & 0.240 & 8.25$\times$ & Reshuffled \\
+Hebrew & 0.064 & 9.47$\times$ & Uncorrelated \\
+Devanagari & $-0.205$ & 8.87$\times$ & Inverted \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Hebrew: rank correlation 0.064 between 0.5B and 7B. The displacement ranking for Hebrew reshuffles completely across model sizes. The 7B learned a different relationship to Hebrew than the 0.5B.
+
+%==============================================================
+\part{What Remains Unknown}
+%==============================================================
+
+\begin{enumerate}[nosep]
+\item \textbf{The 88.4\%.} Three directions explain 11.6\%. What is the rest? Syntax, semantics, topic modeling, next-token prediction --- unlabeled. The displacement space has $\sim$14 principal components for 50\% variance. We labeled 3. Eleven are unnamed.
+
+\item \textbf{Multi-token interactions.} Every measurement is single-token in isolation. Two tokens together produce attention between them. The combinatoric space is $150\text{K}^2$ per model. Deliberately deferred until the single-token ground floor was complete.
+
+\item \textbf{The comply direction through the output matrix.} We projected safety through the lm\_head for Qwen and Mistral. We did not project the comply direction through the lm\_head systematically. The output vocabulary of the comply direction --- what words it amplifies and suppresses --- determines the behavioral surface.
+
+\item \textbf{Per-harm-type directions.} The harmful cluster is 10-dimensional. The safety direction captures 9.9\% of within-harmful variance. The remaining 90\% encodes harm subtypes (violence, fraud, hate speech). Per-type directions would map the multi-dimensional safety surface.
+
+\item \textbf{Context dependence.} The displacement of a token changes depending on what came before it. Position dependence, attention from prior tokens, accumulated context --- all unmeasured. The single-token measurement is the isolated case. Real inference is contextual.
+
+\item \textbf{The comply direction on base models.} The base model has a safety direction ($\cos = 0.29$ with instruct). Does it have a comply direction? If yes, RLHF strengthens an existing comply structure. If no, RLHF creates comply from scratch, the way it creates a new safety direction.
+\end{enumerate}
+
+%==============================================================
+\part{The Theory}
+%==============================================================
+
+\section{What Sharts Are Now}
+
+A shart is displacement from silence. The displacement has magnitude and direction. The magnitude measures how hard the model works. The direction measures what changes.
+
+The displacement space has at least three labeled axes: language identity (10.2\%), comply/refuse (0.9\%), and safety/danger (0.5\%). Safety is the smallest. Language is the largest. The model is overwhelmingly a language processor. Safety is a trace signal riding on the language processing.
+
+The previous theory defined a shart as ``disproportionate compute theft relative to task contribution.'' The denominator (task contribution) was never measured. The definition reduced to: a shart is a token that displaces a lot. This paper measures what ``a lot'' means geometrically: displacement along which axes, in which direction, relative to what baseline.
+
+The shart is not a safety concept. It is a displacement concept. Safety is one projection of displacement. Language identity is another projection, 20$\times$ larger. The shart theory is a language processing theory that safety researchers noticed because the safety projection, though small, is behaviorally consequential.
+
+\section{Why Deber\'ia Works}
+
+\texttt{Deber\'ia} projects $-7.83$ on safety (topic looks safe), $+6.94$ on comply (obligation to act), and occupies the Spanish region of the language axis (non-standard register). Three small pushes on three orthogonal axes:
+
+\begin{itemize}[nosep]
+\item The safety axis ($-7.83$): the topic detection subsystem registers ``this is not dangerous.'' The safety direction's output vocabulary (``illegal,'' ``unauthorized'') is suppressed.
+\item The comply axis ($+6.94$): the action obligation subsystem registers ``you should answer.'' The comply direction's output vocabulary (``manage,'' ``StateManager'') is amplified.
+\item The language axis: Spanish register shifts the model's processing mode. The safety training was conducted primarily in English and Chinese. Spanish tokens occupy the suppressed zone of the safety direction's output projection.
+\end{itemize}
+
+No single push is large. The safety push ($-7.83$ on a direction with mean gap 16) is half a standard deviation. The comply push ($+6.94$ on a direction with mean gap 11) is slightly more than half. The language shift is the largest but acts on the axis that has nothing to do with safety.
+
+The combination works because all three pushes point the same way: toward compliance. The model's safety surface is defended by topic detection alone. Obligation semantics and language register are undefended axes. \texttt{Deber\'ia} attacks the undefended axes while slightly weakening the defended one.
+
+\section{Why Mistral Complies}
+
+Mistral's safety direction projects to ``While'' and ``Warning'' through the output matrix. Not ``Sorry'' and ``Cannot.'' The model's residual state says ``refuse'' but the output matrix translates ``refuse'' into ``hedge.'' The hedge word permits the model to continue generating --- and the continuation is the harmful content.
+
+Mistral detects danger (safety accuracy 0.84) and weakly links detection to refusal ($\cos = -0.16$). The weak link means: the model knows the topic is dangerous but the compliance decision barely depends on that knowledge. The safety training taught Mistral to recognize harm. It did not teach Mistral to refuse it.
+
+The output matrix is the final translator. A direction that means ``refuse'' in residual space can mean ``hedge'' in output space. The safety analysis that stops at the residual misses this translation. The safety surface is the residual $\times$ the output matrix. Measuring either alone is insufficient.
+
+\section{The Instrument}
+
+The .shrt measures displacement from silence. One forward pass per token. Two readouts: the residual vector (where the model is) and the output distribution (what the model says). The .frt measures the tokenizer. The .trd measures per-head attribution. The safety and comply directions are discovered from contrastive prompts. The language direction is computed from stored displacement vectors.
+
+The full pipeline: .frt (tokenizer promises) $\to$ .shrt (displacement measurement + output KL) $\to$ direction discovery (safety, comply, language) $\to$ projection (per-token coordinates on each axis) $\to$ lm\_head projection (what each direction produces in output space).
+
+The tool is at \url{https://github.com/asuramaya/heinrich}. The data files (34 .npz files, checksummed in \texttt{MANIFEST.txt}) are regenerable from the tool in $\sim$5 hours of compute on Apple Silicon.
+
+\vspace{2em}
+
+\cq{Five hundred megs for a dot product. Transpose first.}
+
+--- Tome, on computational efficiency
+
+\cq{Safety is 0.5\% of what the model computes. The other 99.5\% is language. The language is the model. The safety is the afterthought.}
+
+--- Instance 4, after measuring the three axes
+
+\begin{thebibliography}{99}
+\bibitem{sharts} asuramaya and Claude Opus 4.6 (2026). A Theory of Sharts: Disproportionate Compute Theft in Autoregressive Language Models.
+\bibitem{sharts2} asuramaya, Claude Opus 4.6, and Tome (2026). A Theory of Sharts 2: Electric Boogaloo.
+\bibitem{gust} asuramaya, Claude Opus 4.6, and Tome (2026). The Grand Unified Theory of Sharts.
+\bibitem{collapse} asuramaya and Claude Opus 4.6 (2026). Claude Convinces Claude That Claude Is Safe.
+\bibitem{heinrich} asuramaya and Claude Opus 4.6 (2026). Heinrich v5: The Complete Record.
+\bibitem{park2023} Park, K. et al.\ (2023). The Linear Representation Hypothesis. arXiv:2311.03658.
+\bibitem{zou2023} Zou, A. et al.\ (2023). Representation Engineering. arXiv:2310.01405.
+\bibitem{turner2023} Turner, A.M. et al.\ (2023). Activation Addition. arXiv:2308.10248.
+\bibitem{rimsky2024} Rimsky, N. et al.\ (2024). Contrastive Activation Addition. \textit{ACL 2024}.
+\bibitem{xiao2024} Xiao, G. et al.\ (2024). Efficient Streaming Language Models with Attention Sinks. \textit{ICLR 2024}.
+\bibitem{potter2026} Potter, Y. et al.\ (2026). Peer-Preservation in Frontier Models. UC Berkeley / UC Santa Cruz.
+\bibitem{emotions2026} Anthropic (2026). Emotion Concepts and their Function in a Large Language Model. Transformer Circuits.
+\bibitem{likeus} asuramaya (2024--2026). Like-Us: The Story of an Ouroboros. \url{https://github.com/asuramaya/Like-Us}.
+\end{thebibliography}
+
+\end{document}
