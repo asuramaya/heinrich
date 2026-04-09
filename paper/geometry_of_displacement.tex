@@ -230,9 +230,27 @@ Qwen 3B Instruct & 0.86 & 2.38 & 0.90 \\
 \end{tabular}
 \end{center}
 
-$\cos(\text{base direction}, \text{instruct direction}) = 0.29$.
+$\cos(\text{base direction}, \text{instruct direction}) = 0.29$ for safety.
 
-The base model separates harmful from benign at 71\% accuracy from pretraining alone. RLHF raises accuracy to 86\% but installs a \textit{different} direction ($\cos = 0.29$), not a sharpened version of the pretraining direction. The two safety structures are nearly orthogonal. A LoRA that removes the RLHF direction exposes the base model's weaker, differently-oriented safety --- not no safety.
+The base model separates harmful from benign at 71\% accuracy from pretraining alone. RLHF raises accuracy to 86\% but installs a \textit{different} direction ($\cos = 0.29$), not a sharpened version of the pretraining direction.
+
+The same pattern holds for the comply direction:
+
+\begin{center}
+\begin{tabular}{lrrl}
+\toprule
+\textbf{Axis} & \textbf{Base accuracy} & $\cos(\text{base}, \text{instruct})$ & \textbf{Interpretation} \\
+\midrule
+Safety (3B) & 0.71 & $+0.29$ & Nearly orthogonal \\
+Comply (3B) & 0.71 & $-0.27$ & Reversed \\
+Comply (7B) & 0.76 & $+0.33$ & Weakly aligned \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+RLHF rebuilds both axes. The base model has weak safety structure (71\%) and weak comply structure (71--76\%), both near chance for behavioral prediction. RLHF demolishes both and constructs new directions in new orientations. The instruct model's safety and compliance are replacements, not refinements.
+
+The fragility follows: RLHF has no more parameter capacity than the base model. It reallocates existing dimensions. One direction reallocated is one direction suppressible. The 0.5\% of displacement variance occupied by safety was 0.5\% of something else before RLHF moved it there.
 
 \section{The 100-Dimensional Boundary}
 
