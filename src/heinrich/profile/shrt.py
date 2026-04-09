@@ -609,9 +609,20 @@ def generate_shrt(
 
 
 def load_shrt(path: str) -> dict:
-    """Legacy loader for .shrt.npz files. Use load_mri() for .mri directories."""
+    """Load measurement data. Accepts .mri directories or legacy .shrt.npz.
+
+    For .mri directories: delegates to load_mri (returns compatible keys).
+    For .shrt.npz: loads directly (legacy support for old data files).
+    """
+    from pathlib import Path
+    p = Path(path)
+
+    if p.is_dir():
+        from .mri import load_mri
+        return load_mri(path)
+
     import warnings as _warnings
-    d = np.load(path, allow_pickle=False)  # npz only, no arbitrary objects
+    d = np.load(path, allow_pickle=False)
     meta = json.loads(str(d['metadata'][0]))
     baseline_ent = meta.get('baseline', {}).get('entropy', 0)
     if baseline_ent > 5.0:

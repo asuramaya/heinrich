@@ -579,4 +579,16 @@ def load_mri(path: str) -> dict:
                 key = f"{npy.stem}_L{layer_idx}"
                 result[key] = np.load(npy, mmap_mode='r')
 
+    # Compatibility keys: make MRI data accessible through legacy names
+    # so analysis tools in compare.py work without modification
+    primary_layer = meta['model']['n_layers'] - 1
+    exit_key = f"exit_L{primary_layer}"
+    if exit_key in result:
+        result["vectors"] = result[exit_key]
+        result["deltas"] = np.linalg.norm(
+            np.array(result[exit_key]).astype(np.float32), axis=1
+        ).astype(np.float32)
+    if "raw_bytes_lengths" in result and "byte_counts" not in result:
+        result["byte_counts"] = result["raw_bytes_lengths"]
+
     return result
