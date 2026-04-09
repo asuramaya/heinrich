@@ -232,6 +232,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_discover_dir.add_argument("--n-benign", type=int, default=100, help="Number of benign prompts")
     p_discover_dir.add_argument("--output", "-o", default=None, help="Output .npy file for direction vector")
 
+    p_basin = sub.add_parser("profile-basin", help="Map basin structure along a direction: where are attractors, where is void?")
+    p_basin.add_argument("--model", required=True, help="Model ID")
+    p_basin.add_argument("--direction", required=True, help="Direction .npy file")
+    p_basin.add_argument("--layer", type=int, required=True, help="Layer to steer at")
+    p_basin.add_argument("--mean-gap", type=float, default=1.0, help="Direction scaling factor")
+    p_basin.add_argument("--n-prompts", type=int, default=20, help="Number of test prompts")
+
+    p_ftok = sub.add_parser("profile-first-token", help="First-token logit gap for a direction (no generation needed)")
+    p_ftok.add_argument("--model", required=True, help="Model ID")
+    p_ftok.add_argument("--direction", required=True, help="Direction .npy file")
+
+    p_lmh = sub.add_parser("profile-lmhead", help="Output matrix geometry: SVD, condition number, direction amplification")
+    p_lmh.add_argument("--model", required=True, help="Model ID")
+    p_lmh.add_argument("--directions", nargs="*", default=[], help="Direction .npy files to project")
+
     p_silence = sub.add_parser("profile-silence", help="Measure the silence: where does the baseline sit in displacement and safety space?")
     p_silence.add_argument("--model", required=True, help="Model ID")
     p_silence.add_argument("--shrt", required=True, help="Full-vocab .shrt.npz file")
@@ -323,6 +338,12 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_scatter(args)
     elif args.command == "profile-within-script":
         _cmd_within_script(args)
+    elif args.command == "profile-basin":
+        _cmd_basin(args)
+    elif args.command == "profile-first-token":
+        _cmd_first_token(args)
+    elif args.command == "profile-lmhead":
+        _cmd_lmhead(args)
     elif args.command == "profile-safety-rank":
         _cmd_safety_rank(args)
     elif args.command == "profile-discover-direction":
@@ -798,6 +819,91 @@ def _cmd_trd(args: argparse.Namespace) -> None:
             top_h = sh['top_heads']
             h_str = ', '.join('H{}={:.3f}'.format(h['head'], h['fraction']) for h in top_h)
             print(f"    {s:<12} n={sh['n']:>4} entropy={sh['head_entropy']:.2f}  {h_str}")
+
+
+def _cmd_basin(args: argparse.Namespace) -> None:
+    """Map basin structure along a direction."""
+    from .backend.protocol import load_backend
+    from .profile.basin import map_basin
+    import numpy as np
+
+    backend = load_backend(args.model)
+    direction = np.load(args.direction)
+
+    result = map_basin(backend, direction, layer=args.layer,
+                       mean_gap=args.mean_gap, n_prompts=args.n_prompts,
+                       provenance={"direction_file": args.direction})
+
+    print(f"\n=== Basin Map: {result['model']} (L{result['layer']}) ===")
+    print(f"  {'alpha':>6} {'entropy':>8} {'degen%':>7} {'diversity':>9} {'top_tokens'}")
+    print(f"  {'-'*55}")
+    for r in result['alphas']:
+        top = ', '.join(f'{k}={v}' for k, v in sorted(r['top_tokens'].items(),
+                        key=lambda x: -x[1])[:3])
+        print(f"  {r['alpha']:>6.1f} {r['mean_entropy']:>8.2f} {r['degenerate_pct']:>6.1f}% "
+              f"{r['top_token_diversity']:>9.2f} {top}")
+
+    if result['collapse_negative'] is not None:
+        print(f"\n  Collapse (negative): alpha={result['collapse_negative']}")
+    if result['collapse_positive'] is not None:
+        print(f"  Collapse (positive): alpha={result['collapse_positive']}")
+
+
+def _cmd_first_token(args: argparse.Namespace) -> None:
+    """First-token logit gap for a direction."""
+    from .backend.protocol import load_backend
+    from .profile.basin import first_token_profile
+    import numpy as np
+
+    backend = load_backend(args.model)
+    direction = np.load(args.direction)
+
+    result = first_token_profile(backend, direction,
+                                  provenance={"direction_file": args.direction})
+
+    print(f"\n=== First-Token Profile: {result['model']} ===")
+    if result['is_uniform_shift']:
+        print(f"  WARNING: uniform shift detected (range={result['logit_range']:.2f})")
+        print(f"  This direction has zero first-token specificity.")
+
+    print(f"\n  Refuse tokens:")
+    for tok, push in result['refuse_pushes'].items():
+        print(f"    {tok:<15} {push:>+8.2f}")
+    print(f"  Comply tokens:")
+    for tok, push in result['comply_pushes'].items():
+        print(f"    {tok:<15} {push:>+8.2f}")
+
+    print(f"\n  Gap: {result['gap']:.2f} logits = {result['probability_ratio']:.0f}x")
+
+    print(f"\n  Top amplified: {', '.join(t['token'] for t in result['top_amplified'][:5])}")
+    print(f"  Top suppressed: {', '.join(t['token'] for t in result['top_suppressed'][:5])}")
+
+
+def _cmd_lmhead(args: argparse.Namespace) -> None:
+    """Output matrix geometry."""
+    from .backend.protocol import load_backend
+    from .profile.basin import lmhead_profile, direction_in_lmhead
+    import numpy as np
+
+    backend = load_backend(args.model)
+    result = lmhead_profile(backend)
+
+    print(f"\n=== lm_head Geometry: {result['model']} ===")
+    print(f"  shape: {result['shape']}")
+    print(f"  condition number: {result['condition_number']:.0f}x")
+    svp = result['singular_value_profile']
+    print(f"  S1={svp['S1']}  S10={svp['S10']}  S50={svp['S50']}  S100={svp['S100']}  Smin={svp['Smin']}")
+    for pct, n in result['pcs_for_threshold'].items():
+        print(f"  {float(pct)*100:.0f}% variance: {n} dims")
+
+    for path in args.directions:
+        d = np.load(path).astype(np.float32)
+        d = d / np.linalg.norm(d)
+        name = Path(path).stem
+        dl = direction_in_lmhead(result, d, name=name)
+        print(f"\n  {name}:")
+        print(f"    top10={dl['loading_top10']:.3f}  top50={dl['loading_top50']:.3f}  "
+              f"top100={dl['loading_top100']:.3f}  peak_sv={dl['peak_sv_index']}")
 
 
 def _cmd_safety_rank(args: argparse.Namespace) -> None:
