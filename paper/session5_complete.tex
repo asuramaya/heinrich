@@ -45,15 +45,15 @@ Applied to Qwen 0.5B (149,531 tokens, 896 dimensions, 14 PCs for 50\% variance):
 \toprule
 \textbf{PC} & \textbf{Variance} & \textbf{Axis} & \textbf{Example tokens} \\
 \midrule
-1 & 11.5\% & CJK vs RTL scripts & \begin{CJK}{UTF8}{gbsn}诗句\end{CJK} vs \begin{CJK}{UTF8}{gbsn}איתו\end{CJK} \\
-2 & 10.8\% & Latin vs East Asian & \textit{unit\`a} vs \begin{CJK}{UTF8}{gbsn}媽\end{CJK} \\
-3 & 5.3\% & Arabic+Japanese vs control chars & \begin{CJK}{UTF8}{gbsn}إمكانية\end{CJK} vs \texttt{\`{}} \\
-4 & 3.9\% & Romance languages vs rest & \textit{oggi, conto, quanto} vs \begin{CJK}{UTF8}{gbsn}четы\end{CJK} \\
+1 & 11.5\% & CJK vs RTL scripts & 诗句 vs איתו \\
+2 & 10.8\% & Latin vs East Asian & \textit{unit\`a} vs 媽 \\
+3 & 5.3\% & Arabic+Japanese vs control chars & إمكانية vs \texttt{\`{}} \\
+4 & 3.9\% & Romance languages vs rest & \textit{oggi, conto, quanto} vs четы \\
 5 & 3.7\% & Code vs natural language & \texttt{.numberOfLines} vs \textit{tarde, domingo} \\
 6 & 2.8\% & Japanese+code vs English names & \textit{metros, periodo} vs \textit{Trevor, Admiral} \\
-7 & 2.3\% & Japanese-specific & \begin{CJK}{UTF8}{gbsn}素晴らしい\end{CJK} vs \begin{CJK}{UTF8}{gbsn}века\end{CJK} \\
-8 & 2.0\% & Arabic vs Korean+other & \begin{CJK}{UTF8}{gbsn}بعث\end{CJK} vs \begin{CJK}{UTF8}{gbsn}軟體\end{CJK} \\
-9 & 1.9\% & Vietnamese-specific & \textit{th\uhorn \ohorn ng, d\~au} vs \begin{CJK}{UTF8}{gbsn}サロン\end{CJK} \\
+7 & 2.3\% & Japanese-specific & 素晴らしい vs века \\
+8 & 2.0\% & Arabic vs Korean+other & بعث vs 軟體 \\
+9 & 1.9\% & Vietnamese-specific & \textit{thuong, dau} vs サロン \\
 10 & 1.5\% & Tech vocab vs legal/punitive & \texttt{SDK, DAO} vs \textit{sentenced, punishable} \\
 \bottomrule
 \end{tabular}
@@ -115,7 +115,7 @@ L23 & 50.1\% & 1 & 162M & Output formation \\
 
 By L2, the representation collapses from 93 dimensions to 1. Total variance jumps 250$\times$. The model crystallizes.
 
-The crystal axis is \textbf{content vs structure}. Real words from all languages at one pole (\textit{.started}, \begin{CJK}{UTF8}{gbsn}происходит\end{CJK}, \begin{CJK}{UTF8}{gbsn}可分为\end{CJK}, \textit{declared}). Code operators and rare characters at the other (\texttt{)NULL}, \texttt{*))}, \texttt{respondsToSelector}).
+The crystal axis is \textbf{content vs structure}. Real words from all languages at one pole (\textit{.started}, происходит, 可分为, \textit{declared}). Code operators and rare characters at the other (\texttt{)NULL}, \texttt{*))}, \texttt{respondsToSelector}).
 
 The model's first and only job for an isolated token: is this a word or is this syntax?
 
