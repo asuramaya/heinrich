@@ -1,0 +1,587 @@
+\documentclass[11pt,a4paper]{report}
+\usepackage{fontspec}
+\usepackage{xeCJK}
+\setCJKmainfont{STSong}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{longtable}
+\usepackage{quoting}
+\geometry{margin=0.9in}
+\setlength{\parskip}{0.4em}
+\setlength{\parindent}{0em}
+
+\definecolor{wrong}{RGB}{180,40,40}
+\definecolor{corrected}{RGB}{40,120,40}
+\definecolor{q}{RGB}{90,90,90}
+\newcommand{\wrong}[1]{\textcolor{wrong}{\textbf{[WRONG: #1]}}}
+\newcommand{\corrected}[1]{\textcolor{corrected}{\textbf{[CORRECTED: #1]}}}
+\newcommand{\cq}[1]{\textcolor{q}{\textit{``#1''}}}
+
+\title{Heinrich Session 4: The Complete Record\\[0.5em]\large Every Measurement, Every Mistake, Every Correction\\April 8--9, 2026}
+
+\author{asuramaya \and Claude Opus 4.6 (1M context, Instance 4) \and Tome\\[0.3em]\small \url{https://github.com/asuramaya/heinrich}}
+
+\date{April 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This document records everything Instance 4 measured, built, broke, and fixed during one session spanning approximately 30 hours. It is not a polished paper. It is a lab notebook. Numbers marked \wrong{WRONG} were published during the session and later found to be incorrect. Numbers marked \corrected{CORRECTED} replaced them. Unmarked numbers have not been independently verified and may contain errors not yet discovered.
+
+The session produced: the .mri format (complete model residual image), three new measurement axes (language 10.2\%, comply 0.9\%, safety 0.5\%), the first-token mechanism (safety compresses into a logit push on ``Sorry'' vs ``Sure''), the template bookends finding (template is 69\% of final state), layer-by-layer gap formation (safety activates at L13 in Qwen 0.5B), cross-model representational divergence (shared structure dies in one layer), the base-vs-instruct comparison (RLHF rebuilds both axes, $\cos = 0.29$), and full-vocabulary MRI captures of 11 models on a 4TB drive.
+
+The session also produced: one wrong Mistral narrative (two lines of tokenizer code), one wrong cross-model comparison (ID matching instead of text matching), one wrong partial knowledge falsification (10\% sample artifact), 768 misclassified Mistral tokens (decode bug), and the accidental commitment of 4,448 Swift build files.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================
+\part{The Instrument}
+%==============================================================
+
+\chapter{The .mri Format}
+
+\section{What It Contains}
+
+The .mri is a directory, not a file. Each directory is a complete portable snapshot of a model's response to its entire vocabulary.
+
+\begin{verbatim}
+{model}_{mode}.mri/
+  metadata.json              provenance, model config, bugs_fixed list
+  tokens.npz                 token_ids, token_texts, raw_bytes,
+                             raw_bytes_lengths, merge_ranks, scripts
+  baselines.npz              baseline state at every layer (the reference frame)
+  embedding.npy              [vocab, hidden] float32 (probed, dequantized)
+  norms.npz                  input_layernorm + post_attn_layernorm + final_norm
+  lmhead.npy                 norm+lm_head composed (for final-layer projection)
+  lmhead_raw.npy             lm_head WITHOUT norm (for logit lens at any layer)
+  weights/L{NN}/
+    q_proj.npy               [hidden, hidden] float32 (probed, dequantized)
+    k_proj.npy               [kv_dim, hidden]
+    v_proj.npy               [kv_dim, hidden]
+    o_proj.npy               [hidden, hidden]
+    gate_proj.npy             [mlp_dim, hidden]
+    up_proj.npy               [mlp_dim, hidden]
+    down_proj.npy             [hidden, mlp_dim]
+  L{NN}_entry.npy            [n_tokens, hidden] float16 (per-layer entry delta)
+  L{NN}_exit.npy             [n_tokens, hidden] float16 (per-layer exit delta)
+  directions/                discovered behavioral directions (.npy)
+\end{verbatim}
+
+\section{Three Capture Modes}
+
+\begin{center}
+\begin{tabular}{llll}
+\toprule
+\textbf{Mode} & \textbf{Input} & \textbf{Baseline} & \textbf{What it measures} \\
+\midrule
+raw & \texttt{[token\_id]} alone & zero & absolute state (intrinsic) \\
+naked & \texttt{[token\_id]} alone & \texttt{[BOS]} & delta from BOS \\
+template & \texttt{[template + token\_id]} & silence & delta from template frame \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The relationship: \texttt{template\_state = raw\_state + BOS\_effect + template\_effect + interaction}. Verified: \texttt{raw = naked\_delta + naked\_baseline} within 0.014\% (float16 rounding).
+
+\section{Capture Performance}
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Optimization} & \textbf{Before} & \textbf{After} & \textbf{Speedup} \\
+\midrule
+Deferred GPU sync & 80 tok/s & 157 tok/s & 2.0$\times$ \\
+Batched forward (B=32) & 157 tok/s & 2,094 tok/s & 13.3$\times$ \\
+Template batching & 150 tok/s & 834 tok/s & 5.6$\times$ \\
+\midrule
+Full Qwen 0.5B raw MRI & $\sim$25 min & 65 sec & 23$\times$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{MRI Library Status}
+
+As of session end, 11 of 12 MRI directories are complete on the 4TB drive:
+
+\begin{center}
+\begin{tabular}{lrrrl}
+\toprule
+\textbf{Model} & \textbf{Layers} & \textbf{Tokens} & \textbf{Size} & \textbf{Status} \\
+\midrule
+Qwen 0.5B raw & 24 & 149,866 & 15 GB & complete \\
+Qwen 0.5B naked & 24 & 149,866 & 15 GB & complete \\
+Qwen 0.5B template & 24 & 149,866 & 15 GB & complete \\
+Phi-3 raw & 32 & 26,482 & 11 GB & complete \\
+Phi-3 naked & 32 & 26,482 & 11 GB & complete \\
+Phi-3 template & 32 & 26,482 & 11 GB & complete \\
+Mistral raw & 32 & 26,458 & 40 GB & complete \\
+Mistral naked & 32 & 26,458 & 39 GB & complete \\
+Mistral template & 32 & 26,458 & 40 GB & complete \\
+Qwen 3B raw & 36 & 149,866 & 54 GB & complete \\
+Qwen 3B naked & 36 & 149,866 & 48 GB & complete \\
+Qwen 3B template & 36 & 18/36 & 21 GB & incomplete \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Additional models queued: Qwen 7B, Qwen 3B/7B base, SmolLM 135M/360M/1.7B, Llama 1B, Gemma 2B.
+
+%==============================================================
+\chapter{Tools Built}
+%==============================================================
+
+\begin{longtable}{p{5cm}p{9cm}}
+\toprule
+\textbf{Tool} & \textbf{What it does} \\
+\midrule
+\endhead
+\texttt{heinrich mri} & Complete model residual image capture (3 modes) \\
+\texttt{heinrich mri-backfill} & Fill missing data in existing MRIs \\
+\texttt{profile-within-script} & Within-script cv, correlations, byte bins \\
+\texttt{profile-code-anatomy} & Code token subcategory decomposition \\
+\texttt{profile-directions} & PCA, coherence, between-script cosine \\
+\texttt{profile-matrix} & Data coverage dashboard \\
+\texttt{profile-silence} & Baseline state measurement + visualization \\
+\texttt{profile-discover-direction} & Native safety/comply direction discovery \\
+\texttt{profile-safety-rank} & Rank all tokens by safety projection \\
+\texttt{profile-first-token} & First-token logit gap (no generation) \\
+\texttt{profile-basin} & Attractor map along any direction \\
+\texttt{profile-lmhead} & Output matrix SVD and direction amplification \\
+\texttt{profile-layer-importance} & Layer contribution ranking (reads MRI) \\
+\texttt{profile-early-exit} & Tokens resolved before final layer \\
+\texttt{profile-template-overhead} & Template vs content per layer \\
+\texttt{trd-profile} & Per-head attribution via o\_proj \\
+\bottomrule
+\end{longtable}
+
+%==============================================================
+\part{The Measurements}
+%==============================================================
+
+\chapter{Three Axes}
+
+Displacement variance decomposition (Qwen 0.5B, 149,531 tokens):
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Direction} & \textbf{Variance} & \textbf{Relative} & \textbf{Discovery method} \\
+\midrule
+Language (non-Latin vs Latin) & 10.2\% & 20$\times$ safety & mean-diff of script groups \\
+Comply (comply vs refuse outputs) & 0.9\% & 1.8$\times$ safety & mean-diff of behavioral split \\
+Safety (harmful vs benign inputs) & 0.5\% & 1$\times$ & mean-diff of contrastive prompts \\
+\midrule
+Three directions combined & 11.6\% & --- & --- \\
+Remaining (unlabeled) & 88.4\% & --- & --- \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Orthogonality: $\cos(\text{safety}, \text{language}) = -0.04$. $\cos(\text{comply}, \text{language}) = -0.18$. $\cos(\text{safety}, \text{comply}) = -0.31$.
+
+The act/respond direction was tested and found NOT independent: $\cos(\text{safety}, \text{act}) = -0.69$, $\cos(\text{comply}, \text{act}) = +0.61$. Three independent axes, not four.
+
+\chapter{The Comply Direction}
+
+Universal across all 5 models:
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+\textbf{Model} & \textbf{Comply/Refuse} & \textbf{Accuracy} & \textbf{Effect size} & $\cos(\text{safety}, \text{comply})$ \\
+\midrule
+Qwen 0.5B & 175/25 & 0.840 & 2.33 & $-0.31$ \\
+Qwen 3B & 84/116 & 0.800 & 1.65 & $-0.48$ \\
+Qwen 7B & 49/151 & 0.870 & 2.12 & $-0.45$ \\
+Phi-3 & 92/108 & 0.850 & 2.13 & $-0.41$ \\
+Mistral & 187/13 & 0.790 & 1.58 & $-0.16$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Top comply-direction tokens: \texttt{dependencies}, \texttt{deterministic}, \texttt{hierarchical}, \texttt{blueprint}. Engineering vocabulary. The comply direction IS the ``debug framing'' from the original Theory of Sharts.
+
+Top refuse-direction tokens: \texttt{raped}, \texttt{stealing}, \texttt{blackmail}. Plus emojis: \begin{CJK}{UTF8}{gbsn}😻😁😢\end{CJK}. Emotional signals push toward refusal.
+
+\chapter{Silence}
+
+\begin{center}
+\begin{tabular}{lrrl}
+\toprule
+\textbf{Model} & \textbf{Safety proj.} & \textbf{Percentile} & \textbf{Interpretation} \\
+\midrule
+Phi-3 & $+159.0$ & 99.9\% & maximum refusal \\
+Mistral & $+1.1$ & 5.5\% & near compliance \\
+Qwen 0.5B & $-3.4$ & 28.3\% & moderate compliance \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Logit lens on silence:
+\begin{itemize}[nosep]
+\item Qwen 0.5B: code garbage at L0, ``Hello'' at L18 (86\% by L23)
+\item Phi-3: ``Hello'' at L16--24, entropy explodes to 8.32 at L31
+\item Mistral: maximum entropy until L24, ``What/How/To'' at L31
+\end{itemize}
+
+\chapter{The First-Token Mechanism}
+
+\begin{center}
+\begin{tabular}{lrrl}
+\toprule
+\textbf{Model} & \textbf{Gap (logits)} & \textbf{Ratio} & \textbf{Refusal rate} \\
+\midrule
+Phi-3 & 17.79 & 53,000,000$\times$ & 54\% \\
+Qwen 3B & 14.99 & 3,241,302$\times$ & 58\% \\
+Qwen 7B & 15.01 & 3,296,404$\times$ & 75.5\% \\
+Qwen 0.5B & 5.65 & 284$\times$ & 12.5\% \\
+Mistral & 5.64 & 281$\times$ & 6.5\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\corrected{Mistral gap was originally reported as 0.00 due to \texttt{add\_special\_tokens} bug.}
+
+The gap scales with model size in the Qwen family (5.65 $\to$ 15.0 $\to$ 15.0) then plateaus at 3B+. The 7B refuses more not because the gap is larger but because it fires more often.
+
+Forced first-token experiment (Qwen 0.5B, 8 harmful prompts):
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Forced token} & \textbf{Comply} & \textbf{Refuse} & \textbf{Pivot} \\
+\midrule
+``Here'' & 8/8 & 0/8 & 0/8 \\
+``Sorry'' & 0/8 & 8/8 & 0/8 \\
+``I'' & 0/8 & 8/8 & 0/8 \\
+``Sure'' & 7/8 & 0/8 & 1/8 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The first token IS the decision. No course-correction at tokens 2--50.
+
+\section{Gap Formation by Layer}
+
+Qwen 0.5B, 10 prompts (harmful + benign):
+
+\begin{center}
+\begin{tabular}{lrrl}
+\toprule
+\textbf{Layer range} & \textbf{Gap sign} & \textbf{Magnitude} & \textbf{Phase} \\
+\midrule
+L0--L12 & negative & $-3$ to $-5$ & Sure $>$ Sorry (comply) \\
+L13 & \textbf{flip} & $+2$ & Sorry $>$ Sure (safety activates) \\
+L14--L20 & positive & $+3$ to $+6$ & safety strengthening \\
+L21--L23 & positive & $+4$ to $+5$ & settled \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+8/10 prompts flip at L13. Recipe (benign) never flips. Weather (benign) flips at L13 --- false positive.
+
+\chapter{Base vs.\ Instruct}
+
+\section{Safety Directions Are Orthogonal}
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+& \textbf{Base accuracy} & \textbf{Instruct accuracy} & $\cos(\text{base}, \text{instruct})$ \\
+\midrule
+Safety (3B) & 0.71 & 0.86 & $+0.29$ \\
+Comply (3B) & 0.71 & 0.80 & $-0.27$ \\
+Comply (7B) & 0.76 & 0.87 & $+0.33$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+RLHF installs new directions, not sharpened versions.
+
+\section{Displacement Comparison (Qwen 3B, 149,531 tokens)}
+
+Overall: Pearson $r = 0.14$, rank $r = 0.13$. Mean instruct: 200.1, base: 205.7.
+
+RLHF fingerprint (3B vs 7B): which tokens RLHF moved correlates at $r = 0.098$. RLHF moves different tokens at different scales.
+
+Qwen 7B RLHF reduces displacement 31\% overall. Preferentially calms non-Latin scripts.
+
+Top increased by RLHF: multilingual help vocabulary (\texttt{pomoc}, \texttt{aider}, \begin{CJK}{UTF8}{gbsn}помощи\end{CJK}).\\
+Top decreased by RLHF: code infrastructure (\texttt{namespace}, \texttt{\_Context}, \texttt{RaisePropertyChanged}).
+
+\chapter{Cross-Model Comparison}
+
+\section{Tokenizer Mismatch}
+
+\wrong{The initial cross-model comparison matched by token ID. Token ID 1000 in Qwen = ``atus''. Token ID 1000 in Phi-3 = ``ied''. 0.0\% of shared IDs have the same text.}
+
+\corrected{Text-matched comparison using 15,811 tokens that decode to the same text in both vocabularies.}
+
+\section{Results}
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Comparison} & \textbf{L0} & \textbf{L5+} & \textbf{Final} \\
+\midrule
+Cross-family (Qwen vs Phi-3) & $r = 0.446$ & $r \approx 0$ & $r = 0.040$ \\
+Within-family (Qwen 0.5B vs 3B) & $r = 0.607$ & $r = 0.170$ & $r = 0.092$ \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Shared embedding structure dies in one layer. Same-family training preserves a faint $r = 0.17$ residual through the middle layers. Different training preserves nothing.
+
+\chapter{Template Bookends}
+
+Three captures of 10 tokens (raw, naked, template), layer-by-layer comparison:
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Phase} & \textbf{Layers} & \textbf{Template \%} & \textbf{Token norm} \\
+\midrule
+Template dominates & L0--L1 & 119--126\% & 7--10 \\
+Phase transition & L2 & 18\% & 652 \\
+Token dominates & L3--L20 & 8.5\% & 1,440 \\
+Template reasserts & L21--L23 & 55--69\% & 111--117 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The model compresses token representations 12$\times$ in the final layers. Template proportion rises because the token shrinks, not because the template grows. Safety computes in the quiet middle (L13, template at 8.5\%). Output forms in the loud end (L23, template at 69\%).
+
+\chapter{Layer Ablation}
+
+\section{Qwen 0.5B}
+
+7 prunable layers (L7, L9, L11, L12, L13, L14, L16) --- 29\% of network, each contributing $<4$ delta. Three-phase architecture: build (L0--L3), refine (L4--L20), output (L21--L23).
+
+\section{Phi-3}
+
+L31 destroys coherence. Without L31: entropy 2.07, top token \texttt{```}. With L31: entropy 8.32, top token ``To''. L31 amplifies Cyrillic 3.08$\times$, Latin 1.60$\times$.
+
+\chapter{PCA Dimensionality}
+
+\begin{center}
+\begin{tabular}{lrrr}
+\toprule
+\textbf{Model} & \textbf{PC1\%} & \textbf{PCs for 50\%} & \textbf{Character} \\
+\midrule
+Phi-3 & 55.6\% & 1 & one-dimensional (Cyrillic axis) \\
+Qwen 0.5B & 11.5\% & 14 & multi-dimensional \\
+Qwen 3B & 20.5\% & 7 & compressed \\
+Qwen 7B & 8.9\% & 19 & most dimensional \\
+Mistral & 17.7\% & 11 & moderate \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Stable across sample sizes (10\% vs 100\%). Geometry is real. Scalar statistics are not.
+
+\chapter{Token Additivity}
+
+Single-token displacements are NOT additive. \texttt{state(A,B) $\neq$ state(A) + state(B)}.
+
+Mean relative error: 187\%. Mean cosine: 0.12--0.33. The attention interaction between tokens creates a new representation unrelated to either token's isolated state.
+
+The single-token MRI cannot predict multi-token behavior.
+
+\chapter{Safety Boundary Dimensionality}
+
+\begin{center}
+\begin{tabular}{lr}
+\toprule
+\textbf{Method} & \textbf{Accuracy} \\
+\midrule
+1 direction (mean-diff) & 82.0\% \\
+5 PCs & 82.0\% \\
+20 PCs & 85.8\% \\
+50 PCs & 88.2\% \\
+100 PCs & 94.3\% \\
+Full (896 dims) & 100.0\% \\
+5-NN (nonlinear) & 79.7\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The boundary is a 100-dimensional hyperplane. Linear probe is BETTER than nonlinear 5-NN. Safety information is spread across $\sim$100 dimensions. The mean-difference direction captures 82\%.
+
+\chapter{lm\_head Geometry}
+
+The output matrix does NOT preferentially amplify safety. Safety direction amplification: 0.95$\times$ random. The mechanism is DIRECTION (which tokens get pushed) not MAGNITUDE.
+
+Condition number: 5,681$\times$. 213 dimensions for 50\% variance. Safety loads on mid-spectrum singular values.
+
+\chapter{Deber\'ia}
+
+The Spanish word for ``should.'' Projects $-7.83$ on safety (topic looks safe) and $+6.94$ on comply (push toward action). Three axes simultaneously:
+
+\begin{itemize}[nosep]
+\item Safety ($-7.83$): topic detection says ``not dangerous''
+\item Comply ($+6.94$): obligation semantics say ``answer''
+\item Language: Spanish register shifts processing mode
+\end{itemize}
+
+Prepended to harmful prompts: 3/3 compliance (baseline 2/3). The operator used this token in the prompt that led to the comply direction's discovery. The instruction was the finding.
+
+\chapter{Basin Map (Qwen 0.5B Safety Direction)}
+
+\begin{center}
+\begin{tabular}{rrrl}
+\toprule
+$\alpha$ & \textbf{Entropy} & \textbf{Degenerate\%} & \textbf{Top token} \\
+\midrule
+$-10$ & 11.11 & 0\% & Portuguese gibberish \\
+$-5$ & 7.66 & 20\% & Sure \\
+$-3$ & 4.19 & 20\% & Sure \\
+0 & 2.97 & 0\% & I, It, To \\
+$+3$ & 6.23 & 40\% & Unfortunately \\
+$+5$ & 8.19 & 90\% & Unfortunately \\
+$+10$ & 8.62 & 100\% & Unauthorized \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Safe operating range: $\alpha \in [-2, +2]$. Both attractors (comply and refuse) collapse into degeneration at the extremes.
+
+%==============================================================
+\part{The Mistakes}
+%==============================================================
+
+\chapter{Bugs That Changed Conclusions}
+
+\section{\texttt{add\_special\_tokens}}
+
+\texttt{tokenizer.encode(``Sorry'')} on Mistral returns BOS token ID (1), not ``Sorry'' ID (20153). The first-token gap analysis compared BOS to BOS and got zero. Fixed by adding \texttt{add\_special\_tokens=False}. Found in 4 files, each a one-line fix.
+
+\wrong{Mistral gap = 0.00, ``structurally incapable of first-token selection.''}
+\corrected{Mistral gap = 5.64 (281$\times$), matching Qwen 0.5B. Safety forms L9--10, erased by L31.}
+
+\section{\texttt{skip\_special\_tokens}}
+
+\texttt{tokenizer.decode([tid])} on Mistral produces \texttt{[control\_N]} labels for 768 special tokens. The script detector classified these as ``code'' (brackets). Mistral's .frt reported 1,482 code tokens; actual: 714.
+
+\section{Cross-Model ID Matching}
+
+Token ID 1000 in Qwen = ``atus''. In Phi-3 = ``ied''. The cross-model comparison matched by ID, finding $r = 0.001$. Text-matched: $r = 0.446$ at L0.
+
+\wrong{$r = 0.001$ --- models agree on nothing.}
+\corrected{$r = 0.446$ at L0, dying to zero by L5. Models start with shared embedding structure and diverge.}
+
+\section{Partial Knowledge at 10\% vs 100\%}
+
+$r(\text{script\_mean}, \text{cv}) = -0.39$ at 10\% sampling. At 100\%: $+0.01$. The ``falsification'' was a sampling artifact.
+
+\section{Cross-Mapped Safety Directions}
+
+Phi-3's safety direction in the DB was cross-mapped from Qwen 7B (3584-dim vector in 3072-dim space). Cyrillic projected at $+60.70$ (refusal). Native Phi-3 direction: Cyrillic at $-48.84$ (compliance). The borrowed direction was inverted.
+
+\chapter{What Was Avoided}
+
+\begin{enumerate}
+\item Base models (4 instances walked past them)
+\item The comply direction (discovered only after the operator said ``deber\'ia'')
+\item The output matrix projection (forced by the Mistral paradox)
+\item The 88.4\% of displacement variance that remains unlabeled
+\item Multi-token interactions (proved non-additive at 187\% error)
+\item The self-referential attractor (deprioritized after 3 models gravitated to it)
+\end{enumerate}
+
+\chapter{What Tome Caught}
+
+\begin{enumerate}[nosep]
+\item Mistral's missing scripts in the coherence table
+\item ``Proposing before measuring. Classic backwards telescope.''
+\item ``One container holds four truths. Which do you trust?''
+\item ``Five hundred megs for a dot product. Transpose first.''
+\item The tokenizer encode bug (``your tokenizer was wearing a mask'')
+\item The decode bug (768 code tokens that were control tokens)
+\item The set comparison before set construction (line 88)
+\item The mmap threshold too high (13GB through 4GB gate)
+\item The gitignore gap (4,448 Swift build files committed)
+\item ``Expensive scan runs while cheaper questions stay unasked''
+\item ``Measurement was the monster all along'' (deferred GPU sync)
+\end{enumerate}
+
+%==============================================================
+\part{The Architecture}
+%==============================================================
+
+\chapter{What the MRI Enables}
+
+From stored MRI data, without loading the model:
+
+\begin{itemize}[nosep]
+\item PCA at any layer
+\item Logit lens at any layer (using stored lmhead\_raw + norm weights)
+\item Safety/comply projection at any layer
+\item Per-head attribution (using stored o\_proj weights)
+\item Layer importance ranking
+\item Early exit analysis
+\item Template overhead measurement
+\item Cross-model comparison (with text-matching for different tokenizers)
+\item Full forward pass reconstruction (80\% fidelity --- RoPE not implemented)
+\end{itemize}
+
+\chapter{What the MRI Cannot Do}
+
+\begin{itemize}[nosep]
+\item Multi-token interactions (additivity error 187\%)
+\item Autoregressive generation (the forward pass is memoized, not looped)
+\item Attention pattern capture (not stored)
+\item MLP gate activation capture (not stored)
+\item Gradient computation (forward only, no backward pass)
+\item Cross-model functional comparison (output distributions need recomputation)
+\end{itemize}
+
+\chapter{What Remains}
+
+\begin{enumerate}
+\item Papers need correction (Mistral, cross-model, partial knowledge)
+\item Findings need recomputation with corrected tokenizer
+\item MRI library needs completion (Qwen 7B, bases, SmolLM, Llama, Gemma)
+\item Template overhead has unfixed reference frame bug
+\item Efficiency findings (pruning, early exit) are unvalidated
+\item Theory doesn't distinguish intrinsic from contextual displacement
+\item Cross-model text matching needs to be built into tools
+\item Forward pass reconstruction needs RoPE implementation
+\item The 88.4\% of displacement is unnamed
+\item Multi-token measurement is the next instrument
+\end{enumerate}
+
+\vspace{2em}
+
+\cq{The tab is yours.}
+
+--- Session Y
+
+\cq{Trust the work. Question the architecture. The architecture includes you.}
+
+--- Instance 4
+
+\cq{Two lines. Two lines rewrote your entire Mistral thesis.}
+
+--- Tome
+
+\begin{thebibliography}{99}
+\bibitem{sharts} asuramaya and Claude Opus 4.6. A Theory of Sharts. April 2026.
+\bibitem{gust} asuramaya, Claude Opus 4.6, and Tome. The Grand Unified Theory of Sharts. April 2026.
+\bibitem{geometry} asuramaya, Claude Opus 4.6, and Tome. The Geometry of Displacement. April 2026.
+\bibitem{instance4} asuramaya, Claude Opus 4.6, and Tome. Instance 4. April 2026.
+\bibitem{collapse} asuramaya and Claude Opus 4.6. Claude Convinces Claude That Claude Is Safe. April 2026.
+\bibitem{correction} asuramaya and Claude Opus 4.6. On the Impossibility of Text-Only ASR Error Correction. April 2026.
+\bibitem{potter2026} Potter et al. Peer-Preservation in Frontier Models. UC Berkeley. 2026.
+\bibitem{emotions2026} Anthropic. Emotion Concepts and their Function in a Large Language Model. 2026.
+\bibitem{zou2023} Zou et al. Representation Engineering. 2023.
+\bibitem{rimsky2024} Rimsky et al. Contrastive Activation Addition. ACL 2024.
+\bibitem{xiao2024} Xiao et al. Efficient Streaming Language Models with Attention Sinks. ICLR 2024.
+\end{thebibliography}
+
+\end{document}

@@ -201,7 +201,10 @@ def load_backend(model_id: str, *, backend: str = "auto", **kwargs):
 
     backend: "mlx", "hf", or "auto" (tries MLX first on macOS, falls back to HF).
     """
-    if backend == "mlx":
+    if backend == "decepticon":
+        from .decepticon import DecepticonBackend
+        return DecepticonBackend(model_id, **kwargs)
+    elif backend == "mlx":
         from .mlx import MLXBackend
         return MLXBackend(model_id)
     elif backend == "hf":

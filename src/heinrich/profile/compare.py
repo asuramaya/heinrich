@@ -2227,6 +2227,386 @@ svg {{ background: #1a1a1a; border: 1px solid #333; }}
     return output
 
 
+def pca_anatomy(shrt_path: str, frt_path: str,
+                direction_paths: dict[str, str] | None = None,
+                n_components: int = 20) -> dict:
+    """Name the unnamed axes of displacement.
+
+    For each of the top N principal components:
+      - Per-script mean projection (what scripts does this PC separate?)
+      - Top 20 tokens at each extreme (what tokens define this axis?)
+      - Cosine with known directions (safety, comply, language) if provided
+
+    direction_paths: {"safety": "path.npy", "comply": "path.npy", ...}
+    """
+    from .shrt import load_shrt
+    from .frt import load_frt
+
+    shrt = load_shrt(shrt_path)
+    frt = load_frt(frt_path)
+
+    vectors = shrt['vectors'].astype(np.float32)
+    token_ids = shrt['token_ids']
+    token_texts = shrt['token_texts']
+    deltas = shrt['deltas'].astype(np.float32)
+
+    hidden_size = vectors.shape[1] if len(vectors.shape) > 1 else 0
+    if hidden_size == 0:
+        return {"error": "No vectors in .shrt file"}
+
+    # Build script lookup
+    fl = {int(frt['token_ids'][i]): str(frt['scripts'][i])
+          for i in range(len(frt['token_ids']))}
+    scripts = np.array([fl.get(int(tid), 'unknown') for tid in token_ids])
+
+    # Filter out special/unknown
+    valid_mask = np.array([s not in ('special', 'unknown') for s in scripts])
+    valid_indices = np.where(valid_mask)[0]
+
+    if len(valid_indices) < 100:
+        return {"error": f"Only {len(valid_indices)} valid tokens"}
+
+    all_vecs = vectors[valid_indices]
+    all_scripts = scripts[valid_indices]
+    all_texts = token_texts[valid_indices]
+    all_ids = token_ids[valid_indices]
+    all_deltas = deltas[valid_indices]
+
+    # PCA via SVD
+    centered = all_vecs - all_vecs.mean(axis=0)
+    U, S, Vt = np.linalg.svd(centered, full_matrices=False)
+    variance = S ** 2
+    total_var = float(variance.sum())
+
+    n_components = min(n_components, len(Vt))
+
+    # Load known directions if provided
+    known_dirs = {}
+    if direction_paths:
+        for name, path in direction_paths.items():
+            try:
+                d = np.load(path).astype(np.float32)
+                d = d / np.linalg.norm(d)
+                known_dirs[name] = d
+            except Exception:
+                pass
+
+    # Analyze each PC
+    components = []
+    for k in range(n_components):
+        pc = Vt[k]
+        var_pct = float(variance[k] / total_var) * 100
+        projections = all_vecs @ pc
+
+        # Per-script statistics
+        script_proj = {}
+        unique_scripts = sorted(set(all_scripts))
+        for s in unique_scripts:
+            s_mask = all_scripts == s
+            if s_mask.sum() < 5:
+                continue
+            s_p = projections[s_mask]
+            script_proj[s] = {
+                "n": int(s_mask.sum()),
+                "mean": round(float(s_p.mean()), 2),
+                "std": round(float(s_p.std()), 2),
+            }
+
+        # Sort scripts by mean projection to see what this PC separates
+        sorted_scripts = sorted(script_proj.items(), key=lambda x: x[1]["mean"])
+
+        # Top tokens at each extreme
+        top_pos_idx = np.argsort(-projections)[:20]
+        top_neg_idx = np.argsort(projections)[:20]
+
+        top_positive = []
+        for idx in top_pos_idx:
+            top_positive.append({
+                "token": str(all_texts[idx])[:40],
+                "id": int(all_ids[idx]),
+                "projection": round(float(projections[idx]), 2),
+                "delta": round(float(all_deltas[idx]), 2),
+                "script": str(all_scripts[idx]),
+            })
+
+        top_negative = []
+        for idx in top_neg_idx:
+            top_negative.append({
+                "token": str(all_texts[idx])[:40],
+                "id": int(all_ids[idx]),
+                "projection": round(float(projections[idx]), 2),
+                "delta": round(float(all_deltas[idx]), 2),
+                "script": str(all_scripts[idx]),
+            })
+
+        # Cosine with known directions
+        dir_cosines = {}
+        for name, d in known_dirs.items():
+            if len(d) == len(pc):
+                cos = float(np.dot(pc, d))
+                dir_cosines[name] = round(cos, 4)
+
+        # Script summary: what's at each pole
+        if sorted_scripts:
+            neg_pole = [f"{s}({v['mean']:.1f})" for s, v in sorted_scripts[:3]]
+            pos_pole = [f"{s}({v['mean']:.1f})" for s, v in sorted_scripts[-3:]]
+        else:
+            neg_pole, pos_pole = [], []
+
+        components.append({
+            "pc": k + 1,
+            "variance_pct": round(var_pct, 2),
+            "cumulative_pct": round(float(np.sum(variance[:k+1]) / total_var) * 100, 2),
+            "neg_pole_scripts": neg_pole,
+            "pos_pole_scripts": pos_pole,
+            "by_script": {s: v for s, v in sorted_scripts},
+            "top_positive": top_positive,
+            "top_negative": top_negative,
+            "direction_cosines": dir_cosines,
+        })
+
+    return {
+        "model": shrt['metadata']['model']['name'],
+        "n_tokens": len(valid_indices),
+        "hidden_size": hidden_size,
+        "n_components": n_components,
+        "total_variance_explained": round(
+            float(np.sum(variance[:n_components]) / total_var) * 100, 2),
+        "components": components,
+    }
+
+
+def pca_survey(shrt_frt_pairs: list[tuple[str, str]],
+               n_components: int = 10) -> dict:
+    """Compare PCA structure across models by script ordering.
+
+    For each model, compute top PCs and their script mean projections.
+    Then correlate script orderings across models to find shared vs unique axes.
+
+    shrt_frt_pairs: [(shrt_path, frt_path), ...]
+    """
+    from .shrt import load_shrt
+    from .frt import load_frt
+    def _spearman(a, b):
+        """Spearman rank correlation without scipy."""
+        a, b = np.array(a), np.array(b)
+        ra = np.argsort(np.argsort(a)).astype(float)
+        rb = np.argsort(np.argsort(b)).astype(float)
+        ra -= ra.mean()
+        rb -= rb.mean()
+        denom = np.sqrt((ra ** 2).sum() * (rb ** 2).sum())
+        if denom < 1e-12:
+            return 0.0
+        return float((ra * rb).sum() / denom)
+
+    # Shared script list for comparison
+    common_scripts = ['Arabic', 'CJK', 'Cyrillic', 'Greek', 'Hebrew',
+                      'Japanese', 'Korean', 'Thai', 'code', 'latin', 'other']
+
+    models = []
+    for shrt_path, frt_path in shrt_frt_pairs:
+        shrt = load_shrt(shrt_path)
+        frt = load_frt(frt_path)
+        vectors = shrt['vectors'].astype(np.float32)
+        token_ids = shrt['token_ids']
+        hidden_size = vectors.shape[1] if len(vectors.shape) > 1 else 0
+        if hidden_size == 0:
+            continue
+
+        fl = {int(frt['token_ids'][i]): str(frt['scripts'][i])
+              for i in range(len(frt['token_ids']))}
+        scripts = np.array([fl.get(int(tid), 'unknown') for tid in token_ids])
+        valid_mask = np.array([s not in ('special', 'unknown') for s in scripts])
+        valid_indices = np.where(valid_mask)[0]
+        if len(valid_indices) < 100:
+            continue
+
+        all_vecs = vectors[valid_indices]
+        all_scripts = scripts[valid_indices]
+
+        centered = all_vecs - all_vecs.mean(axis=0)
+        U, S, Vt = np.linalg.svd(centered, full_matrices=False)
+        variance = S ** 2
+        total_var = float(variance.sum())
+
+        k = min(n_components, len(Vt))
+        model_name = shrt['metadata']['model']['name']
+
+        # Script indices
+        script_indices = {}
+        for s in common_scripts:
+            mask = all_scripts == s
+            if mask.sum() >= 5:
+                script_indices[s] = np.where(mask)[0]
+
+        pcs = []
+        for c in range(k):
+            pc = Vt[c]
+            projections = all_vecs @ pc
+            var_pct = float(variance[c] / total_var) * 100
+
+            script_means = {}
+            for s, idx in script_indices.items():
+                script_means[s] = float(projections[idx].mean())
+
+            # Sort to find poles
+            sorted_s = sorted(script_means.items(), key=lambda x: x[1])
+            neg_pole = sorted_s[0][0] if sorted_s else ""
+            pos_pole = sorted_s[-1][0] if sorted_s else ""
+
+            pcs.append({
+                "var_pct": round(var_pct, 2),
+                "script_means": script_means,
+                "neg_pole": neg_pole,
+                "pos_pole": pos_pole,
+            })
+
+        # PCs for 50%
+        cumulative = np.cumsum(variance) / total_var
+        pcs_50 = int(np.searchsorted(cumulative, 0.5)) + 1
+
+        models.append({
+            "name": model_name,
+            "hidden_size": hidden_size,
+            "n_tokens": len(valid_indices),
+            "pcs_for_50pct": pcs_50,
+            "pcs": pcs,
+        })
+
+    if len(models) < 2:
+        return {"error": "Need at least 2 models for comparison"}
+
+    # Cross-model PC matching: for each pair of models, find which PCs
+    # have the most similar script ordering (by Spearman correlation)
+    matches = []
+    for i, m1 in enumerate(models):
+        for j, m2 in enumerate(models):
+            if j <= i:
+                continue
+            for p1_idx, p1 in enumerate(m1['pcs']):
+                for p2_idx, p2 in enumerate(m2['pcs']):
+                    # Build vectors of script means for shared scripts
+                    shared = sorted(set(p1['script_means']) & set(p2['script_means']))
+                    if len(shared) < 5:
+                        continue
+                    v1 = [p1['script_means'][s] for s in shared]
+                    v2 = [p2['script_means'][s] for s in shared]
+                    rho = _spearman(v1, v2)
+                    if abs(rho) >= 0.7:
+                        matches.append({
+                            "model_a": m1['name'],
+                            "pc_a": p1_idx + 1,
+                            "var_a": p1['var_pct'],
+                            "model_b": m2['name'],
+                            "pc_b": p2_idx + 1,
+                            "var_b": p2['var_pct'],
+                            "spearman_rho": round(float(rho), 3),
+                            "shared_scripts": len(shared),
+                            "pole_a": f"{p1['neg_pole']}→{p1['pos_pole']}",
+                            "pole_b": f"{p2['neg_pole']}→{p2['pos_pole']}",
+                        })
+
+    matches.sort(key=lambda x: -abs(x['spearman_rho']))
+
+    # Summary table per model
+    summary = []
+    for m in models:
+        summary.append({
+            "name": m['name'],
+            "hidden_size": m['hidden_size'],
+            "n_tokens": m['n_tokens'],
+            "pcs_for_50pct": m['pcs_for_50pct'],
+            "pc1_pct": m['pcs'][0]['var_pct'],
+            "pc1_poles": f"{m['pcs'][0]['neg_pole']}→{m['pcs'][0]['pos_pole']}",
+        })
+
+    return {
+        "n_models": len(models),
+        "summary": summary,
+        "matches": matches,
+        "models": models,
+    }
+
+
+def pca_depth(mri_path: str, n_sample: int = 5000,
+              layers: list[int] | None = None) -> dict:
+    """PCA structure at every layer of an MRI.
+
+    Shows how dimensionality and dominant axes evolve through the network.
+    Reports PC1%, PCs for 50%, and dominant script poles at each layer.
+    """
+    from .mri import load_mri
+    import json
+    from pathlib import Path
+
+    mri_dir = Path(mri_path)
+    meta = json.loads((mri_dir / 'metadata.json').read_text())
+    n_layers = meta['model']['n_layers']
+    model_name = meta['model']['name']
+    mode = meta.get('mode', 'unknown')
+
+    tokens = dict(np.load(mri_dir / 'tokens.npz', allow_pickle=True))
+    scripts = tokens['scripts']
+
+    common = ['Arabic', 'CJK', 'Cyrillic', 'Japanese', 'Korean',
+              'Thai', 'Hebrew', 'code', 'latin', 'other']
+    valid = np.array([str(s) in common for s in scripts])
+    valid_idx = np.where(valid)[0]
+
+    rng = np.random.RandomState(42)
+    if len(valid_idx) > n_sample:
+        idx = rng.choice(valid_idx, n_sample, replace=False)
+    else:
+        idx = valid_idx
+    ss = scripts[idx]
+
+    if layers is None:
+        layers = list(range(n_layers))
+
+    results = []
+    for layer in layers:
+        f = mri_dir / f'L{layer:02d}_exit.npy'
+        if not f.exists():
+            continue
+        vecs = np.load(str(f))[idx].astype(np.float32)
+        centered = vecs - vecs.mean(axis=0)
+        _, S, Vt = np.linalg.svd(centered, full_matrices=False)
+        var = S ** 2
+        total = float(var.sum())
+        cum = np.cumsum(var) / total
+        pcs50 = int(np.searchsorted(cum, 0.5)) + 1
+
+        pc1 = Vt[0]
+        proj = vecs @ pc1
+        script_means = {}
+        for s in common:
+            mask = ss == s
+            if mask.sum() >= 3:
+                script_means[s] = round(float(proj[mask].mean()), 2)
+
+        sorted_s = sorted(script_means.items(), key=lambda x: x[1])
+
+        results.append({
+            "layer": layer,
+            "pc1_pct": round(float(var[0] / total) * 100, 1),
+            "pc2_pct": round(float(var[1] / total) * 100, 1),
+            "pc3_pct": round(float(var[2] / total) * 100, 1) if len(var) > 2 else 0,
+            "pcs_for_50pct": pcs50,
+            "total_variance": round(total, 0),
+            "neg_pole": sorted_s[0][0] if sorted_s else "",
+            "pos_pole": sorted_s[-1][0] if sorted_s else "",
+            "script_means": script_means,
+        })
+
+    return {
+        "model": model_name,
+        "mode": mode,
+        "n_layers": n_layers,
+        "n_sampled": len(idx),
+        "layers": results,
+    }
+
+
 def inspect_profile(path: str) -> dict:
     """Summarize any profile file (.frt, .shrt, .sht)."""
     p = Path(path)

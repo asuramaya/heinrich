@@ -207,6 +207,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_dirs.add_argument("--frt", required=True, help=".frt.npz file")
     p_dirs.add_argument("--safety-shrt", default=None, help=".shrt.npz with discovered safety direction")
 
+    p_pca = sub.add_parser("profile-pca-anatomy", help="Name the unnamed axes: what each PC separates, extreme tokens, direction cosines")
+    p_pca.add_argument("--shrt", required=True, help=".shrt.npz or .mri directory")
+    p_pca.add_argument("--frt", required=True, help=".frt.npz or .mri directory")
+    p_pca.add_argument("--directions", nargs="*", default=None, help="Named direction files: name=path.npy")
+    p_pca.add_argument("--n-components", type=int, default=20, help="Number of PCs to analyze (default: 20)")
+
+    p_pcasurvey = sub.add_parser("profile-pca-survey", help="Compare PCA structure across models: which axes are shared, which are unique")
+    p_pcasurvey.add_argument("--pairs", nargs="+", required=True, help="shrt:frt pairs (e.g. model1.shrt.npz:model1.frt.npz)")
+    p_pcasurvey.add_argument("--n-components", type=int, default=10, help="Number of PCs per model (default: 10)")
+
+    p_mriverify = sub.add_parser("mri-verify", help="Smoke-test a model: 5-token MRI capture to verify architecture compatibility")
+    p_mriverify.add_argument("--model", required=True, help="Model ID or checkpoint path")
+    p_mriverify.add_argument("--backend", choices=["auto", "mlx", "hf", "decepticon"], default="auto")
+
+    p_mristatus = sub.add_parser("mri-status", help="Show all MRIs: what's complete, what's missing, what's running")
+    p_mristatus.add_argument("--dir", default="/Volumes/sharts", help="MRI directory (default: /Volumes/sharts)")
+
     p_codeanat = sub.add_parser("profile-code-anatomy", help="Decompose 'code' tokens: do structural, keywords, operators fall the same?")
     p_codeanat.add_argument("--shrt", required=True, help=".shrt.npz file")
     p_codeanat.add_argument("--frt", required=True, help=".frt.npz file")
@@ -248,10 +265,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_backfill.add_argument("--mri", nargs="+", required=True, help="MRI directories to backfill")
 
     p_mri = sub.add_parser("mri", help="Complete model residual image: tokenizer + state + baselines + directions in one file")
-    p_mri.add_argument("--model", required=True, help="Model ID")
+    p_mri.add_argument("--model", required=True, help="Model ID or checkpoint path")
+    p_mri.add_argument("--backend", choices=["auto", "mlx", "hf", "decepticon"], default="auto", help="Backend (default: auto)")
     p_mri.add_argument("--mode", choices=["template", "naked", "raw"], default="template")
     p_mri.add_argument("--n-index", type=int, default=None, help="Number of tokens (default: full vocabulary)")
-    p_mri.add_argument("--output", "-o", required=True, help="Output .mri.npz file")
+    p_mri.add_argument("--output", "-o", required=True, help="Output .mri directory")
     p_mri.add_argument("--db", default=None, help="Database path for direction discovery")
 
     p_capture = sub.add_parser("total-capture", help="[legacy] Use 'mri' instead. Capture every token, every layer.")
@@ -399,6 +417,14 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_directions(args)
     elif args.command == "profile-code-anatomy":
         _cmd_code_anatomy(args)
+    elif args.command == "profile-pca-anatomy":
+        _cmd_pca_anatomy(args)
+    elif args.command == "profile-pca-survey":
+        _cmd_pca_survey(args)
+    elif args.command == "mri-verify":
+        _cmd_mri_verify(args)
+    elif args.command == "mri-status":
+        _cmd_mri_status(args)
     else:
         parser.print_help()
 
@@ -926,12 +952,18 @@ def _cmd_mri(args: argparse.Namespace) -> None:
     """Complete model residual image."""
     from .backend.protocol import load_backend
     from .profile.mri import capture_mri
-    backend = load_backend(args.model)
+    backend_name = getattr(args, 'backend', 'auto')
+    # Auto-detect decepticon checkpoints
+    if backend_name == "auto" and args.model.endswith('.checkpoint.pt'):
+        backend_name = "decepticon"
+    backend = load_backend(args.model, backend=backend_name)
     result = capture_mri(backend, mode=args.mode, n_index=args.n_index,
                           output=args.output, db_path=getattr(args, 'db', None))
-    print(f"\n  {result['capture']['n_tokens']} tokens x {result['capture']['n_layers']} layers")
-    print(f"  mode: {result['capture']['mode']}")
-    print(f"  {result['elapsed_s']}s elapsed")
+    meta = result.get('metadata', result)
+    capture = meta.get('capture', meta)
+    print(f"\n  {capture.get('n_tokens', '?')} tokens")
+    print(f"  mode: {capture.get('mode', '?')}")
+    print(f"  {meta.get('elapsed_s', '?')}s elapsed")
 
 
 def _cmd_total_capture(args: argparse.Namespace) -> None:
@@ -1241,6 +1273,244 @@ def _cmd_directions(args: argparse.Namespace) -> None:
         print(f"\n  Safety direction: layer {result['safety_layer']}")
         if result.get('safety_note'):
             print(f"  {result['safety_note']}")
+
+
+def _cmd_pca_anatomy(args: argparse.Namespace) -> None:
+    """Name the unnamed axes of displacement."""
+    from .profile.compare import pca_anatomy
+
+    # Parse direction arguments: name=path.npy
+    direction_paths = {}
+    if args.directions:
+        for d in args.directions:
+            if '=' in d:
+                name, path = d.split('=', 1)
+                direction_paths[name] = path
+            else:
+                # Use filename stem as name
+                from pathlib import Path as P
+                direction_paths[P(d).stem] = d
+
+    result = pca_anatomy(args.shrt, args.frt,
+                         direction_paths=direction_paths or None,
+                         n_components=args.n_components)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== PCA Anatomy: {result['model']} "
+          f"(N={result['n_tokens']}, hidden={result['hidden_size']}, "
+          f"top {result['n_components']} PCs = {result['total_variance_explained']}%) ===")
+
+    for comp in result['components']:
+        k = comp['pc']
+        print(f"\n{'='*70}")
+        print(f"  PC{k}: {comp['variance_pct']:.2f}% "
+              f"(cumulative {comp['cumulative_pct']:.1f}%)")
+
+        # Script poles
+        if comp['neg_pole_scripts'] or comp['pos_pole_scripts']:
+            neg = ', '.join(comp['neg_pole_scripts'])
+            pos = ', '.join(comp['pos_pole_scripts'])
+            print(f"  (-) pole: {neg}")
+            print(f"  (+) pole: {pos}")
+
+        # Direction cosines
+        if comp['direction_cosines']:
+            cos_str = ', '.join(f"{n}={v:+.3f}" for n, v in comp['direction_cosines'].items())
+            print(f"  direction cosines: {cos_str}")
+
+        # Per-script table
+        print(f"\n  {'script':<12} {'n':>6} {'mean':>8} {'std':>8}")
+        print(f"  {'-'*36}")
+        for s, v in comp['by_script'].items():
+            print(f"  {s:<12} {v['n']:>6} {v['mean']:>8.2f} {v['std']:>8.2f}")
+
+        # Extreme tokens
+        print(f"\n  Top (+) tokens:")
+        for t in comp['top_positive'][:10]:
+            print(f"    {t['projection']:>8.2f}  {t['script']:<8} {t['delta']:>7.1f}  {t['token']}")
+        print(f"  Top (-) tokens:")
+        for t in comp['top_negative'][:10]:
+            print(f"    {t['projection']:>8.2f}  {t['script']:<8} {t['delta']:>7.1f}  {t['token']}")
+
+
+def _cmd_pca_survey(args: argparse.Namespace) -> None:
+    """Compare PCA structure across models."""
+    from .profile.compare import pca_survey
+
+    pairs = []
+    for p in args.pairs:
+        parts = p.split(':')
+        if len(parts) != 2:
+            print(f"Error: pair must be shrt:frt, got '{p}'")
+            return
+        pairs.append((parts[0], parts[1]))
+
+    result = pca_survey(pairs, n_components=args.n_components)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== PCA Survey: {result['n_models']} models ===\n")
+
+    print(f"  {'model':<45} {'hidden':>6} {'tokens':>8} {'PCs@50%':>7} {'PC1%':>6} {'PC1 axis'}")
+    print(f"  {'-'*95}")
+    for s in result['summary']:
+        name = s['name'].split('/')[-1][:42]
+        print(f"  {name:<45} {s['hidden_size']:>6} {s['n_tokens']:>8} {s['pcs_for_50pct']:>7} {s['pc1_pct']:>5.1f}% {s['pc1_poles']}")
+
+    if result['matches']:
+        print(f"\n  Shared axes (Spearman rho >= 0.7):")
+        print(f"  {'model_a':<22} {'PC':>3} {'%':>5}  {'model_b':<22} {'PC':>3} {'%':>5}  {'rho':>6} {'axis_a':<20} {'axis_b'}")
+        print(f"  {'-'*110}")
+        for m in result['matches'][:30]:
+            na = m['model_a'].split('/')[-1][:20]
+            nb = m['model_b'].split('/')[-1][:20]
+            print(f"  {na:<22} {m['pc_a']:>3} {m['var_a']:>5.1f}  "
+                  f"{nb:<22} {m['pc_b']:>3} {m['var_b']:>5.1f}  "
+                  f"{m['spearman_rho']:>+6.3f} {m['pole_a']:<20} {m['pole_b']}")
+    else:
+        print(f"\n  No shared axes found (rho >= 0.7)")
+
+
+def _cmd_mri_verify(args: argparse.Namespace) -> None:
+    """Smoke-test a model: 5-token capture to verify compatibility."""
+    import tempfile
+    from .backend.protocol import load_backend
+    from .profile.mri import capture_mri
+
+    backend_name = getattr(args, 'backend', 'auto')
+    if backend_name == "auto" and args.model.endswith('.checkpoint.pt'):
+        backend_name = "decepticon"
+
+    try:
+        backend = load_backend(args.model, backend=backend_name)
+        cfg = backend.config
+        print(f"Model: {cfg.model_type}, L={cfg.n_layers}, H={cfg.hidden_size}, V={cfg.vocab_size}")
+    except Exception as e:
+        print(f"FAIL: Cannot load model: {e}")
+        return
+
+    try:
+        with tempfile.TemporaryDirectory() as tmp:
+            result = capture_mri(backend, mode='raw', n_index=5, output=f'{tmp}/test.mri')
+            meta = result.get('metadata', result)
+            print(f"PASS: {meta.get('capture', {}).get('n_tokens', '?')} tokens captured successfully")
+    except Exception as e:
+        print(f"FAIL: Capture error: {e}")
+
+
+def _cmd_mri_status(args: argparse.Namespace) -> None:
+    """Show all MRIs: complete, incomplete, running."""
+    import json
+    import subprocess
+    from pathlib import Path
+    import numpy as np
+
+    mri_dir = Path(args.dir)
+    if not mri_dir.exists():
+        print(f"MRI directory not found: {mri_dir}")
+        return
+
+    # Find all .mri directories
+    mris = sorted(mri_dir.glob("*.mri"))
+    if not mris:
+        print(f"No .mri directories in {mri_dir}")
+        return
+
+    # Check running captures
+    try:
+        ps = subprocess.run(["pgrep", "-af", "heinrich.cli mri"],
+                            capture_output=True, text=True, timeout=5)
+        running = ps.stdout.strip().split('\n') if ps.stdout.strip() else []
+    except Exception:
+        running = []
+
+    complete = []
+    incomplete = []
+    for d in mris:
+        meta_path = d / "metadata.json"
+        if not meta_path.exists():
+            incomplete.append((d.name, "no metadata", {}))
+            continue
+        try:
+            meta = json.loads(meta_path.read_text())
+        except Exception:
+            incomplete.append((d.name, "bad metadata", {}))
+            continue
+
+        arch = meta.get("architecture", "transformer")
+        model = meta.get("model", {})
+        n_layers = model.get("n_layers", 0)
+
+        if arch == "causal_bank":
+            has_sub = (d / "substrate.npy").exists()
+            has_hl = (d / "half_lives.npy").exists()
+            ok = has_sub and has_hl
+            detail = f"modes={model.get('n_modes','?')} experts={model.get('n_experts','?')}"
+            if ok:
+                complete.append((d.name, detail, meta))
+            else:
+                missing = []
+                if not has_sub: missing.append("substrate")
+                if not has_hl: missing.append("half_lives")
+                incomplete.append((d.name, f"{detail} missing={','.join(missing)}", meta))
+        else:
+            n_entry = len(list(d.glob("L*_entry.npy")))
+            n_exit = len(list(d.glob("L*_exit.npy")))
+            has_embed = (d / "embedding.npy").exists()
+            has_lmhead = (d / "lmhead_raw.npy").exists()
+            n_wt = len(list((d / "weights").glob("L*"))) if (d / "weights").exists() else 0
+
+            layers_ok = n_entry == n_layers and n_exit == n_layers
+            detail = f"{n_layers}L h={model.get('hidden_size','?')}"
+            mode = meta.get("capture", {}).get("mode", "?")
+            n_tok = meta.get("capture", {}).get("n_tokens", "?")
+
+            if layers_ok and has_embed and n_wt == n_layers:
+                size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                # Health check: verify one layer file isn't corrupt
+                health = ""
+                try:
+                    test = np.load(d / "L00_exit.npy", mmap_mode='r')
+                    expected_h = model.get('hidden_size', 0)
+                    if expected_h and test.shape[1] != expected_h:
+                        health = f" CORRUPT(shape={test.shape})"
+                    if np.any(np.isnan(test[:10].astype(np.float32))):
+                        health = " CORRUPT(NaN)"
+                except Exception as e:
+                    health = f" CORRUPT({e})"
+                complete.append((d.name, f"{detail} {mode} {n_tok}tok {size/1e9:.0f}G{health}", meta))
+            else:
+                parts = []
+                if not layers_ok: parts.append(f"layers={n_entry}/{n_layers}")
+                if not has_embed: parts.append("no embed")
+                if not has_lmhead: parts.append("no lmhead")
+                if n_wt < n_layers: parts.append(f"wt={n_wt}/{n_layers}")
+                incomplete.append((d.name, f"{detail} {' '.join(parts)}", meta))
+
+    print(f"\n=== MRI Library: {mri_dir} ===\n")
+    print(f"Complete ({len(complete)}):")
+    for name, detail, _ in complete:
+        print(f"  ✓ {name:<35} {detail}")
+
+    if incomplete:
+        print(f"\nIncomplete ({len(incomplete)}):")
+        for name, detail, _ in incomplete:
+            print(f"  ✗ {name:<35} {detail}")
+
+    if running:
+        print(f"\nRunning ({len(running)}):")
+        for r in running:
+            print(f"  ▶ {r.strip()}")
+
+    # Also check for legacy .shrt files
+    legacy = list(Path("data/runs").glob("*.shrt.npz")) if Path("data/runs").exists() else []
+    if legacy:
+        print(f"\nLegacy .shrt files ({len(legacy)} in data/runs/) — recapture as .mri")
+
+    print()
 
 
 def _cmd_code_anatomy(args: argparse.Namespace) -> None:

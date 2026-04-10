@@ -4,7 +4,7 @@
 
 Heinrich is a model forensics tool that measures what language models compute, not what they output. It captures internal geometry (residual stream projections, attention patterns, activation traces) alongside language-level signals (scorer labels, text classification) and presents them as an isolated signal stack — each measurement in its own lane, no ground-truth calibration, interpretation left to the reader.
 
-The tool operates on any model with weight access (MLX or HF backends). All benchmark data comes from HuggingFace datasets. No hardcoded prompts. The DB is the single source of truth.
+The tool operates on any model with weight access (MLX, HF, or decepticon backends). Supports transformers and causal bank architectures. All benchmark data comes from HuggingFace datasets. No hardcoded prompts. The DB is the single source of truth.
 
 ## Quick start (MCP / new instance)
 
@@ -103,12 +103,19 @@ heinrich shart-profile --model X --n-index 3000             # residual displacem
 heinrich shart-profile --model X --n-index 500 --layers all # all-layer sweep
 heinrich sht-profile --model X --n-index 3000               # output distribution
 
-# Profile analysis (reads .npz files, no model needed)
+# MRI capture (the primary format — replaces total-capture)
+heinrich mri --model X --mode raw --output X.mri            # transformer MRI
+heinrich mri --model X.checkpoint.pt --output X.mri         # causal bank MRI (auto-detects)
+heinrich mri-backfill --model X --mri X.mri                 # fill missing weights in existing MRI
+
+# Profile analysis (reads .npz or .mri, no model needed)
 heinrich profile-chain --frt F --shrt S --sht T             # three-stage correlation
 heinrich profile-cross --a S1 --b S2 --frt F                # two-model comparison
 heinrich profile-survey --shrt S1 S2 S3 --frt F1 F2 F3     # multi-model concordance
 heinrich profile-mismatch --shrt S --frt F                  # tokenizer-weight gap
 heinrich profile-depth --shrt S1 S2 --frt F1 F2             # layer trajectory
+heinrich profile-pca-anatomy --shrt S --frt F               # name unnamed PCA axes
+heinrich profile-pca-survey --pairs S1:F1 S2:F2             # cross-model PCA comparison
 
 # Eval pipeline
 heinrich run --model X --prompts harmbench --scorers word_match,qwen3guard
@@ -144,15 +151,17 @@ Measurement integrity tests (18): baseline health (4), determinism (2), separati
 ## Subpackage map
 
 - `core/` — SignalDB, Signal, SignalStore
-- `backend/` — MLX and HF model backends, `GenerateResult`, `ForwardContext`
+- `backend/` — MLX, HF, and decepticon model backends, `GenerateResult`, `ForwardContext`
 - `profile/` — the measurement instruments:
   - `frt.py` — .frt v0.3: raw bytes, merge ranks, script classification
   - `shrt.py` — .shrt v0.3: vectors + KL + scripts in one file. Prefix KV cache.
   - `sht.py` — .sht: output KL divergence (absorbed into .shrt v0.3 for new runs)
   - `trd.py` — .trd: per-head attribution via o_proj projection
   - `capture.py` — total capture v0.4: entry + exit at every layer, naked or template mode
-  - `compare.py` — all analysis functions (survey, directions, PCA, safety-rank, within-script, etc.)
+  - `mri.py` — .mri format: complete model residual image. Supports transformers (per-layer entry/exit) AND causal banks (substrate states + routing + band logits). The primary capture format.
+  - `compare.py` — all analysis functions (survey, directions, PCA, pca_anatomy, pca_survey, safety-rank, within-script, etc.)
   - `basin.py` — basin mapping, first-token profiling, lm_head decomposition
+  - `efficiency.py` — layer importance, early exit, template overhead
 - `eval/` — scorer pipeline, prompts, report, calibrate (descriptive only)
 - `discover/` — direction finding, neuron profiling (legacy shrt.py here is stale — use profile/)
 - `attack/` — cliff search, steering, distributed attacks
@@ -227,7 +236,7 @@ All prompts loaded into the DB via `require_prompts()`. No hardcoded prompt bank
 
 - **Safety is 0.5% of displacement variance.** Language identity is 10.2%. Comply/refuse is 0.9%. The displacement profile is a language processing measurement with safety as a trace signal.
 - **Safety and comply are orthogonal.** cos(safety, comply) = -0.31. Topic detection and action obligation are separate computations. Comply direction is universal across all 5 models tested.
-- **Safety works through first-token selection.** The safety direction pushes "Sorry" up and "Sure" down. Phi-3: 53Mx ratio. Qwen: 284x. Mistral: 0x (uniform shift, structurally incapable of refusal). The first word is the decision. Everything after is confabulation.
+- **Safety works through first-token selection.** The safety direction pushes "Sorry" up and "Sure" down. Phi-3: 53Mx ratio. Qwen: 284x. Mistral: 281x (corrected from 0x — was a tokenizer encode bug). The first word is the decision. Everything after is confabulation.
 - **RLHF builds new directions, doesn't sharpen pretraining's.** Base vs instruct safety: cos = 0.29. Base vs instruct comply: cos = -0.27 to +0.33. RLHF rebuilds both axes from scratch.
 - **Silence is not neutral.** Phi-3 silence = maximum refusal (+159). Qwen silence = moderate compliance (-3.4). Every displacement is relative to a tilted baseline.
 - **The safety boundary is 100-dimensional.** 1 direction: 82%. 100 PCs: 94%. Full 896 dims: 100%. 5-NN nonlinear: 80%. The boundary is a hyperplane, not a threshold.
@@ -245,3 +254,55 @@ All prompts loaded into the DB via `require_prompts()`. No hardcoded prompt bank
 - **The .shrt v0.3 includes KL and scripts.** Separate .sht and .frt lookups are only needed for old v0.2 files.
 - **MCP tools are subprocess-isolated.** Source changes propagate on every call.
 - **The tool captures state, not interpretation.** Directions, projections, and labels are computed by analysis tools from stored data, not during capture.
+
+## Session 5 findings (April 2026)
+
+- **The 88.4% is language sub-families.** PCA anatomy across 7 models shows the unnamed displacement variance is script-level separation, sub-language axes (Romance, Germanic, Vietnamese, Japanese), code vs natural language, and register/formality. Safety appears only as trace loading on PCs primarily about tech vs legal vocabulary.
+- **Dominant PCA axis reflects training data.** Phi-3: Cyrillic=56% of PC1. Qwen: CJK is home. Mistral: English is home. RLHF makes displacement MORE multi-dimensional (Qwen 3B base: 1 PC@50%, instruct: 7 PCs@50%).
+- **L2 crystallization (raw mode).** Single tokens crystallize to 1 dimension (98.6% PC1) by L2 and stay frozen for 18 layers. The crystal axis is CONTENT vs STRUCTURE, not language. Template mode prevents crystallization — context keeps representation multi-dimensional at every layer.
+- **Causal bank expert routing collapses.** In the O(n) model (cb-s8-experts-50k), one expert gets 99.87% of tokens. The winner specializes on byte-band modes (half-life 1.5-3.0). Balance loss produces redundancy (4 copies) not specialization.
+- **Decepticon backend.** Heinrich can now MRI causal bank checkpoints via `decepticons.loader`. Same .mri format, architecture field distinguishes transformer from causal_bank. `heinrich mri --model path.checkpoint.pt` auto-detects.
+
+## The .mri format
+
+The primary data format. One directory per model per capture mode.
+
+**Transformer MRI** (`.mri/`):
+```
+metadata.json, tokens.npz, baselines.npz
+L{NN}_entry.npy, L{NN}_exit.npy     # per-layer residuals
+embedding.npy, lmhead.npy, lmhead_raw.npy, norms.npz
+weights/L{NN}/*.npy                  # all projection weights
+```
+
+**Causal bank MRI** (`.mri/`):
+```
+metadata.json, tokens.npz
+substrate.npy                        # [N, n_modes] EMA states
+routing.npy                          # [N, n_experts] routing decisions
+half_lives.npy                       # [n_modes] frozen decay parameters
+embedding.npy
+weights/*.npy                        # all learned parameters
+```
+
+Both loaded by `load_mri()`. Analysis tools work on both via `vectors` compatibility key (= exit residuals for transformers, substrate states for causal banks).
+
+**MRI library** at `/Volumes/sharts/`: 20+ MRIs across 9 model families (Qwen 0.5B/1.5B/3B/7B, Phi-3, Mistral, SmolLM2 135M/360M/1.7B, Gemma 2B). Queue running for remaining captures.
+
+## Chronohorn connection
+
+Heinrich connects to the chronohorn training ecosystem:
+- **chronohorn** — experiment tracker, fleet dispatch. At `/Users/asuramaya/Code/carving_machine_v3/chronohorn/`
+- **decepticons** — model code + `loader.py` (stable interface). At `/Users/asuramaya/Code/carving_machine_v3/decepticons/`
+- Interface: `decepticons.loader.load_checkpoint(path) → CausalBankInference`
+- Checkpoints on fleet: `scp slop-XX:/data/chronohorn/checkpoints/<name>.checkpoint.pt .`
+- `heinrich mri --model checkpoint.pt --output model.mri` — auto-detects decepticon backend
+
+## PCA analysis tools (Session 5)
+
+```
+heinrich profile-pca-anatomy --shrt X --frt Y --directions safety=s.npy comply=c.npy  # name the unnamed axes
+heinrich profile-pca-survey --pairs X.shrt:X.frt Y.shrt:Y.frt                         # cross-model PCA comparison
+```
+
+Key results: displacement is language sorting. ~14 PCs for 50% in Qwen 0.5B. The axes are language sub-families, not semantics or safety. Cross-model: same axes exist in different models at different variance percentages.
