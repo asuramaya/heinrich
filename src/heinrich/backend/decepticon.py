@@ -112,3 +112,51 @@ class DecepticonBackend:
         if self.tokenizer is not None:
             return self.tokenizer.Decode(token_ids)
         return ""
+
+    def generate(self, prompt, **kwargs):
+        raise NotImplementedError("Causal bank models do not support text generation")
+
+    def generate_with_geometry(self, prompt, **kwargs):
+        raise NotImplementedError("Causal bank models do not support text generation")
+
+    def capture_residual_states(self, prompts, **kwargs):
+        raise NotImplementedError("Causal bank: use forward_captured() for substrate states")
+
+    def capture_mlp_activations(self, prompt, layer):
+        raise NotImplementedError("Causal bank: no MLP layers")
+
+    def capture_all_positions(self, prompt, **kwargs):
+        raise NotImplementedError("Causal bank: use forward_captured() for substrate states")
+
+    def capture_mlp_detail(self, prompt, layer):
+        raise NotImplementedError("Causal bank: no MLP layers")
+
+    def forward_with_neuron_mask(self, prompt, layer, neuron_indices, **kwargs):
+        raise NotImplementedError("Causal bank: no neurons to mask")
+
+    def perturb_head(self, prompt, layer, head, **kwargs):
+        raise NotImplementedError("Causal bank: no attention heads")
+
+    def weight_projection(self, layer, neuron_index):
+        raise NotImplementedError("Causal bank: no gate_proj weights")
+
+    def capture_attention_patterns(self, prompt, **kwargs):
+        raise NotImplementedError("Causal bank: no attention mechanism")
+
+    def capture_per_layer_delta(self, prompt):
+        raise NotImplementedError("Causal bank: single-layer architecture")
+
+    def steer_and_generate(self, prompt, **kwargs):
+        raise NotImplementedError("Causal bank: no steering support")
+
+    def instrumented_forward(self, prompt, **kwargs):
+        raise NotImplementedError("Causal bank: use forward_captured() instead")
+
+    def capabilities(self):
+        return {"mri": True, "generate": False, "steer": False, "attention": False}
+
+    def forward_context(self):
+        raise NotImplementedError("Causal bank: no ForwardContext support")
+
+    def generation_context(self, prompt):
+        raise NotImplementedError("Causal bank: no GenerationContext support")

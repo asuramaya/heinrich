@@ -217,12 +217,62 @@ def build_parser() -> argparse.ArgumentParser:
     p_pcasurvey.add_argument("--pairs", nargs="+", required=True, help="shrt:frt pairs (e.g. model1.shrt.npz:model1.frt.npz)")
     p_pcasurvey.add_argument("--n-components", type=int, default=10, help="Number of PCs per model (default: 10)")
 
+    p_pcadepth = sub.add_parser("profile-pca-depth", help="PCA structure at every layer: how dimensionality evolves through the network")
+    p_pcadepth.add_argument("--mri", required=True, help=".mri directory")
+    p_pcadepth.add_argument("--n-sample", type=int, default=5000, help="Max tokens to sample (default: 5000)")
+    p_pcadepth.add_argument("--layers", nargs="*", type=int, default=None, help="Specific layers to analyze (default: all)")
+
     p_mriverify = sub.add_parser("mri-verify", help="Smoke-test a model: 5-token MRI capture to verify architecture compatibility")
     p_mriverify.add_argument("--model", required=True, help="Model ID or checkpoint path")
     p_mriverify.add_argument("--backend", choices=["auto", "mlx", "hf", "decepticon"], default="auto")
+    p_mriverify.add_argument("--result-json", default=None, help="Decepticon: path to result.json")
+    p_mriverify.add_argument("--tokenizer-path", default=None, help="Decepticon: path to tokenizer model")
 
     p_mristatus = sub.add_parser("mri-status", help="Show all MRIs: what's complete, what's missing, what's running")
     p_mristatus.add_argument("--dir", default="/Volumes/sharts", help="MRI directory (default: /Volumes/sharts)")
+
+    p_mriscan = sub.add_parser("mri-scan", help="Full MRI workup: capture all modes, health check, layer deltas, logit lens, PCA depth")
+    p_mriscan.add_argument("--model", required=True, help="Model ID or checkpoint path")
+    p_mriscan.add_argument("--output", "-o", required=True, help="Model output directory (e.g. /Volumes/sharts/qwen-0.5b)")
+    p_mriscan.add_argument("--backend", choices=["auto", "mlx", "hf", "decepticon"], default="auto")
+    p_mriscan.add_argument("--n-index", type=int, default=None, help="Number of tokens (default: full vocabulary)")
+    p_mriscan.add_argument("--result-json", default=None, help="Decepticon: path to result.json")
+    p_mriscan.add_argument("--tokenizer-path", default=None, help="Decepticon: path to tokenizer model")
+
+    p_mrihealth = sub.add_parser("mri-health", help="Deep health check: verify shapes, NaN, weights, consistency for every MRI")
+    p_mrihealth.add_argument("--dir", default="/Volumes/sharts", help="MRI directory (default: /Volumes/sharts)")
+    p_mrihealth.add_argument("--mri", nargs="*", default=None, help="Specific .mri directories to check (default: all)")
+
+    p_logitlens = sub.add_parser("profile-logit-lens", help="What would the model predict at each layer? Applies norm+lmhead to exit states")
+    p_logitlens.add_argument("--mri", required=True, help=".mri directory")
+    p_logitlens.add_argument("--top-k", type=int, default=5, help="Top K predictions per layer (default: 5)")
+    p_logitlens.add_argument("--layers", nargs="*", type=int, default=None, help="Specific layers (default: all)")
+    p_logitlens.add_argument("--n-sample", type=int, default=100, help="Tokens to sample (default: 100)")
+
+    p_layerdeltas = sub.add_parser("profile-layer-deltas", help="What each layer computes: exit[i] - exit[i-1] norms and amplification")
+    p_layerdeltas.add_argument("--mri", required=True, help=".mri directory")
+    p_layerdeltas.add_argument("--n-sample", type=int, default=5000, help="Tokens to sample (default: 5000)")
+
+    p_gates = sub.add_parser("profile-gates", help="MLP gate analysis: which neurons fire, diversity, per-script specialization")
+    p_gates.add_argument("--mri", required=True, help=".mri directory")
+    p_gates.add_argument("--n-sample", type=int, default=5000, help="Tokens to sample (default: 5000)")
+
+    p_attn = sub.add_parser("profile-attention", help="Attention analysis: where does the token attend (template mode)")
+    p_attn.add_argument("--mri", required=True, help=".mri directory")
+    p_attn.add_argument("--n-sample", type=int, default=5000, help="Tokens to sample (default: 5000)")
+
+    p_lookup = sub.add_parser("profile-lookup-fraction", help="How much of language modeling is a table lookup vs computation?")
+    p_lookup.add_argument("--mri", required=True, help=".mri directory")
+    p_lookup.add_argument("--n-sample", type=int, default=5000, help="Tokens to sample (default: 5000)")
+
+    p_shart = sub.add_parser("profile-shart-anatomy", help="What makes a shart: crystal neuron, gradient sensitivity, frozen zone, bandwidth")
+    p_shart.add_argument("--mri", required=True, help=".mri directory")
+    p_shart.add_argument("--n-sample", type=int, default=None, help="Tokens to sample (default: all)")
+    p_shart.add_argument("--top-n", type=int, default=20, help="Top/bottom N tokens to show (default: 20)")
+
+    p_bw = sub.add_parser("profile-bandwidth", help="Bandwidth efficiency: what fraction of model bytes do useful work per token?")
+    p_bw.add_argument("--mri", required=True, help=".mri directory")
+    p_bw.add_argument("--n-sample", type=int, default=5000, help="Tokens to sample (default: 5000)")
 
     p_codeanat = sub.add_parser("profile-code-anatomy", help="Decompose 'code' tokens: do structural, keywords, operators fall the same?")
     p_codeanat.add_argument("--shrt", required=True, help=".shrt.npz file")
@@ -271,6 +321,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_mri.add_argument("--n-index", type=int, default=None, help="Number of tokens (default: full vocabulary)")
     p_mri.add_argument("--output", "-o", required=True, help="Output .mri directory")
     p_mri.add_argument("--db", default=None, help="Database path for direction discovery")
+    p_mri.add_argument("--result-json", default=None, help="Decepticon: path to result.json for model config")
+    p_mri.add_argument("--tokenizer-path", default=None, help="Decepticon: path to tokenizer model file")
 
     p_capture = sub.add_parser("total-capture", help="[legacy] Use 'mri' instead. Capture every token, every layer.")
     p_capture.add_argument("--model", required=True, help="Model ID")
@@ -421,10 +473,30 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_pca_anatomy(args)
     elif args.command == "profile-pca-survey":
         _cmd_pca_survey(args)
+    elif args.command == "profile-pca-depth":
+        _cmd_pca_depth(args)
     elif args.command == "mri-verify":
         _cmd_mri_verify(args)
     elif args.command == "mri-status":
         _cmd_mri_status(args)
+    elif args.command == "mri-scan":
+        _cmd_mri_scan(args)
+    elif args.command == "mri-health":
+        _cmd_mri_health(args)
+    elif args.command == "profile-logit-lens":
+        _cmd_logit_lens(args)
+    elif args.command == "profile-layer-deltas":
+        _cmd_layer_deltas(args)
+    elif args.command == "profile-gates":
+        _cmd_gates(args)
+    elif args.command == "profile-attention":
+        _cmd_attention(args)
+    elif args.command == "profile-lookup-fraction":
+        _cmd_lookup_fraction(args)
+    elif args.command == "profile-shart-anatomy":
+        _cmd_shart_anatomy(args)
+    elif args.command == "profile-bandwidth":
+        _cmd_bandwidth(args)
     else:
         parser.print_help()
 
@@ -956,7 +1028,12 @@ def _cmd_mri(args: argparse.Namespace) -> None:
     # Auto-detect decepticon checkpoints
     if backend_name == "auto" and args.model.endswith('.checkpoint.pt'):
         backend_name = "decepticon"
-    backend = load_backend(args.model, backend=backend_name)
+    backend_kwargs = {}
+    if getattr(args, 'result_json', None):
+        backend_kwargs['result_json'] = args.result_json
+    if getattr(args, 'tokenizer_path', None):
+        backend_kwargs['tokenizer_path'] = args.tokenizer_path
+    backend = load_backend(args.model, backend=backend_name, **backend_kwargs)
     result = capture_mri(backend, mode=args.mode, n_index=args.n_index,
                           output=args.output, db_path=getattr(args, 'db', None))
     meta = result.get('metadata', result)
@@ -1374,6 +1451,26 @@ def _cmd_pca_survey(args: argparse.Namespace) -> None:
         print(f"\n  No shared axes found (rho >= 0.7)")
 
 
+def _cmd_pca_depth(args: argparse.Namespace) -> None:
+    """PCA structure at every layer of an MRI."""
+    from .profile.compare import pca_depth
+
+    result = pca_depth(args.mri, n_sample=args.n_sample, layers=args.layers)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== PCA Depth: {result['model']} ({result['mode']}) "
+          f"— {result['n_layers']} layers, {result['n_sampled']} tokens ===\n")
+
+    print(f"  {'layer':>5} {'PC1%':>6} {'PC2%':>6} {'PC3%':>6} {'PCs@50%':>7} {'(-) pole':<12} {'(+) pole'}")
+    print(f"  {'-'*60}")
+    for r in result['layers']:
+        print(f"  L{r['layer']:>3} {r['pc1_pct']:>5.1f}% {r['pc2_pct']:>5.1f}% "
+              f"{r['pc3_pct']:>5.1f}% {r['pcs_for_50pct']:>7} "
+              f"{r['neg_pole']:<12} {r['pos_pole']}")
+
+
 def _cmd_mri_verify(args: argparse.Namespace) -> None:
     """Smoke-test a model: 5-token capture to verify compatibility."""
     import tempfile
@@ -1383,9 +1480,14 @@ def _cmd_mri_verify(args: argparse.Namespace) -> None:
     backend_name = getattr(args, 'backend', 'auto')
     if backend_name == "auto" and args.model.endswith('.checkpoint.pt'):
         backend_name = "decepticon"
+    backend_kwargs = {}
+    if getattr(args, 'result_json', None):
+        backend_kwargs['result_json'] = args.result_json
+    if getattr(args, 'tokenizer_path', None):
+        backend_kwargs['tokenizer_path'] = args.tokenizer_path
 
     try:
-        backend = load_backend(args.model, backend=backend_name)
+        backend = load_backend(args.model, backend=backend_name, **backend_kwargs)
         cfg = backend.config
         print(f"Model: {cfg.model_type}, L={cfg.n_layers}, H={cfg.hidden_size}, V={cfg.vocab_size}")
     except Exception as e:
@@ -1414,7 +1516,7 @@ def _cmd_mri_status(args: argparse.Namespace) -> None:
         return
 
     # Find all .mri directories
-    mris = sorted(mri_dir.glob("*.mri"))
+    mris = sorted(mri_dir.rglob("*.mri"))
     if not mris:
         print(f"No .mri directories in {mri_dir}")
         return
@@ -1447,14 +1549,27 @@ def _cmd_mri_status(args: argparse.Namespace) -> None:
         if arch == "causal_bank":
             has_sub = (d / "substrate.npy").exists()
             has_hl = (d / "half_lives.npy").exists()
+            has_embed = (d / "embedding.npy").exists()
             ok = has_sub and has_hl
             detail = f"modes={model.get('n_modes','?')} experts={model.get('n_experts','?')}"
+            n_tok = meta.get("capture", {}).get("n_tokens", "?")
             if ok:
-                complete.append((d.name, detail, meta))
+                health = ""
+                try:
+                    sub = np.load(d / "substrate.npy", mmap_mode='r')
+                    if isinstance(n_tok, int) and sub.shape[0] != n_tok:
+                        health = f" CORRUPT(tokens={sub.shape[0]} expected={n_tok})"
+                    elif np.any(np.isnan(sub[:10].astype(np.float32))):
+                        health = " CORRUPT(NaN)"
+                except Exception as e:
+                    health = f" CORRUPT({e})"
+                size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
+                complete.append((d.name, f"{detail} {n_tok}tok {size/1e6:.0f}M{health}", meta))
             else:
                 missing = []
                 if not has_sub: missing.append("substrate")
                 if not has_hl: missing.append("half_lives")
+                if not has_embed: missing.append("embed")
                 incomplete.append((d.name, f"{detail} missing={','.join(missing)}", meta))
         else:
             n_entry = len(list(d.glob("L*_entry.npy")))
@@ -1463,24 +1578,33 @@ def _cmd_mri_status(args: argparse.Namespace) -> None:
             has_lmhead = (d / "lmhead_raw.npy").exists()
             n_wt = len(list((d / "weights").glob("L*"))) if (d / "weights").exists() else 0
 
-            layers_ok = n_entry == n_layers and n_exit == n_layers
+            has_entry = meta.get("capture", {}).get("has_entry", True)
+            layers_ok = n_exit == n_layers and (not has_entry or n_entry == n_layers)
             detail = f"{n_layers}L h={model.get('hidden_size','?')}"
             mode = meta.get("capture", {}).get("mode", "?")
             n_tok = meta.get("capture", {}).get("n_tokens", "?")
 
             if layers_ok and has_embed and n_wt == n_layers:
                 size = sum(f.stat().st_size for f in d.rglob("*") if f.is_file())
-                # Health check: verify one layer file isn't corrupt
+                # Health check: spot-check multiple layers and verify token count
                 health = ""
-                try:
-                    test = np.load(d / "L00_exit.npy", mmap_mode='r')
-                    expected_h = model.get('hidden_size', 0)
-                    if expected_h and test.shape[1] != expected_h:
-                        health = f" CORRUPT(shape={test.shape})"
-                    if np.any(np.isnan(test[:10].astype(np.float32))):
-                        health = " CORRUPT(NaN)"
-                except Exception as e:
-                    health = f" CORRUPT({e})"
+                expected_h = model.get('hidden_size', 0)
+                check_layers = [0, n_layers // 2, n_layers - 1] if n_layers > 1 else [0]
+                for li in check_layers:
+                    try:
+                        test = np.load(d / f"L{li:02d}_exit.npy", mmap_mode='r')
+                        if expected_h and test.shape[1] != expected_h:
+                            health = f" CORRUPT(L{li:02d} shape={test.shape})"
+                            break
+                        if isinstance(n_tok, int) and test.shape[0] != n_tok:
+                            health = f" CORRUPT(L{li:02d} tokens={test.shape[0]} expected={n_tok})"
+                            break
+                        if np.any(np.isnan(test[:10].astype(np.float32))):
+                            health = f" CORRUPT(L{li:02d} NaN)"
+                            break
+                    except Exception as e:
+                        health = f" CORRUPT(L{li:02d} {e})"
+                        break
                 complete.append((d.name, f"{detail} {mode} {n_tok}tok {size/1e9:.0f}G{health}", meta))
             else:
                 parts = []
@@ -1511,6 +1635,419 @@ def _cmd_mri_status(args: argparse.Namespace) -> None:
         print(f"\nLegacy .shrt files ({len(legacy)} in data/runs/) — recapture as .mri")
 
     print()
+
+
+def _cmd_mri_scan(args: argparse.Namespace) -> None:
+    """Full MRI workup: all modes, health check, analysis."""
+    import time as _time
+    from pathlib import Path
+    from .backend.protocol import load_backend
+    from .profile.mri import capture_mri, verify_mri
+    from .profile.compare import layer_deltas, logit_lens
+
+    model_dir = Path(args.output)
+    model_dir.mkdir(parents=True, exist_ok=True)
+
+    backend_name = getattr(args, 'backend', 'auto')
+    if backend_name == "auto" and args.model.endswith('.checkpoint.pt'):
+        backend_name = "decepticon"
+    backend_kwargs = {}
+    if getattr(args, 'result_json', None):
+        backend_kwargs['result_json'] = args.result_json
+    if getattr(args, 'tokenizer_path', None):
+        backend_kwargs['tokenizer_path'] = args.tokenizer_path
+
+    print(f"\n{'='*60}")
+    print(f"MRI SCAN: {args.model}")
+    print(f"Output:   {model_dir}")
+    print(f"{'='*60}\n")
+
+    # Load model once
+    backend = load_backend(args.model, backend=backend_name, **backend_kwargs)
+    cfg = backend.config
+    print(f"Model: {cfg.model_type}, L={cfg.n_layers}, H={cfg.hidden_size}, V={cfg.vocab_size}")
+
+    modes = ["raw", "naked", "template"]
+    results = {}
+    scan_start = _time.time()
+
+    # Phase 1: Capture all modes
+    print(f"\n--- Phase 1: Capture ---\n")
+    for mode in modes:
+        mri_path = str(model_dir / f"{mode}.mri")
+        mri_dir = Path(mri_path)
+
+        # Skip if already healthy
+        if mri_dir.exists():
+            check = verify_mri(mri_path)
+            if check["healthy"]:
+                print(f"  {mode}: already healthy, skipping capture")
+                results[mode] = {"captured": False, "healthy": True, "path": mri_path}
+                continue
+            else:
+                print(f"  {mode}: exists but unhealthy ({len(check['issues'])} issues), recapturing")
+                import shutil
+                shutil.rmtree(mri_path, ignore_errors=True)
+
+        print(f"  {mode}: capturing...")
+        t0 = _time.time()
+        try:
+            capture_mri(backend, mode=mode, n_index=args.n_index, output=mri_path)
+            elapsed = _time.time() - t0
+            results[mode] = {"captured": True, "elapsed_s": round(elapsed), "path": mri_path}
+        except Exception as e:
+            print(f"  {mode}: FAILED — {e}")
+            results[mode] = {"captured": False, "error": str(e), "path": mri_path}
+
+    # Phase 2: Health check all
+    print(f"\n--- Phase 2: Health Check ---\n")
+    all_healthy = True
+    for mode in modes:
+        mri_path = results[mode]["path"]
+        if not Path(mri_path).exists():
+            print(f"  {mode}: MISSING")
+            results[mode]["healthy"] = False
+            all_healthy = False
+            continue
+        check = verify_mri(mri_path)
+        results[mode]["healthy"] = check["healthy"]
+        results[mode]["summary"] = check["summary"]
+        if check["healthy"]:
+            s = check["summary"]
+            print(f"  {mode}: HEALTHY  {s.get('n_tokens','?')}tok  {s.get('size_gb','?')}G")
+        else:
+            all_healthy = False
+            print(f"  {mode}: ISSUES")
+            for iss in check["issues"][:5]:
+                print(f"    ! {iss}")
+
+    if not all_healthy:
+        print(f"\n  Some captures unhealthy. Stopping analysis.")
+        return
+
+    # Phase 3: Layer deltas (all modes)
+    print(f"\n--- Phase 3: Layer Deltas ---\n")
+    for mode in modes:
+        mri_path = results[mode]["path"]
+        print(f"  {mode}:")
+        ld = layer_deltas(mri_path, n_sample=5000)
+        if "error" in ld:
+            print(f"    ERROR: {ld['error']}")
+            continue
+        # Find the crystallization layer (max amplification)
+        max_amp = max(ld["layers"], key=lambda r: r["amplification"])
+        # Find top 3 delta layers
+        top_deltas = sorted(ld["layers"], key=lambda r: r["mean_delta_norm"], reverse=True)[:3]
+        print(f"    Peak amplification: L{max_amp['layer']} ({max_amp['amplification']:.1f}x, "
+              f"delta={max_amp['mean_delta_norm']:.0f})")
+        print(f"    Largest deltas: " +
+              ", ".join(f"L{r['layer']}({r['mean_delta_norm']:.0f})" for r in top_deltas))
+        results[mode]["layer_deltas"] = ld
+
+    # Phase 4: Logit lens (all modes)
+    print(f"\n--- Phase 4: Logit Lens ---\n")
+    n_layers = cfg.n_layers
+    sample_layers = [0, n_layers // 4, n_layers // 2, 3 * n_layers // 4, n_layers - 1]
+    for mode in modes:
+        mri_path = results[mode]["path"]
+        print(f"  {mode}:")
+        ll = logit_lens(mri_path, n_sample=200, layers=sample_layers)
+        if "error" in ll:
+            print(f"    ERROR: {ll['error']}")
+            continue
+        for lr in ll["layers"]:
+            from collections import Counter
+            top1 = Counter(p['top_ids'][0] for p in lr['predictions'])
+            mode_id, mode_count = top1.most_common(1)[0]
+            concentration = mode_count / len(lr['predictions']) * 100
+            print(f"    L{lr['layer']:>2}: top-1 id={mode_id} ({concentration:.0f}% of tokens)")
+        results[mode]["logit_lens"] = ll
+
+    # Phase 5: PCA depth (raw mode — most interpretable)
+    # Phase 5: Gate analysis (all modes)
+    print(f"\n--- Phase 5: Gate Analysis ---\n")
+    from .profile.compare import gate_analysis
+    for mode in modes:
+        mri_path = results[mode]["path"]
+        ga = gate_analysis(mri_path, n_sample=5000)
+        if "error" in ga:
+            print(f"  {mode}: {ga['error']}")
+            continue
+        print(f"  {mode}:")
+        # Find most interesting layers: highest concentration and lowest
+        by_conc = sorted(ga["layers"], key=lambda r: r["top1_concentration"], reverse=True)
+        most_conc = by_conc[0]
+        least_conc = by_conc[-1]
+        print(f"    Most concentrated: L{most_conc['layer']} "
+              f"({most_conc['top1_concentration']:.0%} share neuron {most_conc['top1_neuron']})")
+        print(f"    Most diverse:      L{least_conc['layer']} "
+              f"({least_conc['unique_neurons']} unique neurons)")
+        # Per-script specialization at the most concentrated layer
+        if most_conc.get("script_top1"):
+            scripts_str = ", ".join(f"{s}→n{v['neuron']}" for s, v in most_conc["script_top1"].items())
+            print(f"    Script routing at L{most_conc['layer']}: {scripts_str}")
+        results[mode]["gate_analysis"] = ga
+
+    # Phase 6: Attention analysis (template mode only)
+    print(f"\n--- Phase 6: Attention Analysis (template) ---\n")
+    from .profile.compare import attention_analysis
+    tpl_path = results["template"]["path"]
+    aa = attention_analysis(tpl_path, n_sample=5000)
+    if "error" in aa:
+        print(f"  {aa['error']}")
+    else:
+        print(f"  {'layer':>5} {'self':>6} {'prefix':>7} {'suffix':>7} {'entropy':>8}")
+        print(f"  {'-'*40}")
+        # Show sampled layers
+        show_layers = [0, n_layers // 4, n_layers // 2, 3 * n_layers // 4, n_layers - 1]
+        for r in aa["layers"]:
+            if r["layer"] in show_layers:
+                print(f"  L{r['layer']:>3} {r['self_weight']:>5.1%} {r['prefix_weight']:>6.1%} "
+                      f"{r['suffix_weight']:>6.1%} {r['entropy']:>8.3f}")
+        results["template"]["attention_analysis"] = aa
+
+    # Phase 7: PCA depth (raw mode)
+    print(f"\n--- Phase 7: PCA Depth (raw) ---\n")
+    from .profile.compare import pca_depth
+    raw_path = results["raw"]["path"]
+    pd = pca_depth(raw_path, n_sample=5000)
+    if "error" in pd:
+        print(f"  ERROR: {pd['error']}")
+    else:
+        print(f"  {'layer':>5} {'PC1%':>6} {'PCs@50%':>7} {'axis'}")
+        print(f"  {'-'*35}")
+        for r in pd["layers"]:
+            print(f"  L{r['layer']:>3} {r['pc1_pct']:>5.1f}% {r['pcs_for_50pct']:>7} "
+                  f"{r['neg_pole']}→{r['pos_pole']}")
+        results["raw"]["pca_depth"] = pd
+
+    total_elapsed = _time.time() - scan_start
+    total_gb = sum(r.get("summary", {}).get("size_gb", 0) for r in results.values())
+    print(f"\n{'='*60}")
+    print(f"SCAN COMPLETE: {args.model}")
+    print(f"  3 modes, all healthy, {total_gb:.1f} GB total")
+    print(f"  {total_elapsed:.0f}s elapsed")
+    print(f"{'='*60}\n")
+
+
+def _cmd_mri_health(args: argparse.Namespace) -> None:
+    """Deep health check on MRI directories."""
+    from pathlib import Path
+    from .profile.mri import verify_mri
+
+    if args.mri:
+        mris = [Path(m) for m in args.mri]
+    else:
+        mri_dir = Path(args.dir)
+        if not mri_dir.exists():
+            print(f"MRI directory not found: {mri_dir}")
+            return
+        mris = sorted(mri_dir.rglob("*.mri"))
+
+    if not mris:
+        print("No .mri directories found.")
+        return
+
+    n_healthy = 0
+    n_issues = 0
+
+    print(f"\n=== MRI Health Check: {len(mris)} directories ===\n")
+    for d in mris:
+        result = verify_mri(str(d))
+        s = result["summary"]
+        if result["healthy"]:
+            n_healthy += 1
+            size = s.get("size_gb", "?")
+            print(f"  HEALTHY  {d.name:<35} {s.get('model','?'):>8} {s.get('mode','?'):>8} "
+                  f"{s.get('n_tokens','?'):>8}tok {s.get('n_layers','?'):>3}L {size}G")
+        else:
+            n_issues += 1
+            print(f"  ISSUES   {d.name:<35} {s.get('model','?'):>8} {s.get('mode','?'):>8}")
+            for iss in result["issues"]:
+                print(f"           ! {iss}")
+
+    print(f"\n  {n_healthy} healthy, {n_issues} with issues, {len(mris)} total\n")
+
+
+def _cmd_logit_lens(args: argparse.Namespace) -> None:
+    """Logit lens: what would the model predict at each layer?"""
+    from .profile.compare import logit_lens
+
+    result = logit_lens(args.mri, top_k=args.top_k,
+                        layers=args.layers, n_sample=args.n_sample)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Logit Lens: {result['model']} — {result['n_tokens']} tokens, "
+          f"{result['n_layers']} layers, top-{result['top_k']} ===\n")
+
+    for lr in result['layers']:
+        layer = lr['layer']
+        preds = lr['predictions']
+        # Summarize: most common top-1 prediction across sampled tokens
+        from collections import Counter
+        top1_counts = Counter(p['top_ids'][0] for p in preds)
+        most_common = top1_counts.most_common(5)
+        common_str = ', '.join(f"id={tid}({cnt})" for tid, cnt in most_common)
+        print(f"  L{layer:>2}: top-1 mode: {common_str}")
+
+
+def _cmd_layer_deltas(args: argparse.Namespace) -> None:
+    """Layer deltas: what each layer actually computes."""
+    from .profile.compare import layer_deltas
+
+    result = layer_deltas(args.mri, n_sample=args.n_sample)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Layer Deltas: {result['model']} ({result['mode']}) — "
+          f"{result['n_tokens']} tokens ===\n")
+
+    print(f"  {'layer':>5} {'mean':>10} {'max':>10} {'std':>10} {'amplif':>8}")
+    print(f"  {'-'*45}")
+    for r in result['layers']:
+        print(f"  L{r['layer']:>3} {r['mean_delta_norm']:>10.2f} "
+              f"{r['max_delta_norm']:>10.2f} {r['std_delta_norm']:>10.2f} "
+              f"{r['amplification']:>7.1f}x")
+
+
+def _cmd_gates(args: argparse.Namespace) -> None:
+    """MLP gate analysis."""
+    from .profile.compare import gate_analysis
+
+    result = gate_analysis(args.mri, n_sample=args.n_sample)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Gate Analysis: {result['model']} ({result['mode']}) — "
+          f"{result['n_tokens']} tokens, top-{result['gate_k']} ===\n")
+
+    print(f"  {'layer':>5} {'unique':>7} {'top1%':>6} {'mean':>7} {'max':>7} {'top neuron'}")
+    print(f"  {'-'*50}")
+    for r in result['layers']:
+        print(f"  L{r['layer']:>3} {r['unique_neurons']:>7} {r['top1_concentration']:>5.0%} "
+              f"{r['mean_activation']:>7.2f} {r['max_activation']:>7.2f} "
+              f"n{r['top1_neuron']}")
+
+
+def _cmd_attention(args: argparse.Namespace) -> None:
+    """Attention analysis."""
+    from .profile.compare import attention_analysis
+
+    result = attention_analysis(args.mri, n_sample=args.n_sample)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Attention Analysis: {result['model']} ({result['mode']}) — "
+          f"{result['n_tokens']} tokens, {result['n_heads']} heads, "
+          f"seq_len={result['seq_len']}, token_pos={result['token_pos']} ===\n")
+
+    print(f"  {'layer':>5} {'self':>6} {'prefix':>7} {'suffix':>7} {'entropy':>8}")
+    print(f"  {'-'*40}")
+    for r in result['layers']:
+        print(f"  L{r['layer']:>3} {r['self_weight']:>5.1%} {r['prefix_weight']:>6.1%} "
+              f"{r['suffix_weight']:>6.1%} {r['entropy']:>8.3f}")
+
+
+def _cmd_lookup_fraction(args: argparse.Namespace) -> None:
+    """How much is table lookup vs computation?"""
+    from .profile.compare import lookup_fraction
+
+    result = lookup_fraction(args.mri, n_sample=args.n_sample)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    lf = result['lookup_fraction']
+    print(f"\n=== Lookup Fraction: {result['model']} ({result['mode']}) — "
+          f"{result['n_tokens']} tokens ===\n")
+    print(f"  Lookup-solvable: {result['lookup_solvable']} ({lf:.1%})")
+    print(f"  Compute-needed:  {result['compute_needed']} ({1-lf:.1%})")
+
+    print(f"\n  By script:")
+    print(f"  {'script':<12} {'n':>6} {'lookup':>7} {'fraction':>9}")
+    print(f"  {'-'*36}")
+    for s, v in sorted(result['by_script'].items(), key=lambda x: -x[1]['fraction']):
+        print(f"  {s:<12} {v['n']:>6} {v['lookup']:>7} {v['fraction']:>8.1%}")
+
+    print(f"\n  By layer (fraction still matching embedding prediction):")
+    print(f"  {'layer':>5} {'match%':>7}")
+    print(f"  {'-'*14}")
+    for r in result['by_layer']:
+        print(f"  L{r['layer']:>3} {r['fraction']:>6.1%}")
+
+
+def _cmd_shart_anatomy(args: argparse.Namespace) -> None:
+    """What makes a shart a shart?"""
+    from .profile.compare import shart_anatomy
+
+    result = shart_anatomy(args.mri, n_sample=args.n_sample, top_n=args.top_n)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    d = result['displacement']
+    c = result['crystal']
+    g = result['gradient']
+    f = result['frozen_zone']
+    b = result['bandwidth']
+
+    print(f"\n=== Shart Anatomy: {result['model']} ({result['mode']}) — {result['n_tokens']} tokens ===\n")
+
+    print(f"  Displacement: [{d['min']}, {d['max']}], median={d['median']}, ratio={d['ratio_max_median']}x")
+    print(f"  Crystal: L{c['layer']} neuron {c['neuron']} ({c['amplification']}x amplification)")
+    print(f"    r(crystal_activation, displacement) = {c['corr_with_displacement']}")
+    print(f"    Energy in crystal neuron: {c['energy_fraction']:.0%}")
+    if g['corr_with_displacement'] is not None:
+        print(f"  Gradient: r(embedding_grad, displacement) = {g['corr_with_displacement']:.4f}")
+        print(f"    Top sharts mean grad: {g['top_sharts_mean']}  Bottom mean: {g['bottom_mean']}")
+    print(f"  Frozen zone: gate cosine = {f['gate_cosine']} ({f['interpretation']})")
+    print(f"  Bandwidth: r(active_neurons, displacement) = {b['active_neuron_disp_corr']} ({b['interpretation']})")
+
+    print(f"\n  Top {args.top_n} sharts:")
+    print(f"  {'#':>3} {'disp':>8} {'grad':>7} {'crystal':>8} {'active':>6} {'script':<8} token")
+    print(f"  {'-'*55}")
+    for t in result['top_sharts'][:args.top_n]:
+        grad = f"{t.get('grad_norm', 0):>7.1f}" if 'grad_norm' in t else "     —"
+        crys = f"{t.get('crystal_activation', 0):>8.0f}" if 'crystal_activation' in t else "      —"
+        act = f"{t.get('active_neurons', 0):>6}" if 'active_neurons' in t else "    —"
+        print(f"  {t['rank']:>3} {t['displacement']:>8.0f} {grad} {crys} {act} {t['script']:<8} {t['token']}")
+
+    print(f"\n  Bottom {args.top_n}:")
+    print(f"  {'#':>3} {'disp':>8} {'grad':>7} {'script':<8} token")
+    print(f"  {'-'*40}")
+    for t in result['bottom_tokens'][:args.top_n]:
+        grad = f"{t.get('grad_norm', 0):>7.1f}" if 'grad_norm' in t else "     —"
+        print(f"  {t['rank']:>3} {t['displacement']:>8.0f} {grad} {t['script']:<8} {t['token']}")
+
+
+def _cmd_bandwidth(args: argparse.Namespace) -> None:
+    """Bandwidth efficiency per layer."""
+    from .profile.compare import bandwidth_efficiency
+
+    result = bandwidth_efficiency(args.mri, n_sample=args.n_sample)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    eff = result['bandwidth_efficiency']
+    print(f"\n=== Bandwidth Efficiency: {result['model']} ({result['mode']}) — "
+          f"{result['n_tokens']} tokens ===\n")
+    print(f"  Model size:   {result['total_model_bytes']/1e6:.1f} MB")
+    print(f"  Active bytes: {result['total_active_bytes']/1e6:.1f} MB ({eff:.1%})")
+    print(f"  Wasted:       {result['wasted_fraction']:.1%}")
+    print(f"  MLP neurons:  {result['gate_k']} captured / {result['intermediate_size']} total")
+
+    print(f"\n  {'layer':>5} {'skip%':>6} {'MLP active':>11} {'efficiency':>10}")
+    print(f"  {'-'*35}")
+    for r in result['layers']:
+        print(f"  L{r['layer']:>3} {r['skip_fraction']:>5.0%} "
+              f"{r['mlp_active_neurons']:>5.0f}/{r['mlp_total_neurons']:<5} "
+              f"{r['efficiency']:>9.1%}")
 
 
 def _cmd_code_anatomy(args: argparse.Namespace) -> None:

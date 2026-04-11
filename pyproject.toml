@@ -4,18 +4,34 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "heinrich"
-version = "0.2.1"
-description = "Model forensics and signal-mixing pipeline."
+version = "0.6.0"
+description = "Model forensics: measure what language models compute, not what they output."
 readme = "README.md"
 requires-python = ">=3.10"
-dependencies = ["numpy", "safetensors>=0.4"]
+dependencies = [
+    "numpy>=1.24",
+    "safetensors>=0.4",
+    "huggingface_hub>=0.20",
+]
 
 [project.optional-dependencies]
-dev = ["pytest>=8"]
-fetch = ["huggingface_hub>=0.20"]
-probe = ["torch", "transformers>=4.45"]
-dormant = ["jsinfer"]
-all = ["huggingface_hub>=0.20", "torch", "transformers>=4.45", "jsinfer"]
+mlx = [
+    "mlx>=0.20",
+    "mlx-lm>=0.20",
+]
+hf = [
+    "torch>=2.0",
+    "transformers>=4.45",
+]
+dev = [
+    "pytest>=8",
+    "pytest-timeout",
+]
+all = [
+    "heinrich[mlx]",
+    "heinrich[hf]",
+    "heinrich[dev]",
+]
 
 [project.scripts]
 heinrich = "heinrich.cli:main"
@@ -31,4 +47,7 @@ where = ["src"]
 testpaths = ["tests"]
 markers = [
     "slow: marks tests as slow (deselect with '-m \"not slow\"')",
+    "mlx: requires MLX backend and a cached model",
+    "hf: requires HF/torch backend",
+    "integration: full pipeline tests (capture + analyze)",
 ]

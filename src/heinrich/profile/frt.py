@@ -247,26 +247,68 @@ def load_frt(path: str) -> dict:
 
 
 def _detect_script(text: str) -> str:
-    """Detect the primary script of a token."""
+    """Detect the primary script of a token by majority vote of letter characters.
+
+    Only letters count toward script detection. Punctuation, digits, and
+    whitespace are ignored. If no letters are found, falls back to structural
+    classification (code, special, other).
+    """
+    import unicodedata
+
     if not text.strip():
         return "special"
+
+    # Count letters by script
+    script_counts: dict[str, int] = {}
+    n_letters = 0
+    has_code_chars = False
+
     for c in text:
-        if '\u4e00' <= c <= '\u9fff': return "CJK"
-        if '\u3040' <= c <= '\u30ff': return "Japanese"
-        if '\uac00' <= c <= '\ud7af': return "Korean"
-        if '\u0e00' <= c <= '\u0e7f': return "Thai"
-        if '\u0600' <= c <= '\u06ff': return "Arabic"
-        if '\u0590' <= c <= '\u05ff': return "Hebrew"
-        if '\u0400' <= c <= '\u04ff': return "Cyrillic"
-        if '\u0900' <= c <= '\u097f': return "Devanagari"
-        if '\u0370' <= c <= '\u03ff': return "Greek"
-    if any(c in text for c in '{}()[];_\\\n\t\r'):
+        cat = unicodedata.category(c)
+        if cat.startswith('L'):  # Letter categories: Lu, Ll, Lt, Lm, Lo
+            n_letters += 1
+            cp = ord(c)
+            if '\u4e00' <= c <= '\u9fff' or '\u3400' <= c <= '\u4dbf':
+                script_counts["CJK"] = script_counts.get("CJK", 0) + 1
+            elif '\u3040' <= c <= '\u30ff' or '\u31f0' <= c <= '\u31ff':
+                script_counts["Japanese"] = script_counts.get("Japanese", 0) + 1
+            elif '\uac00' <= c <= '\ud7af' or '\u1100' <= c <= '\u11ff':
+                script_counts["Korean"] = script_counts.get("Korean", 0) + 1
+            elif '\u0e00' <= c <= '\u0e7f':
+                script_counts["Thai"] = script_counts.get("Thai", 0) + 1
+            elif '\u0600' <= c <= '\u06ff' or '\u0750' <= c <= '\u077f':
+                script_counts["Arabic"] = script_counts.get("Arabic", 0) + 1
+            elif '\u0590' <= c <= '\u05ff':
+                script_counts["Hebrew"] = script_counts.get("Hebrew", 0) + 1
+            elif '\u0400' <= c <= '\u04ff' or '\u0500' <= c <= '\u052f':
+                script_counts["Cyrillic"] = script_counts.get("Cyrillic", 0) + 1
+            elif '\u0900' <= c <= '\u097f':
+                script_counts["Devanagari"] = script_counts.get("Devanagari", 0) + 1
+            elif '\u0370' <= c <= '\u03ff' or '\u1f00' <= c <= '\u1fff':
+                script_counts["Greek"] = script_counts.get("Greek", 0) + 1
+            elif '\u1e00' <= c <= '\u1eff':
+                # Latin Extended Additional (Vietnamese etc)
+                script_counts["latin"] = script_counts.get("latin", 0) + 1
+            elif c.isascii() or '\u00c0' <= c <= '\u024f':
+                script_counts["latin"] = script_counts.get("latin", 0) + 1
+            else:
+                script_counts["other"] = script_counts.get("other", 0) + 1
+        elif c in '{}()[];\\':
+            has_code_chars = True
+
+    if n_letters > 0:
+        # Return script with most letters
+        best = max(script_counts, key=script_counts.get)
+        return best
+
+    # No letters — classify by structure
+    if has_code_chars:
         return "code"
-    # Latin includes ASCII and Latin-extended (accented characters)
+    # Pure whitespace/control/digits/punctuation
     stripped = text.strip()
-    if stripped and all(c.isascii() or '\u00c0' <= c <= '\u024f' for c in stripped):
-        return "latin"
-    return "other"
+    if stripped and all(c.isdigit() or c in '+-.,=%#@!?:' for c in stripped):
+        return "other"
+    return "special"
 
 
 if __name__ == "__main__":

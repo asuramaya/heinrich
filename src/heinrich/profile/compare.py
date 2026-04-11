@@ -2272,11 +2272,17 @@ def pca_anatomy(shrt_path: str, frt_path: str,
     all_ids = token_ids[valid_indices]
     all_deltas = deltas[valid_indices]
 
-    # PCA via SVD
+    # PCA via eigendecomposition of covariance (avoids [N, d] U matrix)
     centered = all_vecs - all_vecs.mean(axis=0)
-    U, S, Vt = np.linalg.svd(centered, full_matrices=False)
-    variance = S ** 2
+    cov = centered.T @ centered  # [d, d]
+    eigenvalues, eigenvectors = np.linalg.eigh(cov)
+    # eigh returns ascending order — reverse for descending variance
+    idx = eigenvalues.argsort()[::-1]
+    eigenvalues = eigenvalues[idx]
+    eigenvectors = eigenvectors[:, idx]
+    variance = np.maximum(eigenvalues, 0)  # numerical stability
     total_var = float(variance.sum())
+    Vt = eigenvectors.T  # [d, d] — rows are principal components
 
     n_components = min(n_components, len(Vt))
 
@@ -2425,9 +2431,14 @@ def pca_survey(shrt_frt_pairs: list[tuple[str, str]],
         all_scripts = scripts[valid_indices]
 
         centered = all_vecs - all_vecs.mean(axis=0)
-        U, S, Vt = np.linalg.svd(centered, full_matrices=False)
-        variance = S ** 2
+        cov = centered.T @ centered
+        eigenvalues, eigenvectors = np.linalg.eigh(cov)
+        idx = eigenvalues.argsort()[::-1]
+        eigenvalues = eigenvalues[idx]
+        eigenvectors = eigenvectors[:, idx]
+        variance = np.maximum(eigenvalues, 0)
         total_var = float(variance.sum())
+        Vt = eigenvectors.T
 
         k = min(n_components, len(Vt))
         model_name = shrt['metadata']['model']['name']
@@ -2487,7 +2498,7 @@ def pca_survey(shrt_frt_pairs: list[tuple[str, str]],
                 for p2_idx, p2 in enumerate(m2['pcs']):
                     # Build vectors of script means for shared scripts
                     shared = sorted(set(p1['script_means']) & set(p2['script_means']))
-                    if len(shared) < 5:
+                    if len(shared) < 11:
                         continue
                     v1 = [p1['script_means'][s] for s in shared]
                     v2 = [p2['script_means'][s] for s in shared]
@@ -2607,6 +2618,601 @@ def pca_depth(mri_path: str, n_sample: int = 5000,
     }
 
 
+def gate_analysis(mri_path: str, *, n_sample: int | None = None) -> dict:
+    """Which MLP neurons fire and how they specialize.
+
+    Per-layer: diversity, concentration, top neurons, per-script differences.
+    """
+    from .mri import load_mri
+    from collections import Counter
+
+    mri = load_mri(mri_path)
+    meta = mri['metadata']
+    n_layers = meta['model']['n_layers']
+    n_tok = meta['capture']['n_tokens']
+    model_name = meta['model']['name']
+    mode = meta['capture']['mode']
+    gate_format = meta['capture'].get('gate_format', 'topk')
+
+    # Check for gate data in either format
+    has_full_gates = "gate_L0" in mri
+    has_topk_gates = "gate_indices_L0" in mri
+    if not has_full_gates and not has_topk_gates:
+        return {"error": "MRI has no gate data"}
+
+    scripts = mri.get('scripts', np.array(['?'] * n_tok))
+
+    if n_sample and n_sample < n_tok:
+        rng = np.random.RandomState(42)
+        idx = sorted(rng.choice(n_tok, n_sample, replace=False))
+    else:
+        idx = list(range(n_tok))
+        n_sample = n_tok
+
+    sampled_scripts = scripts[idx]
+    gate_k = 32  # default for analysis reporting
+
+    layers = []
+    for i in range(n_layers):
+        if has_full_gates and f"gate_L{i}" in mri:
+            # Full gate values: [n_tok, intermediate]
+            g_full = np.array(mri[f"gate_L{i}"])[idx].astype(np.float32)
+            # Derive top-K for compatibility
+            gate_k = 32
+            g_topk_idx = np.argpartition(-np.abs(g_full), gate_k, axis=1)[:, :gate_k]
+            g_idx = g_topk_idx
+            g_val = np.take_along_axis(g_full, g_topk_idx, axis=1)
+        elif has_topk_gates and f"gate_indices_L{i}" in mri:
+            g_idx = np.array(mri[f"gate_indices_L{i}"])[idx]
+            g_val = np.array(mri[f"gate_values_L{i}"])[idx].astype(np.float32)
+            gate_k = g_idx.shape[1]
+        else:
+            continue
+
+        all_neurons = g_idx.flatten()
+        unique = len(set(all_neurons.tolist()))
+
+        top1 = g_idx[:, 0]
+        top1_counts = Counter(top1.tolist())
+        mode_neuron, mode_count = top1_counts.most_common(1)[0]
+        concentration = mode_count / n_sample
+
+        neuron_freq = Counter(all_neurons.tolist())
+        top_neurons = neuron_freq.most_common(10)
+
+        mean_act = float(np.abs(g_val).mean())
+        max_act = float(np.abs(g_val).max())
+
+        script_top1 = {}
+        for s in ['latin', 'CJK', 'Cyrillic', 'code', 'Arabic', 'Japanese']:
+            mask = sampled_scripts == s
+            if mask.sum() < 10:
+                continue
+            s_top1 = Counter(g_idx[mask, 0].tolist())
+            s_mode, s_count = s_top1.most_common(1)[0]
+            script_top1[s] = {"neuron": int(s_mode),
+                              "concentration": round(s_count / mask.sum(), 3)}
+
+        layers.append({
+            "layer": i,
+            "unique_neurons": unique,
+            "total_entries": n_sample * gate_k,
+            "top1_concentration": round(concentration, 3),
+            "top1_neuron": int(mode_neuron),
+            "mean_activation": round(mean_act, 3),
+            "max_activation": round(max_act, 3),
+            "top_neurons": [(int(n), c) for n, c in top_neurons],
+            "script_top1": script_top1,
+        })
+
+    return {
+        "model": model_name, "mode": mode, "n_tokens": n_sample,
+        "gate_k": gate_k, "n_layers": len(layers), "layers": layers,
+    }
+
+
+def attention_analysis(mri_path: str, *, n_sample: int | None = None) -> dict:
+    """Where does the token attend in template mode?
+
+    Per-layer: self vs prefix vs suffix weight, entropy, per-head focus.
+    """
+    from .mri import load_mri
+
+    mri = load_mri(mri_path)
+    meta = mri['metadata']
+    n_layers = meta['model']['n_layers']
+    n_tok = meta['capture']['n_tokens']
+    n_heads = meta['model']['n_heads']
+    model_name = meta['model']['name']
+    mode = meta['capture']['mode']
+    token_pos = meta['capture'].get('token_pos', 0)
+    seq_len = meta['capture'].get('seq_len', 1)
+
+    if not meta['capture'].get('has_attention', False):
+        return {"error": "MRI has no attention data"}
+    # New format: attn_weights_L0, legacy: attn_L0
+    attn_prefix = "attn_weights_L" if "attn_weights_L0" in mri else "attn_L"
+    if f"{attn_prefix}0" not in mri:
+        return {"error": "MRI has no attention data loaded"}
+
+    if n_sample and n_sample < n_tok:
+        rng = np.random.RandomState(42)
+        idx = sorted(rng.choice(n_tok, n_sample, replace=False))
+    else:
+        idx = list(range(n_tok))
+        n_sample = n_tok
+
+    prefix_range = list(range(token_pos))
+    suffix_range = list(range(token_pos + 1, seq_len))
+
+    layers = []
+    for i in range(n_layers):
+        akey = f"{attn_prefix}{i}"
+        if akey not in mri:
+            continue
+        aw = np.array(mri[akey])[idx].astype(np.float32)
+
+        self_w = float(aw[:, :, token_pos].mean())
+        prefix_w = float(aw[:, :, prefix_range].sum(axis=2).mean()) if prefix_range else 0.0
+        suffix_w = float(aw[:, :, suffix_range].sum(axis=2).mean()) if suffix_range else 0.0
+
+        aw_clipped = np.clip(aw, 1e-8, 1.0)
+        entropy = float(-np.sum(aw_clipped * np.log2(aw_clipped), axis=2).mean())
+
+        head_focus = []
+        for h in range(n_heads):
+            mean_per_pos = aw[:, h, :].mean(axis=0)
+            peak_pos = int(mean_per_pos.argmax())
+            peak_val = float(mean_per_pos[peak_pos])
+            if peak_pos < token_pos:
+                focus = f"prefix[{peak_pos}]"
+            elif peak_pos == token_pos:
+                focus = "self"
+            else:
+                focus = f"suffix[{peak_pos - token_pos - 1}]"
+            head_focus.append({"head": h, "focus": focus, "weight": round(peak_val, 3)})
+
+        layers.append({
+            "layer": i, "self_weight": round(self_w, 4),
+            "prefix_weight": round(prefix_w, 4), "suffix_weight": round(suffix_w, 4),
+            "entropy": round(entropy, 3), "head_focus": head_focus,
+        })
+
+    return {
+        "model": model_name, "mode": mode, "n_tokens": n_sample,
+        "n_heads": n_heads, "seq_len": seq_len, "token_pos": token_pos,
+        "n_layers": len(layers), "layers": layers,
+    }
+
+
+def bandwidth_efficiency(mri_path: str, *, n_sample: int | None = None,
+                         delta_threshold: float = 0.01) -> dict:
+    """Per-token bandwidth efficiency: what fraction of model bytes do useful work?
+
+    For each token, estimates:
+      - MLP active bytes: (active_neurons / total_neurons) × MLP weight size
+      - Skippable layers: layers where delta_norm < threshold × exit_norm
+      - Total active bytes vs total model bytes
+
+    Returns bandwidth efficiency = active_bytes / total_bytes.
+    The gap is wasted bandwidth — bytes loaded from memory, never used.
+    """
+    from .mri import load_mri
+    from pathlib import Path
+    import json
+
+    mri = load_mri(mri_path)
+    meta = mri['metadata']
+    n_layers = meta['model']['n_layers']
+    hidden = meta['model']['hidden_size']
+    model_name = meta['model']['name']
+    mode = meta.get('capture', {}).get('mode', '?')
+    gate_k = meta['capture'].get('gate_k', 0)
+    n_tok = len(mri['token_ids'])
+
+    if n_sample and n_sample < n_tok:
+        rng = np.random.RandomState(42)
+        idx = sorted(rng.choice(n_tok, n_sample, replace=False))
+    else:
+        idx = list(range(n_tok))
+        n_sample = n_tok
+
+    # Compute weight sizes per layer from stored weights
+    p = Path(mri_path)
+    wdir = p / "weights"
+    layer_weight_bytes = {}
+    attn_bytes_per_layer = 0
+    mlp_bytes_per_layer = 0
+    for i in range(n_layers):
+        ldir = wdir / f"L{i:02d}" if wdir.exists() else None
+        if ldir and ldir.exists():
+            attn_b = sum(f.stat().st_size for f in ldir.glob("*_proj.npy")
+                         if f.stem in ("q_proj", "k_proj", "v_proj", "o_proj"))
+            mlp_b = sum(f.stat().st_size for f in ldir.glob("*_proj.npy")
+                        if f.stem in ("gate_proj", "up_proj", "down_proj"))
+            layer_weight_bytes[i] = {"attn": attn_b, "mlp": mlp_b, "total": attn_b + mlp_b}
+            if i == 0:
+                attn_bytes_per_layer = attn_b
+                mlp_bytes_per_layer = mlp_b
+
+    total_model_bytes = sum(v["total"] for v in layer_weight_bytes.values())
+    embed_bytes = (p / "embedding.npy").stat().st_size if (p / "embedding.npy").exists() else 0
+    lmhead_bytes = (p / "lmhead_raw.npy").stat().st_size if (p / "lmhead_raw.npy").exists() else 0
+    total_model_bytes += embed_bytes + lmhead_bytes
+
+    # Infer intermediate_size from gate weights
+    if wdir.exists() and (wdir / "L00" / "gate_proj.npy").exists():
+        gate_w = np.load(wdir / "L00" / "gate_proj.npy", mmap_mode='r')
+        intermediate_size = gate_w.shape[0]
+    else:
+        intermediate_size = hidden * 4  # fallback estimate
+
+    # Per-layer analysis
+    layer_results = []
+    prev_exit = None
+    for i in range(n_layers):
+        exit_key = f"exit_L{i}"
+        if exit_key not in mri:
+            continue
+        exits = np.array(mri[exit_key])[idx].astype(np.float32)
+        exit_norms = np.linalg.norm(exits, axis=1)
+
+        # Layer delta
+        if prev_exit is not None:
+            deltas = exits - prev_exit
+            delta_norms = np.linalg.norm(deltas, axis=1)
+        else:
+            delta_norms = exit_norms
+
+        # Fraction of tokens where this layer is skippable
+        if prev_exit is not None:
+            prev_norms = np.linalg.norm(prev_exit, axis=1)
+            skippable = (delta_norms < delta_threshold * np.maximum(prev_norms, 1e-8))
+            skip_frac = float(skippable.mean())
+        else:
+            skip_frac = 0.0
+
+        # MLP active fraction from gates
+        if gate_k and f"gate_indices_L{i}" in mri:
+            g_idx = np.array(mri[f"gate_indices_L{i}"])[idx]
+            # Unique neurons per token
+            unique_per_token = np.array([len(set(row)) for row in g_idx])
+            mean_active = float(unique_per_token.mean())
+            mlp_active_frac = mean_active / intermediate_size
+        else:
+            mlp_active_frac = 1.0  # no gate data, assume all active
+            mean_active = intermediate_size
+
+        # Active bytes for this layer
+        wb = layer_weight_bytes.get(i, {"attn": attn_bytes_per_layer,
+                                         "mlp": mlp_bytes_per_layer,
+                                         "total": attn_bytes_per_layer + mlp_bytes_per_layer})
+        # Attention is dense (all heads needed), MLP is sparse (only active neurons)
+        active_bytes = wb["attn"] + wb["mlp"] * mlp_active_frac
+        if skip_frac > 0.5:
+            # Majority skippable — this layer is mostly wasted
+            active_bytes *= (1.0 - skip_frac)
+
+        layer_results.append({
+            "layer": i,
+            "skip_fraction": round(skip_frac, 3),
+            "mlp_active_fraction": round(mlp_active_frac, 4),
+            "mlp_active_neurons": round(mean_active, 1),
+            "mlp_total_neurons": intermediate_size,
+            "active_bytes": int(active_bytes),
+            "total_bytes": wb["total"],
+            "efficiency": round(active_bytes / max(wb["total"], 1), 4),
+        })
+
+        prev_exit = exits
+
+    total_active = sum(r["active_bytes"] for r in layer_results) + embed_bytes + lmhead_bytes
+    efficiency = total_active / max(total_model_bytes, 1)
+
+    return {
+        "model": model_name,
+        "mode": mode,
+        "n_tokens": n_sample,
+        "total_model_bytes": total_model_bytes,
+        "total_active_bytes": total_active,
+        "bandwidth_efficiency": round(efficiency, 4),
+        "wasted_fraction": round(1.0 - efficiency, 4),
+        "intermediate_size": intermediate_size,
+        "gate_k": gate_k,
+        "layers": layer_results,
+    }
+
+
+def lookup_fraction(mri_path: str, *, n_sample: int | None = None) -> dict:
+    """How much of language modeling is a table lookup?
+
+    For each token, compares:
+      - embedding prediction: lmhead @ embedding[token_id] (no computation)
+      - full prediction: lmhead @ norm(exit_L[-1]) (24 layers of computation)
+
+    If top-1 matches, the layers added nothing — the token was lookup-solvable.
+    """
+    from .mri import load_mri
+
+    mri = load_mri(mri_path)
+    meta = mri['metadata']
+    n_layers = meta['model']['n_layers']
+    model_name = meta['model']['name']
+    mode = meta.get('capture', {}).get('mode', '?')
+
+    if 'lmhead_raw' not in mri or 'embedding' not in mri:
+        return {"error": "MRI missing lmhead_raw or embedding"}
+
+    lmhead = np.array(mri['lmhead_raw']).astype(np.float32)  # [vocab, hidden]
+    embedding = np.array(mri['embedding']).astype(np.float32)  # [vocab, hidden]
+    token_ids = mri['token_ids']
+    n_tok = len(token_ids)
+
+    final_norm_w = mri.get('norm_final')
+    if final_norm_w is not None:
+        final_norm_w = np.array(final_norm_w).astype(np.float32)
+
+    last_layer = f"exit_L{n_layers - 1}"
+    if last_layer not in mri:
+        return {"error": f"Missing {last_layer}"}
+
+    if n_sample and n_sample < n_tok:
+        rng = np.random.RandomState(42)
+        idx = sorted(rng.choice(n_tok, n_sample, replace=False))
+    else:
+        idx = list(range(n_tok))
+        n_sample = n_tok
+
+    sampled_ids = token_ids[idx]
+    exit_states = np.array(mri[last_layer])[idx].astype(np.float32)
+
+    # Apply RMSNorm to exit states
+    if final_norm_w is not None:
+        rms = np.sqrt(np.mean(exit_states ** 2, axis=1, keepdims=True) + 1e-6)
+        exit_states = exit_states / rms * final_norm_w
+
+    # Embedding prediction: lmhead @ embedding[tid]
+    emb_vecs = embedding[sampled_ids]  # [n_sample, hidden]
+    emb_logits = emb_vecs @ lmhead.T  # [n_sample, vocab]
+    emb_top1 = np.argmax(emb_logits, axis=1)
+
+    # Full prediction: lmhead @ normed_exit
+    full_logits = exit_states @ lmhead.T  # [n_sample, vocab]
+    full_top1 = np.argmax(full_logits, axis=1)
+
+    # Compare
+    match = emb_top1 == full_top1
+    lookup_count = int(match.sum())
+    compute_count = n_sample - lookup_count
+
+    # Per-script breakdown
+    scripts = mri.get('scripts', np.array(['?'] * n_tok))
+    sampled_scripts = scripts[idx]
+    script_stats = {}
+    for s in sorted(set(sampled_scripts)):
+        mask = sampled_scripts == s
+        if mask.sum() < 5:
+            continue
+        s_match = match[mask].sum()
+        script_stats[str(s)] = {
+            "n": int(mask.sum()),
+            "lookup": int(s_match),
+            "fraction": round(float(s_match / mask.sum()), 3),
+        }
+
+    # Per-layer: at which layer does the prediction diverge from embedding?
+    layer_divergence = []
+    for i in range(n_layers):
+        exit_key = f"exit_L{i}"
+        if exit_key not in mri:
+            continue
+        states = np.array(mri[exit_key])[idx].astype(np.float32)
+        if final_norm_w is not None:
+            rms = np.sqrt(np.mean(states ** 2, axis=1, keepdims=True) + 1e-6)
+            states = states / rms * final_norm_w
+        layer_logits = states @ lmhead.T
+        layer_top1 = np.argmax(layer_logits, axis=1)
+        layer_match = (layer_top1 == emb_top1).sum()
+        layer_divergence.append({
+            "layer": i,
+            "matches_embedding": int(layer_match),
+            "fraction": round(float(layer_match / n_sample), 3),
+        })
+
+    return {
+        "model": model_name,
+        "mode": mode,
+        "n_tokens": n_sample,
+        "lookup_solvable": lookup_count,
+        "compute_needed": compute_count,
+        "lookup_fraction": round(lookup_count / n_sample, 4),
+        "by_script": script_stats,
+        "by_layer": layer_divergence,
+    }
+
+
+def shart_anatomy(mri_path: str, *, n_sample: int | None = None,
+                   top_n: int = 100) -> dict:
+    """What makes a shart a shart?
+
+    For each token, measures:
+      - Final displacement (exit state norm)
+      - Embedding gradient norm (sensitivity to input perturbation)
+      - Crystal neuron identification (dominant neuron at peak amplification layer)
+      - Crystal neuron activation magnitude vs displacement
+      - Gate activity in the frozen zone (opposing or idle?)
+      - Active neuron count (bandwidth)
+
+    Returns ranked tokens with full decomposition.
+    """
+    from .mri import load_mri
+
+    mri = load_mri(mri_path)
+    meta = mri['metadata']
+    n_layers = meta['model']['n_layers']
+    hidden = meta['model']['hidden_size']
+    model_name = meta['model']['name']
+    mode = meta.get('capture', {}).get('mode', '?')
+    token_ids = mri['token_ids']
+    token_texts = mri.get('token_texts', np.array([''] * len(token_ids)))
+    scripts = mri.get('scripts', np.array(['?'] * len(token_ids)))
+    n_tok = len(token_ids)
+
+    if n_sample and n_sample < n_tok:
+        rng = np.random.RandomState(42)
+        idx = sorted(rng.choice(n_tok, n_sample, replace=False))
+    else:
+        idx = list(range(n_tok))
+        n_sample = n_tok
+
+    # Final displacement
+    exit_key = f"exit_L{n_layers - 1}"
+    if exit_key not in mri:
+        return {"error": f"Missing {exit_key}"}
+    exit_last = np.array(mri[exit_key])[idx].astype(np.float32)
+    displacements = np.linalg.norm(exit_last, axis=1)
+
+    # Embedding gradient
+    from pathlib import Path
+    eg_path = Path(mri_path) / "embedding_grad.npy"
+    if eg_path.exists():
+        eg = np.load(eg_path)[idx].astype(np.float32)
+        grad_norms = np.linalg.norm(eg, axis=1)
+        disp_grad_corr = float(np.corrcoef(displacements, grad_norms)[0, 1])
+    else:
+        grad_norms = None
+        disp_grad_corr = None
+
+    # Find peak amplification layer (crystal layer)
+    max_amp_layer = 0
+    max_amp = 0
+    prev_norms = None
+    for i in range(n_layers):
+        ek = f"exit_L{i}"
+        if ek not in mri:
+            continue
+        curr = np.array(mri[ek])[idx].astype(np.float32)
+        curr_norms = np.linalg.norm(curr, axis=1)
+        if prev_norms is not None:
+            delta_norms = np.linalg.norm(curr - prev_exit, axis=1)
+            amp = delta_norms.mean() / max(prev_norms_mean, 1e-8)
+            if amp > max_amp:
+                max_amp = amp
+                max_amp_layer = i
+        prev_exit = curr
+        prev_norms = curr_norms
+        prev_norms_mean = curr_norms.mean()
+
+    # Crystal neuron at peak layer
+    crystal_layer = max_amp_layer
+    gate_key = f"gate_L{crystal_layer}"
+    up_key = f"up_L{crystal_layer}"
+    crystal_neuron = -1
+    crystal_corr = 0.0
+    crystal_energy_frac = 0.0
+    if gate_key in mri and up_key in mri:
+        g = np.array(mri[gate_key])[idx].astype(np.float32)
+        u = np.array(mri[up_key])[idx].astype(np.float32)
+        neuron_act = g * u
+        mean_abs = np.abs(neuron_act).mean(axis=0)
+        crystal_neuron = int(np.argmax(mean_abs))
+        crystal_act = np.abs(neuron_act[:, crystal_neuron])
+        crystal_corr = float(np.corrcoef(crystal_act, displacements)[0, 1])
+        total_energy = np.abs(neuron_act).sum(axis=1)
+        crystal_energy_frac = float((crystal_act / (total_energy + 1e-8)).mean())
+    elif gate_key in mri:
+        g = np.array(mri[gate_key])[idx].astype(np.float32)
+        mean_abs = np.abs(g).mean(axis=0)
+        crystal_neuron = int(np.argmax(mean_abs))
+
+    # Frozen zone: gate cosine between early and late frozen layers
+    frozen_start = crystal_layer + 2
+    frozen_end = n_layers - 3
+    frozen_gate_cosine = None
+    if frozen_end > frozen_start and f"gate_L{frozen_start}" in mri and f"gate_L{frozen_end}" in mri:
+        ga = np.array(mri[f"gate_L{frozen_start}"])[idx].astype(np.float32)
+        gb = np.array(mri[f"gate_L{frozen_end}"])[idx].astype(np.float32)
+        dot = (ga * gb).sum(axis=1)
+        na = np.linalg.norm(ga, axis=1)
+        nb = np.linalg.norm(gb, axis=1)
+        frozen_gate_cosine = float((dot / (na * nb + 1e-8)).mean())
+
+    # Active neuron count at crystal layer
+    if gate_key in mri and up_key in mri:
+        active_per_token = (np.abs(neuron_act) > 1.0).sum(axis=1).astype(float)
+        active_disp_corr = float(np.corrcoef(active_per_token, displacements)[0, 1])
+    else:
+        active_per_token = None
+        active_disp_corr = None
+
+    # Rank tokens
+    order = np.argsort(-displacements)
+    top_tokens = []
+    for rank, oi in enumerate(order[:top_n]):
+        real_idx = idx[oi]
+        entry = {
+            "rank": rank + 1,
+            "token_id": int(token_ids[real_idx]),
+            "token": str(token_texts[real_idx]),
+            "script": str(scripts[real_idx]),
+            "displacement": round(float(displacements[oi]), 1),
+        }
+        if grad_norms is not None:
+            entry["grad_norm"] = round(float(grad_norms[oi]), 2)
+        if gate_key in mri and up_key in mri:
+            entry["crystal_activation"] = round(float(np.abs(neuron_act[oi, crystal_neuron])), 1)
+            entry["active_neurons"] = int(active_per_token[oi])
+        top_tokens.append(entry)
+
+    bottom_tokens = []
+    for rank, oi in enumerate(order[-top_n:]):
+        real_idx = idx[oi]
+        entry = {
+            "rank": n_sample - top_n + rank + 1,
+            "token_id": int(token_ids[real_idx]),
+            "token": str(token_texts[real_idx]),
+            "script": str(scripts[real_idx]),
+            "displacement": round(float(displacements[oi]), 1),
+        }
+        if grad_norms is not None:
+            entry["grad_norm"] = round(float(grad_norms[oi]), 2)
+        bottom_tokens.append(entry)
+
+    return {
+        "model": model_name,
+        "mode": mode,
+        "n_tokens": n_sample,
+        "displacement": {
+            "min": round(float(displacements.min()), 1),
+            "max": round(float(displacements.max()), 1),
+            "median": round(float(np.median(displacements)), 1),
+            "ratio_max_median": round(float(displacements.max() / np.median(displacements)), 2),
+        },
+        "gradient": {
+            "corr_with_displacement": disp_grad_corr,
+            "top_sharts_mean": round(float(grad_norms[order[:top_n]].mean()), 1) if grad_norms is not None else None,
+            "bottom_mean": round(float(grad_norms[order[-top_n:]].mean()), 1) if grad_norms is not None else None,
+        },
+        "crystal": {
+            "layer": crystal_layer,
+            "amplification": round(max_amp, 1),
+            "neuron": crystal_neuron,
+            "corr_with_displacement": round(crystal_corr, 4),
+            "energy_fraction": round(crystal_energy_frac, 3),
+        },
+        "frozen_zone": {
+            "gate_cosine": round(frozen_gate_cosine, 4) if frozen_gate_cosine is not None else None,
+            "interpretation": "opposing" if frozen_gate_cosine is not None and frozen_gate_cosine < 0 else "aligned" if frozen_gate_cosine is not None else "unknown",
+        },
+        "bandwidth": {
+            "active_neuron_disp_corr": round(active_disp_corr, 4) if active_disp_corr is not None else None,
+            "interpretation": "magnitude not count" if active_disp_corr is not None and active_disp_corr < 0.3 else "more neurons" if active_disp_corr is not None else "unknown",
+        },
+        "top_sharts": top_tokens,
+        "bottom_tokens": bottom_tokens,
+    }
+
+
 def inspect_profile(path: str) -> dict:
     """Summarize any profile file (.frt, .shrt, .sht)."""
     p = Path(path)
@@ -2624,3 +3230,149 @@ def inspect_profile(path: str) -> dict:
         return d['metadata']
     else:
         return {"error": f"Unknown profile type: {p.name}"}
+
+
+def logit_lens(mri_path: str, *, top_k: int = 5,
+               layers: list[int] | None = None,
+               n_sample: int | None = None) -> dict:
+    """Logit lens: what would the model predict at each layer?
+
+    Applies final_norm + lmhead to each layer's exit state.
+    Returns top-K token predictions per layer per token.
+    Requires lmhead_raw.npy and norms.npz in the MRI directory.
+    """
+    from .mri import load_mri
+
+    mri = load_mri(mri_path)
+    meta = mri['metadata']
+    n_layers = meta['model']['n_layers']
+    hidden = meta['model']['hidden_size']
+    model_name = meta['model']['name']
+
+    if 'lmhead_raw' not in mri:
+        return {"error": "MRI missing lmhead_raw.npy — run mri-backfill"}
+    lmhead = np.array(mri['lmhead_raw']).astype(np.float32)  # [vocab, hidden]
+
+    # Final norm weights (RMSNorm: weight * x / rms(x))
+    final_norm_w = mri.get('norm_final')
+    if final_norm_w is not None:
+        final_norm_w = np.array(final_norm_w).astype(np.float32)
+
+    token_ids = mri['token_ids']
+    token_texts = mri.get('token_texts', np.array([''] * len(token_ids)))
+    n_tokens = len(token_ids)
+
+    if layers is None:
+        layers = list(range(n_layers))
+
+    # Optional subsampling
+    if n_sample and n_sample < n_tokens:
+        rng = np.random.RandomState(42)
+        idx = sorted(rng.choice(n_tokens, n_sample, replace=False))
+    else:
+        idx = list(range(n_tokens))
+        n_sample = n_tokens
+
+    results = []
+    for layer in layers:
+        exit_key = f"exit_L{layer}"
+        if exit_key not in mri:
+            continue
+
+        states = np.array(mri[exit_key])[idx].astype(np.float32)  # [n_sample, hidden]
+
+        # Apply RMSNorm
+        if final_norm_w is not None:
+            rms = np.sqrt(np.mean(states ** 2, axis=1, keepdims=True) + 1e-6)
+            states = states / rms * final_norm_w
+
+        # Logits: [n_sample, vocab]
+        logits = states @ lmhead.T
+
+        # Top-K per token
+        top_indices = np.argpartition(-logits, top_k, axis=1)[:, :top_k]
+        layer_preds = []
+        for t in range(len(idx)):
+            top_idx = top_indices[t]
+            top_logit = logits[t, top_idx]
+            order = np.argsort(-top_logit)
+            top_idx = top_idx[order]
+            top_logit = top_logit[order]
+            layer_preds.append({
+                "token_id": int(token_ids[idx[t]]),
+                "top_ids": top_idx.tolist(),
+                "top_logits": [round(float(v), 2) for v in top_logit],
+            })
+
+        results.append({
+            "layer": layer,
+            "predictions": layer_preds,
+        })
+
+    return {
+        "model": model_name,
+        "n_tokens": n_sample,
+        "n_layers": len(results),
+        "top_k": top_k,
+        "layers": results,
+    }
+
+
+def layer_deltas(mri_path: str, *, n_sample: int | None = None) -> dict:
+    """Layer deltas: what each layer actually computes.
+
+    Delta at layer i = exit_L[i] - exit_L[i-1].
+    Delta at layer 0 = exit_L[0] - embedding (if embedding exists).
+
+    Returns per-layer statistics: mean/max delta norm, dominant direction.
+    """
+    from .mri import load_mri
+
+    mri = load_mri(mri_path)
+    meta = mri['metadata']
+    n_layers = meta['model']['n_layers']
+    model_name = meta['model']['name']
+    mode = meta.get('capture', {}).get('mode', '?')
+    n_tokens = len(mri['token_ids'])
+
+    if n_sample and n_sample < n_tokens:
+        rng = np.random.RandomState(42)
+        idx = sorted(rng.choice(n_tokens, n_sample, replace=False))
+    else:
+        idx = list(range(n_tokens))
+        n_sample = n_tokens
+
+    scripts = mri.get('scripts', np.array(['?'] * n_tokens))
+    sampled_scripts = scripts[idx]
+
+    results = []
+    prev = None
+    for i in range(n_layers):
+        exit_key = f"exit_L{i}"
+        if exit_key not in mri:
+            continue
+        curr = np.array(mri[exit_key])[idx].astype(np.float32)
+
+        if prev is not None:
+            delta = curr - prev
+        else:
+            delta = curr  # layer 0: delta from zero (or embedding)
+
+        norms = np.linalg.norm(delta, axis=1)
+        results.append({
+            "layer": i,
+            "mean_delta_norm": round(float(norms.mean()), 2),
+            "max_delta_norm": round(float(norms.max()), 2),
+            "std_delta_norm": round(float(norms.std()), 2),
+            "amplification": round(float(norms.mean() / max(results[-1]["mean_delta_norm"], 1e-8)), 2)
+                if results else 1.0,
+        })
+        prev = curr
+
+    return {
+        "model": model_name,
+        "mode": mode,
+        "n_tokens": n_sample,
+        "n_layers": len(results),
+        "layers": results,
+    }

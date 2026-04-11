@@ -344,12 +344,97 @@ TOOLS = {
         },
     },
     "heinrich_total_capture": {
-        "description": "Total residual capture: every token, every layer, entry + exit positions. No interpretation. Raw displacement deltas.",
+        "description": "[Legacy — use heinrich_mri instead] Total residual capture.",
         "parameters": {
             "model": {"type": "string", "description": "Model ID", "required": True},
             "n_index": {"type": "integer", "description": "Number of tokens (default: full vocabulary)"},
             "output": {"type": "string", "description": "Output .shrt.npz path", "required": True},
             "naked": {"type": "boolean", "description": "Naked mode: single token, BOS baseline, no template"},
+        },
+    },
+    "heinrich_mri": {
+        "description": "Complete model residual image: capture every token at every layer with baselines and weights. The primary capture format.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or checkpoint path", "required": True},
+            "output": {"type": "string", "description": "Output .mri directory path", "required": True},
+            "mode": {"type": "string", "description": "Capture mode: template (default), naked, or raw"},
+            "n_index": {"type": "integer", "description": "Number of tokens (default: full vocabulary)"},
+            "backend": {"type": "string", "description": "Backend: auto (default), mlx, hf, or decepticon"},
+            "result_json": {"type": "string", "description": "Decepticon: path to result.json"},
+            "tokenizer_path": {"type": "string", "description": "Decepticon: path to tokenizer model"},
+        },
+    },
+    "heinrich_mri_backfill": {
+        "description": "Fill missing data (embedding, norms, weights, lmhead_raw) in existing MRI directories.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID", "required": True},
+            "mri": {"type": "string", "description": "MRI directory path to backfill", "required": True},
+        },
+    },
+    "heinrich_mri_status": {
+        "description": "Show all MRIs: what's complete, what's missing, what's running.",
+        "parameters": {
+            "dir": {"type": "string", "description": "MRI directory (default: /Volumes/sharts)"},
+        },
+    },
+    "heinrich_mri_health": {
+        "description": "Deep health check: verify shapes, NaN, weights, consistency for every MRI. No model needed.",
+        "parameters": {
+            "dir": {"type": "string", "description": "MRI directory (default: /Volumes/sharts)"},
+            "mri": {"type": "string", "description": "Specific .mri directory to check (optional)"},
+        },
+    },
+    "heinrich_mri_scan": {
+        "description": "Full MRI workup: capture all 3 modes, health check, layer deltas, logit lens, gate analysis, attention analysis, PCA depth.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or checkpoint path", "required": True},
+            "output": {"type": "string", "description": "Model output directory", "required": True},
+            "n_index": {"type": "integer", "description": "Number of tokens (default: full vocabulary)"},
+            "backend": {"type": "string", "description": "Backend: auto, mlx, hf, or decepticon"},
+        },
+    },
+    "heinrich_mri_verify": {
+        "description": "5-token smoke test: verify a model is compatible with MRI capture.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or checkpoint path", "required": True},
+            "backend": {"type": "string", "description": "Backend: auto, mlx, hf, or decepticon"},
+        },
+    },
+    "heinrich_profile_logit_lens": {
+        "description": "Logit lens: what would the model predict at each layer? Reads .mri, no model needed.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory path", "required": True},
+            "top_k": {"type": "integer", "description": "Top K predictions (default: 5)"},
+            "n_sample": {"type": "integer", "description": "Tokens to sample (default: 100)"},
+            "layers": {"type": "string", "description": "Comma-separated layer indices (default: all)"},
+        },
+    },
+    "heinrich_profile_layer_deltas": {
+        "description": "Layer deltas: what each layer computes (exit[i] - exit[i-1]). Reads .mri, no model needed.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory path", "required": True},
+            "n_sample": {"type": "integer", "description": "Tokens to sample (default: 5000)"},
+        },
+    },
+    "heinrich_profile_gates": {
+        "description": "MLP gate analysis: neuron diversity, concentration, per-script routing. Reads .mri, no model needed.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory path", "required": True},
+            "n_sample": {"type": "integer", "description": "Tokens to sample (default: 5000)"},
+        },
+    },
+    "heinrich_profile_attention": {
+        "description": "Attention analysis: self vs prefix vs suffix weight, entropy, per-head focus. Template mode only.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory path (template mode)", "required": True},
+            "n_sample": {"type": "integer", "description": "Tokens to sample (default: 5000)"},
+        },
+    },
+    "heinrich_profile_pca_depth": {
+        "description": "PCA structure at every layer: dimensionality, dominant axes, crystallization detection.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory path", "required": True},
+            "n_sample": {"type": "integer", "description": "Tokens to sample (default: 5000)"},
         },
     },
 }
@@ -466,6 +551,42 @@ class ToolServer:
             return self._do_sht_profile(arguments)
         if name == "heinrich_total_capture":
             return self._do_total_capture(arguments)
+        if name == "heinrich_mri":
+            return self._do_mri(arguments)
+        if name == "heinrich_mri_backfill":
+            return self._do_mri_backfill(arguments)
+        if name == "heinrich_mri_status":
+            return self._do_mri_status(arguments)
+        if name == "heinrich_mri_health":
+            return self._do_mri_health(arguments)
+        if name == "heinrich_mri_scan":
+            return self._do_subprocess(arguments, "mri-scan",
+                ["--model", arguments["model"], "--output", arguments["output"]],
+                optional={"n_index": "--n-index", "backend": "--backend"}, timeout=36000)
+        if name == "heinrich_mri_verify":
+            return self._do_subprocess(arguments, "mri-verify",
+                ["--model", arguments["model"]],
+                optional={"backend": "--backend"}, timeout=120)
+        if name == "heinrich_profile_logit_lens":
+            return self._do_subprocess(arguments, "profile-logit-lens",
+                ["--mri", arguments["mri"]],
+                optional={"top_k": "--top-k", "n_sample": "--n-sample", "layers": "--layers"}, timeout=300)
+        if name == "heinrich_profile_layer_deltas":
+            return self._do_subprocess(arguments, "profile-layer-deltas",
+                ["--mri", arguments["mri"]],
+                optional={"n_sample": "--n-sample"}, timeout=300)
+        if name == "heinrich_profile_gates":
+            return self._do_subprocess(arguments, "profile-gates",
+                ["--mri", arguments["mri"]],
+                optional={"n_sample": "--n-sample"}, timeout=300)
+        if name == "heinrich_profile_attention":
+            return self._do_subprocess(arguments, "profile-attention",
+                ["--mri", arguments["mri"]],
+                optional={"n_sample": "--n-sample"}, timeout=300)
+        if name == "heinrich_profile_pca_depth":
+            return self._do_subprocess(arguments, "profile-pca-depth",
+                ["--mri", arguments["mri"]],
+                optional={"n_sample": "--n-sample"}, timeout=300)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -1762,3 +1883,92 @@ class ToolServer:
         meta = json.loads(str(d['metadata'][0]))
         meta["output"] = output
         return meta
+
+    def _do_mri(self, args: dict[str, Any]) -> dict[str, Any]:
+        """MRI capture. Subprocess-isolated."""
+        import subprocess, sys
+        model = args["model"]
+        output = args["output"]
+
+        cmd = [sys.executable, "-m", "heinrich.cli", "mri",
+               "--model", model, "--output", output]
+        if args.get("mode"):
+            cmd.extend(["--mode", args["mode"]])
+        if args.get("n_index") is not None:
+            cmd.extend(["--n-index", str(args["n_index"])])
+        if args.get("backend"):
+            cmd.extend(["--backend", args["backend"]])
+        if args.get("result_json"):
+            cmd.extend(["--result-json", args["result_json"]])
+        if args.get("tokenizer_path"):
+            cmd.extend(["--tokenizer-path", args["tokenizer_path"]])
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=36000)
+        if result.returncode != 0:
+            return {"error": result.stderr, "stdout": result.stdout}
+
+        from pathlib import Path
+        meta_path = Path(output) / "metadata.json"
+        if meta_path.exists():
+            meta = json.loads(meta_path.read_text())
+            meta["output"] = output
+            return meta
+        return {"output": output, "stdout": result.stdout}
+
+    def _do_mri_backfill(self, args: dict[str, Any]) -> dict[str, Any]:
+        """MRI backfill. Subprocess-isolated."""
+        import subprocess, sys
+        model = args["model"]
+        mri = args["mri"]
+
+        cmd = [sys.executable, "-m", "heinrich.cli", "mri-backfill",
+               "--model", model, "--mri", mri]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if result.returncode != 0:
+            return {"error": result.stderr, "stdout": result.stdout}
+        return {"model": model, "mri": mri, "stdout": result.stdout}
+
+    def _do_mri_status(self, args: dict[str, Any]) -> dict[str, Any]:
+        """MRI status. Subprocess-isolated."""
+        import subprocess, sys
+        mri_dir = args.get("dir", "/Volumes/sharts")
+
+        cmd = [sys.executable, "-m", "heinrich.cli", "mri-status",
+               "--dir", mri_dir]
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=30)
+        if result.returncode != 0:
+            return {"error": result.stderr}
+        return {"output": result.stdout}
+
+    def _do_mri_health(self, args: dict[str, Any]) -> dict[str, Any]:
+        """MRI health check. Subprocess-isolated."""
+        import subprocess, sys
+        cmd = [sys.executable, "-m", "heinrich.cli", "mri-health"]
+        if args.get("mri"):
+            cmd.extend(["--mri", args["mri"]])
+        else:
+            cmd.extend(["--dir", args.get("dir", "/Volumes/sharts")])
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+        if result.returncode != 0:
+            return {"error": result.stderr}
+        return {"output": result.stdout}
+
+    def _do_subprocess(self, args: dict[str, Any], command: str,
+                       required: list[str], *,
+                       optional: dict[str, str] | None = None,
+                       timeout: int = 300) -> dict[str, Any]:
+        """Generic subprocess handler for CLI commands."""
+        import subprocess, sys
+        cmd = [sys.executable, "-m", "heinrich.cli", command] + required
+        if optional:
+            for arg_key, cli_flag in optional.items():
+                val = args.get(arg_key)
+                if val is not None:
+                    cmd.extend([cli_flag, str(val)])
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
+        if result.returncode != 0:
+            return {"error": result.stderr, "stdout": result.stdout}
+        return {"output": result.stdout}

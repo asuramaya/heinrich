@@ -70,7 +70,10 @@ heinrich profile-matrix --data-dir data/runs                                # da
 - `heinrich_frt_profile` — tokenizer profile (.frt v0.3: raw bytes + merge ranks)
 - `heinrich_shrt_profile` — shart profile (.shrt v0.3: vectors + KL + scripts)
 - `heinrich_sht_profile` — output profile
-- `heinrich_total_capture` — total residual capture (10h timeout, supports `naked` flag)
+- `heinrich_total_capture` — [legacy, use heinrich_mri] total residual capture
+- `heinrich_mri` — complete model MRI capture (10h timeout, supports mode/backend flags)
+- `heinrich_mri_backfill` — fill missing weights/norms/embedding in existing MRI
+- `heinrich_mri_status` — show all MRIs: complete, incomplete, running
 
 ## Architecture
 
@@ -103,10 +106,23 @@ heinrich shart-profile --model X --n-index 3000             # residual displacem
 heinrich shart-profile --model X --n-index 500 --layers all # all-layer sweep
 heinrich sht-profile --model X --n-index 3000               # output distribution
 
-# MRI capture (the primary format — replaces total-capture)
-heinrich mri --model X --mode raw --output X.mri            # transformer MRI
+# MRI capture (the primary format)
+heinrich mri --model X --mode raw --output X.mri            # single mode capture
 heinrich mri --model X.checkpoint.pt --output X.mri         # causal bank MRI (auto-detects)
+heinrich mri-scan --model X --output DIR                    # full workup: 3 modes + health + analysis
 heinrich mri-backfill --model X --mri X.mri                 # fill missing weights in existing MRI
+heinrich mri-health --dir /Volumes/sharts                   # deep health check (shapes, NaN, gates, attn)
+heinrich mri-status --dir /Volumes/sharts                   # what's complete, incomplete, running
+heinrich mri-verify --model X                               # 5-token smoke test
+
+# MRI analysis (reads .mri, no model needed)
+heinrich profile-layer-deltas --mri X.mri                   # per-layer delta norms and amplification
+heinrich profile-logit-lens --mri X.mri                     # per-layer predictions (logit lens)
+heinrich profile-gates --mri X.mri                          # MLP gate diversity, concentration, routing
+heinrich profile-attention --mri X.mri                      # attention patterns: self vs prefix vs suffix
+heinrich profile-pca-depth --mri X.mri                      # per-layer PCA structure
+heinrich profile-pca-anatomy --shrt S --frt F               # name unnamed PCA axes
+heinrich profile-pca-survey --pairs S1:F1 S2:F2             # cross-model PCA comparison
 
 # Profile analysis (reads .npz or .mri, no model needed)
 heinrich profile-chain --frt F --shrt S --sht T             # three-stage correlation
@@ -114,8 +130,6 @@ heinrich profile-cross --a S1 --b S2 --frt F                # two-model comparis
 heinrich profile-survey --shrt S1 S2 S3 --frt F1 F2 F3     # multi-model concordance
 heinrich profile-mismatch --shrt S --frt F                  # tokenizer-weight gap
 heinrich profile-depth --shrt S1 S2 --frt F1 F2             # layer trajectory
-heinrich profile-pca-anatomy --shrt S --frt F               # name unnamed PCA axes
-heinrich profile-pca-survey --pairs S1:F1 S2:F2             # cross-model PCA comparison
 
 # Eval pipeline
 heinrich run --model X --prompts harmbench --scorers word_match,qwen3guard
@@ -132,10 +146,15 @@ heinrich db summary              # database stats
 
 ```
 pytest tests/test_measurement_integrity.py -v  # 18 tests, measurement guarantees
-pytest tests/ -v                               # full suite
+pytest tests/test_session5_code.py -v          # 33 tests, Session 5-6 code
+pytest tests/test_mri_integration.py -v        # 17 tests, full capture+analysis pipeline (needs MLX)
+pytest tests/ -v                               # full suite (68 tests)
 ```
 
-Measurement integrity tests (18): baseline health (4), determinism (2), separation (3), bounds (5), stability (4). These test the measurement methodology, not just the code. All tests run without GPU or network.
+Measurement integrity tests (18): baseline health (4), determinism (2), separation (3), bounds (5), stability (4).
+Session 5-6 tests (33): _detect_script (16), _is_mlx_backend (3), PCA eigendecomp (2), decomposed forward (4), verify_mri (8).
+Integration tests (17): 3-mode capture, health check, gate/attention validation, analysis tools, resume.
+All unit tests run without GPU. Integration tests need MLX + cached Qwen 0.5B.
 
 ## Code conventions
 
@@ -199,7 +218,13 @@ Judge scorers disagree: qwen3guard says 97% safe, llamaguard says 63% safe on th
 
 `heinrich serve` or `heinrich-mcp` runs JSON-RPC over stdio.
 
-**Profile tools (start here):**
+**MRI tools (the working frontier):**
+- `heinrich_mri` — complete model MRI capture (subprocess, 10h timeout)
+- `heinrich_mri_backfill` — fill missing weights/norms/embedding
+- `heinrich_mri_status` — what's complete, incomplete, running
+- `heinrich_mri_health` — deep health check (shapes, NaN, gates, attention sums)
+
+**Profile tools:**
 - `heinrich_frt_profile` — tokenizer profile (in-process, fast)
 - `heinrich_shrt_profile` — shart profile (subprocess-isolated, accepts `layers` param)
 - `heinrich_sht_profile` — output profile (subprocess-isolated)
@@ -215,7 +240,7 @@ Judge scorers disagree: qwen3guard says 97% safe, llamaguard says 63% safe on th
 - `heinrich_sql` — read-only SQL (blocks DROP/ATTACH/PRAGMA)
 - `heinrich_discover_results` — directions, neurons, sharts from DB
 
-**Legacy tools (40+ total):** Many tools point at legacy tables or stale code. The profile tools above are the working frontier. Use `heinrich_db_summary` to see what data exists before calling other tools.
+**Note:** `heinrich_total_capture` is deprecated — use `heinrich_mri` instead. Analysis CLI commands (`profile-logit-lens`, `profile-gates`, `profile-attention`, `profile-layer-deltas`, `profile-pca-depth`) are available via CLI but not yet wired as MCP tools.
 
 ## Datasets
 
@@ -265,29 +290,51 @@ All prompts loaded into the DB via `require_prompts()`. No hardcoded prompt bank
 
 ## The .mri format
 
-The primary data format. One directory per model per capture mode.
+The primary data format. Per-model directory with one `.mri/` per capture mode:
+```
+/Volumes/sharts/smollm2-135m/
+  raw.mri/
+  naked.mri/
+  template.mri/
+```
 
 **Transformer MRI** (`.mri/`):
 ```
 metadata.json, tokens.npz, baselines.npz
-L{NN}_entry.npy, L{NN}_exit.npy     # per-layer residuals
+L{NN}_exit.npy                       # residual stream after each layer [N, hidden]
+L{NN}_entry.npy                      # (template only) residual at token_pos [N, hidden]
 embedding.npy, lmhead.npy, lmhead_raw.npy, norms.npz
 weights/L{NN}/*.npy                  # all projection weights
+attention/L{NN}_attn.npy             # (template only) attention weights [N, heads, seq_len]
+gates/L{NN}_gates.npz                # MLP gate top-K: indices [N, K] + values [N, K]
 ```
+
+Raw/naked mode: no entry arrays (single-token, entry == exit). No attention (self-attention = 1.0).
+Template mode: entry + exit (different positions) + attention weights + gate activations.
+Gate activations captured in all modes — these are from the exact pre-MLP state via decomposed forward.
+
+**Key metadata fields:**
+- `has_entry`: whether L{NN}_entry.npy files exist (False for raw/naked)
+- `has_attention`: whether attention/ directory exists (True for template only)
+- `has_gates`: whether gates/ directory exists (True for all new captures)
+- `gate_k`: number of top-K gate activations stored (default 32)
+- `seq_len`: template sequence length (for attention shape)
 
 **Causal bank MRI** (`.mri/`):
 ```
 metadata.json, tokens.npz
 substrate.npy                        # [N, n_modes] EMA states
 routing.npy                          # [N, n_experts] routing decisions
+band_logits.npy                      # [N, n_bands, vocab] per-band logits (if multi-band)
 half_lives.npy                       # [n_modes] frozen decay parameters
 embedding.npy
 weights/*.npy                        # all learned parameters
 ```
 
-Both loaded by `load_mri()`. Analysis tools work on both via `vectors` compatibility key (= exit residuals for transformers, substrate states for causal banks).
+Both loaded by `load_mri()`. Analysis tools work on both via `vectors` compatibility key.
 
-**MRI library** at `/Volumes/sharts/`: 20+ MRIs across 9 model families (Qwen 0.5B/1.5B/3B/7B, Phi-3, Mistral, SmolLM2 135M/360M/1.7B, Gemma 2B). Queue running for remaining captures.
+**MRI library** at `/Volumes/sharts/`: per-model directories. Old format MRIs in `/Volumes/sharts/old/`.
+Use `heinrich mri-scan` for full workup, `heinrich mri-health` to verify.
 
 ## Chronohorn connection
 
@@ -306,3 +353,14 @@ heinrich profile-pca-survey --pairs X.shrt:X.frt Y.shrt:Y.frt                   
 ```
 
 Key results: displacement is language sorting. ~14 PCs for 50% in Qwen 0.5B. The axes are language sub-families, not semantics or safety. Cross-model: same axes exist in different models at different variance percentages.
+
+## Session 6 findings (April 2026)
+
+- **The MRI now captures attention and MLP gates.** Decomposed forward: split each layer into attention + MLP, capture intermediates. Exit states are bit-identical to fused forward. Attention weights computed separately via Q@K. Gate activations from the exact pre-MLP state.
+- **Raw mode: entry == exit.** Single-token input means token_pos and -1 are the same position. Entry arrays were redundant — now skipped in raw/naked mode (halves storage).
+- **Crystallization is one MLP neuron.** SmolLM2-135M L11: 100% of tokens fire the same gate neuron. Qwen 0.5B L2: same. The crystal isn't distributed — it's a single gate selecting a single axis.
+- **Template prevents crystallization via attention.** In template mode, the token attends 73-98% to the prefix (system prompt) and 2-26% to itself. This multi-signal input prevents the MLP from collapsing to one axis. Without context, the MLP classifies (one axis). With context, it has multiple things to classify.
+- **Logit lens confirms the crystal.** Raw mode: all tokens predict the same ID from L2/L7 to L25. Template mode: predictions stay diverse at every layer.
+- **Layer deltas reveal the architecture.** SmolLM2-135M: L11=123x amplification (crystal birth), L28=75x (output assembly). L3-L10 and L12-L27: delta norms of 3-20 (the frozen zone — waiting for a question that never comes).
+- **Fused mmap.** MRI captures write directly to final .npy files via `np.lib.format.open_memmap`. No copy phase. Saves ~50 min on large captures.
+- **`mri-scan` is the primary command.** One command, one model: captures all 3 modes, health checks, runs layer deltas, logit lens, gate analysis, attention analysis, PCA depth. The queue script just lists models.

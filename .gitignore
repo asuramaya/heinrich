@@ -46,3 +46,6 @@ __pycache__/
 **/.build/
 **/ModuleCache/
 security/
+
+# Local MCP config (contains absolute paths)
+.mcp.json

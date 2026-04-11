@@ -6,7 +6,7 @@ The papers contain wrong numbers. Fix them before anything else.
 
 ### geometry_of_displacement.tex
 - [ ] Cross-model r=0.001 was ID-matched. Real answer is r=0.446 at L0, 0 by L5. Rewrite the cross-model section.
-- [ ] Mistral first-token gap was reported as 0 (tokenizer encode bug). Real answer is 5.64 (281x). Remove the "Mistral structurally incapable" claim.
+- [x] Mistral first-token gap was reported as 0 (tokenizer encode bug). Real answer is 5.64 (281x). Remove the "Mistral structurally incapable" claim.
 - [ ] Mistral "hedge words" finding needs reverification with corrected tokenizer.
 - [ ] Partial knowledge "falsified" at 10% collapsed to r=+0.01 at 100%. Note the instability, don't claim falsification.
 - [ ] Add the within-family finding: shared training = r=0.17, different training = r=0.
@@ -44,7 +44,7 @@ The MRI queue is running but incomplete.
 - [ ] Capture SmolLM 135M, 360M, 1.7B (2 modes each) — in queue
 - [ ] Capture Llama 1B, Gemma 2B (2 modes each) — in queue
 - [ ] Backfill any MRIs captured before the latest code (missing lmhead_raw, weights, embedding, norms)
-- [ ] Build an `mri-verify` command that checks completeness of an MRI directory
+- [x] Build an `mri-verify` command that checks completeness of an MRI directory
 
 ## 4. Build the MRI verification tool
 
@@ -106,21 +106,21 @@ Layer importance and early exit were computed but not validated.
 
 The MCP server has `heinrich_total_capture` but not `heinrich_mri`.
 
-- [ ] Add `heinrich_mri` MCP tool (subprocess-isolated, no timeout)
-- [ ] Add `heinrich_mri_backfill` MCP tool
-- [ ] Add `heinrich_mri_verify` MCP tool  
-- [ ] Deprecate `heinrich_total_capture` in MCP
+- [x] Add `heinrich_mri` MCP tool (subprocess-isolated, no timeout)
+- [x] Add `heinrich_mri_backfill` MCP tool
+- [x] Add `heinrich_mri_status` MCP tool (was mri_verify in plan, status is more useful)
+- [x] Deprecate `heinrich_total_capture` in MCP (description updated)
 - [ ] Update MCP tool descriptions to reference .mri format
 
 ## 10. Update CLAUDE.md
 
 The CLAUDE.md references Session 4 findings that are now known to be wrong.
 
-- [ ] Remove or correct the Mistral "structurally incapable" claim
+- [x] Remove or correct the Mistral "structurally incapable" claim
 - [ ] Note that cross-model comparison requires text matching, not ID matching
 - [ ] Update the three-axis numbers if they change on recomputation
-- [ ] Add the MRI format as the primary data format
-- [ ] Document the mri-verify command
+- [x] Add the MRI format as the primary data format
+- [x] Document the mri-verify command
 - [ ] Add warning: all pre-Session-4 analysis tools still use load_shrt/load_frt
 
 ## Priority order
