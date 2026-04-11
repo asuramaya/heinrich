@@ -224,7 +224,7 @@ class TestDecomposedForward:
         inp = mx.array([[10, 20, 30]])  # 3 tokens
         mask = ops.triu_mask(3)
         h = ops.embed(inp)
-        _, aw, _, _, _ = ops.layer_decomposed(model_inner.layers[0], h, mask)
+        _, aw, *_ = ops.layer_decomposed(model_inner.layers[0], h, mask)
         aw_np = np.array(aw.astype(mx.float32))  # [1, heads, 3, 3]
 
         # Row sums should be 1.0
@@ -245,7 +245,7 @@ class TestDecomposedForward:
 
         inp = mx.array([[42]])
         h = ops.embed(inp)
-        _, _, _, h_pre_mlp, _ = ops.layer_decomposed(model_inner.layers[0], h, None)
+        _, _, _, h_pre_mlp, _, gate_val, _ = ops.layer_decomposed(model_inner.layers[0], h, None)
 
         # Manual gate computation
         ly = model_inner.layers[0]

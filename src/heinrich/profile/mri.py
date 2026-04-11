@@ -107,14 +107,31 @@ def _framework_ops(backend):
             attn_out = attn_mod(norm_in, mask=mask, cache=None)
 
             if is_parallel:
-                # Parallel: MLP gets same normed input as attention
                 h_pre_mlp = norm_in
-                h_exit = attn_out + ly.mlp(norm_in) + residual
             else:
-                # Sequential: MLP gets post-attention state
                 h_after_attn = residual + attn_out
                 h_pre_mlp = ly.post_attention_layernorm(h_after_attn)
-                h_exit = h_after_attn + ly.mlp(h_pre_mlp)
+
+            # MLP decomposed: capture gate + up before down_proj
+            import mlx.nn as _nn
+            _mlp = ly.mlp
+            if hasattr(_mlp, 'gate_proj'):
+                _gate_val = _nn.silu(_mlp.gate_proj(h_pre_mlp))
+                _up_val = _mlp.up_proj(h_pre_mlp)
+                _mlp_out = _mlp.down_proj(_gate_val * _up_val)
+            elif hasattr(_mlp, 'fc1'):
+                _gate_val = _nn.gelu(_mlp.fc1(h_pre_mlp))
+                _up_val = _gate_val
+                _mlp_out = _mlp.fc2(_gate_val)
+            else:
+                _gate_val = None
+                _up_val = None
+                _mlp_out = _mlp(h_pre_mlp)
+
+            if is_parallel:
+                h_exit = attn_out + _mlp_out + residual
+            else:
+                h_exit = h_after_attn + _mlp_out
 
             # Attention weights (recomputed Q@K — does NOT affect h_exit)
             n_h = getattr(attn_mod, 'n_heads', None) or getattr(attn_mod, 'num_heads', None)
@@ -141,7 +158,7 @@ def _framework_ops(backend):
                 scores = scores + mask
             weights = mx.softmax(scores, axis=-1)
 
-            return h_exit, weights, scores, h_pre_mlp, attn_out
+            return h_exit, weights, scores, h_pre_mlp, attn_out, _gate_val, _up_val
 
         def _mlx_embedding_grad(emb, mask):
             """Gradient of top-1 logit w.r.t. embedding. One backward pass."""
@@ -238,13 +255,30 @@ def _framework_ops(backend):
                 is_parallel = not hasattr(ly, 'post_attention_layernorm')
                 if is_parallel:
                     h_pre_mlp = norm_in
-                    h_exit = attn_hidden + ly.mlp(norm_in) + residual
                 else:
                     h_after_attn = residual + attn_hidden
                     h_pre_mlp = ly.post_attention_layernorm(h_after_attn)
-                    h_exit = h_after_attn + ly.mlp(h_pre_mlp)
 
-                return h_exit, weights, None, h_pre_mlp, attn_hidden
+                _mlp = ly.mlp
+                if hasattr(_mlp, 'gate_proj'):
+                    _gv = torch.nn.functional.silu(_mlp.gate_proj(h_pre_mlp))
+                    _uv = _mlp.up_proj(h_pre_mlp)
+                    _mo = _mlp.down_proj(_gv * _uv)
+                elif hasattr(_mlp, 'fc1'):
+                    _gv = torch.nn.functional.gelu(_mlp.fc1(h_pre_mlp))
+                    _uv = _gv
+                    _mo = _mlp.fc2(_gv)
+                else:
+                    _gv = None
+                    _uv = None
+                    _mo = _mlp(h_pre_mlp)
+
+                if is_parallel:
+                    h_exit = attn_hidden + _mo + residual
+                else:
+                    h_exit = h_after_attn + _mo
+
+                return h_exit, weights, None, h_pre_mlp, attn_hidden, _gv, _uv
 
         def _hf_mlp_internals(ly, h_pre_mlp):
             """Get gate AND up values."""
@@ -762,7 +796,8 @@ def capture_mri(
         batch_gates = []
         batch_ups = []
         for i, ly in enumerate(model_inner.layers):
-            h, attn_w, attn_scores, h_pre_mlp, attn_output = ops.layer_decomposed(ly, h, mask)
+            h, attn_w, attn_scores, h_pre_mlp, attn_output, gate_val, up_val = \
+                ops.layer_decomposed(ly, h, mask)
 
             layer_pre_mlps.append(h_pre_mlp[:, -1, :] if len(h_pre_mlp.shape) == 3 else h_pre_mlp)
             layer_attn_outs.append(attn_output[:, -1, :] if len(attn_output.shape) == 3 else attn_output)
@@ -771,14 +806,19 @@ def capture_mri(
             batch_attn_w.append(np.array(aw_row).astype(np.float16))
             if attn_scores is not None:
                 scores_np = np.array(attn_scores[:, :, token_pos, :]).astype(np.float32)
-                scores_np = np.clip(scores_np, -65504, 65504)  # float16 range
+                scores_np = np.clip(scores_np, -65504, 65504)
                 batch_attn_s.append(scores_np.astype(np.float16))
             else:
                 batch_attn_s.append(np.zeros((B, n_heads, T_seq), dtype=np.float16))
 
-            g, u = ops.mlp_internals(ly, h_pre_mlp)
-            batch_gates.append(g)
-            batch_ups.append(u)
+            if gate_val is not None:
+                gv = gate_val[:, -1, :] if len(gate_val.shape) == 3 else gate_val
+                uv = up_val[:, -1, :] if len(up_val.shape) == 3 else up_val
+                batch_gates.append(np.array(gv).astype(np.float16))
+                batch_ups.append(np.array(uv).astype(np.float16))
+            else:
+                batch_gates.append(None)
+                batch_ups.append(None)
 
             layer_entries.append(h[:, token_pos, :])
             layer_exits.append(h[:, -1, :])
