@@ -711,19 +711,13 @@ def capture_mri(
         entry_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16) for i in range(n_layers)}
         pre_mlp_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16) for i in range(n_layers)}
 
+    # Attn_out: mmap (hidden-sized, small per layer)
+    # Attn weights/logits: mmap (tiny per layer)
+    # Gate/up: NOT mmap (intermediate-sized, causes page thrashing on USB drives)
+    #          Written to disk after capture from in-memory accumulators
     if use_mmap:
-        mlp_mmap_dir = out_dir_alloc / "mlp"
-        mlp_mmap_dir.mkdir(exist_ok=True)
         attn_mmap_dir = out_dir_alloc / "attention"
         attn_mmap_dir.mkdir(exist_ok=True)
-        gate_arrays = {i: np.lib.format.open_memmap(
-            str(mlp_mmap_dir / f"L{i:02d}_gate.npy"),
-            mode='w+', dtype=np.float16, shape=(n_tokens, intermediate_size))
-            for i in range(n_layers)}
-        up_arrays = {i: np.lib.format.open_memmap(
-            str(mlp_mmap_dir / f"L{i:02d}_up.npy"),
-            mode='w+', dtype=np.float16, shape=(n_tokens, intermediate_size))
-            for i in range(n_layers)}
         attn_out_arrays = {i: np.lib.format.open_memmap(
             str(out_dir_alloc / f"L{i:02d}_attn_out.npy"),
             mode='w+', dtype=np.float16, shape=(n_tokens, hidden))
@@ -737,16 +731,16 @@ def capture_mri(
             mode='w+', dtype=np.float16, shape=(n_tokens, n_heads, T_seq))
             for i in range(n_layers)}
     else:
-        gate_arrays = {i: np.zeros((n_tokens, intermediate_size), dtype=np.float16)
-                       for i in range(n_layers)}
-        up_arrays = {i: np.zeros((n_tokens, intermediate_size), dtype=np.float16)
-                     for i in range(n_layers)}
         attn_out_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16)
                            for i in range(n_layers)}
         attn_weight_arrays = {i: np.zeros((n_tokens, n_heads, T_seq), dtype=np.float16)
                               for i in range(n_layers)}
         attn_logit_arrays = {i: np.zeros((n_tokens, n_heads, T_seq), dtype=np.float16)
                              for i in range(n_layers)}
+
+    # Gate/up: accumulate per-layer lists of batch arrays, write after capture
+    gate_chunks = {i: [] for i in range(n_layers)}
+    up_chunks = {i: [] for i in range(n_layers)}
 
     # Embedding gradient: d(top1_logit) / d(embedding)
     emb_grad_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16)
@@ -817,8 +811,8 @@ def capture_mri(
                 batch_gates.append(np.array(gv).astype(np.float16))
                 batch_ups.append(np.array(uv).astype(np.float16))
             else:
-                batch_gates.append(None)
-                batch_ups.append(None)
+                batch_gates.append(np.zeros((B, intermediate_size), dtype=np.float16))
+                batch_ups.append(np.zeros((B, intermediate_size), dtype=np.float16))
 
             layer_entries.append(h[:, token_pos, :])
             layer_exits.append(h[:, -1, :])
@@ -835,10 +829,8 @@ def capture_mri(
             attn_out_arrays[i][batch_start:batch_end] = all_attn_out[i].astype(np.float16)
             attn_weight_arrays[i][batch_start:batch_end] = batch_attn_w[i]
             attn_logit_arrays[i][batch_start:batch_end] = batch_attn_s[i]
-            if batch_gates[i] is not None:
-                gate_arrays[i][batch_start:batch_end] = batch_gates[i]
-            if batch_ups[i] is not None:
-                up_arrays[i][batch_start:batch_end] = batch_ups[i]
+            gate_chunks[i].append(batch_gates[i])
+            up_chunks[i].append(batch_ups[i])
 
         # Backward pass: embedding gradient
         emb_for_grad = ops.embed(inp)
@@ -958,17 +950,20 @@ def capture_mri(
                 attn_out_arrays[i].flush()
                 attn_weight_arrays[i].flush()
                 attn_logit_arrays[i].flush()
-                gate_arrays[i].flush()
-                up_arrays[i].flush()
         else:
             attn_dir.mkdir(exist_ok=True)
-            mlp_dir.mkdir(exist_ok=True)
             for i in range(n_layers):
                 np.save(out_dir / f"L{i:02d}_attn_out.npy", attn_out_arrays[i])
                 np.save(attn_dir / f"L{i:02d}_weights.npy", attn_weight_arrays[i])
                 np.save(attn_dir / f"L{i:02d}_logits.npy", attn_logit_arrays[i])
-                np.save(mlp_dir / f"L{i:02d}_gate.npy", gate_arrays[i])
-                np.save(mlp_dir / f"L{i:02d}_up.npy", up_arrays[i])
+
+        # Gate/up: concatenate chunks and write sequentially (no mmap pressure)
+        mlp_dir.mkdir(exist_ok=True)
+        for i in range(n_layers):
+            np.save(mlp_dir / f"L{i:02d}_gate.npy", np.concatenate(gate_chunks[i], axis=0))
+            np.save(mlp_dir / f"L{i:02d}_up.npy", np.concatenate(up_chunks[i], axis=0))
+            gate_chunks[i] = []  # free memory immediately
+            up_chunks[i] = []
         for i in range(n_layers):
             total_size += (out_dir / f"L{i:02d}_attn_out.npy").stat().st_size
             total_size += (attn_dir / f"L{i:02d}_weights.npy").stat().st_size
