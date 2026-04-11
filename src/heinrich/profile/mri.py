@@ -744,7 +744,9 @@ def capture_mri(
             aw_row = attn_w[:, :, token_pos, :]
             batch_attn_w.append(np.array(aw_row).astype(np.float16))
             if attn_scores is not None:
-                batch_attn_s.append(np.array(attn_scores[:, :, token_pos, :]).astype(np.float16))
+                scores_np = np.array(attn_scores[:, :, token_pos, :]).astype(np.float32)
+                scores_np = np.clip(scores_np, -65504, 65504)  # float16 range
+                batch_attn_s.append(scores_np.astype(np.float16))
             else:
                 batch_attn_s.append(np.zeros((B, n_heads, T_seq), dtype=np.float16))
 
