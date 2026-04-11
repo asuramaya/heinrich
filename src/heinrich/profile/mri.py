@@ -819,9 +819,9 @@ def capture_mri(
             layer_attn_outs.append(attn_output[:, -1, :] if len(attn_output.shape) == 3 else attn_output)
 
             aw_row = attn_w[:, :, token_pos, :]
-            batch_attn_w.append(np.array(aw_row).astype(np.float16))
+            batch_attn_w.append(np.array(aw_row.astype(ops.float32)).astype(np.float16))
             if attn_scores is not None:
-                scores_np = np.array(attn_scores[:, :, token_pos, :]).astype(np.float32)
+                scores_np = np.array(attn_scores[:, :, token_pos, :].astype(ops.float32)).astype(np.float32)
                 scores_np = np.clip(scores_np, -65504, 65504)
                 batch_attn_s.append(scores_np.astype(np.float16))
             else:
@@ -830,8 +830,11 @@ def capture_mri(
             if gate_val is not None:
                 gv = gate_val[:, -1, :] if len(gate_val.shape) == 3 else gate_val
                 uv = up_val[:, -1, :] if len(up_val.shape) == 3 else up_val
-                batch_gates.append(np.array(gv).astype(np.float16))
-                batch_ups.append(np.array(uv).astype(np.float16))
+                # MLX bfloat16 -> float32 -> numpy float16 (bfloat16 not supported by numpy)
+                gv_f32 = gv.astype(ops.float32) if hasattr(gv, 'astype') and not isinstance(gv, np.ndarray) else gv
+                uv_f32 = uv.astype(ops.float32) if hasattr(uv, 'astype') and not isinstance(uv, np.ndarray) else uv
+                batch_gates.append(np.array(gv_f32).astype(np.float16))
+                batch_ups.append(np.array(uv_f32).astype(np.float16))
             else:
                 batch_gates.append(np.zeros((B, intermediate_size), dtype=np.float16))
                 batch_ups.append(np.zeros((B, intermediate_size), dtype=np.float16))
