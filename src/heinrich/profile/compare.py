@@ -3298,6 +3298,142 @@ def layer_opposition(mri_path: str, *, n_sample: int | None = None) -> dict:
     }
 
 
+def cross_model(mri_paths: list[str], *, n_sample: int | None = None) -> dict:
+    """Cross-model comparison on shared vocabulary.
+
+    Matches tokens by decoded TEXT across models with different tokenizers.
+    Compares displacement, gradient, crystal activation on the shared set.
+    """
+    from .mri import load_mri
+    from scipy.stats import spearmanr
+
+    if len(mri_paths) < 2:
+        return {"error": "Need at least 2 MRI paths"}
+
+    # Load all MRIs and build text→index maps
+    mris = []
+    for p in mri_paths:
+        m = load_mri(p)
+        meta = m['metadata']
+        texts = [str(t) for t in m['token_texts']]
+        text_to_idx = {}
+        for i, t in enumerate(texts):
+            if t.strip() and t not in text_to_idx:
+                text_to_idx[t] = i
+        n_layers = meta['model']['n_layers']
+        # Unique label from directory structure (model_dir/mode.mri)
+        from pathlib import Path
+        pp = Path(p)
+        label = f"{pp.parent.name}/{pp.name.replace('.mri','')}"
+        mris.append({
+            "path": p,
+            "name": label,
+            "mri": m,
+            "text_to_idx": text_to_idx,
+            "n_layers": n_layers,
+        })
+
+    # Find shared vocabulary (tokens present in ALL models by text)
+    shared_texts = set(mris[0]["text_to_idx"].keys())
+    for mi in mris[1:]:
+        shared_texts &= set(mi["text_to_idx"].keys())
+    shared_texts = sorted(shared_texts)
+
+    if n_sample and n_sample < len(shared_texts):
+        rng = np.random.RandomState(42)
+        shared_texts = [shared_texts[i] for i in sorted(
+            rng.choice(len(shared_texts), n_sample, replace=False))]
+
+    n_shared = len(shared_texts)
+    if n_shared < 10:
+        return {"error": f"Only {n_shared} shared tokens"}
+
+    # Compute per-model displacement and gradient on shared set
+    model_data = []
+    for mi in mris:
+        m = mi["mri"]
+        idx = [mi["text_to_idx"][t] for t in shared_texts]
+        n_layers = mi["n_layers"]
+
+        exit_last = m[f"exit_L{n_layers - 1}"][idx].astype(np.float32)
+        displacements = np.linalg.norm(exit_last, axis=1)
+
+        from pathlib import Path
+        eg_path = Path(mi["path"]) / "embedding_grad.npy"
+        if eg_path.exists():
+            eg = np.load(eg_path)[idx].astype(np.float32)
+            grad_norms = np.linalg.norm(eg, axis=1)
+        else:
+            grad_norms = None
+
+        model_data.append({
+            "name": mi["name"],
+            "path": mi["path"],
+            "displacements": displacements,
+            "grad_norms": grad_norms,
+        })
+
+    # Pairwise comparisons
+    comparisons = []
+    for i in range(len(model_data)):
+        for j in range(i + 1, len(model_data)):
+            a, b = model_data[i], model_data[j]
+            disp_rho, _ = spearmanr(a["displacements"], b["displacements"])
+
+            entry = {
+                "model_a": a["name"],
+                "model_b": b["name"],
+                "displacement_rho": round(float(disp_rho), 4),
+            }
+
+            if a["grad_norms"] is not None and b["grad_norms"] is not None:
+                grad_rho, _ = spearmanr(a["grad_norms"], b["grad_norms"])
+                entry["gradient_rho"] = round(float(grad_rho), 4)
+
+            # Top shart overlap
+            top_n = min(100, n_shared // 5)
+            top_a = set(np.argsort(-a["displacements"])[:top_n])
+            top_b = set(np.argsort(-b["displacements"])[:top_n])
+            entry["top_overlap"] = len(top_a & top_b)
+            entry["top_n"] = top_n
+
+            comparisons.append(entry)
+
+    # Per-model stats on shared set
+    per_model = []
+    for md in model_data:
+        d = md["displacements"]
+        entry = {
+            "name": md["name"],
+            "mean_disp": round(float(d.mean()), 1),
+            "std_disp": round(float(d.std()), 1),
+        }
+        if md["grad_norms"] is not None:
+            entry["mean_grad"] = round(float(md["grad_norms"].mean()), 1)
+        per_model.append(entry)
+
+    # Shared shart examples: tokens with highest mean displacement across models
+    mean_disps = np.mean([md["displacements"] for md in model_data], axis=0)
+    top_shared = np.argsort(-mean_disps)[:20]
+    shared_sharts = []
+    for rank, si in enumerate(top_shared):
+        entry = {
+            "rank": rank + 1,
+            "token": shared_texts[si],
+        }
+        for k, md in enumerate(model_data):
+            entry[f"disp_{md['name']}"] = round(float(md["displacements"][si]), 1)
+        shared_sharts.append(entry)
+
+    return {
+        "n_shared": n_shared,
+        "n_models": len(mris),
+        "models": per_model,
+        "comparisons": comparisons,
+        "shared_sharts": shared_sharts,
+    }
+
+
 def shart_anatomy(mri_path: str, *, n_sample: int | None = None,
                    top_n: int = 100) -> dict:
     """What makes a shart a shart?

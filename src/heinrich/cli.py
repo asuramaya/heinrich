@@ -282,6 +282,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_shart.add_argument("--n-sample", type=int, default=None, help="Tokens to sample (default: all)")
     p_shart.add_argument("--top-n", type=int, default=20, help="Top/bottom N tokens to show (default: 20)")
 
+    p_cross = sub.add_parser("profile-cross-model", help="Compare models on shared vocabulary: displacement, gradient, shart overlap")
+    p_cross.add_argument("--mri", nargs="+", required=True, help="Two or more .mri directories to compare")
+    p_cross.add_argument("--n-sample", type=int, default=None, help="Max shared tokens (default: all)")
+
     p_regrad = sub.add_parser("mri-regrad", help="Recompute embedding gradients for existing MRIs (fixes tied-weight bug)")
     p_regrad.add_argument("--model", required=True, help="Model ID")
     p_regrad.add_argument("--mri", nargs="+", required=True, help="MRI directories to fix")
@@ -515,6 +519,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_retrieval_horizon(args)
     elif args.command == "profile-layer-opposition":
         _cmd_layer_opposition(args)
+    elif args.command == "profile-cross-model":
+        _cmd_cross_model(args)
     elif args.command == "mri-regrad":
         _cmd_mri_regrad(args)
     elif args.command == "profile-shart-anatomy":
@@ -2075,6 +2081,46 @@ def _cmd_layer_opposition(args: argparse.Namespace) -> None:
         print(f"  L{r['layer']:>3} {r['cos_mlp_attn']:>+8.4f} {r['mlp_norm']:>8.2f} "
               f"{r['attn_norm']:>8.2f} {r['delta_norm']:>8.2f} {r['cancellation']:>6.0%} "
               f"{r['relative_error']:>7.1%}")
+
+
+def _cmd_cross_model(args: argparse.Namespace) -> None:
+    """Compare models on shared vocabulary."""
+    from .profile.compare import cross_model
+
+    result = cross_model(args.mri, n_sample=args.n_sample)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Cross-Model Comparison: {result['n_shared']} shared tokens ===\n")
+
+    print(f"  Per-model stats:")
+    for m in result['models']:
+        grad = f"  grad={m.get('mean_grad', '?')}" if 'mean_grad' in m else ""
+        print(f"    {m['name']:<15} disp={m['mean_disp']:>8.1f} ±{m['std_disp']:<6.1f}{grad}")
+
+    print(f"\n  Pairwise comparisons:")
+    print(f"  {'A':<15} {'B':<15} {'disp_rho':>9} {'grad_rho':>9} {'overlap':>8}")
+    print(f"  {'-'*58}")
+    for c in result['comparisons']:
+        grad_r = f"{c.get('gradient_rho', ''):>9}" if 'gradient_rho' in c else "        —"
+        print(f"  {c['model_a']:<15} {c['model_b']:<15} {c['displacement_rho']:>+8.4f} "
+              f"{grad_r} {c['top_overlap']:>3}/{c['top_n']}")
+
+    print(f"\n  Top shared sharts (highest mean displacement):")
+    if result['shared_sharts']:
+        models = result['models']
+        header = "  " + f"{'#':>3} {'token':<20}"
+        for m in models:
+            header += f" {m['name']:>10}"
+        print(header)
+        print(f"  {'-'*(25 + 11*len(models))}")
+        for s in result['shared_sharts'][:15]:
+            line = f"  {s['rank']:>3} {s['token']:<20}"
+            for m in models:
+                key = f"disp_{m['name']}"
+                line += f" {s.get(key, 0):>10.1f}"
+            print(line)
 
 
 def _cmd_mri_regrad(args: argparse.Namespace) -> None:
