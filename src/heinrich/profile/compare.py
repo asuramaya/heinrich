@@ -3088,21 +3088,30 @@ def layer_opposition(mri_path: str, *, n_sample: int | None = None) -> dict:
 
         delta = exit_curr - exit_prev
 
-        # Derived attention: delta - mlp_out (should match stored attn_out)
-        attn_derived = delta - mlp_out
+        # For L0: delta = embedding + attn + mlp (embedding is the residual input)
+        if i == 0 and "embedding" in mri:
+            emb = np.array(mri["embedding"]).astype(np.float32)
+            sampled_tids = mri["token_ids"][idx]
+            emb_vecs = emb[sampled_tids]
+            recon = emb_vecs + attn + mlp_out
+            verification_err = float(np.abs(exit_curr - recon).mean())
+        else:
+            recon = attn + mlp_out
+            verification_err = float(np.abs(delta - recon).mean())
 
-        # Cosine between DIRECT mlp_out and stored attn_out
-        dot_ma = (mlp_out * attn).sum(axis=1)
         mn = np.linalg.norm(mlp_out, axis=1)
         an = np.linalg.norm(attn, axis=1)
+        delta_norm = np.linalg.norm(delta, axis=1)
+
+        # Cosine between MLP and attention output
+        dot_ma = (mlp_out * attn).sum(axis=1)
         cos_mlp_attn = float((dot_ma / (mn * an + 1e-8)).mean())
 
-        # Verification: does derived attn match stored attn?
-        attn_match = float(np.abs(attn - attn_derived).max())
+        # Relative verification error
+        rel_err = verification_err / max(float(delta_norm.mean()), 1e-8)
 
-        # Cancellation: how much of the larger component survives in the delta
+        # Cancellation
         larger_norm = np.maximum(mn, an)
-        delta_norm = np.linalg.norm(delta, axis=1)
         cancellation = float((1.0 - delta_norm / (larger_norm + 1e-8)).mean())
 
         layers.append({
@@ -3112,7 +3121,8 @@ def layer_opposition(mri_path: str, *, n_sample: int | None = None) -> dict:
             "attn_norm": round(float(an.mean()), 2),
             "delta_norm": round(float(delta_norm.mean()), 2),
             "cancellation": round(cancellation, 3),
-            "attn_verification_error": round(attn_match, 4),
+            "verification_error": round(verification_err, 4),
+            "relative_error": round(rel_err, 4),
         })
 
     return {

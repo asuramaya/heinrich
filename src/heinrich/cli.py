@@ -1997,12 +1997,12 @@ def _cmd_layer_opposition(args: argparse.Namespace) -> None:
         return
 
     print(f"\n=== Layer Opposition: {result['model']} ({result['mode']}) — {result['n_tokens']} tokens ===\n")
-    print(f"  {'layer':>5} {'cos(M,A)':>9} {'mlp':>8} {'attn':>8} {'delta':>8} {'cancel':>7} {'verify':>8}")
+    print(f"  {'layer':>5} {'cos(M,A)':>9} {'mlp':>8} {'attn':>8} {'delta':>8} {'cancel':>7} {'rel_err':>8}")
     print(f"  {'-'*57}")
     for r in result['layers']:
         print(f"  L{r['layer']:>3} {r['cos_mlp_attn']:>+8.4f} {r['mlp_norm']:>8.2f} "
               f"{r['attn_norm']:>8.2f} {r['delta_norm']:>8.2f} {r['cancellation']:>6.0%} "
-              f"{r['attn_verification_error']:>8.4f}")
+              f"{r['relative_error']:>7.1%}")
 
 
 def _cmd_shart_anatomy(args: argparse.Namespace) -> None:
