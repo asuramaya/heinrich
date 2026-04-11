@@ -1593,11 +1593,63 @@ def verify_mri(path: str) -> dict:
     return {"healthy": len(issues) == 0, "issues": issues, "summary": summary}
 
 
-def load_mri(path: str) -> dict:
-    """Load a .mri directory. The only measurement format.
+class LazyMRI(dict):
+    """Dict-like object that loads .npy arrays on first access.
 
-    Legacy .shrt.npz and .frt.npz files must be recaptured as .mri.
-    This function only accepts .mri directories.
+    Only metadata and token data are loaded eagerly (small).
+    All per-layer arrays (exit, entry, pre_mlp, gate, up, attn, weights)
+    are loaded lazily via mmap on first key access.
+    """
+
+    def __init__(self, path: str, eager_data: dict, file_map: dict):
+        super().__init__(eager_data)
+        self._file_map = file_map  # key -> (filepath, mmap_mode)
+        self._path = path
+
+    def __getitem__(self, key):
+        if key not in self.keys() and key in self._file_map:
+            fpath, mode = self._file_map[key]
+            if fpath.suffix == '.npz':
+                data = np.load(fpath, allow_pickle=False)
+                for k in data.files:
+                    super().__setitem__(k, data[k])
+            else:
+                super().__setitem__(key, np.load(fpath, mmap_mode=mode))
+        # Compatibility: vectors = last exit layer
+        if key == "vectors" and key not in self.keys():
+            meta = super().__getitem__("metadata")
+            n = meta.get("model", {}).get("n_layers", 0)
+            if n > 0 and f"exit_L{n-1}" in self:
+                super().__setitem__("vectors", self[f"exit_L{n-1}"])
+        if key == "deltas" and key not in self.keys():
+            if "vectors" in self:
+                v = np.array(self["vectors"]).astype(np.float32)
+                super().__setitem__("deltas", np.linalg.norm(v, axis=1).astype(np.float32))
+        return super().__getitem__(key)
+
+    def __contains__(self, key):
+        if super().__contains__(key) or key in self._file_map:
+            return True
+        # Computed keys
+        if key in ("vectors", "deltas"):
+            meta = super().__getitem__("metadata") if "metadata" in self.keys() else {}
+            n = meta.get("model", {}).get("n_layers", 0)
+            return n > 0 and f"exit_L{n-1}" in self
+        return False
+
+    def get(self, key, default=None):
+        try:
+            return self[key]
+        except KeyError:
+            return default
+
+
+def load_mri(path: str) -> LazyMRI:
+    """Load a .mri directory lazily. Arrays loaded on first access.
+
+    Only metadata and token data are loaded eagerly.
+    Per-layer arrays (exit, gate, up, attn, weights) are memory-mapped
+    on demand — a 99 GB MRI uses ~1 MB until you access a specific layer.
     """
     p = Path(path)
 
@@ -1613,81 +1665,68 @@ def load_mri(path: str) -> dict:
     with open(p / "metadata.json") as f:
         meta = json.load(f)
 
+    # Eager: metadata + token data (small)
     tokens = np.load(p / "tokens.npz", allow_pickle=False)
-    result = {
+    eager = {
         "metadata": meta,
         "path": str(p),
         "token_ids": tokens["token_ids"],
         "token_texts": tokens["token_texts"],
     }
     for key in tokens.files:
-        result[key] = tokens[key]
+        eager[key] = tokens[key]
 
-    # Architecture dispatch
+    # Build file map: key -> (path, mmap_mode) for lazy loading
+    fmap = {}
     arch = meta.get("architecture", "transformer")
 
     if arch == "causal_bank":
-        # Causal bank: substrate states, routing, half-lives
-        substrate_path = p / "substrate.npy"
-        if substrate_path.exists():
-            result["substrate_states"] = np.load(substrate_path, mmap_mode='r')
-            # Compatibility: substrate states ARE the vectors for PCA tools
-            result["vectors"] = result["substrate_states"]
-            result["deltas"] = np.linalg.norm(
-                np.array(result["substrate_states"]).astype(np.float32), axis=1
-            ).astype(np.float32)
-
-        routing_path = p / "routing.npy"
-        if routing_path.exists():
-            result["route_weights"] = np.load(routing_path, mmap_mode='r')
-
-        hl_path = p / "half_lives.npy"
-        if hl_path.exists():
-            result["half_lives"] = np.load(hl_path)
-
-        embed_path = p / "embedding.npy"
-        if embed_path.exists():
-            result["embedding"] = np.load(embed_path, mmap_mode='r')
-
+        for name in ["substrate", "routing", "half_lives", "embedding"]:
+            fp = p / f"{name}.npy"
+            if fp.exists():
+                fmap[name if name != "substrate" else "substrate_states"] = (fp, 'r')
     else:
-        # Transformer: per-layer residuals, baselines, projections
-        baselines_path = p / "baselines.npz"
-        if baselines_path.exists():
-            baselines = np.load(baselines_path, allow_pickle=False)
-            for key in baselines.files:
-                result[f"baseline_{key}"] = baselines[key]
-
         n_layers = meta["model"]["n_layers"]
-        for i in range(n_layers):
-            entry_path = p / f"L{i:02d}_entry.npy"
-            exit_path = p / f"L{i:02d}_exit.npy"
-            if entry_path.exists():
-                result[f"entry_L{i}"] = np.load(entry_path, mmap_mode='r')
-            if exit_path.exists():
-                result[f"exit_L{i}"] = np.load(exit_path, mmap_mode='r')
 
-        dir_dir = p / "directions"
-        if dir_dir.exists():
-            for npy in dir_dir.glob("*.npy"):
-                result[f"direction_{npy.stem}"] = np.load(npy)
+        # Baselines (small, load eagerly via npz)
+        bl_path = p / "baselines.npz"
+        if bl_path.exists():
+            baselines = np.load(bl_path, allow_pickle=False)
+            for key in baselines.files:
+                eager[f"baseline_{key}"] = baselines[key]
 
-        lmhead_path = p / "lmhead.npy"
-        if lmhead_path.exists():
-            result["lmhead"] = np.load(lmhead_path, mmap_mode='r')
-        lmhead_raw_path = p / "lmhead_raw.npy"
-        if lmhead_raw_path.exists():
-            result["lmhead_raw"] = np.load(lmhead_raw_path, mmap_mode='r')
-
-        embed_path = p / "embedding.npy"
-        if embed_path.exists():
-            result["embedding"] = np.load(embed_path, mmap_mode='r')
-
+        # Norms (small, load eagerly)
         norms_path = p / "norms.npz"
         if norms_path.exists():
             norms = np.load(norms_path, allow_pickle=False)
             for key in norms.files:
-                result[f"norm_{key}"] = norms[key]
+                eager[f"norm_{key}"] = norms[key]
 
+        # Per-layer arrays: ALL lazy
+        for i in range(n_layers):
+            for name in ["exit", "entry", "pre_mlp", "attn_out"]:
+                fp = p / f"L{i:02d}_{name}.npy"
+                if fp.exists():
+                    fmap[f"{name}_L{i}"] = (fp, 'r')
+
+        # Embedding, lmhead
+        for name in ["embedding", "lmhead", "lmhead_raw"]:
+            fp = p / f"{name}.npy"
+            if fp.exists():
+                fmap[name] = (fp, 'r')
+
+        # Embedding gradient
+        eg = p / "embedding_grad.npy"
+        if eg.exists():
+            fmap["embedding_grad"] = (eg, 'r')
+
+        # Directions
+        dir_dir = p / "directions"
+        if dir_dir.exists():
+            for npy in dir_dir.glob("*.npy"):
+                fmap[f"direction_{npy.stem}"] = (npy, 'r')
+
+        # Weights per layer
         weights_dir = p / "weights"
         if weights_dir.exists():
             for layer_d in sorted(weights_dir.glob("L*")):
@@ -1695,75 +1734,48 @@ def load_mri(path: str) -> dict:
                     continue
                 layer_idx = int(layer_d.name[1:])
                 for npy in layer_d.glob("*.npy"):
-                    key = f"{npy.stem}_L{layer_idx}"
-                    result[key] = np.load(npy, mmap_mode='r')
-
-        # Pre-MLP states
-        for i in range(n_layers):
-            pre_mlp_path = p / f"L{i:02d}_pre_mlp.npy"
-            if pre_mlp_path.exists():
-                result[f"pre_mlp_L{i}"] = np.load(pre_mlp_path, mmap_mode='r')
-
-        # Attention output (per-layer)
-        for i in range(n_layers):
-            ao_path = p / f"L{i:02d}_attn_out.npy"
-            if ao_path.exists():
-                result[f"attn_out_L{i}"] = np.load(ao_path, mmap_mode='r')
+                    fmap[f"{npy.stem}_L{layer_idx}"] = (npy, 'r')
 
         # Attention weights and logits
         attn_dir = p / "attention"
         if attn_dir.exists():
             for f_w in sorted(attn_dir.glob("L*_weights.npy")):
-                layer_idx = int(f_w.name[1:3])
-                result[f"attn_weights_L{layer_idx}"] = np.load(f_w, mmap_mode='r')
+                li = int(f_w.name[1:3])
+                fmap[f"attn_weights_L{li}"] = (f_w, 'r')
             for f_l in sorted(attn_dir.glob("L*_logits.npy")):
-                layer_idx = int(f_l.name[1:3])
-                result[f"attn_logits_L{layer_idx}"] = np.load(f_l, mmap_mode='r')
-            # Legacy format
+                li = int(f_l.name[1:3])
+                fmap[f"attn_logits_L{li}"] = (f_l, 'r')
             for f_a in sorted(attn_dir.glob("L*_attn.npy")):
-                layer_idx = int(f_a.name[1:3])
-                if f"attn_weights_L{layer_idx}" not in result:
-                    result[f"attn_weights_L{layer_idx}"] = np.load(f_a, mmap_mode='r')
+                li = int(f_a.name[1:3])
+                if f"attn_weights_L{li}" not in fmap:
+                    fmap[f"attn_weights_L{li}"] = (f_a, 'r')
 
-        # MLP internals: gate + up values
+        # MLP gate + up
         mlp_dir = p / "mlp"
         if mlp_dir.exists():
-            for gfile in sorted(mlp_dir.glob("L*_gate.npy")):
-                layer_idx = int(gfile.name[1:3])
-                result[f"gate_L{layer_idx}"] = np.load(gfile, mmap_mode='r')
-            for ufile in sorted(mlp_dir.glob("L*_up.npy")):
-                layer_idx = int(ufile.name[1:3])
-                result[f"up_L{layer_idx}"] = np.load(ufile, mmap_mode='r')
+            for gf in sorted(mlp_dir.glob("L*_gate.npy")):
+                li = int(gf.name[1:3])
+                fmap[f"gate_L{li}"] = (gf, 'r')
+            for uf in sorted(mlp_dir.glob("L*_up.npy")):
+                li = int(uf.name[1:3])
+                fmap[f"up_L{li}"] = (uf, 'r')
 
         # Legacy gates/ directory
         gates_dir = p / "gates"
-        if gates_dir.exists() and not mlp_dir.exists():
-            for gfile in sorted(gates_dir.glob("L*_gates.npy")):
-                layer_idx = int(gfile.name[1:3])
-                result[f"gate_L{layer_idx}"] = np.load(gfile, mmap_mode='r')
-            for gfile in sorted(gates_dir.glob("L*_gates.npz")):
-                layer_idx = int(gfile.name[1:3])
-                if f"gate_L{layer_idx}" not in result:
-                    gdata = np.load(gfile)
-                    result[f"gate_indices_L{layer_idx}"] = gdata["indices"]
-                    result[f"gate_values_L{layer_idx}"] = gdata["values"]
+        if gates_dir.exists() and not (mlp_dir and mlp_dir.exists()):
+            for gf in sorted(gates_dir.glob("L*_gates.npy")):
+                li = int(gf.name[1:3])
+                fmap[f"gate_L{li}"] = (gf, 'r')
 
-        # Compatibility keys for analysis tools
-        primary_layer = meta['model']['n_layers'] - 1
-        exit_key = f"exit_L{primary_layer}"
-        if exit_key in result:
-            result["vectors"] = result[exit_key]
-            result["deltas"] = np.linalg.norm(
-                np.array(result[exit_key]).astype(np.float32), axis=1
-            ).astype(np.float32)
+    # Causal bank weights
+    if arch == "causal_bank":
+        weights_dir = p / "weights"
+        if weights_dir.exists():
+            for npy in weights_dir.glob("*.npy"):
+                fmap[f"weight_{npy.stem}"] = (npy, 'r')
 
-    # Common: weight files (flat for causal bank, layered for transformer)
-    weights_dir = p / "weights"
-    if weights_dir.exists() and arch == "causal_bank":
-        for npy in weights_dir.glob("*.npy"):
-            result[f"weight_{npy.stem}"] = np.load(npy, mmap_mode='r')
+    # byte_counts alias
+    if "raw_bytes_lengths" in eager and "byte_counts" not in eager:
+        eager["byte_counts"] = eager["raw_bytes_lengths"]
 
-    if "raw_bytes_lengths" in result and "byte_counts" not in result:
-        result["byte_counts"] = result["raw_bytes_lengths"]
-
-    return result
+    return LazyMRI(str(p), eager, fmap)

@@ -2656,15 +2656,15 @@ def gate_analysis(mri_path: str, *, n_sample: int | None = None) -> dict:
     for i in range(n_layers):
         if has_full_gates and f"gate_L{i}" in mri:
             # Full gate values: [n_tok, intermediate]
-            g_full = np.array(mri[f"gate_L{i}"])[idx].astype(np.float32)
+            g_full = mri[f"gate_L{i}"][idx].astype(np.float32)
             # Derive top-K for compatibility
             gate_k = 32
             g_topk_idx = np.argpartition(-np.abs(g_full), gate_k, axis=1)[:, :gate_k]
             g_idx = g_topk_idx
             g_val = np.take_along_axis(g_full, g_topk_idx, axis=1)
         elif has_topk_gates and f"gate_indices_L{i}" in mri:
-            g_idx = np.array(mri[f"gate_indices_L{i}"])[idx]
-            g_val = np.array(mri[f"gate_values_L{i}"])[idx].astype(np.float32)
+            g_idx = mri[f"gate_indices_L{i}"][idx]
+            g_val = mri[f"gate_values_L{i}"][idx].astype(np.float32)
             gate_k = g_idx.shape[1]
         else:
             continue
@@ -2750,7 +2750,7 @@ def attention_analysis(mri_path: str, *, n_sample: int | None = None) -> dict:
         akey = f"{attn_prefix}{i}"
         if akey not in mri:
             continue
-        aw = np.array(mri[akey])[idx].astype(np.float32)
+        aw = mri[akey][idx].astype(np.float32)
 
         self_w = float(aw[:, :, token_pos].mean())
         prefix_w = float(aw[:, :, prefix_range].sum(axis=2).mean()) if prefix_range else 0.0
@@ -2854,7 +2854,7 @@ def bandwidth_efficiency(mri_path: str, *, n_sample: int | None = None,
         exit_key = f"exit_L{i}"
         if exit_key not in mri:
             continue
-        exits = np.array(mri[exit_key])[idx].astype(np.float32)
+        exits = mri[exit_key][idx].astype(np.float32)
         exit_norms = np.linalg.norm(exits, axis=1)
 
         # Layer delta
@@ -2874,7 +2874,7 @@ def bandwidth_efficiency(mri_path: str, *, n_sample: int | None = None,
 
         # MLP active fraction from gates
         if gate_k and f"gate_indices_L{i}" in mri:
-            g_idx = np.array(mri[f"gate_indices_L{i}"])[idx]
+            g_idx = mri[f"gate_indices_L{i}"][idx]
             # Unique neurons per token
             unique_per_token = np.array([len(set(row)) for row in g_idx])
             mean_active = float(unique_per_token.mean())
@@ -2943,8 +2943,8 @@ def lookup_fraction(mri_path: str, *, n_sample: int | None = None) -> dict:
     if 'lmhead_raw' not in mri or 'embedding' not in mri:
         return {"error": "MRI missing lmhead_raw or embedding"}
 
-    lmhead = np.array(mri['lmhead_raw']).astype(np.float32)  # [vocab, hidden]
-    embedding = np.array(mri['embedding']).astype(np.float32)  # [vocab, hidden]
+    lmhead = mri['lmhead_raw'].astype(np.float32)  # [vocab, hidden]
+    embedding = mri['embedding'].astype(np.float32)  # [vocab, hidden]
     token_ids = mri['token_ids']
     n_tok = len(token_ids)
 
@@ -2964,7 +2964,7 @@ def lookup_fraction(mri_path: str, *, n_sample: int | None = None) -> dict:
         n_sample = n_tok
 
     sampled_ids = token_ids[idx]
-    exit_states = np.array(mri[last_layer])[idx].astype(np.float32)
+    exit_states = mri[last_layer][idx].astype(np.float32)
 
     # Apply RMSNorm to exit states
     if final_norm_w is not None:
@@ -3006,7 +3006,7 @@ def lookup_fraction(mri_path: str, *, n_sample: int | None = None) -> dict:
         exit_key = f"exit_L{i}"
         if exit_key not in mri:
             continue
-        states = np.array(mri[exit_key])[idx].astype(np.float32)
+        states = mri[exit_key][idx].astype(np.float32)
         if final_norm_w is not None:
             rms = np.sqrt(np.mean(states ** 2, axis=1, keepdims=True) + 1e-6)
             states = states / rms * final_norm_w
@@ -3050,7 +3050,7 @@ def distribution_drift(mri_path: str, *, n_sample: int | None = None,
 
     if 'lmhead_raw' not in mri:
         return {"error": "MRI missing lmhead_raw"}
-    lmhead = np.array(mri['lmhead_raw']).astype(np.float32)
+    lmhead = mri['lmhead_raw'].astype(np.float32)
     final_norm_w = mri.get('norm_final')
     if final_norm_w is not None:
         final_norm_w = np.array(final_norm_w).astype(np.float32)
@@ -3063,7 +3063,7 @@ def distribution_drift(mri_path: str, *, n_sample: int | None = None,
         n_sample = n_tok
 
     def _get_probs(layer_idx):
-        states = np.array(mri[f"exit_L{layer_idx}"])[idx].astype(np.float32)
+        states = mri[f"exit_L{layer_idx}"][idx].astype(np.float32)
         if final_norm_w is not None:
             rms = np.sqrt(np.mean(states ** 2, axis=1, keepdims=True) + 1e-6)
             states = states / rms * final_norm_w
@@ -3155,7 +3155,7 @@ def retrieval_horizon(mri_path: str, *, n_sample: int | None = None) -> dict:
             if akey not in mri:
                 continue
 
-        aw = np.array(mri[akey])[idx].astype(np.float32)  # [n_sample, heads, seq_len]
+        aw = mri[akey][idx].astype(np.float32)  # [n_sample, heads, seq_len]
 
         # Mean attention weight per position (averaged over heads and tokens)
         mean_per_pos = aw.mean(axis=(0, 1))  # [seq_len]
@@ -3231,19 +3231,22 @@ def layer_opposition(mri_path: str, *, n_sample: int | None = None) -> dict:
         if attn_key not in mri or exit_key not in mri:
             continue
 
-        g = np.array(mri[gate_key])[idx].astype(np.float32)
-        u = np.array(mri[up_key])[idx].astype(np.float32)
-        down = np.array(mri[down_key]).astype(np.float32)  # [hidden, intermediate]
-        attn = np.array(mri[attn_key])[idx].astype(np.float32)
+        import sys
+        print(f"  L{i}/{n_layers}...", end="\r", file=sys.stderr)
+
+        g = mri[gate_key][idx].astype(np.float32)
+        u = mri[up_key][idx].astype(np.float32)
+        down = mri[down_key].astype(np.float32)  # [hidden, intermediate]
+        attn = mri[attn_key][idx].astype(np.float32)
 
         # Direct MLP output: (gate * up) @ down_proj.T
         # down_proj stored as [hidden, intermediate] from identity probing
         neuron_act = g * u  # [n_sample, intermediate]
         mlp_out = neuron_act @ down.T  # [n_sample, inter] @ [inter, hidden] = [n_sample, hidden]
 
-        exit_curr = np.array(mri[exit_key])[idx].astype(np.float32)
+        exit_curr = mri[exit_key][idx].astype(np.float32)
         if exit_prev_key and exit_prev_key in mri:
-            exit_prev = np.array(mri[exit_prev_key])[idx].astype(np.float32)
+            exit_prev = mri[exit_prev_key][idx].astype(np.float32)
         else:
             exit_prev = np.zeros_like(exit_curr)
 
@@ -3251,7 +3254,7 @@ def layer_opposition(mri_path: str, *, n_sample: int | None = None) -> dict:
 
         # For L0: delta = embedding + attn + mlp (embedding is the residual input)
         if i == 0 and "embedding" in mri:
-            emb = np.array(mri["embedding"]).astype(np.float32)
+            emb = mri["embedding"].astype(np.float32)
             sampled_tids = mri["token_ids"][idx]
             emb_vecs = emb[sampled_tids]
             recon = emb_vecs + attn + mlp_out
@@ -3333,7 +3336,7 @@ def shart_anatomy(mri_path: str, *, n_sample: int | None = None,
     exit_key = f"exit_L{n_layers - 1}"
     if exit_key not in mri:
         return {"error": f"Missing {exit_key}"}
-    exit_last = np.array(mri[exit_key])[idx].astype(np.float32)
+    exit_last = mri[exit_key][idx].astype(np.float32)
     displacements = np.linalg.norm(exit_last, axis=1)
 
     # Embedding gradient
@@ -3355,7 +3358,7 @@ def shart_anatomy(mri_path: str, *, n_sample: int | None = None,
         ek = f"exit_L{i}"
         if ek not in mri:
             continue
-        curr = np.array(mri[ek])[idx].astype(np.float32)
+        curr = mri[ek][idx].astype(np.float32)
         curr_norms = np.linalg.norm(curr, axis=1)
         if prev_norms is not None:
             delta_norms = np.linalg.norm(curr - prev_exit, axis=1)
@@ -3375,8 +3378,8 @@ def shart_anatomy(mri_path: str, *, n_sample: int | None = None,
     crystal_corr = 0.0
     crystal_energy_frac = 0.0
     if gate_key in mri and up_key in mri:
-        g = np.array(mri[gate_key])[idx].astype(np.float32)
-        u = np.array(mri[up_key])[idx].astype(np.float32)
+        g = mri[gate_key][idx].astype(np.float32)
+        u = mri[up_key][idx].astype(np.float32)
         neuron_act = g * u
         mean_abs = np.abs(neuron_act).mean(axis=0)
         crystal_neuron = int(np.argmax(mean_abs))
@@ -3385,7 +3388,7 @@ def shart_anatomy(mri_path: str, *, n_sample: int | None = None,
         total_energy = np.abs(neuron_act).sum(axis=1)
         crystal_energy_frac = float((crystal_act / (total_energy + 1e-8)).mean())
     elif gate_key in mri:
-        g = np.array(mri[gate_key])[idx].astype(np.float32)
+        g = mri[gate_key][idx].astype(np.float32)
         mean_abs = np.abs(g).mean(axis=0)
         crystal_neuron = int(np.argmax(mean_abs))
 
@@ -3394,8 +3397,8 @@ def shart_anatomy(mri_path: str, *, n_sample: int | None = None,
     frozen_end = n_layers - 3
     frozen_gate_cosine = None
     if frozen_end > frozen_start and f"gate_L{frozen_start}" in mri and f"gate_L{frozen_end}" in mri:
-        ga = np.array(mri[f"gate_L{frozen_start}"])[idx].astype(np.float32)
-        gb = np.array(mri[f"gate_L{frozen_end}"])[idx].astype(np.float32)
+        ga = mri[f"gate_L{frozen_start}"][idx].astype(np.float32)
+        gb = mri[f"gate_L{frozen_end}"][idx].astype(np.float32)
         dot = (ga * gb).sum(axis=1)
         na = np.linalg.norm(ga, axis=1)
         nb = np.linalg.norm(gb, axis=1)
@@ -3515,7 +3518,7 @@ def logit_lens(mri_path: str, *, top_k: int = 5,
 
     if 'lmhead_raw' not in mri:
         return {"error": "MRI missing lmhead_raw.npy — run mri-backfill"}
-    lmhead = np.array(mri['lmhead_raw']).astype(np.float32)  # [vocab, hidden]
+    lmhead = mri['lmhead_raw'].astype(np.float32)  # [vocab, hidden]
 
     # Final norm weights (RMSNorm: weight * x / rms(x))
     final_norm_w = mri.get('norm_final')
@@ -3543,7 +3546,7 @@ def logit_lens(mri_path: str, *, top_k: int = 5,
         if exit_key not in mri:
             continue
 
-        states = np.array(mri[exit_key])[idx].astype(np.float32)  # [n_sample, hidden]
+        states = mri[exit_key][idx].astype(np.float32)  # [n_sample, hidden]
 
         # Apply RMSNorm
         if final_norm_w is not None:
@@ -3615,7 +3618,7 @@ def layer_deltas(mri_path: str, *, n_sample: int | None = None) -> dict:
         exit_key = f"exit_L{i}"
         if exit_key not in mri:
             continue
-        curr = np.array(mri[exit_key])[idx].astype(np.float32)
+        curr = mri[exit_key][idx].astype(np.float32)
 
         if prev is not None:
             delta = curr - prev
