@@ -437,6 +437,49 @@ TOOLS = {
             "n_sample": {"type": "integer", "description": "Tokens to sample (default: 5000)"},
         },
     },
+    "heinrich_profile_shart_anatomy": {
+        "description": "What makes a shart: crystal neuron, gradient sensitivity, frozen zone, bandwidth analysis.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory path", "required": True},
+            "n_sample": {"type": "integer", "description": "Tokens to sample (default: all)"},
+            "top_n": {"type": "integer", "description": "Top/bottom N tokens to show (default: 20)"},
+        },
+    },
+    "heinrich_profile_lookup_fraction": {
+        "description": "How much is table lookup vs computation? Compares embedding prediction to full model prediction.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory path", "required": True},
+            "n_sample": {"type": "integer", "description": "Tokens to sample (default: 5000)"},
+        },
+    },
+    "heinrich_profile_bandwidth": {
+        "description": "Bandwidth efficiency: what fraction of model bytes do useful work per token?",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory path", "required": True},
+            "n_sample": {"type": "integer", "description": "Tokens to sample (default: 5000)"},
+        },
+    },
+    "heinrich_profile_layer_opposition": {
+        "description": "Do MLP and attention oppose? Direct MLP output from stored gate*up*down_proj vs attention output.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory path", "required": True},
+            "n_sample": {"type": "integer", "description": "Tokens to sample (default: 1000)"},
+        },
+    },
+    "heinrich_profile_distribution_drift": {
+        "description": "What do the frozen zone layers change? Distribution shift (KL, TVD, entropy) per layer.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory path", "required": True},
+            "n_sample": {"type": "integer", "description": "Tokens to sample (default: 1000)"},
+        },
+    },
+    "heinrich_profile_retrieval_horizon": {
+        "description": "How far back does the token look? Per-layer attention reach. Template mode only.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory path", "required": True},
+            "n_sample": {"type": "integer", "description": "Tokens to sample (default: 1000)"},
+        },
+    },
 }
 
 
@@ -585,6 +628,30 @@ class ToolServer:
                 optional={"n_sample": "--n-sample"}, timeout=300)
         if name == "heinrich_profile_pca_depth":
             return self._do_subprocess(arguments, "profile-pca-depth",
+                ["--mri", arguments["mri"]],
+                optional={"n_sample": "--n-sample"}, timeout=300)
+        if name == "heinrich_profile_shart_anatomy":
+            return self._do_subprocess(arguments, "profile-shart-anatomy",
+                ["--mri", arguments["mri"]],
+                optional={"n_sample": "--n-sample", "top_n": "--top-n"}, timeout=300)
+        if name == "heinrich_profile_lookup_fraction":
+            return self._do_subprocess(arguments, "profile-lookup-fraction",
+                ["--mri", arguments["mri"]],
+                optional={"n_sample": "--n-sample"}, timeout=300)
+        if name == "heinrich_profile_bandwidth":
+            return self._do_subprocess(arguments, "profile-bandwidth",
+                ["--mri", arguments["mri"]],
+                optional={"n_sample": "--n-sample"}, timeout=300)
+        if name == "heinrich_profile_layer_opposition":
+            return self._do_subprocess(arguments, "profile-layer-opposition",
+                ["--mri", arguments["mri"]],
+                optional={"n_sample": "--n-sample"}, timeout=300)
+        if name == "heinrich_profile_distribution_drift":
+            return self._do_subprocess(arguments, "profile-distribution-drift",
+                ["--mri", arguments["mri"]],
+                optional={"n_sample": "--n-sample"}, timeout=300)
+        if name == "heinrich_profile_retrieval_horizon":
+            return self._do_subprocess(arguments, "profile-retrieval-horizon",
                 ["--mri", arguments["mri"]],
                 optional={"n_sample": "--n-sample"}, timeout=300)
         return {"error": f"Unknown tool: {name}"}
