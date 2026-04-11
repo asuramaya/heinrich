@@ -1689,6 +1689,23 @@ def _cmd_mri_scan(args: argparse.Namespace) -> None:
     results = {}
     scan_start = _time.time()
 
+    # Phase 0: Tokenizer profile (once per model, shared by all modes)
+    tokenizer_path = model_dir / "tokenizer.npz"
+    if not tokenizer_path.exists():
+        print(f"\n--- Phase 0: Tokenizer Profile ---\n")
+        from .profile.frt import generate_frt
+        try:
+            frt_meta = generate_frt(backend.tokenizer, output=str(tokenizer_path))
+            print(f"  {frt_meta['tokenizer']['vocab_size']} tokens, "
+                  f"{frt_meta['tokenizer']['n_real']} real, "
+                  f"{frt_meta['tokenizer']['n_special']} special")
+            if frt_meta.get('system_prompt', {}).get('injected'):
+                print(f"  System prompt: {frt_meta['system_prompt']['default'][:60]}...")
+        except Exception as e:
+            print(f"  Tokenizer profile failed: {e}")
+    else:
+        print(f"\n--- Phase 0: Tokenizer profile exists ---\n")
+
     # Phase 1: Capture all modes
     print(f"\n--- Phase 1: Capture ---\n")
     for mode in modes:
