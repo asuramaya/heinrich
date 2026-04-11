@@ -738,9 +738,31 @@ def capture_mri(
         attn_logit_arrays = {i: np.zeros((n_tokens, n_heads, T_seq), dtype=np.float16)
                              for i in range(n_layers)}
 
-    # Gate/up: accumulate per-layer lists of batch arrays, write after capture
-    gate_chunks = {i: [] for i in range(n_layers)}
-    up_chunks = {i: [] for i in range(n_layers)}
+    # Gate/up: write per-batch to pre-allocated files (no mmap, no accumulation)
+    # Pre-allocate .npy files with correct headers, keep file handles open
+    gate_files = {}
+    up_files = {}
+    if output:
+        mlp_out_dir = Path(output) / "mlp"
+        mlp_out_dir.mkdir(parents=True, exist_ok=True)
+        for i in range(n_layers):
+            for name, store in [("gate", gate_files), ("up", up_files)]:
+                fpath = mlp_out_dir / f"L{i:02d}_{name}.npy"
+                # Write numpy header, then keep file open for batch writes
+                header = np.lib.format.header_data_from_array_1_0(
+                    np.zeros((n_tokens, intermediate_size), dtype=np.float16))
+                with open(fpath, 'wb') as f:
+                    np.lib.format.write_array_header_1_0(f, header)
+                store[i] = {"path": fpath, "header_size": 128}  # .npy v1 header is 128 bytes typically
+        # Measure actual header size from first file
+        _test_path = mlp_out_dir / "L00_gate.npy"
+        with open(_test_path, 'rb') as f:
+            np.lib.format.read_magic(f)
+            np.lib.format.read_array_header_1_0(f)
+            _header_bytes = f.tell()
+        for i in range(n_layers):
+            gate_files[i]["header_size"] = _header_bytes
+            up_files[i]["header_size"] = _header_bytes
 
     # Embedding gradient: d(top1_logit) / d(embedding)
     emb_grad_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16)
@@ -829,8 +851,16 @@ def capture_mri(
             attn_out_arrays[i][batch_start:batch_end] = all_attn_out[i].astype(np.float16)
             attn_weight_arrays[i][batch_start:batch_end] = batch_attn_w[i]
             attn_logit_arrays[i][batch_start:batch_end] = batch_attn_s[i]
-            gate_chunks[i].append(batch_gates[i])
-            up_chunks[i].append(batch_ups[i])
+            # Write gate/up batch directly to file (no memory accumulation)
+            if output and i in gate_files:
+                row_bytes = intermediate_size * 2  # float16
+                offset = gate_files[i]["header_size"] + batch_start * row_bytes
+                with open(gate_files[i]["path"], 'r+b') as f:
+                    f.seek(offset)
+                    f.write(batch_gates[i].tobytes())
+                with open(up_files[i]["path"], 'r+b') as f:
+                    f.seek(offset)
+                    f.write(batch_ups[i].tobytes())
 
         # Backward pass: embedding gradient
         emb_for_grad = ops.embed(inp)
@@ -957,13 +987,11 @@ def capture_mri(
                 np.save(attn_dir / f"L{i:02d}_weights.npy", attn_weight_arrays[i])
                 np.save(attn_dir / f"L{i:02d}_logits.npy", attn_logit_arrays[i])
 
-        # Gate/up: concatenate chunks and write sequentially (no mmap pressure)
-        mlp_dir.mkdir(exist_ok=True)
-        for i in range(n_layers):
-            np.save(mlp_dir / f"L{i:02d}_gate.npy", np.concatenate(gate_chunks[i], axis=0))
-            np.save(mlp_dir / f"L{i:02d}_up.npy", np.concatenate(up_chunks[i], axis=0))
-            gate_chunks[i] = []  # free memory immediately
-            up_chunks[i] = []
+        # Gate/up: already written per-batch during capture
+        if output:
+            for i in range(n_layers):
+                total_size += (mlp_dir / f"L{i:02d}_gate.npy").stat().st_size
+                total_size += (mlp_dir / f"L{i:02d}_up.npy").stat().st_size
         for i in range(n_layers):
             total_size += (out_dir / f"L{i:02d}_attn_out.npy").stat().st_size
             total_size += (attn_dir / f"L{i:02d}_weights.npy").stat().st_size
