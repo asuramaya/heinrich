@@ -3351,24 +3351,28 @@ def shart_anatomy(mri_path: str, *, n_sample: int | None = None,
         disp_grad_corr = None
 
     # Find peak amplification layer (crystal layer)
+    # Use a small subsample to avoid reading all layers at full size
+    amp_sample = idx[:min(500, len(idx))]
     max_amp_layer = 0
     max_amp = 0
-    prev_norms = None
+    prev_exit_s = None
+    prev_norms_mean_s = 0
+    import sys
     for i in range(n_layers):
         ek = f"exit_L{i}"
         if ek not in mri:
             continue
-        curr = mri[ek][idx].astype(np.float32)
-        curr_norms = np.linalg.norm(curr, axis=1)
-        if prev_norms is not None:
-            delta_norms = np.linalg.norm(curr - prev_exit, axis=1)
-            amp = delta_norms.mean() / max(prev_norms_mean, 1e-8)
+        print(f"  scanning L{i}/{n_layers}...", end="\r", file=sys.stderr)
+        curr_s = mri[ek][amp_sample].astype(np.float32)
+        curr_norms_s = np.linalg.norm(curr_s, axis=1)
+        if prev_exit_s is not None:
+            delta_norms_s = np.linalg.norm(curr_s - prev_exit_s, axis=1)
+            amp = delta_norms_s.mean() / max(prev_norms_mean_s, 1e-8)
             if amp > max_amp:
                 max_amp = amp
                 max_amp_layer = i
-        prev_exit = curr
-        prev_norms = curr_norms
-        prev_norms_mean = curr_norms.mean()
+        prev_exit_s = curr_s
+        prev_norms_mean_s = curr_norms_s.mean()
 
     # Crystal neuron at peak layer
     crystal_layer = max_amp_layer

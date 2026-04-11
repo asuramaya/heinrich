@@ -282,6 +282,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_shart.add_argument("--n-sample", type=int, default=None, help="Tokens to sample (default: all)")
     p_shart.add_argument("--top-n", type=int, default=20, help="Top/bottom N tokens to show (default: 20)")
 
+    p_regrad = sub.add_parser("mri-regrad", help="Recompute embedding gradients for existing MRIs (fixes tied-weight bug)")
+    p_regrad.add_argument("--model", required=True, help="Model ID")
+    p_regrad.add_argument("--mri", nargs="+", required=True, help="MRI directories to fix")
+
     p_bw = sub.add_parser("profile-bandwidth", help="Bandwidth efficiency: what fraction of model bytes do useful work per token?")
     p_bw.add_argument("--mri", required=True, help=".mri directory")
     p_bw.add_argument("--n-sample", type=int, default=5000, help="Tokens to sample (default: 5000)")
@@ -511,6 +515,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_retrieval_horizon(args)
     elif args.command == "profile-layer-opposition":
         _cmd_layer_opposition(args)
+    elif args.command == "mri-regrad":
+        _cmd_mri_regrad(args)
     elif args.command == "profile-shart-anatomy":
         _cmd_shart_anatomy(args)
     elif args.command == "profile-bandwidth":
@@ -2069,6 +2075,98 @@ def _cmd_layer_opposition(args: argparse.Namespace) -> None:
         print(f"  L{r['layer']:>3} {r['cos_mlp_attn']:>+8.4f} {r['mlp_norm']:>8.2f} "
               f"{r['attn_norm']:>8.2f} {r['delta_norm']:>8.2f} {r['cancellation']:>6.0%} "
               f"{r['relative_error']:>7.1%}")
+
+
+def _cmd_mri_regrad(args: argparse.Namespace) -> None:
+    """Recompute embedding gradients for existing MRIs."""
+    import time as _time
+    from pathlib import Path
+    from .backend.protocol import load_backend
+    from .profile.mri import _framework_ops, load_mri
+    import numpy as np
+
+    backend_name = 'auto'
+    if args.model.endswith('.checkpoint.pt'):
+        backend_name = 'decepticon'
+    backend = load_backend(args.model, backend=backend_name)
+    ops = _framework_ops(backend)
+    cfg = backend.config
+    hidden = cfg.hidden_size
+
+    for mri_path in args.mri:
+        p = Path(mri_path)
+        if not p.is_dir():
+            print(f"  SKIP: {mri_path} not a directory")
+            continue
+
+        m = load_mri(mri_path)
+        meta = m['metadata']
+        n_tok = meta['capture']['n_tokens']
+        mode = meta['capture']['mode']
+        token_pos = meta['capture'].get('token_pos', 0)
+        token_ids = m['token_ids']
+        T_seq = meta['capture'].get('seq_len', 1)
+
+        print(f"\n  Recomputing gradients: {p.name} ({mode}, {n_tok} tokens)")
+
+        # Build mask
+        mask = ops.triu_mask(T_seq) if T_seq > 1 else None
+
+        # Build input sequences (same logic as capture)
+        if mode == "template":
+            from .profile.shrt import _extract_template_parts
+            prefix_ids, suffix_ids = _extract_template_parts(backend.tokenizer)
+        else:
+            prefix_ids, suffix_ids = [], []
+
+        batch_size = 32
+        emb_grad = np.zeros((n_tok, hidden), dtype=np.float16)
+        t0 = _time.time()
+
+        # Rebuild token sample (same order as original capture)
+        vocab_size = backend.tokenizer.vocab_size
+        real_tokens = []
+        seen = set()
+        for tid in range(vocab_size):
+            tok = backend.tokenizer.decode([tid], skip_special_tokens=True,
+                                            clean_up_tokenization_spaces=False)
+            if tok.strip() and tok not in seen:
+                seen.add(tok)
+                real_tokens.append((tid, tok))
+
+        n_index = meta.get('provenance', {}).get('n_index')
+        if n_index and n_index < len(real_tokens):
+            import numpy as _np
+            rng = _np.random.RandomState(meta.get('provenance', {}).get('seed', 42))
+            idx = rng.choice(len(real_tokens), n_index, replace=False)
+            sample = [real_tokens[i] for i in sorted(idx)]
+        else:
+            sample = real_tokens
+
+        for batch_start in range(0, n_tok, batch_size):
+            batch_end = min(batch_start + batch_size, n_tok)
+            batch = sample[batch_start:batch_end]
+
+            if mode in ("raw", "naked"):
+                inp = ops.array([[tid] for tid, _ in batch])
+            else:
+                inp = ops.array([prefix_ids + [tid] + suffix_ids for tid, _ in batch])
+
+            emb = ops.embed(inp)
+            eg = ops.embedding_grad(emb, mask)
+            if len(eg.shape) == 3:
+                emb_grad[batch_start:batch_end] = eg[:, token_pos, :].astype(np.float16)
+            else:
+                emb_grad[batch_start:batch_end] = eg.astype(np.float16)
+
+            if (batch_end) % 1000 < batch_size or batch_end == n_tok:
+                elapsed = _time.time() - t0
+                rate = batch_end / max(elapsed, 0.01)
+                print(f"    {batch_end}/{n_tok} ({rate:.0f} tok/s)", end="\r")
+
+        np.save(p / "embedding_grad.npy", emb_grad)
+        elapsed = _time.time() - t0
+        print(f"    {n_tok} tokens, {elapsed:.0f}s — saved")
 
 
 def _cmd_shart_anatomy(args: argparse.Namespace) -> None:
