@@ -161,17 +161,39 @@ def _framework_ops(backend):
             return h_exit, weights, scores, h_pre_mlp, attn_out, _gate_val, _up_val
 
         def _mlx_embedding_grad(emb, mask):
-            """Gradient of top-1 logit w.r.t. embedding. One backward pass."""
-            def _fwd(emb):
-                h = emb
+            """Gradient of top-1 logit w.r.t. embedding. One backward pass.
+
+            CRITICAL: For tied-embedding models (embed_tokens.as_linear),
+            the embedding must be detached from the graph before computing
+            gradients. Otherwise the same weight matrix appears in both
+            the embed and lm_head paths, producing wrong gradients.
+            """
+            # Detach: break tied-weight graph by round-tripping through numpy
+            emb_detached = mx.array(np.array(emb.astype(mx.float32)))
+
+            # Find top-1 token (outside gradient graph)
+            h_probe = emb_detached
+            for ly in model_inner.layers:
+                h_probe = ly(h_probe, mask=mask, cache=None)
+            h_probe = _final_norm(h_probe) if _final_norm else h_probe
+            logits_probe = _lm_head(backend.model, h_probe)
+            top1 = mx.argmax(logits_probe[:, -1, :], axis=1)
+            mx.eval(top1)
+            top1_ids = np.array(top1).astype(np.int32).tolist()
+
+            # Gradient with fixed target (no argmax in backward graph)
+            def _fwd(e):
+                h = e
                 for ly in model_inner.layers:
                     h = ly(h, mask=mask, cache=None)
                 h = _final_norm(h) if _final_norm else h
                 logits = _lm_head(backend.model, h)
-                top1 = mx.argmax(logits[:, -1, :], axis=1)
-                return mx.sum(mx.take_along_axis(logits[:, -1, :], top1[:, None], axis=1))
+                # Fixed targets per batch item
+                selected = mx.take_along_axis(logits[:, -1, :], mx.array(top1_ids)[:, None], axis=1)
+                return mx.sum(selected)
+
             grad_fn = mx.grad(_fwd)
-            g = grad_fn(emb)
+            g = grad_fn(emb_detached)
             return np.array(g.astype(mx.float32))
 
         def _mlx_mlp_internals(ly, h_pre_mlp):
