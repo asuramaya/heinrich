@@ -265,6 +265,14 @@ def build_parser() -> argparse.ArgumentParser:
     p_lookup.add_argument("--mri", required=True, help=".mri directory")
     p_lookup.add_argument("--n-sample", type=int, default=5000, help="Tokens to sample (default: 5000)")
 
+    p_drift = sub.add_parser("profile-distribution-drift", help="What do the frozen zone whispers change? Distribution shift per layer")
+    p_drift.add_argument("--mri", required=True, help=".mri directory")
+    p_drift.add_argument("--n-sample", type=int, default=1000, help="Tokens to sample (default: 1000)")
+
+    p_horizon = sub.add_parser("profile-retrieval-horizon", help="How far back does the token look? Per-layer attention reach (template only)")
+    p_horizon.add_argument("--mri", required=True, help=".mri directory")
+    p_horizon.add_argument("--n-sample", type=int, default=1000, help="Tokens to sample (default: 1000)")
+
     p_opp = sub.add_parser("profile-layer-opposition", help="Do MLP and attention oppose? Direct MLP output from stored gate*up*down_proj")
     p_opp.add_argument("--mri", required=True, help=".mri directory")
     p_opp.add_argument("--n-sample", type=int, default=1000, help="Tokens to sample (default: 1000)")
@@ -497,6 +505,10 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_attention(args)
     elif args.command == "profile-lookup-fraction":
         _cmd_lookup_fraction(args)
+    elif args.command == "profile-distribution-drift":
+        _cmd_distribution_drift(args)
+    elif args.command == "profile-retrieval-horizon":
+        _cmd_retrieval_horizon(args)
     elif args.command == "profile-layer-opposition":
         _cmd_layer_opposition(args)
     elif args.command == "profile-shart-anatomy":
@@ -1985,6 +1997,43 @@ def _cmd_lookup_fraction(args: argparse.Namespace) -> None:
     print(f"  {'-'*14}")
     for r in result['by_layer']:
         print(f"  L{r['layer']:>3} {r['fraction']:>6.1%}")
+
+
+def _cmd_distribution_drift(args: argparse.Namespace) -> None:
+    """Distribution drift per layer."""
+    from .profile.compare import distribution_drift
+
+    result = distribution_drift(args.mri, n_sample=args.n_sample)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Distribution Drift: {result['model']} ({result['mode']}) — {result['n_tokens']} tokens ===\n")
+    print(f"  {'layer':>5} {'top1Δ':>6} {'KL':>10} {'TVD':>7} {'entropy':>8}")
+    print(f"  {'-'*40}")
+    for r in result['layers']:
+        print(f"  L{r['layer']:>3} {r['top1_changed']:>5.1%} {r['mean_kl']:>10.6f} "
+              f"{r['mean_tvd']:>7.4f} {r['mean_entropy']:>8.2f}")
+
+
+def _cmd_retrieval_horizon(args: argparse.Namespace) -> None:
+    """Retrieval horizon per layer."""
+    from .profile.compare import retrieval_horizon
+
+    result = retrieval_horizon(args.mri, n_sample=args.n_sample)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Retrieval Horizon: {result['model']} ({result['mode']}) — "
+          f"{result['n_tokens']} tokens, {result['n_heads']} heads, "
+          f"seq_len={result['seq_len']}, token_pos={result['token_pos']} ===\n")
+    print(f"  {'layer':>5} {'dist':>6} {'self%':>6} {'head peaks'}")
+    print(f"  {'-'*50}")
+    for r in result['layers']:
+        peaks = ', '.join(str(p) for p in r['head_peak_positions'])
+        print(f"  L{r['layer']:>3} {r['mean_retrieval_distance']:>+5.1f} "
+              f"{r['self_attention']:>5.1%} [{peaks}]")
 
 
 def _cmd_layer_opposition(args: argparse.Namespace) -> None:

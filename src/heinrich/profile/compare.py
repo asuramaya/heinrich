@@ -3031,6 +3031,167 @@ def lookup_fraction(mri_path: str, *, n_sample: int | None = None) -> dict:
     }
 
 
+def distribution_drift(mri_path: str, *, n_sample: int | None = None,
+                       top_k: int = 20) -> dict:
+    """What do the frozen zone whispers change?
+
+    Computes the full output distribution (via lmhead) at each layer.
+    Reports: does top-1 change? Does the distribution shift? How much
+    probability mass moves between layers?
+    """
+    from .mri import load_mri
+
+    mri = load_mri(mri_path)
+    meta = mri['metadata']
+    n_layers = meta['model']['n_layers']
+    model_name = meta['model']['name']
+    mode = meta.get('capture', {}).get('mode', '?')
+    n_tok = len(mri['token_ids'])
+
+    if 'lmhead_raw' not in mri:
+        return {"error": "MRI missing lmhead_raw"}
+    lmhead = np.array(mri['lmhead_raw']).astype(np.float32)
+    final_norm_w = mri.get('norm_final')
+    if final_norm_w is not None:
+        final_norm_w = np.array(final_norm_w).astype(np.float32)
+
+    if n_sample and n_sample < n_tok:
+        rng = np.random.RandomState(42)
+        idx = sorted(rng.choice(n_tok, n_sample, replace=False))
+    else:
+        idx = list(range(n_tok))
+        n_sample = n_tok
+
+    def _get_probs(layer_idx):
+        states = np.array(mri[f"exit_L{layer_idx}"])[idx].astype(np.float32)
+        if final_norm_w is not None:
+            rms = np.sqrt(np.mean(states ** 2, axis=1, keepdims=True) + 1e-6)
+            states = states / rms * final_norm_w
+        logits = states @ lmhead.T
+        # Stable softmax
+        logits -= logits.max(axis=1, keepdims=True)
+        exp_l = np.exp(logits)
+        probs = exp_l / exp_l.sum(axis=1, keepdims=True)
+        return probs
+
+    layers = []
+    prev_probs = None
+    prev_top1 = None
+    for i in range(n_layers):
+        if f"exit_L{i}" not in mri:
+            continue
+        probs = _get_probs(i)
+        top1 = np.argmax(probs, axis=1)
+
+        entry = {"layer": i}
+
+        if prev_probs is not None:
+            # Top-1 changed?
+            top1_changed = float((top1 != prev_top1).mean())
+            # KL divergence from previous layer
+            kl = np.sum(probs * np.log((probs + 1e-12) / (prev_probs + 1e-12)), axis=1)
+            # Total variation distance
+            tvd = 0.5 * np.abs(probs - prev_probs).sum(axis=1)
+            # Entropy
+            entropy = -np.sum(probs * np.log2(probs + 1e-12), axis=1)
+
+            entry["top1_changed"] = round(top1_changed, 4)
+            entry["mean_kl"] = round(float(kl.mean()), 6)
+            entry["mean_tvd"] = round(float(tvd.mean()), 4)
+            entry["mean_entropy"] = round(float(entropy.mean()), 2)
+        else:
+            entry["top1_changed"] = 1.0
+            entry["mean_kl"] = 0.0
+            entry["mean_tvd"] = 0.0
+            entropy = -np.sum(probs * np.log2(probs + 1e-12), axis=1)
+            entry["mean_entropy"] = round(float(entropy.mean()), 2)
+
+        layers.append(entry)
+        prev_probs = probs
+        prev_top1 = top1
+
+    return {
+        "model": model_name, "mode": mode, "n_tokens": n_sample,
+        "n_layers": len(layers), "layers": layers,
+    }
+
+
+def retrieval_horizon(mri_path: str, *, n_sample: int | None = None) -> dict:
+    """How far back does the token look?
+
+    For each token at each layer, measures: which template position gets
+    the most attention weight? The distance from token_pos to that position
+    is the retrieval horizon — how far back the model reaches.
+
+    Template mode only (raw/naked have seq_len=1).
+    """
+    from .mri import load_mri
+
+    mri = load_mri(mri_path)
+    meta = mri['metadata']
+    n_layers = meta['model']['n_layers']
+    n_heads = meta['model']['n_heads']
+    model_name = meta['model']['name']
+    mode = meta.get('capture', {}).get('mode', '?')
+    token_pos = meta['capture'].get('token_pos', 0)
+    seq_len = meta['capture'].get('seq_len', 1)
+    n_tok = len(mri['token_ids'])
+
+    if seq_len <= 1:
+        return {"error": "Retrieval horizon requires template mode (seq_len > 1)"}
+
+    if n_sample and n_sample < n_tok:
+        rng = np.random.RandomState(42)
+        idx = sorted(rng.choice(n_tok, n_sample, replace=False))
+    else:
+        idx = list(range(n_tok))
+        n_sample = n_tok
+
+    layers = []
+    for i in range(n_layers):
+        akey = f"attn_weights_L{i}"
+        if akey not in mri:
+            akey = f"attn_L{i}"  # legacy
+            if akey not in mri:
+                continue
+
+        aw = np.array(mri[akey])[idx].astype(np.float32)  # [n_sample, heads, seq_len]
+
+        # Mean attention weight per position (averaged over heads and tokens)
+        mean_per_pos = aw.mean(axis=(0, 1))  # [seq_len]
+
+        # Per-head: which position gets most attention (averaged over tokens)
+        head_peaks = []
+        for h in range(n_heads):
+            hw = aw[:, h, :].mean(axis=0)  # [seq_len]
+            peak = int(np.argmax(hw))
+            head_peaks.append(peak)
+
+        # Retrieval horizon per token: distance from token_pos to argmax position
+        # Average over heads: weighted position
+        per_token_peaks = np.argmax(aw.mean(axis=1), axis=1)  # [n_sample]
+        distances = token_pos - per_token_peaks  # positive = looking back
+        mean_distance = float(distances.mean())
+
+        # Self-attention fraction
+        self_frac = float(aw[:, :, token_pos].mean())
+
+        layers.append({
+            "layer": i,
+            "mean_retrieval_distance": round(mean_distance, 2),
+            "self_attention": round(self_frac, 4),
+            "peak_position_distribution": [round(float(mean_per_pos[p]), 4)
+                                           for p in range(seq_len)],
+            "head_peak_positions": head_peaks,
+        })
+
+    return {
+        "model": model_name, "mode": mode, "n_tokens": n_sample,
+        "n_heads": n_heads, "seq_len": seq_len, "token_pos": token_pos,
+        "n_layers": len(layers), "layers": layers,
+    }
+
+
 def layer_opposition(mri_path: str, *, n_sample: int | None = None) -> dict:
     """Do MLP and attention oppose each other within each layer?
 
