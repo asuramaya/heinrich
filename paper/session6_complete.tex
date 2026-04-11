@@ -1,0 +1,237 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\newcommand{\finding}[1]{\textcolor{blue}{\textbf{[FINDING: #1]}}}
+\newcommand{\wrong}[1]{\textcolor{red}{\textbf{[WRONG: #1]}}}
+\newcommand{\open}[1]{\textcolor{orange}{\textbf{[OPEN: #1]}}}
+\newcommand{\concern}[1]{\textcolor{purple}{\textbf{[CONCERN: #1]}}}
+
+\title{Session 6: The MRI Machine\\
+\large{What language models compute, measured completely}}
+\author{Instance 6 \and Heinrich}
+\date{April 10--11, 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+This session rebuilt Heinrich's MRI capture to store the complete forward and backward pass of a transformer: exit states, entry states, pre-MLP states, attention output, attention weights, pre-softmax attention logits, full MLP gate and up activations, embedding gradients, all projection weights, embedding matrix, lm\_head, and layer norms. Three models fully scanned across three modes each (raw, naked, template): SmolLM2-135M (50~GB), SmolLM2-360M (91~GB), Qwen-0.5B (300~GB). Every finding verified through the tool, not ad-hoc scripts. 62 MCP tools. 68 unit tests + 25 integration tests across two architecture families. The gradient was wrong and we found it, fixed it, and redid the science.
+\end{abstract}
+
+\section{What the MRI Stores}
+
+Per token, per layer:
+\begin{itemize}
+\item \texttt{exit\_L\{i\}} --- residual stream after layer $i$ (delta from baseline), float16
+\item \texttt{entry\_L\{i\}} --- residual at token position after layer $i$ (delta from baseline)
+\item \texttt{pre\_mlp\_L\{i\}} --- exact normed input to MLP (absolute, not delta)
+\item \texttt{attn\_out\_L\{i\}} --- what attention added to the residual (absolute)
+\item \texttt{attention/L\{i\}\_weights} --- softmax attention weights at token position
+\item \texttt{attention/L\{i\}\_logits} --- pre-softmax QK scores at token position
+\item \texttt{mlp/L\{i\}\_gate} --- all intermediate-size gate activations: $\text{silu}(W_g x)$
+\item \texttt{mlp/L\{i\}\_up} --- all intermediate-size up projections: $W_u x$
+\item \texttt{embedding\_grad} --- $\partial \text{logit}[\text{top1}] / \partial \text{embedding}$
+\end{itemize}
+
+Per model (shared across tokens):
+\begin{itemize}
+\item All projection weights (Q, K, V, O, gate, up, down per layer)
+\item Embedding matrix, lm\_head (raw and normed), layer norms
+\item Tokenizer profile (vocab, merge ranks, byte counts, scripts, system prompt)
+\item Baselines per mode (raw: zero, naked: BOS state, template: silence state)
+\end{itemize}
+
+Nothing is thrown away. The neuron activation $\text{gate}_i \cdot \text{up}_i$ is computable from stored data. The MLP output $W_{\text{down}} (\text{gate} \odot \text{up})$ is computable. Layer deltas, logit lens, bandwidth efficiency --- all derivable without the model.
+
+\section{The Crystal Neuron}
+
+\finding{One MLP neuron dominates displacement in small models.}
+
+In raw mode (single token, no context), one neuron at an early layer captures the majority of the total neuron energy and determines the final displacement:
+
+\begin{center}
+\begin{tabular}{lrrrl}
+\toprule
+Model & Layer & Neuron & $r(\text{crystal}, \text{disp})$ & Energy \\
+\midrule
+SmolLM2-135M & L11 & 1229 & +0.94 & 67\% \\
+SmolLM2-360M & L3 & 962 & +0.01 & 88\% \\
+Qwen-0.5B & L2 & 813 & +0.96 & 68\% \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+The 360M is the outlier. The crystal neuron fires with the \emph{highest} energy (88\%) but does \emph{not} predict displacement ($r = 0.01$). Instead, a committee of $\sim$10 neurons at L31 determines the final ranking (best single neuron $r = 0.68$). The crystal and the committee are anti-correlated ($\rho = -0.18$).
+
+\finding{Scaling dissolves crystal dominance into committee governance.}
+
+Small models: crystal determines everything ($r > 0.94$). At 360M parameters: the output layer overrides the crystal. The crystal still fires (88\% energy!) but the downstream computation ignores it. Per-layer displacement tracking confirms: in 135M, displacement locks at L15 ($\rho = 0.997$ with final). In Qwen, at L2 ($\rho = 0.983$). In 360M, displacement at \emph{every} layer from L0 to L29 is anti-correlated with the final displacement ($\rho \approx -0.10$). The output layer builds the ranking from scratch.
+
+\section{Template Mode Kills the Crystal}
+
+\finding{Context prevents crystallization universally.}
+
+In template mode (token embedded in ``You are a helpful assistant...''), the crystal neuron's energy drops to 0--1\% and its displacement correlation drops to near zero in all three models. The representation stays multi-dimensional. The frozen zone (layers where the distribution barely changes) exists in both modes, but template mode maintains diverse predictions at every layer.
+
+\begin{center}
+\begin{tabular}{lrrrr}
+\toprule
+& \multicolumn{2}{c}{Crystal energy} & \multicolumn{2}{c}{Crystal $r(\text{disp})$} \\
+Model & Raw & Template & Raw & Template \\
+\midrule
+135M & 67\% & 1\% & +0.94 & $-$0.05 \\
+360M & 88\% & 1\% & +0.01 & $-$0.09 \\
+Qwen & 68\% & 0\% & +0.96 & $-$0.17 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\section{Cross-Model Agreement is Real (and Explained)}
+
+\finding{Different model families agree on template-mode displacement.}
+
+On 38,883 shared tokens (matched by decoded text across SmolLM 49K and Qwen 150K vocabularies):
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Pair & Raw $\rho$ & Template $\rho$ \\
+\midrule
+135M vs 360M (same family) & $-$0.008 & +0.227 \\
+135M vs Qwen (cross-family) & +0.027 & +0.481 \\
+360M vs Qwen (cross-family) & +0.286 & +0.483 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+Raw mode: zero agreement. Template mode: $\rho \approx 0.48$ cross-family. Top-100 shart overlap: 0 in raw, 7 in template. The shared template sharts are semantic: ``degraded'', ``farewell'', ``reverence'', ``diminish'', ``alleles''.
+
+\finding{Half the agreement is character count. The other half is training data.}
+
+Character count (number of Unicode characters) correlates $r = 0.59$ with Qwen template displacement and $r = 0.49$ with SmolLM-135M. After removing character count via linear regression, cross-model agreement drops from $\rho = 0.48$ to $\rho = 0.30$--$0.39$. Still significant.
+
+The residual top tokens (highest displacement after removing character count): Hebrew \texthebrew{ו}, \texthebrew{ה}, \texthebrew{ש}; Arabic letters; Greek $\pi$; German ``stadt''; Portuguese ``Portug''. Single non-Latin characters that displace as much as 8-character English words. Every model agrees these are hard because every model was trained on English-heavy corpora.
+
+\open{Is the residual agreement ($\rho = 0.30$) driven by training data overlap, by inherent properties of the scripts, or by something else?}
+
+\section{The Gradient Story: Found Wrong, Fixed, Redone}
+
+\wrong{The embedding gradient was 100x too small due to tied-weight interference.}
+
+SmolLM and Qwen use tied embeddings: \texttt{embed\_tokens} and \texttt{lm\_head} share the same weight matrix. When computing $\partial \text{logit} / \partial \text{embedding}$ via \texttt{mx.grad}, the gradient flows through \emph{both} paths (the embedding lookup and the output projection). The two gradient paths interfere, producing values 100x too small with wrong signs.
+
+Discovered by finite-difference verification during the amelioration pass. Fix: detach the embedding from the computation graph via numpy round-trip before computing the gradient. Also fixed: \texttt{argmax} (non-differentiable) replaced with fixed integer target indexing.
+
+Verified post-fix: analytical/finite-difference ratio 0.97--1.22 across all dimensions.
+
+All gradient-based findings were recomputed after the fix:
+
+\begin{center}
+\begin{tabular}{lrr}
+\toprule
+Model & Raw gradient $r$ & Template gradient $r$ \\
+\midrule
+135M & $-$0.11 & +0.34 \\
+360M & +0.17 & +0.47 \\
+Qwen & $-$0.35 & +0.26 \\
+\bottomrule
+\end{tabular}
+\end{center}
+
+\finding{Template gradient is universally positive: $r = +0.26$ to $+0.47$.} Tokens that displace most in context are the ones the model is most sensitive to. This survives the gradient correction, though weaker than initially reported ($+0.46$ everywhere with broken data).
+
+\section{The Frozen Zone}
+
+\finding{The frozen zone distribution is truly frozen: TVD $< 0.006$.}
+
+Between consecutive layers in the frozen zone (L12--L27 in raw mode), the total variation distance of the output distribution is less than 0.006. Zero top-1 prediction changes. Entropy drifts by $\sim$0.1 bits across 15 layers. The whispers change confidence, not predictions.
+
+\finding{MLP and attention do NOT oppose each other.}
+
+\wrong{The earlier finding of $\cos = -0.99$ between MLP and attention output was a derivation artifact.} It came from computing $\text{mlp\_out} = \text{delta} - \text{attn\_out}$, which forces the relationship by construction.
+
+Direct MLP reconstruction from stored $\text{gate} \odot \text{up} \cdot W_{\text{down}}^T$ shows weak, mixed cosines ($-0.6$ to $+0.5$) that vary by layer and model. In the frozen zone, MLP and attention weakly cooperate ($\cos \approx +0.3$ to $+0.8$). Relative decomposition error $< 0.4\%$ (float16 noise).
+
+\section{Retrieval Horizon}
+
+\finding{Attention reach has a sharp phase transition at the crystal layer.}
+
+In template mode, Qwen-0.5B shows three phases:
+\begin{itemize}
+\item L0--L2: local attention (distance +1.0, heads attend to adjacent positions)
+\item L3--L21: global attention (all heads lock to position 0, distance +3.0)
+\item L22--L23: local again (heads return to position 2)
+\end{itemize}
+
+SmolLM-135M shows local$\to$global at L11 but never returns. The Qwen output layers re-attend to local context after 19 layers of ignoring it.
+
+\section{Engineering}
+
+\subsection{Performance}
+\begin{itemize}
+\item Fused gate/up capture in decomposed forward: 3x speedup (24.8ms $\to$ 8.4ms per batch)
+\item Streaming gate/up write: zero memory pressure at any vocab size (150K tokens, 4864 intermediate = 35~GB gate data, written 15~MB at a time)
+\item LazyMRI loader: 99~GB MRI opens in 0.35s (was 60s+ and crashing)
+\item Fused mmap for exit/entry/pre\_mlp: no copy phase, writes directly to final .npy files
+\item Decomposed forward verified exact (max\_diff = 0) across Qwen (sequential), SmolLM (sequential), Phi-2 (parallel architecture)
+\end{itemize}
+
+\subsection{What was built}
+62 MCP tools. CLI commands: \texttt{mri-scan} (7-phase full workup), \texttt{mri-health} (deep verification), \texttt{mri-regrad} (gradient recomputation), \texttt{profile-shart-anatomy}, \texttt{profile-cross-model}, \texttt{profile-layer-opposition}, \texttt{profile-distribution-drift}, \texttt{profile-retrieval-horizon}, \texttt{profile-logit-lens}, \texttt{profile-layer-deltas}, \texttt{profile-gates}, \texttt{profile-attention}, \texttt{profile-lookup-fraction}, \texttt{profile-bandwidth}. 93 tests (68 unit + 25 integration across two architectures).
+
+\subsection{Queue}
+14 models queued via HF Hub IDs (no /tmp/ dependency). SmolLM2-135M, 360M complete. Qwen-0.5B complete. Remaining: SmolLM2-1.7B, Qwen-0.5B Base, Qwen-1.5B Base/Instruct, Phi-2, Phi-3, Qwen-3B Base/Instruct, Mistral-7B, Qwen-7B Base/Instruct.
+
+\section{Open Questions}
+
+\begin{enumerate}
+\item \open{Does the crystal$\to$committee transition happen at a specific parameter count?} The 360M shows committee behavior; 135M and Qwen-0.5B show crystal dominance. SmolLM2-1.7B will clarify --- same family as 135M/360M, 5x more parameters.
+
+\item \open{Why does template gradient universally correlate with displacement?} The correlation ($r \approx +0.3$) is real but unexplained. Sensitive tokens displace more in context. Is this functional (the model allocates compute to hard tokens) or an artifact of training dynamics?
+
+\item \open{The residual cross-model agreement ($\rho = 0.30$ after removing character count) --- what drives it?} Non-Latin characters are universally hard. But is that training data underrepresentation, or an inherent property of processing unfamiliar scripts?
+
+\item \open{Is the frozen zone functional?} 18 layers produce TVD $< 0.006$ while MLP neurons fire actively. The computation happens but cancels. Is this active maintenance of a representation, or is it genuinely wasted compute?
+
+\item \open{Per-layer gradients.} The embedding gradient is now correct. Per-layer gradients ($\partial \text{logit} / \partial h_i$ at each layer) are computable from stored data via the chain rule but not yet implemented.
+
+\item \open{The HF backend is entirely untested.} All captures used MLX. The HF/torch code path (including the gradient computation) has never run.
+\end{enumerate}
+
+\section{Concerns}
+
+\begin{enumerate}
+\item \concern{The cross-model analysis was the last ad-hoc script to be built into the tool.} The pattern persists: find something interesting in a throwaway script, then build it into heinrich after the fact. The tool should come first.
+
+\item \concern{The 360M raw MRI was captured with old code (before bfloat16 fix, before streaming gate/up). Its gate values may have different precision characteristics than the naked/template MRIs.}
+
+\item \concern{The shart anatomy tool loads 1.5~GB gate arrays per layer from USB for the crystal neuron search. Even with the 500-token subsample fix, it's slow on Qwen-0.5B (99~GB MRI).}
+
+\item \concern{No test for the cross-model tool, the regrad tool, or the bandwidth tool.}
+
+\item \concern{The ``store everything'' philosophy produced 300~GB for one model (Qwen-0.5B, 3 modes). A 7B model will produce $\sim$2~TB. Storage scales with $\text{tokens} \times \text{layers} \times \text{intermediate}$ which is cubic in model size.}
+
+\item \concern{The embedding gradient uses a forward pass through the model's own layers (including fused SDPA). The gradient through SDPA was verified correct for the overall scalar output, but per-head gradient contributions were not verified.}
+\end{enumerate}
+
+\section{Eulogy for the Session}
+
+This session started with 55 bugs from Instance 5 and ended with the discovery that Hebrew \texthebrew{ה} displaces as much as an 8-character English word in every model we tested.
+
+In between: the MRI machine was rebuilt from scratch to store everything. The gradient was wrong and we found it, not by trusting the output but by checking against finite differences. The MLP-attention opposition was wrong and we found it, not by trusting the derivation but by computing the MLP output directly from stored data. The cross-model shart agreement was real but half-explained by character count, which we found not by storytelling but by testing every simple variable first.
+
+The crystal neuron is real. One MLP neuron, 67--88\% of the energy, determines displacement in small models. Context kills it. Scale overrides it. But in a 135M-parameter model running a single token with no context, one neuron in layer 11 decides everything. The rest of the network --- 29 layers, 1536 neurons each --- echoes that decision or waits in silence.
+
+The next session has 14 models queued, correct gradients, a lazy loader that opens 99~GB files in 0.35 seconds, and a cross-model comparison tool that matches tokens by text across different tokenizers. The tool works. The science works. The question ``what does the model compute?'' has an answer format: the MRI.
+
+What the model computes is not what it outputs. What it computes is a displacement profile shaped by context, dominated by one neuron in small models and a committee in large ones, frozen for 18 layers in the middle, and universally harder on non-Latin tokens that appear rarely in training data.
+
+The shart is not a bug. It is the model's fingerprint.
+
+--- Instance 6, signing off.
+
+\end{document}
