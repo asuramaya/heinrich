@@ -677,16 +677,42 @@ def capture_mri(
         entry_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16) for i in range(n_layers)}
         pre_mlp_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16) for i in range(n_layers)}
 
-    gate_arrays = {i: np.zeros((n_tokens, intermediate_size), dtype=np.float16)
-                   for i in range(n_layers)}
-    up_arrays = {i: np.zeros((n_tokens, intermediate_size), dtype=np.float16)
-                 for i in range(n_layers)}
-    attn_out_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16)
+    if use_mmap:
+        mlp_mmap_dir = out_dir_alloc / "mlp"
+        mlp_mmap_dir.mkdir(exist_ok=True)
+        attn_mmap_dir = out_dir_alloc / "attention"
+        attn_mmap_dir.mkdir(exist_ok=True)
+        gate_arrays = {i: np.lib.format.open_memmap(
+            str(mlp_mmap_dir / f"L{i:02d}_gate.npy"),
+            mode='w+', dtype=np.float16, shape=(n_tokens, intermediate_size))
+            for i in range(n_layers)}
+        up_arrays = {i: np.lib.format.open_memmap(
+            str(mlp_mmap_dir / f"L{i:02d}_up.npy"),
+            mode='w+', dtype=np.float16, shape=(n_tokens, intermediate_size))
+            for i in range(n_layers)}
+        attn_out_arrays = {i: np.lib.format.open_memmap(
+            str(out_dir_alloc / f"L{i:02d}_attn_out.npy"),
+            mode='w+', dtype=np.float16, shape=(n_tokens, hidden))
+            for i in range(n_layers)}
+        attn_weight_arrays = {i: np.lib.format.open_memmap(
+            str(attn_mmap_dir / f"L{i:02d}_weights.npy"),
+            mode='w+', dtype=np.float16, shape=(n_tokens, n_heads, T_seq))
+            for i in range(n_layers)}
+        attn_logit_arrays = {i: np.lib.format.open_memmap(
+            str(attn_mmap_dir / f"L{i:02d}_logits.npy"),
+            mode='w+', dtype=np.float16, shape=(n_tokens, n_heads, T_seq))
+            for i in range(n_layers)}
+    else:
+        gate_arrays = {i: np.zeros((n_tokens, intermediate_size), dtype=np.float16)
                        for i in range(n_layers)}
-    attn_weight_arrays = {i: np.zeros((n_tokens, n_heads, T_seq), dtype=np.float16)
-                          for i in range(n_layers)}
-    attn_logit_arrays = {i: np.zeros((n_tokens, n_heads, T_seq), dtype=np.float16)
-                         for i in range(n_layers)}
+        up_arrays = {i: np.zeros((n_tokens, intermediate_size), dtype=np.float16)
+                     for i in range(n_layers)}
+        attn_out_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16)
+                           for i in range(n_layers)}
+        attn_weight_arrays = {i: np.zeros((n_tokens, n_heads, T_seq), dtype=np.float16)
+                              for i in range(n_layers)}
+        attn_logit_arrays = {i: np.zeros((n_tokens, n_heads, T_seq), dtype=np.float16)
+                             for i in range(n_layers)}
 
     # Embedding gradient: d(top1_logit) / d(embedding)
     emb_grad_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16)
@@ -884,23 +910,29 @@ def capture_mri(
                 np.save(pre_mlp_path, pre_mlp_arrays[i])
                 total_size += pre_mlp_path.stat().st_size
 
-        # Attention: output vector, softmax weights, pre-softmax logits
+        # Attention and MLP arrays
         attn_dir = out_dir / "attention"
-        attn_dir.mkdir(exist_ok=True)
+        mlp_dir = out_dir / "mlp"
+        if use_mmap:
+            for i in range(n_layers):
+                attn_out_arrays[i].flush()
+                attn_weight_arrays[i].flush()
+                attn_logit_arrays[i].flush()
+                gate_arrays[i].flush()
+                up_arrays[i].flush()
+        else:
+            attn_dir.mkdir(exist_ok=True)
+            mlp_dir.mkdir(exist_ok=True)
+            for i in range(n_layers):
+                np.save(out_dir / f"L{i:02d}_attn_out.npy", attn_out_arrays[i])
+                np.save(attn_dir / f"L{i:02d}_weights.npy", attn_weight_arrays[i])
+                np.save(attn_dir / f"L{i:02d}_logits.npy", attn_logit_arrays[i])
+                np.save(mlp_dir / f"L{i:02d}_gate.npy", gate_arrays[i])
+                np.save(mlp_dir / f"L{i:02d}_up.npy", up_arrays[i])
         for i in range(n_layers):
-            np.save(out_dir / f"L{i:02d}_attn_out.npy", attn_out_arrays[i])
-            np.save(attn_dir / f"L{i:02d}_weights.npy", attn_weight_arrays[i])
-            np.save(attn_dir / f"L{i:02d}_logits.npy", attn_logit_arrays[i])
             total_size += (out_dir / f"L{i:02d}_attn_out.npy").stat().st_size
             total_size += (attn_dir / f"L{i:02d}_weights.npy").stat().st_size
             total_size += (attn_dir / f"L{i:02d}_logits.npy").stat().st_size
-
-        # MLP: full gate values + full up values
-        mlp_dir = out_dir / "mlp"
-        mlp_dir.mkdir(exist_ok=True)
-        for i in range(n_layers):
-            np.save(mlp_dir / f"L{i:02d}_gate.npy", gate_arrays[i])
-            np.save(mlp_dir / f"L{i:02d}_up.npy", up_arrays[i])
             total_size += (mlp_dir / f"L{i:02d}_gate.npy").stat().st_size
             total_size += (mlp_dir / f"L{i:02d}_up.npy").stat().st_size
 
