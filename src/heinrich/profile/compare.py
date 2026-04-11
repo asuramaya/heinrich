@@ -3031,6 +3031,99 @@ def lookup_fraction(mri_path: str, *, n_sample: int | None = None) -> dict:
     }
 
 
+def layer_opposition(mri_path: str, *, n_sample: int | None = None) -> dict:
+    """Do MLP and attention oppose each other within each layer?
+
+    Computes MLP output DIRECTLY from stored gate * up * down_proj (no derivation).
+    Computes attention output from stored attn_out.
+    Reports cosine between them, norms, and cancellation ratio.
+    """
+    from .mri import load_mri
+
+    mri = load_mri(mri_path)
+    meta = mri['metadata']
+    n_layers = meta['model']['n_layers']
+    hidden = meta['model']['hidden_size']
+    model_name = meta['model']['name']
+    mode = meta.get('capture', {}).get('mode', '?')
+    n_tok = len(mri['token_ids'])
+
+    if n_sample and n_sample < n_tok:
+        rng = np.random.RandomState(42)
+        idx = sorted(rng.choice(n_tok, n_sample, replace=False))
+    else:
+        idx = list(range(n_tok))
+        n_sample = n_tok
+
+    layers = []
+    for i in range(n_layers):
+        # Need: gate, up, down_proj, attn_out, exit delta
+        gate_key = f"gate_L{i}"
+        up_key = f"up_L{i}"
+        down_key = f"down_proj_L{i}"
+        attn_key = f"attn_out_L{i}"
+        exit_key = f"exit_L{i}"
+        exit_prev_key = f"exit_L{i-1}" if i > 0 else None
+
+        if gate_key not in mri or up_key not in mri or down_key not in mri:
+            continue
+        if attn_key not in mri or exit_key not in mri:
+            continue
+
+        g = np.array(mri[gate_key])[idx].astype(np.float32)
+        u = np.array(mri[up_key])[idx].astype(np.float32)
+        down = np.array(mri[down_key]).astype(np.float32)  # [hidden, intermediate]
+        attn = np.array(mri[attn_key])[idx].astype(np.float32)
+
+        # Direct MLP output: (gate * up) @ down_proj.T
+        # down_proj stored as [hidden, intermediate] from identity probing
+        neuron_act = g * u  # [n_sample, intermediate]
+        mlp_out = neuron_act @ down.T  # [n_sample, inter] @ [inter, hidden] = [n_sample, hidden]
+
+        exit_curr = np.array(mri[exit_key])[idx].astype(np.float32)
+        if exit_prev_key and exit_prev_key in mri:
+            exit_prev = np.array(mri[exit_prev_key])[idx].astype(np.float32)
+        else:
+            exit_prev = np.zeros_like(exit_curr)
+
+        delta = exit_curr - exit_prev
+
+        # Derived attention: delta - mlp_out (should match stored attn_out)
+        attn_derived = delta - mlp_out
+
+        # Cosine between DIRECT mlp_out and stored attn_out
+        dot_ma = (mlp_out * attn).sum(axis=1)
+        mn = np.linalg.norm(mlp_out, axis=1)
+        an = np.linalg.norm(attn, axis=1)
+        cos_mlp_attn = float((dot_ma / (mn * an + 1e-8)).mean())
+
+        # Verification: does derived attn match stored attn?
+        attn_match = float(np.abs(attn - attn_derived).max())
+
+        # Cancellation: how much of the larger component survives in the delta
+        larger_norm = np.maximum(mn, an)
+        delta_norm = np.linalg.norm(delta, axis=1)
+        cancellation = float((1.0 - delta_norm / (larger_norm + 1e-8)).mean())
+
+        layers.append({
+            "layer": i,
+            "cos_mlp_attn": round(cos_mlp_attn, 4),
+            "mlp_norm": round(float(mn.mean()), 2),
+            "attn_norm": round(float(an.mean()), 2),
+            "delta_norm": round(float(delta_norm.mean()), 2),
+            "cancellation": round(cancellation, 3),
+            "attn_verification_error": round(attn_match, 4),
+        })
+
+    return {
+        "model": model_name,
+        "mode": mode,
+        "n_tokens": n_sample,
+        "n_layers": len(layers),
+        "layers": layers,
+    }
+
+
 def shart_anatomy(mri_path: str, *, n_sample: int | None = None,
                    top_n: int = 100) -> dict:
     """What makes a shart a shart?

@@ -265,6 +265,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_lookup.add_argument("--mri", required=True, help=".mri directory")
     p_lookup.add_argument("--n-sample", type=int, default=5000, help="Tokens to sample (default: 5000)")
 
+    p_opp = sub.add_parser("profile-layer-opposition", help="Do MLP and attention oppose? Direct MLP output from stored gate*up*down_proj")
+    p_opp.add_argument("--mri", required=True, help=".mri directory")
+    p_opp.add_argument("--n-sample", type=int, default=1000, help="Tokens to sample (default: 1000)")
+
     p_shart = sub.add_parser("profile-shart-anatomy", help="What makes a shart: crystal neuron, gradient sensitivity, frozen zone, bandwidth")
     p_shart.add_argument("--mri", required=True, help=".mri directory")
     p_shart.add_argument("--n-sample", type=int, default=None, help="Tokens to sample (default: all)")
@@ -493,6 +497,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_attention(args)
     elif args.command == "profile-lookup-fraction":
         _cmd_lookup_fraction(args)
+    elif args.command == "profile-layer-opposition":
+        _cmd_layer_opposition(args)
     elif args.command == "profile-shart-anatomy":
         _cmd_shart_anatomy(args)
     elif args.command == "profile-bandwidth":
@@ -1979,6 +1985,24 @@ def _cmd_lookup_fraction(args: argparse.Namespace) -> None:
     print(f"  {'-'*14}")
     for r in result['by_layer']:
         print(f"  L{r['layer']:>3} {r['fraction']:>6.1%}")
+
+
+def _cmd_layer_opposition(args: argparse.Namespace) -> None:
+    """MLP vs attention opposition per layer."""
+    from .profile.compare import layer_opposition
+
+    result = layer_opposition(args.mri, n_sample=args.n_sample)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Layer Opposition: {result['model']} ({result['mode']}) — {result['n_tokens']} tokens ===\n")
+    print(f"  {'layer':>5} {'cos(M,A)':>9} {'mlp':>8} {'attn':>8} {'delta':>8} {'cancel':>7} {'verify':>8}")
+    print(f"  {'-'*57}")
+    for r in result['layers']:
+        print(f"  L{r['layer']:>3} {r['cos_mlp_attn']:>+8.4f} {r['mlp_norm']:>8.2f} "
+              f"{r['attn_norm']:>8.2f} {r['delta_norm']:>8.2f} {r['cancellation']:>6.0%} "
+              f"{r['attn_verification_error']:>8.4f}")
 
 
 def _cmd_shart_anatomy(args: argparse.Namespace) -> None:
