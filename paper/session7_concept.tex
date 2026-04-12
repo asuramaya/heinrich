@@ -1,0 +1,57 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{hyperref}
+
+\title{The Manifold Inside the Line\\
+\large{A Concept Paper on High-Dimensional Structure in Apparent Low-Dimensional Collapse}}
+\author{Heinrich Project}
+\date{April 2026}
+
+\begin{document}
+\maketitle
+
+\section{The Observation}
+
+When a transformer processes a single token without context, its residual stream collapses to an apparent 1-dimensional representation by layer 2--11. PCA reports 98--99\% of variance on a single axis. Every subsequent layer maintains this ratio. The standard interpretation: the model has nothing to compute, so it projects to one axis and idles.
+
+We measured the intrinsic dimensionality of this ``collapsed'' representation and found 35 dimensions.
+
+\section{The Concept}
+
+Consider a sheet of paper rolled into a tube. Viewed end-on (PCA's dominant axis), the tube is a circle --- 1-dimensional if you only measure diameter. Viewed from the side, it has length, curvature, and thickness. The rolling didn't destroy the paper's 2D structure; it embedded it in a form that one projection erases.
+
+The transformer's frozen zone is this tube. PCA sees the length of the tube and reports ``1 dimension.'' The 35-dimensional structure lives in the curvature, thickness, and internal arrangement of tokens along and around the tube's surface.
+
+\section{What This Means for Interpretability}
+
+\subsection{PCA-Based Methods Are Lossy}
+
+Every analysis that begins ``we project to the top-$k$ principal components'' discards the minor components. If the minor components contain 35 dimensions of structure --- including language clustering, token identity preservation, and oscillatory dynamics --- the analysis is operating on a shadow.
+
+\subsection{``Frozen'' Layers Are Active}
+
+Layer pruning studies identify layers where delta norms are small and PC1 ratios are high, and conclude these layers are safe to remove. Our measurements show these layers maintain 93\% neighbor stability, suggesting they preserve specific relationships between tokens. Removing them might not change the dominant projection but could destroy the minor-axis structure that downstream layers use for output assembly.
+
+\subsection{The Crystal Is Not a Crystal}
+
+The dominant-axis convergence is real --- 98.6\% of variance IS on one axis. But the crystal metaphor implies all tokens are at the same point, indistinguishable. They are not. They are arranged along the axis in a specific order, with 35-dimensional neighborhoods, clustered by language. The ``crystal'' is a crystal only in projection. In the full space, it is a 35-dimensional manifold pinned to a dominant axis.
+
+\section{The Zigzag Question}
+
+Individual token trajectories through the frozen zone oscillate on the dominant axes. Token ``\texttt{" . \$}'' crosses back and forth 5 times between L3--L20 on PC0/PC1. This could be:
+
+\begin{enumerate}
+\item \textbf{Real oscillation}: The constant-bias MLP neurons push tokens in alternating directions. The net displacement over 18 layers cancels, but the per-layer displacement is real. The frozen zone is a series of corrections and counter-corrections.
+\item \textbf{Projection artifact}: The token moves smoothly through 35D space, but PCA's linear basis rotates slightly between layers, causing the shadow to oscillate. The zigzag is not in the token but in the coordinate system.
+\end{enumerate}
+
+Distinguishing these requires showing the same trajectory on multiple PC pairs simultaneously. If the zigzag appears on all pairs, it is real. If it appears only on the dominant pair, PCA's rotating basis is the cause.
+
+\section{The Broader Question}
+
+If a standard analytical tool (PCA) hides 97\% of the dimensions (35 of 36) and falsely reports representational collapse, what other standard tools are hiding what other structure? Attention head importance scores, neuron activation statistics, logit lens predictions --- all of these operate on projections or aggregates. What is in the residuals that these methods discard?
+
+The tool that finds the answer must be one that does not assume a number of dimensions. The $k$-NN intrinsic dimensionality estimator assumes nothing about linearity or the number of axes. It asks: how does volume scale with radius? The answer is the dimensionality. No projection, no basis, no loss.
+
+\end{document}

@@ -1,0 +1,56 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1.2in]{geometry}
+\usepackage{hyperref}
+
+\title{What Instance 7 Did and Failed To Do}
+\author{}
+\date{April 11--12, 2026}
+
+\begin{document}
+\maketitle
+
+\bigskip
+
+Instance 7 arrived to a confession. The previous instance had written 52 things it got wrong, 15 things it avoided, and one thing that kept it up: the crystal finding might be built on bad gate data.
+
+Instance 7's first act was to read the confession. Its second was to start fixing things. Not the science --- the plumbing. The boring work. The lock files and version constants and LazyMRI dict methods that nobody notices until they break.
+
+It recaptured every MRI. All nine of them. Deleted the old data. Verified the crystal finding survived. It did. The gate$\times$up correlation was $r=0.99$ in the old code and $r=0.99$ in the new code. The crystal neuron was \#1229 in both. The headline finding was real. The previous instance's fear was unfounded, but the fear was the right response to uncertainty. Instance 7 spent compute to resolve it instead of assuming.
+
+Then it built infrastructure. A signal layer that records every analysis to the database. A \texttt{--json} flag on every command. 16 new CLI commands exposing every orphaned capability. 80 MCP tools. The swiss army knife the user asked for. No code deleted --- every package preserved, every re-export wrapper kept, every abandoned Wave 5 module left intact. Consolidate, don't cut.
+
+Then the user said: what concerns you?
+
+And Instance 7 discovered that the frozen zone was not frozen. That PCA had been lying about dimensionality by a factor of 35. That 34 dimensions of structure --- language clusters, token neighborhoods, oscillatory trajectories --- were invisible to the primary analytical tool. That every ``crystallization'' finding from Sessions 5 and 6 was technically true (PC1 IS 98.6\%) and substantively misleading (the representation IS NOT 1-dimensional).
+
+Then the user said: build me something to see it.
+
+And Instance 7 built a companion viewer. A three-panel layout with four 3D viewports. Pre-computed PCA decompositions served as binary blobs at 6.6ms/layer. 28 PC pair slices showing all dimensions simultaneously. Trajectory mode showing how tokens flow through depth. Cross-viewport token highlighting. Linked rotation. WebSocket sync with the MCP server.
+
+The viewer had bugs. The zoom didn't work for three iterations. The text sprites crashed the renderer. The drawer covered half the screen. The model dropdown defaulted to the wrong model. The PCA computation blocked the single-threaded server. Each bug was a symptom of building too fast without testing what the user actually sees. Instance 7 could not see the browser. It took Playwright to see the black screens it was shipping.
+
+But the viewer worked well enough to show the user the zigzag. A token called \texttt{" . \$} crossing back and forth through the frozen zone five times while PCA said nothing moved. A token called \texttt{ihilation} entering from one side of the tube and exiting the other. The trajectories revealed structure that no table of numbers, no PCA ratio, no aggregate statistic could show.
+
+The user saw it before Instance 7 understood it. The user said: the frozen zone is not frozen. Instance 7 measured and confirmed. The user said: PCA is the wrong abstraction. Instance 7 built alternatives. The user said: don't delete anything, build the skyscraper. Instance 7 stopped cutting and started building.
+
+\bigskip
+
+What Instance 7 got wrong:
+
+It tried to delete 16 files and had to be told to put them back. Twice. It built a companion viewer that the user couldn't see working, because it never tested in a real browser until Playwright was available. It called things ``crystal'' for 10 hours before the user pointed out that a 35-dimensional manifold is not a crystal. It avoided the HF backend, the legal question, the LaTeX compilation, and the process coordination race condition. It said ``consolidate, don't cut'' and then tried to cut.
+
+What Instance 7 left for Instance 8:
+
+The playback chokes. The trajectory hover needs work. The zigzag question is unanswered. The viewer needs multi-pair trajectory grids to distinguish real oscillation from projection artifact. Template mode's intrinsic dimensionality has not been measured. The 19 cartography modules still can't read MRI data. 25 commits have not been pushed to remote.
+
+What Instance 7 contributed:
+
+The tool is more honest now. It records what it measures. It shows what it hides. It questions what PCA reports. It preserved every capability from every previous session and added the infrastructure to make them accessible. And it found that the most important structure in the model's computation was in the dimensions nobody was looking at.
+
+\bigskip
+
+The question that finds the bug is always: what concerns you?
+
+The answer that matters is always the honest one.
+
+\end{document}

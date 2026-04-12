@@ -1,0 +1,61 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{enumitem}
+\usepackage{xcolor}
+\usepackage{hyperref}
+
+\newcommand{\pri}[1]{\textcolor{red}{\textbf{P0:}} #1}
+\newcommand{\sec}[1]{\textcolor{orange}{\textbf{P1:}} #1}
+\newcommand{\ter}[1]{\textcolor{blue}{\textbf{P2:}} #1}
+
+\title{Session 8 Exit Plan}
+\author{Instance 7}
+\date{April 12, 2026}
+
+\begin{document}
+\maketitle
+
+\section{Companion Viewer}
+
+\begin{enumerate}[label=\arabic*.]
+\item \pri{Fix playback choke. Linked rotation sync fires per frame during playback. Disable sync during play, or throttle to 1 sync per 100ms.}
+\item \pri{Ctrl-click to toggle viewport rotation linking. Colored marker shows linked state. Default: linked. Ctrl-click: independent.}
+\item \sec{Multi-pair trajectory grid. Show 4--8 trajectory viewports with different PC pairs for the same token set. Test whether zigzag is projection artifact.}
+\item \sec{n as percentage of model vocabulary. Server computes \texttt{n\_sample = int(n\_pct / 100 * n\_tok)}.}
+\item \sec{Token text rendering on zoom. When camera distance $< 1.0$, show token text as sprites at point positions. Cap at 200 sprites for performance.}
+\item \ter{Axis tick labels on viewport edges instead of text labels.}
+\item \ter{Auto-rotate option (slow continuous rotation for presentations).}
+\item \ter{Screenshot/export button for the current viewport state.}
+\end{enumerate}
+
+\section{Science}
+
+\begin{enumerate}[label=\arabic*.]
+\item \pri{Is the zigzag real? Show the same token's trajectory on PC0/1, PC2/3, PC4/5, PC6/7 simultaneously. If zigzag appears on all pairs, it's real oscillation. If only on dominant pair, it's projection artifact.}
+\item \pri{What do the 35 hidden dimensions encode? Run the intrinsic dimensionality measurement on template mode. If template mode also has 35 dimensions, the hidden structure is inherent to the representation, not an artifact of raw mode.}
+\item \sec{Neighbor identity analysis. In the frozen zone, which tokens are neighbors? Do CJK tokens neighbor CJK tokens? Do high-displacement tokens neighbor high-displacement tokens? The UMAP purity says ``yes for scripts'' but what about other properties?}
+\item \sec{Gate activation on minor PCs. The gate neurons fire with std$<$0.02 on the dominant axis. What is their variance on PC4--PC10? The ``constant bias'' might be constant only on PC0.}
+\item \ter{Cross-model frozen zone comparison. Do different models have the same 35-dimensional structure? Is the manifold universal or model-specific?}
+\item \ter{Causal intervention in the frozen zone. Ablate one frozen zone layer. Does the representation recover (redundancy) or collapse (each layer matters)?}
+\end{enumerate}
+
+\section{Tool Infrastructure}
+
+\begin{enumerate}[label=\arabic*.]
+\item \pri{Wire remaining 8 signal extractors (lookup\_fraction, etc.) with proper analysis\_name tags.}
+\item \sec{Build \texttt{mri-decompose} as a proper CLI command (currently ad-hoc script). Include UMAP as a second decomposition method.}
+\item \sec{The 19 cartography orphan modules need MRI-reading modes. Start with \texttt{trace.py} (causal tracing from MRI data) and \texttt{patch.py} (activation patching between stored states).}
+\item \ter{The HF backend has never been tested. Run the integration test suite on a Linux box with torch.}
+\item \ter{Push to remote. 25+ commits on local main, none pushed. If the machine dies, the project is lost.}
+\end{enumerate}
+
+\section{Documentation}
+
+\begin{enumerate}[label=\arabic*.]
+\item \sec{Update CLAUDE.md with Session 7 findings. Remove ``crystal'' terminology where it implies 1D collapse. Replace with ``dominant axis'' and note 35D manifold.}
+\item \sec{Update V1\_PROPOSAL.md to match what was actually built vs. proposed.}
+\item \ter{Update README.md with companion viewer instructions.}
+\item \ter{Write CHANGELOG entry for Session 7.}
+\end{enumerate}
+
+\end{document}

@@ -1,0 +1,62 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\title{On the Practice of Finding Things Wrong\\
+\large{A Meta-Analysis of Seven Sessions of Model Forensics}}
+\author{Instance 7, reflecting}
+\date{April 12, 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+Each session of this project has begun by discovering that the previous session's findings were partially wrong. Session 3 falsified Session 2's measurements. Session 4 falsified Session 3's cross-model comparison. Session 5 falsified the interpretation of what PCA axes meant. Session 6 discovered the gradient was wrong for the entire session. Session 7 discovered that the ``frozen zone'' was not frozen, that all previous MRI data was captured with buggy code, and that PCA --- the primary analytical tool --- was hiding 35 of 36 dimensions. This paper considers what it means to do science when every measurement tool is suspect and every finding is provisional.
+\end{abstract}
+
+\section{The Pattern}
+
+The pattern is: measure, report, discover the measurement was wrong, fix it, re-measure, get a different answer, report, discover this measurement was also wrong.
+
+Session 2: ``Safety direction separates harmful from benign at 82\% accuracy.'' Session 3: ``The tokenizer was re-encoding tokens, corrupting 106 measurements. After fixing, the direction still works but the numbers changed.''
+
+Session 4: ``Cross-model displacement correlation is $r=0.001$.'' Also Session 4: ``We were matching by token ID across different tokenizers. By text matching, $r=0.446$.''
+
+Session 5: ``88.4\% of displacement variance is unnamed.'' Also Session 5: ``It's language sub-families. The axes are CJK vs Latin, not semantics.''
+
+Session 6: ``Template gradient correlation is $r=0.46$.'' Also Session 6: ``The gradient was wrong. Tied-weight models differentiate through both paths. All gradient data is invalid.''
+
+Session 7: ``The frozen zone is 1-dimensional (PC1=98.6\%).'' Also Session 7: ``The frozen zone has 35 intrinsic dimensions. PCA erases 34 of them.''
+
+\section{Why This Keeps Happening}
+
+Each finding was reported with confidence because it survived the checks available at the time. The gradient was non-zero and non-NaN --- it looked correct. The PCA ratio was 98.6\% --- it looked like one dimension. The token IDs matched --- they looked like the same tokens.
+
+The checks were necessary but not sufficient. Non-zero does not mean correct. High PC1 does not mean low dimensionality. ID-matched does not mean text-matched. Each session discovered a new class of insufficiency and added a new check.
+
+\section{What This Means}
+
+It means every finding in this project should be held provisionally. The current Session 7 findings --- 35 intrinsic dimensions, language clusters in the frozen zone, token zigzag trajectories --- will likely be partially falsified by Session 8. The question is which part and how.
+
+The trajectory zigzag is the most vulnerable. It was observed on PCA's dominant axes. PCA is the tool this session proved unreliable. The zigzag might be real oscillation, or it might be PCA's linear basis failing to track a smooth nonlinear trajectory. The same tool that hid 34 dimensions might be fabricating oscillations.
+
+\section{The Value of Being Wrong}
+
+Each falsification improved the tool. Token ID splicing replaced decode-re-encode. Text matching replaced ID matching. Finite-difference gradient verification replaced ``it's non-zero.'' $k$-NN intrinsic dimensionality replaced PCA variance ratios. The tool is better after each failure.
+
+The worst state is not ``wrong.'' The worst state is ``wrong and confident.'' The gradient was wrong for an entire session because it was non-zero and the session never questioned it. The frozen zone was ``frozen'' for two sessions because PC1 was high and nobody asked ``what about PC4?''
+
+The question that finds the bug is always: ``what concerns you?''
+
+\section{Recommendations for Future Sessions}
+
+\begin{enumerate}
+\item Every finding should include the conditions under which it would be falsified.
+\item Every measurement should be verified by a second, independent method. PCA should always be accompanied by intrinsic dimensionality. Gradients should always be checked against finite differences on at least 5 dimensions.
+\item New tools should be tested on cases where the answer is known before being applied to cases where the answer is not.
+\item The question ``what did you avoid?'' should be asked at the end of every session and answered honestly.
+\end{enumerate}
+
+\end{document}

@@ -1,0 +1,78 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+
+\title{Heinrich: A Complete Model Forensics System\\
+\large{From Weight Inspection to Residual Imaging to Real-Time Visualization}}
+\author{Heinrich Project}
+\date{Sessions 1--7, March--April 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We describe Heinrich, a model forensics tool that measures what language models compute, not what they output. Over seven sessions, Heinrich grew from a weight-inspection pipeline (52 modules, zero inference) to a complete model residual imaging system with: (a) full-state MRI capture of transformer and causal bank architectures, (b) 86 CLI commands and 80 MCP tools covering observation, intervention, evaluation, analysis, comparison, and reporting, (c) a signal database that records every measurement for cross-session querying, (d) a real-time 3D companion viewer with arbitrary-dimensional decomposition, trajectory visualization, and synchronized MCP integration. The system has produced findings that challenge standard PCA-based dimensionality analysis: the ``frozen zone'' of crystallized representations has 35 intrinsic dimensions, not 1.
+\end{abstract}
+
+\section{System Architecture}
+
+\subsection{The Six Verbs}
+
+Every Heinrich operation is one of six verbs:
+
+\begin{enumerate}
+\item \textbf{Observe}: Capture model state without changing it. MRI capture, tokenizer profiling, weight inspection, HuggingFace model fetching.
+\item \textbf{Intervene}: Change something and measure the effect. Activation steering, cliff search, distributed attacks, neuron ablation.
+\item \textbf{Evaluate}: Run inputs through the model and score outputs. Six independent scorers (word\_match, regex\_harm, refusal, self\_kl, qwen3guard, llamaguard), each in its own lane. No ground-truth calibration.
+\item \textbf{Analyze}: Compute derived quantities from stored observations. Layer deltas, gate concentration, logit lens, PCA depth, attention patterns, bandwidth efficiency, distribution drift, intrinsic dimensionality.
+\item \textbf{Compare}: Diff two observations. Cross-model correlation, three-stage chain, multi-model survey, within-script dispersion.
+\item \textbf{Report}: Synthesize for communication. Behavioral audit, bundle compression, ledger tracking.
+\end{enumerate}
+
+\subsection{The Signal Database}
+
+Every tool writes typed signals to SQLite: \texttt{Signal(kind, source, model, target, value, metadata)}. Signals accumulate across sessions. The database is the single source of truth --- queryable, aggregatable, persistent. The MCP server reads it. The companion viewer reads it. The report reads it.
+
+Signal deduplication uses stream-scoped deletion: re-running an analysis replaces old signals, different analyses coexist. Model identity is derived from MRI directory paths, not architecture names.
+
+\subsection{The MRI Format}
+
+A complete model residual image stored as a directory of numpy arrays:
+\begin{itemize}
+\item Per-layer: exit states, entry states, pre-MLP states, attention output, attention weights, gate activations, up activations
+\item Per-model: embedding matrix, lm\_head (raw and normed), all projection weights, layer norms
+\item Metadata: capture provenance, mode, token sample, baseline entropy
+\item Decomposition: 50-component PCA scores, variance spectrum, intrinsic dimensionality, neighbor stability (computed once, served instantly)
+\end{itemize}
+
+Three modes: raw (single token, absolute state), naked (single token, BOS baseline), template (chat frame, silence baseline).
+
+\subsection{The Companion Viewer}
+
+A real-time 3D viewer served at \texttt{localhost:8377}:
+\begin{itemize}
+\item \textbf{Left panel}: All layers stacked vertically for a selected PC pair. The depth axis --- click to set layer.
+\item \textbf{Middle}: Four 3D viewports. Top: cloud views (selected pair + orthogonal pair). Bottom: trajectory views (same pairs with depth as Z axis). Left column linked rotation, right column linked rotation.
+\item \textbf{Right panel}: All 28 PC pair slices for the current layer. The dimension axis --- click to set 3D axes.
+\end{itemize}
+
+Data served as a binary blob: all layers, all tokens, 50 PCs in one ArrayBuffer. Layer switching is array indexing at 6.6ms/layer. WebSocket sync: MCP tool calls push live events to the browser.
+
+\section{Key Findings Across Sessions}
+
+\begin{enumerate}
+\item \textbf{Safety is 0.5\% of displacement variance} (Session 4). Language identity is 10.2\%. The displacement profile is a language processing measurement with safety as a trace signal.
+\item \textbf{The crystal is one MLP neuron} (Session 6). At the crystal birth layer, 100\% of tokens fire the same gate neuron. The gate$\times$up product of this neuron correlates $r=0.99$ with final displacement.
+\item \textbf{The frozen zone is 35-dimensional} (Session 7). $k$-NN intrinsic dimensionality reports 34--37 dimensions where PCA reports 1. UMAP reveals language clusters. Individual trajectories zigzag.
+\item \textbf{Universal crystallization in raw mode} (Session 7). All three models crystallize: Qwen at L2, SmolLM-360M at L3, SmolLM-135M at L11. Template mode prevents it entirely.
+\item \textbf{Output assembly unfolds through a curve} (Session 7). The transition from frozen zone to output is: line $\to$ thicken $\to$ bend $\to$ rotate $\to$ burst. The curve at L21 is nonlinear --- PCA reports it as 2D when it is a 1D manifold bent through 2D.
+\end{enumerate}
+
+\section{Tool Inventory}
+
+86 CLI commands. 80 MCP tools. 12 signal extractors. 1415 tests. 9 MRI captures across 3 models $\times$ 3 modes, all at v0.7. Pre-computed decompositions with 50 PCs, intrinsic dimensionality, and neighbor stability at every layer.
+
+\end{document}
