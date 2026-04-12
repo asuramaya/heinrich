@@ -294,6 +294,54 @@ def _compute_umap(mri_path: str, n_sample: int = 3000) -> dict:
     }
 
 
+def _load_decomp(mri_path: str, layer: int) -> dict:
+    """Load pre-computed PCA decomposition for a single layer."""
+    p = Path(mri_path) / "decomp"
+    scores_path = p / f"L{layer:02d}_scores.npy"
+    var_path = p / f"L{layer:02d}_variance.npy"
+    if not scores_path.exists():
+        return {"error": f"No decomposition at L{layer}. Run mri-decompose."}
+    scores = np.load(scores_path).astype(np.float32)  # [N, K]
+    variance = np.load(var_path).astype(np.float32)    # [K]
+    # Token metadata
+    meta_mri = json.loads((Path(mri_path) / "metadata.json").read_text())
+    tok = dict(np.load(Path(mri_path) / "tokens.npz", allow_pickle=True))
+    meta_decomp = json.loads((p / "meta.json").read_text())
+    n_sample = meta_decomp["n_sample"]
+    sample_idx = meta_decomp.get("sample_indices", list(range(len(tok["token_ids"]))))
+    if isinstance(sample_idx, str):
+        sample_idx = list(range(len(tok["token_ids"])))
+    scripts = [str(s) for s in tok["scripts"][sample_idx]]
+    texts = [str(t) for t in tok["token_texts"][sample_idx]]
+    lm = meta_decomp["layers"][layer] if layer < len(meta_decomp["layers"]) else {}
+    return {
+        "model": meta_mri["model"]["name"],
+        "model_dir": Path(mri_path).parent.name,
+        "mode": meta_mri.get("capture", {}).get("mode", "?"),
+        "layer": layer,
+        "n_tokens": len(scores),
+        "n_components": len(variance),
+        "variance": variance.tolist(),
+        "scores": scores.tolist(),
+        "scripts": scripts,
+        "texts": texts,
+        "pc1_pct": lm.get("pc1_pct", 0),
+        "intrinsic_dim": lm.get("intrinsic_dim", 0),
+        "neighbor_stability": lm.get("neighbor_stability", 0),
+    }
+
+
+def _load_decomp_meta(mri_path: str) -> dict:
+    """Load decomposition metadata (variance spectrum, intrinsic dim per layer)."""
+    p = Path(mri_path) / "decomp" / "meta.json"
+    if not p.exists():
+        return {"error": "No decomposition. Run mri-decompose."}
+    meta = json.loads(p.read_text())
+    meta["model_dir"] = Path(mri_path).parent.name
+    meta["mode"] = json.loads((Path(mri_path) / "metadata.json").read_text()).get("capture", {}).get("mode", "?")
+    return meta
+
+
 def _list_models(mri_root: str = "/Volumes/sharts") -> list[dict]:
     """List available MRI directories."""
     root = Path(mri_root)
@@ -926,6 +974,29 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                     self._send_json(result)
             else:
                 self._send_json({"error": "Usage: /api/pca/<model>/<mode>?n=5000"})
+        elif path.startswith('/api/decomp/'):
+            # /api/decomp/model/mode?layer=5
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                layer = int(qs.get('layer', ['0'])[0])
+                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                result = _load_decomp(mri_path, layer)
+                if qs.get('fmt', [None])[0] == 'bin':
+                    self._send_decomp_binary(result)
+                else:
+                    self._send_json(result)
+            else:
+                self._send_json({"error": "Usage: /api/decomp/<model>/<mode>?layer=N"})
+        elif path.startswith('/api/decomp-meta/'):
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                result = _load_decomp_meta(mri_path)
+                self._send_json(result)
+            else:
+                self._send_json({"error": "Usage: /api/decomp-meta/<model>/<mode>"})
         elif path == '/api/signals':
             kind = qs.get('kind', [None])[0]
             model = qs.get('model', [None])[0]
