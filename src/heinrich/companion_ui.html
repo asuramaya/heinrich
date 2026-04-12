@@ -27,7 +27,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .vp canvas{position:absolute;top:0;left:0;width:100%;height:100%}
 .vp .badge{position:absolute;bottom:3px;left:4px;font-size:8px;color:#444;pointer-events:none;z-index:2}
 .vp .axes{position:absolute;top:3px;right:4px;font-size:8px;color:#444;pointer-events:none;z-index:2}
-#detail{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(8,8,8,0.95);border:1px solid #444;border-radius:4px;padding:8px 12px;display:none;z-index:20;pointer-events:none;font-size:10px;min-width:200px;max-width:300px;box-shadow:0 4px 20px rgba(0,0,0,0.8)}
+#detail{position:absolute;background:rgba(8,8,8,0.95);border:1px solid #444;border-radius:4px;padding:8px 12px;display:none;z-index:30;pointer-events:none;font-size:10px;min-width:200px;max-width:300px;box-shadow:0 4px 20px rgba(0,0,0,0.8)}
 #detail .tok{font-size:20px;font-weight:bold;color:#fff;margin-bottom:4px;word-break:break-all}
 #detail .meta{color:#888;font-size:9px;white-space:pre;line-height:1.5}
 .vp .info{position:absolute;top:3px;left:4px;font-size:9px;pointer-events:none;z-index:2}
@@ -49,10 +49,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .lg{display:flex;align-items:center;gap:3px;justify-content:flex-end}
 .ld{width:4px;height:4px;border-radius:50%;flex-shrink:0}
 
-#scrub{height:22px;display:flex;align-items:center;gap:5px;padding:0 8px;background:#111;border-top:1px solid #222;flex-shrink:0}
-#scrub input[type=range]{flex:1;accent-color:#4477AA}
-#scrub button{background:#1a1a1a;border:1px solid #333;color:#ccc;padding:0 5px;font-family:inherit;font-size:9px;border-radius:2px;cursor:pointer}
-#scrub span{color:#555;font-size:9px}
+/* scrub removed — layer selection via left panel click */
 </style>
 </head>
 <body>
@@ -70,7 +67,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
     <div id="ls2"></div>
   </div>
   <div id="mid">
-    <div class="vp" id="vp0"><canvas id="c0"></canvas><div class="info" id="info0"><span class="t" id="ht"></span><span class="s" id="hs"></span><div style="color:#555;font-size:8px" id="hst"></div></div><div class="axes" id="ax0"></div><div id="detail"><div class="tok" id="tt"></div><div class="meta" id="tm"></div></div></div>
+    <div class="vp" id="vp0"><canvas id="c0"></canvas><div class="info" id="info0"><span class="t" id="ht"></span><span class="s" id="hs"></span><div style="color:#555;font-size:8px" id="hst"></div></div><div class="axes" id="ax0"></div></div>
     <div class="vp" id="vp1"><canvas id="c1"></canvas><div class="axes" id="ax1"></div><div class="badge">⊥</div></div>
     <div class="vp" id="vp2"><canvas id="c2"></canvas><div class="axes" id="ax2"></div><div class="badge">→</div></div>
     <div class="vp" id="vp3"><canvas id="c3"></canvas><div class="axes" id="ax3"></div><div class="badge">?</div></div>
@@ -80,13 +77,9 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
     <div id="sg"></div>
   </div>
   <div id="legend"></div>
+  <div id="detail"><div class="tok" id="tt"></div><div class="meta" id="tm"></div></div>
 </div>
-<div id="scrub">
-  <button id="bp">▶</button>
-  <span id="ll">L00</span>
-  <input type="range" id="ls" min="0" max="29" value="0">
-  <span id="lp"></span>
-</div>
+<!-- layer selection via left panel click + arrow keys -->
 
 <script type="importmap">
 {"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}
@@ -129,27 +122,40 @@ const ro=new ResizeObserver(()=>resizeAll());
 views.forEach(v=>ro.observe(v.el));
 requestAnimationFrame(resizeAll);
 
-// Raycaster on vp0
+// Raycaster on ALL viewports
 const ray=new THREE.Raycaster();const ms=new THREE.Vector2();
-views[0].cv.addEventListener('mousemove',e=>{
-  if(!nN)return;const r=views[0].cv.getBoundingClientRect();
-  ms.x=((e.clientX-r.left)/r.width)*2-1;ms.y=-((e.clientY-r.top)/r.height)*2+1;
-  ray.setFromCamera(ms,views[0].cam);ray.params.Points.threshold=Math.max(0.005,views[0].cam.position.length()*0.008);
-  const h=ray.intersectObject(views[0].pts);const td=document.getElementById('detail');
-  if(h.length>0){
-    const i=h[0].index;const S=allL[cL][i];
-    document.getElementById('tt').textContent=texts[i]||'?';
-    const sc=scripts[i];const hex=CLh[sc]||'#aaa';
-    document.getElementById('tt').style.color=hex;
-    let m=`${sc}  index:${i}\n`;
-    m+=`\nPC scores at L${cL}:\n`;
-    for(let p=0;p<Math.min(nK,10);p++)m+=`  PC${p}: ${(S[p]||0).toFixed(3)}\n`;
-    if(nK>10)m+=`  ...(${nK} total)\n`;
-    const lm=dm?.layers[cL]||{};
-    m+=`\nlayer ${cL}: dim=${lm.intrinsic_dim||'?'} nbr=${(lm.neighbor_stability||0).toFixed(3)}`;
-    document.getElementById('tm').textContent=m;td.style.display='block';
-  }else{td.style.display='none';}
-});
+function setupRaycast(vi){
+  const v=views[vi];
+  v.cv.addEventListener('mousemove',e=>{
+    if(!nN)return;const r=v.cv.getBoundingClientRect();
+    ms.x=((e.clientX-r.left)/r.width)*2-1;ms.y=-((e.clientY-r.top)/r.height)*2+1;
+    ray.setFromCamera(ms,v.cam);ray.params.Points.threshold=Math.max(0.005,v.cam.position.length()*0.008);
+    // Raycast against points in this viewport
+    const targets=[v.pts];if(v.trajGroup)v.trajGroup.children.forEach(c=>{if(c.isPoints)targets.push(c);});
+    let hit=null;
+    for(const t of targets){const h=ray.intersectObject(t);if(h.length>0){hit=h[0];break;}}
+    const td=document.getElementById('detail');
+    if(hit){
+      const i=hit.index%nN; // modulo for trajectory cloud indices
+      const S=allL[cL][i];
+      document.getElementById('tt').textContent=texts[i]||'?';
+      document.getElementById('tt').style.color=CLh[scripts[i]]||'#aaa';
+      let m=`${scripts[i]}  #${i}\n`;
+      m+=`\nPC scores at L${cL}:\n`;
+      for(let p=0;p<Math.min(nK,8);p++)m+=`  PC${p}: ${(S[p]||0).toFixed(3)}\n`;
+      const lm=dm?.layers[cL]||{};
+      m+=`\nL${cL} dim:${lm.intrinsic_dim||'?'} nbr:${(lm.neighbor_stability||0).toFixed(3)}`;
+      document.getElementById('tm').textContent=m;
+      // Position popup near the viewport that triggered it
+      td.style.left=v.el.offsetLeft+v.el.clientWidth/2+'px';
+      td.style.top=v.el.offsetTop+v.el.clientHeight/2+'px';
+      td.style.transform='translate(-50%,-50%)';
+      td.style.display='block';
+    }else{td.style.display='none';}
+  });
+  v.cv.addEventListener('mouseleave',()=>{document.getElementById('detail').style.display='none';});
+}
+views.forEach((_,i)=>setupRaycast(i));
 
 // === Update a viewport's point cloud ===
 function updateVP(vi,pcX,pcY,pcZ,layer){
@@ -277,8 +283,6 @@ function updateHUD(){
   document.getElementById('ht').textContent=model+' L'+String(cL).padStart(2,'0');
   const se=document.getElementById('hs');se.textContent=s;se.style.color=co;
   document.getElementById('hst').textContent=`PC1:${p1}% dim:${lm.intrinsic_dim||'?'} nbr:${(lm.neighbor_stability||0).toFixed(2)}`;
-  document.getElementById('ll').textContent='L'+String(cL).padStart(2,'0');
-  document.getElementById('lp').textContent=`dim:${lm.intrinsic_dim||'?'}`;
 }
 
 function setLayer(l){
@@ -292,7 +296,7 @@ async function loadAll(){
   document.getElementById('st').textContent='Loading...';
   dm=await api(`decomp-meta/${model}/${mode}`);
   if(dm.error){document.getElementById('st').textContent=dm.error;return;}
-  nL=dm.n_layers;document.getElementById('ls').max=nL-1;
+  nL=dm.n_layers;
   const d0=await api(`decomp/${model}/${mode}?layer=0`);
   scripts=d0.scripts;texts=d0.texts;nN=d0.n_tokens;nK=d0.n_components;
   // Populate PC selectors
@@ -338,16 +342,10 @@ async function init(){
   loadAll();
 }
 
-document.getElementById('ls').addEventListener('input',e=>setLayer(+e.target.value));
-document.getElementById('bp').addEventListener('click',()=>{
-  play=!play;document.getElementById('bp').textContent=play?'⏸':'▶';
-  if(play)pT=setInterval(()=>setLayer((cL+1)%nL),400);else clearInterval(pT);
-});
 document.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;
-  if(e.key==='ArrowRight')setLayer(Math.min(cL+1,nL-1));
-  if(e.key==='ArrowLeft')setLayer(Math.max(cL-1,0));
-  if(e.key===' '){e.preventDefault();document.getElementById('bp').click();}
+  if(e.key==='ArrowRight'||e.key==='ArrowDown')setLayer(Math.min(cL+1,nL-1));
+  if(e.key==='ArrowLeft'||e.key==='ArrowUp')setLayer(Math.max(cL-1,0));
 });
 
 (function anim(){
