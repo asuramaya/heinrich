@@ -27,9 +27,9 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .vp canvas{position:absolute;top:0;left:0;width:100%;height:100%}
 .vp .badge{position:absolute;bottom:3px;left:4px;font-size:8px;color:#444;pointer-events:none;z-index:2}
 .vp .axes{position:absolute;top:3px;right:4px;font-size:8px;color:#444;pointer-events:none;z-index:2}
-#detail{position:absolute;top:3px;left:4px;background:rgba(10,10,10,0.9);border:1px solid #333;border-radius:2px;padding:3px 5px;display:none;z-index:6;pointer-events:none;font-size:9px}
-#detail .tok{font-size:12px;font-weight:bold;color:#fff}
-#detail .meta{color:#666;font-size:8px;white-space:pre}
+#detail{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);background:rgba(8,8,8,0.95);border:1px solid #444;border-radius:4px;padding:8px 12px;display:none;z-index:20;pointer-events:none;font-size:10px;min-width:200px;max-width:300px;box-shadow:0 4px 20px rgba(0,0,0,0.8)}
+#detail .tok{font-size:20px;font-weight:bold;color:#fff;margin-bottom:4px;word-break:break-all}
+#detail .meta{color:#888;font-size:9px;white-space:pre;line-height:1.5}
 .vp .info{position:absolute;top:3px;left:4px;font-size:9px;pointer-events:none;z-index:2}
 .vp .info .t{font-weight:bold}
 .vp .info .s{font-weight:bold;margin-left:4px}
@@ -122,10 +122,12 @@ for(let v=0;v<4;v++){
 // Link orbit: rotate vp0, vp1 follows
 views[0].ctl.addEventListener('change',()=>{views[1].cam.position.copy(views[0].cam.position);views[1].cam.quaternion.copy(views[0].cam.quaternion);});
 
-function resizeAll(){
-  views.forEach(v=>{const w=v.el.clientWidth,h=v.el.clientHeight;v.cam.aspect=w/h;v.cam.updateProjectionMatrix();v.rdr.setSize(w,h);});
-}
-addEventListener('resize',resizeAll);requestAnimationFrame(resizeAll);
+function resizeV(v){const w=v.el.clientWidth,h=v.el.clientHeight;if(w&&h){v.cam.aspect=w/h;v.cam.updateProjectionMatrix();v.rdr.setSize(w,h);v.rdr.setPixelRatio(devicePixelRatio);}}
+function resizeAll(){views.forEach(resizeV);}
+addEventListener('resize',resizeAll);
+const ro=new ResizeObserver(()=>resizeAll());
+views.forEach(v=>ro.observe(v.el));
+requestAnimationFrame(resizeAll);
 
 // Raycaster on vp0
 const ray=new THREE.Raycaster();const ms=new THREE.Vector2();
@@ -134,8 +136,18 @@ views[0].cv.addEventListener('mousemove',e=>{
   ms.x=((e.clientX-r.left)/r.width)*2-1;ms.y=-((e.clientY-r.top)/r.height)*2+1;
   ray.setFromCamera(ms,views[0].cam);ray.params.Points.threshold=Math.max(0.005,views[0].cam.position.length()*0.008);
   const h=ray.intersectObject(views[0].pts);const td=document.getElementById('detail');
-  if(h.length>0){const i=h[0].index;document.getElementById('tt').textContent=texts[i]||'?';
-    document.getElementById('tm').textContent=`${scripts[i]} #${i}`;td.style.display='block';
+  if(h.length>0){
+    const i=h[0].index;const S=allL[cL][i];
+    document.getElementById('tt').textContent=texts[i]||'?';
+    const sc=scripts[i];const hex=CLh[sc]||'#aaa';
+    document.getElementById('tt').style.color=hex;
+    let m=`${sc}  index:${i}\n`;
+    m+=`\nPC scores at L${cL}:\n`;
+    for(let p=0;p<Math.min(nK,10);p++)m+=`  PC${p}: ${(S[p]||0).toFixed(3)}\n`;
+    if(nK>10)m+=`  ...(${nK} total)\n`;
+    const lm=dm?.layers[cL]||{};
+    m+=`\nlayer ${cL}: dim=${lm.intrinsic_dim||'?'} nbr=${(lm.neighbor_stability||0).toFixed(3)}`;
+    document.getElementById('tm').textContent=m;td.style.display='block';
   }else{td.style.display='none';}
 });
 
@@ -153,7 +165,10 @@ function updateVP(vi,pcX,pcY,pcZ,layer){
   let mx=0;for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(S[i][pcX]||0),Math.abs(S[i][pcY]||0),Math.abs(S[i][pcZ]||0));mx=mx||1;
   for(let i=0;i<nN;i++){pos[i*3]=(S[i][pcX]||0)/mx;pos[i*3+1]=(S[i][pcY]||0)/mx;pos[i*3+2]=(S[i][pcZ]||0)/mx;}
   v.geo.attributes.position.needsUpdate=true;
+  v.geo.computeBoundingSphere();
   document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}/${pcZ}`;
+  // Auto-fit camera on first load (not on scrub)
+  if(!v._fitted){v.cam.position.set(0,0,2.5);v.ctl.target.set(0,0,0);v.ctl.update();v._fitted=true;}
 }
 
 // === Update trajectory viewport (vp2) ===
@@ -337,7 +352,7 @@ document.addEventListener('keydown',e=>{
 
 (function anim(){
   requestAnimationFrame(anim);
-  views.forEach(v=>{v.ctl.update();const d=v.cam.position.length();v.mtl.size=Math.max(0.003,d*0.008);v.rdr.render(v.sc,v.cam);});
+  views.forEach(v=>{v.ctl.update();const d=v.cam.position.length();v.mtl.size=Math.max(0.004,d*0.012);v.mtl.opacity=d<0.5?0.95:0.8;v.rdr.render(v.sc,v.cam);});
 })();
 init();
 
