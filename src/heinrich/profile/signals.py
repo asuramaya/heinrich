@@ -271,4 +271,16 @@ def emit_signals(analysis_name: str, result: dict, db,
         "DELETE FROM signals WHERE stream = ?",
         (stream,), wait=True)
     db.add_many(tagged)
+    # Notify companion browser if running
+    try:
+        from ..companion import notify_companions
+        notify_companions({
+            "type": "signals",
+            "analysis": analysis_name,
+            "model": model,
+            "source": source,
+            "count": len(tagged),
+        })
+    except Exception:
+        pass  # companion not running or not importable
     return len(tagged)

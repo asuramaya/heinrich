@@ -154,9 +154,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--max-prompts", type=int, default=None, help="Max prompts per set")
 
     # Visualizer
-    p_viz = sub.add_parser("viz", help="Start the web visualizer sidecar")
+    p_viz = sub.add_parser("viz", help="Start the web visualizer sidecar (legacy DB browser)")
     p_viz.add_argument("--port", type=int, default=8377, help="Port (default: 8377)")
     p_viz.add_argument("--db", default=None, help="Database path")
+
+    p_comp = sub.add_parser("companion", help="Live 3D viewer + command runner + signal browser")
+    p_comp.add_argument("--port", type=int, default=8377, help="Port (default: 8377)")
 
     # Tokenizer profile (.frt)
     p_frt = sub.add_parser("frt-profile", help="Generate a .frt tokenizer profile")
@@ -563,6 +566,9 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command == "viz":
         from .viz import run_server
         run_server(port=args.port, db_path=args.db or "data/heinrich.db")
+    elif args.command == "companion":
+        from .companion import run_companion
+        run_companion(port=args.port)
     elif args.command == "frt-profile":
         _cmd_frt(args)
     elif args.command == "shart-profile":
