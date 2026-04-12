@@ -295,7 +295,9 @@ class TestVerifyMri:
         d.mkdir()
         n_tok, n_layers, hidden, vocab = 10, 2, 8, 20
 
+        from heinrich.profile.mri import MRI_VERSION
         meta = {
+            "version": MRI_VERSION,
             "model": {"n_layers": n_layers, "hidden_size": hidden,
                        "vocab_size": vocab, "name": "test", "n_heads": 2},
             "capture": {"mode": "raw", "n_tokens": n_tok,

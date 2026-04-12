@@ -23,6 +23,9 @@ hf = [
     "torch>=2.0",
     "transformers>=4.45",
 ]
+analysis = [
+    "scipy>=1.10",
+]
 dev = [
     "pytest>=8",
     "pytest-timeout",
@@ -30,6 +33,7 @@ dev = [
 all = [
     "heinrich[mlx]",
     "heinrich[hf]",
+    "heinrich[analysis]",
     "heinrich[dev]",
 ]
 

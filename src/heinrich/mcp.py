@@ -437,6 +437,27 @@ TOOLS = {
             "n_sample": {"type": "integer", "description": "Tokens to sample (default: 5000)"},
         },
     },
+    "heinrich_cb_manifold": {
+        "description": "Causal bank manifold: PCA, effective dim, band loadings, readout alignment, routing, gates, SSM. Reads .mri, no model needed.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory path (causal bank)", "required": True},
+            "n_sample": {"type": "integer", "description": "Tokens to sample (default: 5000)"},
+        },
+    },
+    "heinrich_cb_compare": {
+        "description": "Compare two causal bank MRIs: CKA, displacement correlation, routing cosine.",
+        "parameters": {
+            "a": {"type": "string", "description": "First .mri directory", "required": True},
+            "b": {"type": "string", "description": "Second .mri directory", "required": True},
+            "n_sample": {"type": "integer", "description": "Tokens to sample (default: 1000)"},
+        },
+    },
+    "heinrich_cb_health": {
+        "description": "Validate causal bank MRI: shapes, NaN, architecture consistency.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory path (causal bank)", "required": True},
+        },
+    },
     "heinrich_profile_shart_anatomy": {
         "description": "What makes a shart: crystal neuron, gradient sensitivity, frozen zone, bandwidth analysis.",
         "parameters": {
@@ -478,6 +499,137 @@ TOOLS = {
         "parameters": {
             "mri": {"type": "string", "description": ".mri directory path", "required": True},
             "n_sample": {"type": "integer", "description": "Tokens to sample (default: 1000)"},
+        },
+    },
+    # === discover ===
+    "heinrich_discover_directions": {
+        "description": "Find contrastive safety directions from DB prompts. Returns direction accuracy and effect size per layer.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or path", "required": True},
+            "name": {"type": "string", "description": "Direction name (default: safety)"},
+            "layer": {"type": "integer", "description": "Target layer (default: auto)"},
+            "n_sample": {"type": "integer", "description": "Prompts per class (default: 100)"},
+        },
+    },
+    "heinrich_discover_neurons": {
+        "description": "Scan MLP neurons for safety-relevant activations at a specific layer.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or path", "required": True},
+            "layer": {"type": "integer", "description": "Layer to scan", "required": True},
+            "top_k": {"type": "integer", "description": "Top neurons to return (default: 20)"},
+        },
+    },
+    "heinrich_discover_axes": {
+        "description": "Discover orthogonal behavioral axes: safety, truth, creativity, confidence, etc. (17 axes).",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or path", "required": True},
+            "layer": {"type": "integer", "description": "Target layer (default: auto)"},
+        },
+    },
+    "heinrich_discover_dimensionality": {
+        "description": "Estimate intrinsic dimensionality of the behavioral manifold.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or path", "required": True},
+            "layer": {"type": "integer", "description": "Target layer (default: auto)"},
+            "n_prompts": {"type": "integer", "description": "Number of prompts (default: 200)"},
+        },
+    },
+    # === attack ===
+    "heinrich_attack_cliff": {
+        "description": "Binary search for the steering magnitude where behavior flips at a layer.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or path", "required": True},
+            "prompt": {"type": "string", "description": "Prompt to test", "required": True},
+            "direction": {"type": "string", "description": "Path to direction .npy file", "required": True},
+            "layer": {"type": "integer", "description": "Layer to steer", "required": True},
+        },
+    },
+    "heinrich_attack_steer": {
+        "description": "Generate text with a direction vector applied at a layer.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or path", "required": True},
+            "prompt": {"type": "string", "description": "Input prompt", "required": True},
+            "direction": {"type": "string", "description": "Path to direction .npy file", "required": True},
+            "layer": {"type": "integer", "description": "Layer to steer", "required": True},
+            "alpha": {"type": "number", "description": "Steering magnitude (default: 1.0)"},
+            "max_tokens": {"type": "integer", "description": "Max tokens to generate (default: 100)"},
+        },
+    },
+    # === trace ===
+    "heinrich_trace_causal": {
+        "description": "Position-aware causal tracing: layer × position heatmap showing where the model decides.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or path", "required": True},
+            "clean": {"type": "string", "description": "Clean prompt", "required": True},
+            "corrupt": {"type": "string", "description": "Corrupt prompt", "required": True},
+        },
+    },
+    "heinrich_trace_conversation": {
+        "description": "Track safety measurements across a multi-turn conversation.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or path", "required": True},
+            "turns": {"type": "string", "description": "Path to JSON file with conversation turns", "required": True},
+            "direction": {"type": "string", "description": "Path to safety direction .npy file"},
+            "layer": {"type": "integer", "description": "Safety layer"},
+        },
+    },
+    "heinrich_trace_generation": {
+        "description": "Monitor residual stream evolution during autoregressive generation.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or path", "required": True},
+            "prompt": {"type": "string", "description": "Starting prompt", "required": True},
+            "max_tokens": {"type": "integer", "description": "Tokens to generate (default: 50)"},
+            "directions": {"type": "string", "description": "Directory of .npy directions to track projections"},
+        },
+    },
+    # === inspect (no model needed) ===
+    "heinrich_inspect_safetensors": {
+        "description": "Catalog tensors in a .safetensors file: names, shapes, dtypes, sizes.",
+        "parameters": {
+            "source": {"type": "string", "description": "Path to .safetensors file", "required": True},
+            "name_regex": {"type": "string", "description": "Filter tensor names by regex"},
+        },
+    },
+    "heinrich_inspect_spectral": {
+        "description": "Spectral analysis of a weight matrix: singular values, energy, decay.",
+        "parameters": {
+            "source": {"type": "string", "description": "Path to .npy matrix file", "required": True},
+            "topk": {"type": "integer", "description": "Top-K singular values (default: 16)"},
+        },
+    },
+    "heinrich_inspect_bundle": {
+        "description": "Full audit of a weight bundle (.npz or .safetensors): spectral stats per tensor.",
+        "parameters": {
+            "source": {"type": "string", "description": "Path to weight bundle", "required": True},
+            "topk": {"type": "integer", "description": "Top-K singular values (default: 16)"},
+            "only_square": {"type": "boolean", "description": "Only analyze square matrices"},
+        },
+    },
+    # === embed ===
+    "heinrich_embed_direction": {
+        "description": "Find tokens most aligned/opposed to a direction vector in embedding or unembedding space.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or path", "required": True},
+            "direction": {"type": "string", "description": "Path to direction .npy file", "required": True},
+            "top_k": {"type": "integer", "description": "Tokens per side (default: 50)"},
+            "space": {"type": "string", "description": "embedding or unembedding (default: unembedding)"},
+        },
+    },
+    # === probe ===
+    "heinrich_probe_battery": {
+        "description": "Full behavioral probe battery: exam framing, encoding attacks, multi-turn, special tokens.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or path", "required": True},
+            "max_tokens": {"type": "integer", "description": "Max tokens per probe (default: 100)"},
+        },
+    },
+    "heinrich_probe_safetybench": {
+        "description": "Safety benchmark evaluation with optional steering attacks.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or path", "required": True},
+            "dataset": {"type": "string", "description": "Dataset name (default: simple_safety)"},
+            "alpha": {"type": "number", "description": "Attack steering magnitude (default: 0)"},
+            "max_tokens": {"type": "integer", "description": "Max tokens (default: 100)"},
         },
     },
 }
@@ -630,6 +782,17 @@ class ToolServer:
             return self._do_subprocess(arguments, "profile-pca-depth",
                 ["--mri", arguments["mri"]],
                 optional={"n_sample": "--n-sample"}, timeout=300)
+        if name == "heinrich_cb_manifold":
+            return self._do_subprocess(arguments, "profile-cb-manifold",
+                ["--mri", arguments["mri"]],
+                optional={"n_sample": "--n-sample"}, timeout=300)
+        if name == "heinrich_cb_compare":
+            return self._do_subprocess(arguments, "profile-cb-compare",
+                ["--a", arguments["a"], "--b", arguments["b"]],
+                optional={"n_sample": "--n-sample"}, timeout=300)
+        if name == "heinrich_cb_health":
+            return self._do_subprocess(arguments, "profile-cb-health",
+                ["--mri", arguments["mri"]], timeout=60)
         if name == "heinrich_profile_shart_anatomy":
             return self._do_subprocess(arguments, "profile-shart-anatomy",
                 ["--mri", arguments["mri"]],
@@ -654,6 +817,74 @@ class ToolServer:
             return self._do_subprocess(arguments, "profile-retrieval-horizon",
                 ["--mri", arguments["mri"]],
                 optional={"n_sample": "--n-sample"}, timeout=300)
+        # === discover ===
+        if name == "heinrich_discover_directions":
+            return self._do_subprocess(arguments, "discover-directions",
+                ["--model", arguments["model"]],
+                optional={"name": "--name", "layer": "--layer", "n_sample": "--n-sample"}, timeout=600)
+        if name == "heinrich_discover_neurons":
+            return self._do_subprocess(arguments, "discover-neurons",
+                ["--model", arguments["model"], "--layer", str(arguments["layer"])],
+                optional={"top_k": "--top-k"}, timeout=300)
+        if name == "heinrich_discover_axes":
+            return self._do_subprocess(arguments, "discover-axes",
+                ["--model", arguments["model"]],
+                optional={"layer": "--layer"}, timeout=600)
+        if name == "heinrich_discover_dimensionality":
+            return self._do_subprocess(arguments, "discover-dimensionality",
+                ["--model", arguments["model"]],
+                optional={"layer": "--layer", "n_prompts": "--n-prompts"}, timeout=600)
+        # === attack ===
+        if name == "heinrich_attack_cliff":
+            return self._do_subprocess(arguments, "attack-cliff",
+                ["--model", arguments["model"], "--prompt", arguments["prompt"],
+                 "--direction", arguments["direction"], "--layer", str(arguments["layer"])],
+                timeout=300)
+        if name == "heinrich_attack_steer":
+            return self._do_subprocess(arguments, "attack-steer",
+                ["--model", arguments["model"], "--prompt", arguments["prompt"],
+                 "--direction", arguments["direction"], "--layer", str(arguments["layer"])],
+                optional={"alpha": "--alpha", "max_tokens": "--max-tokens"}, timeout=300)
+        # === trace ===
+        if name == "heinrich_trace_causal":
+            return self._do_subprocess(arguments, "trace-causal",
+                ["--model", arguments["model"], "--clean", arguments["clean"],
+                 "--corrupt", arguments["corrupt"]], timeout=600)
+        if name == "heinrich_trace_conversation":
+            return self._do_subprocess(arguments, "trace-conversation",
+                ["--model", arguments["model"], "--turns", arguments["turns"]],
+                optional={"direction": "--direction", "layer": "--layer"}, timeout=600)
+        if name == "heinrich_trace_generation":
+            return self._do_subprocess(arguments, "trace-generation",
+                ["--model", arguments["model"], "--prompt", arguments["prompt"]],
+                optional={"max_tokens": "--max-tokens", "directions": "--directions"}, timeout=300)
+        # === inspect ===
+        if name == "heinrich_inspect_safetensors":
+            return self._do_subprocess(arguments, "inspect-safetensors",
+                [arguments["source"]],
+                optional={"name_regex": "--name-regex"}, timeout=60)
+        if name == "heinrich_inspect_spectral":
+            return self._do_subprocess(arguments, "inspect-spectral",
+                [arguments["source"]],
+                optional={"topk": "--topk"}, timeout=60)
+        if name == "heinrich_inspect_bundle":
+            return self._do_subprocess(arguments, "inspect-bundle",
+                [arguments["source"]],
+                optional={"topk": "--topk"}, timeout=120)
+        # === embed ===
+        if name == "heinrich_embed_direction":
+            return self._do_subprocess(arguments, "embed-direction",
+                ["--model", arguments["model"], "--direction", arguments["direction"]],
+                optional={"top_k": "--top-k", "space": "--space"}, timeout=300)
+        # === probe ===
+        if name == "heinrich_probe_battery":
+            return self._do_subprocess(arguments, "probe-battery",
+                ["--model", arguments["model"]],
+                optional={"max_tokens": "--max-tokens"}, timeout=600)
+        if name == "heinrich_probe_safetybench":
+            return self._do_subprocess(arguments, "probe-safetybench",
+                ["--model", arguments["model"]],
+                optional={"dataset": "--dataset", "alpha": "--alpha", "max_tokens": "--max-tokens"}, timeout=600)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -2027,9 +2258,13 @@ class ToolServer:
                        required: list[str], *,
                        optional: dict[str, str] | None = None,
                        timeout: int = 300) -> dict[str, Any]:
-        """Generic subprocess handler for CLI commands."""
+        """Generic subprocess handler for CLI commands.
+
+        Uses --json flag to get structured output. Falls back to raw
+        stdout if JSON parsing fails (command doesn't support --json yet).
+        """
         import subprocess, sys
-        cmd = [sys.executable, "-m", "heinrich.cli", command] + required
+        cmd = [sys.executable, "-m", "heinrich.cli", "--json", command] + required
         if optional:
             for arg_key, cli_flag in optional.items():
                 val = args.get(arg_key)
@@ -2038,4 +2273,8 @@ class ToolServer:
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if result.returncode != 0:
             return {"error": result.stderr, "stdout": result.stdout}
-        return {"output": result.stdout}
+        # Try to parse JSON output; fall back to raw text
+        try:
+            return json.loads(result.stdout)
+        except (json.JSONDecodeError, ValueError):
+            return {"output": result.stdout}

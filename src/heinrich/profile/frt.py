@@ -252,6 +252,11 @@ def _detect_script(text: str) -> str:
     Only letters count toward script detection. Punctuation, digits, and
     whitespace are ignored. If no letters are found, falls back to structural
     classification (code, special, other).
+
+    NOTE: This was rewritten from first-character-wins to majority-vote in
+    Session 6. Old .frt files use the previous classification. Comparing old
+    .frt script breakdowns with new MRI data will produce mismatched categories
+    for mixed-script tokens. Regenerate .frt files to ensure consistency.
     """
     import unicodedata
 

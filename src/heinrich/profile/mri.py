@@ -30,6 +30,8 @@ from pathlib import Path
 
 import numpy as np
 
+MRI_VERSION = "0.7"
+
 
 def _is_mlx_backend(backend) -> bool:
     """Check if backend uses MLX (vs PyTorch/HF)."""
@@ -133,7 +135,10 @@ def _framework_ops(backend):
             else:
                 h_exit = h_after_attn + _mlp_out
 
-            # Attention weights (recomputed Q@K — does NOT affect h_exit)
+            # Attention weights: recomputed Q@K because MLX models don't expose
+            # attention weights from __call__ (unlike HF's output_attentions=True).
+            # This duplicates the q_proj/k_proj matmuls the model already did.
+            # Does NOT affect h_exit — purely for analysis capture.
             n_h = getattr(attn_mod, 'n_heads', None) or getattr(attn_mod, 'num_heads', None)
             n_kv = getattr(attn_mod, 'n_kv_heads', None) or getattr(attn_mod, 'num_key_value_heads', n_h)
             B, L, D = norm_in.shape
@@ -168,8 +173,9 @@ def _framework_ops(backend):
             gradients. Otherwise the same weight matrix appears in both
             the embed and lm_head paths, producing wrong gradients.
             """
-            # Detach: break tied-weight graph by round-tripping through numpy
-            emb_detached = mx.array(np.array(emb.astype(mx.float32)))
+            # Detach: break tied-weight graph so same weight matrix
+            # doesn't appear in both embed and lm_head paths
+            emb_detached = mx.stop_gradient(emb.astype(mx.float32))
 
             # Find top-1 token (outside gradient graph)
             h_probe = emb_detached
@@ -447,7 +453,7 @@ def _capture_mri_causal_bank(backend, *, mode="raw", n_index=None,
 
     elapsed = time.time() - t0
     metadata = {
-        "version": "0.5",
+        "version": MRI_VERSION,
         "type": "mri",
         "architecture": "causal_bank",
         "generated_at": time.time(),
@@ -624,6 +630,45 @@ def capture_mri(
     print(f"MRI capture ({mode}): {n_tokens} tokens x {n_layers} layers x {hidden} dims")
     print(f"  Estimated: {estimated_bytes / 1e9:.1f} GB")
 
+    # === Lock check: prevent concurrent writes to the same directory ===
+    _lock_path = None
+    if output:
+        out_dir_check = Path(output)
+        out_dir_check.mkdir(parents=True, exist_ok=True)
+        _lock_path = out_dir_check / ".capture_lock"
+        if _lock_path.exists():
+            try:
+                lock_info = json.loads(_lock_path.read_text())
+                pid = lock_info.get("pid", 0)
+                import os
+                is_alive = False
+                try:
+                    os.kill(pid, 0)
+                    # PID exists — check if it's actually a Python/heinrich process
+                    # by comparing start time (guards against PID reuse)
+                    lock_time = lock_info.get("started", "")
+                    import subprocess as _sp
+                    ps = _sp.run(["ps", "-p", str(pid), "-o", "lstart="],
+                                 capture_output=True, text=True, timeout=2)
+                    is_alive = ps.returncode == 0
+                except (OSError, _sp.TimeoutExpired):
+                    is_alive = False
+                if is_alive:
+                    raise RuntimeError(
+                        f"Capture already in progress (PID {pid}, started {lock_info.get('started', '?')}). "
+                        f"If stale, delete {_lock_path}")
+                else:
+                    print(f"  Stale lock from PID {pid} — removing")
+                    _lock_path.unlink()
+            except (json.JSONDecodeError, KeyError):
+                _lock_path.unlink()
+        import os as _os
+        _lock_path.write_text(json.dumps({
+            "pid": _os.getpid(),
+            "started": time.strftime("%Y-%m-%d %H:%M:%S"),
+            "mode": mode,
+        }))
+
     # === Resume check ===
     if output:
         out_dir_check = Path(output)
@@ -637,6 +682,8 @@ def capture_mri(
                 if test_arr.shape == (n_tokens, hidden):
                     print(f"  All {n_layers} layer files exist — resuming from weight extraction")
                     backfill_mri(backend, str(out_dir_check))
+                    if _lock_path and _lock_path.exists():
+                        _lock_path.unlink()
                     return json.load(open(out_dir_check / "metadata.json"))
                 else:
                     print(f"  WARNING: L00_exit shape {test_arr.shape} != expected ({n_tokens}, {hidden}). Recapturing.")
@@ -679,6 +726,8 @@ def capture_mri(
                         progress_file.unlink()
                         print(f"  Layer files written. Proceeding to weight extraction.")
                         backfill_mri(backend, str(out_dir_check))
+                        if _lock_path and _lock_path.exists():
+                            _lock_path.unlink()
                         return json.load(open(out_dir_check / "metadata.json"))
                     else:
                         print(f"  Dat files corrupt. Recapturing.")
@@ -918,7 +967,7 @@ def capture_mri(
 
     # === Metadata ===
     metadata = {
-        "version": "0.5",
+        "version": MRI_VERSION,
         "type": "mri",
         "generated_at": time.time(),
         "elapsed_s": round(elapsed),
@@ -1220,11 +1269,13 @@ def capture_mri(
 
         print(f"\n  Saved to {out_dir}/ ({total_size / 1e9:.2f} GB)")
 
-        # Clean up progress marker
+        # Clean up progress marker and lock
         progress_marker = out_dir / ".capture_progress"
         if progress_marker.exists():
             progress_marker.unlink()
 
+    if _lock_path and _lock_path.exists():
+        _lock_path.unlink()
     return metadata
 
 
@@ -1277,12 +1328,16 @@ def backfill_mri(backend, mri_path: str) -> dict:
                 import mlx.core as mx
                 return np.array(mx.array(w).astype(mx.float32))
             return w.float().cpu().numpy()
+        has_post_attn = False
         for i in range(n_layers):
             ly = model_inner.layers[i]
             if hasattr(ly, 'input_layernorm'):
                 nd[f"input_L{i}"] = _w2np(ly.input_layernorm.weight)
             if hasattr(ly, 'post_attention_layernorm'):
                 nd[f"post_attn_L{i}"] = _w2np(ly.post_attention_layernorm.weight)
+                has_post_attn = True
+        if not has_post_attn:
+            print(f"  Note: parallel architecture — no post_attention_layernorm (shared input_layernorm)")
         final_norm = getattr(model_inner, 'norm', None) or getattr(model_inner, 'final_layernorm', None)
         if final_norm is not None:
             nd["final"] = _w2np(final_norm.weight)
@@ -1406,6 +1461,11 @@ def verify_mri(path: str) -> dict:
     mode = capture.get("mode", "?")
     model_name = model.get("name", "?")
 
+    # Version check: old captures had buggy decomposed forward
+    mri_version = meta.get("version", "0.0")
+    if mri_version < MRI_VERSION:
+        issues.append(f"MRI version {mri_version} < current {MRI_VERSION} — recapture recommended")
+
     summary = {
         "path": str(p),
         "name": p.name,
@@ -1416,6 +1476,7 @@ def verify_mri(path: str) -> dict:
         "hidden_size": hidden,
         "vocab_size": vocab,
         "architecture": arch,
+        "version": mri_version,
     }
 
     if arch == "causal_bank":
@@ -1598,10 +1659,18 @@ def verify_mri(path: str) -> dict:
                     inter = capture.get("intermediate_size", 0)
                     if inter and gv.shape != (n_tok, inter):
                         issues.append(f"L{li:02d} gate shape={gv.shape} expected=({n_tok},{inter})")
-                    if np.all(gv[:min(100, n_tok)] == 0):
+                    sample = gv[:min(100, n_tok)].astype(np.float32)
+                    if np.all(sample == 0):
                         issues.append(f"L{li:02d} gate all zero (dead MLP?)")
-                    if np.any(np.isnan(gv[:min(100, n_tok)].astype(np.float32))):
+                    if np.any(np.isnan(sample)):
                         issues.append(f"L{li:02d} gate contains NaN")
+                    # Variance check: constant gates indicate wrong input state
+                    if sample.size > 0 and np.std(sample) < 1e-10:
+                        issues.append(f"L{li:02d} gate constant (zero variance)")
+                    # Magnitude check: post-SiLU gates should be bounded
+                    max_abs = float(np.abs(sample).max())
+                    if max_abs > 1e6:
+                        issues.append(f"L{li:02d} gate extreme magnitude ({max_abs:.0e})")
                 except Exception as e:
                     issues.append(f"L{li:02d} gate read error: {e}")
             elif gpath_legacy.exists() or gpath_topk.exists():
@@ -1626,13 +1695,28 @@ class LazyMRI(dict):
     are loaded lazily via mmap on first key access.
     """
 
+    _COMPUTED_KEYS = frozenset(("vectors", "deltas"))
+
     def __init__(self, path: str, eager_data: dict, file_map: dict):
         super().__init__(eager_data)
         self._file_map = file_map  # key -> (filepath, mmap_mode)
         self._path = path
+        self._cached_keys = None  # invalidated on lazy load
+
+    def _all_keys(self):
+        """All available keys: eager + lazy + computable."""
+        if self._cached_keys is not None:
+            return self._cached_keys
+        keys = set(super().keys()) | set(self._file_map.keys())
+        meta = super().get("metadata", {})
+        n = meta.get("model", {}).get("n_layers", 0)
+        if n > 0 and (f"exit_L{n-1}" in super().keys() or f"exit_L{n-1}" in self._file_map):
+            keys |= self._COMPUTED_KEYS
+        self._cached_keys = keys
+        return keys
 
     def __getitem__(self, key):
-        if key not in self.keys() and key in self._file_map:
+        if key not in super().keys() and key in self._file_map:
             fpath, mode = self._file_map[key]
             if fpath.suffix == '.npz':
                 data = np.load(fpath, allow_pickle=False)
@@ -1640,13 +1724,14 @@ class LazyMRI(dict):
                     super().__setitem__(k, data[k])
             else:
                 super().__setitem__(key, np.load(fpath, mmap_mode=mode))
+            self._cached_keys = None  # invalidate cache
         # Compatibility: vectors = last exit layer
-        if key == "vectors" and key not in self.keys():
+        if key == "vectors" and key not in super().keys():
             meta = super().__getitem__("metadata")
             n = meta.get("model", {}).get("n_layers", 0)
             if n > 0 and f"exit_L{n-1}" in self:
                 super().__setitem__("vectors", self[f"exit_L{n-1}"])
-        if key == "deltas" and key not in self.keys():
+        if key == "deltas" and key not in super().keys():
             if "vectors" in self:
                 v = np.array(self["vectors"]).astype(np.float32)
                 super().__setitem__("deltas", np.linalg.norm(v, axis=1).astype(np.float32))
@@ -1655,12 +1740,20 @@ class LazyMRI(dict):
     def __contains__(self, key):
         if super().__contains__(key) or key in self._file_map:
             return True
-        # Computed keys
-        if key in ("vectors", "deltas"):
-            meta = super().__getitem__("metadata") if "metadata" in self.keys() else {}
+        if key in self._COMPUTED_KEYS:
+            meta = super().get("metadata", {})
             n = meta.get("model", {}).get("n_layers", 0)
             return n > 0 and f"exit_L{n-1}" in self
         return False
+
+    def __iter__(self):
+        return iter(self._all_keys())
+
+    def __len__(self):
+        return len(self._all_keys())
+
+    def keys(self):
+        return self._all_keys()
 
     def get(self, key, default=None):
         try:
@@ -1706,7 +1799,7 @@ def load_mri(path: str) -> LazyMRI:
     arch = meta.get("architecture", "transformer")
 
     if arch == "causal_bank":
-        for name in ["substrate", "routing", "half_lives", "embedding"]:
+        for name in ["substrate", "routing", "half_lives", "embedding", "band_logits"]:
             fp = p / f"{name}.npy"
             if fp.exists():
                 fmap[name if name != "substrate" else "substrate_states"] = (fp, 'r')

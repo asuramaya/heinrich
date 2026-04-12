@@ -132,7 +132,9 @@ def test_forward_pass_zero_attn_calls_mlp_not_attn():
 
     assert "L0.mlp" in calls
     assert "L0.post_attn_ln" in calls
-    assert "L0.self_attn" not in calls
+    # self_attn IS called (needed for correct post-attn layernorm input)
+    # but its contribution is zeroed — only MLP output added to residual
+    assert "L0.self_attn" in calls
     assert "L0.full" not in calls
 
 

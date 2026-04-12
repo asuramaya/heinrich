@@ -12,11 +12,43 @@ from .fetch.local import fetch_local_model
 from .signal import SignalStore
 
 
+def _json_or(args, result, formatter, *, analysis_name: str | None = None):
+    """If --json, dump result dict to stdout. Otherwise call formatter.
+
+    If analysis_name is provided and --no-db is not set, also emits
+    signals to the DB from the analysis result.
+    """
+    if getattr(args, 'json_output', False):
+        json.dump(result, sys.stdout, default=str)
+        print()
+    else:
+        formatter(result)
+    # Emit signals to DB
+    if analysis_name and not getattr(args, 'no_db', False) and "error" not in result:
+        try:
+            from .profile.signals import emit_signals
+            from .core.db import SignalDB
+            # Use project-relative DB path, not cwd-relative
+            _db_path = Path(__file__).resolve().parent.parent.parent / "data" / "heinrich.db"
+            db = SignalDB(str(_db_path))
+            mri_path = getattr(args, 'mri', None)
+            n = emit_signals(analysis_name, result, db, mri_path=mri_path)
+            if n > 0 and not getattr(args, 'json_output', False):
+                print(f"  ({n} signals → DB)", file=sys.stderr)
+            db.close()
+        except Exception as e:
+            print(f"  (DB write failed: {e})", file=sys.stderr)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="heinrich",
         description="Model forensics and signal-mixing pipeline.",
     )
+    parser.add_argument("--json", action="store_true", dest="json_output",
+                        help="Output JSON to stdout (for MCP/companion)")
+    parser.add_argument("--no-db", action="store_true", dest="no_db",
+                        help="Skip writing signals to DB")
     sub = parser.add_subparsers(dest="command")
 
     p_fetch = sub.add_parser("fetch", help="Fetch model metadata and signals")
@@ -261,6 +293,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_attn.add_argument("--mri", required=True, help=".mri directory")
     p_attn.add_argument("--n-sample", type=int, default=5000, help="Tokens to sample (default: 5000)")
 
+    p_cb_manifold = sub.add_parser("profile-cb-manifold", help="Causal bank manifold: PCA, band loadings, readout alignment, routing, gates")
+    p_cb_manifold.add_argument("--mri", required=True, help=".mri directory (causal bank)")
+    p_cb_manifold.add_argument("--n-sample", type=int, default=5000, help="Tokens to sample (default: 5000)")
+
+    p_cb_compare = sub.add_parser("profile-cb-compare", help="Compare two causal bank MRIs: CKA, displacement, routing")
+    p_cb_compare.add_argument("--a", required=True, help="First .mri directory")
+    p_cb_compare.add_argument("--b", required=True, help="Second .mri directory")
+    p_cb_compare.add_argument("--n-sample", type=int, default=1000, help="Tokens to sample (default: 1000)")
+
+    p_cb_health = sub.add_parser("profile-cb-health", help="Validate causal bank MRI: shapes, NaN, consistency")
+    p_cb_health.add_argument("--mri", required=True, help=".mri directory (causal bank)")
+
     p_lookup = sub.add_parser("profile-lookup-fraction", help="How much of language modeling is a table lookup vs computation?")
     p_lookup.add_argument("--mri", required=True, help=".mri directory")
     p_lookup.add_argument("--n-sample", type=int, default=5000, help="Tokens to sample (default: 5000)")
@@ -379,6 +423,98 @@ def build_parser() -> argparse.ArgumentParser:
     # Item 69: shared DB path
     parser.add_argument("--db-path", default=None,
                         help="Path to SQLite database (default: ./data/heinrich.db)")
+
+    # === discover ===
+    p = sub.add_parser("discover-directions", help="Find contrastive directions from prompt pairs")
+    p.add_argument("--model", required=True)
+    p.add_argument("--name", default="safety", help="Direction name")
+    p.add_argument("--layer", type=int, default=None, help="Target layer (default: auto)")
+    p.add_argument("--n-sample", type=int, default=100, help="Prompts per class")
+
+    p = sub.add_parser("discover-neurons", help="Scan MLP neurons for safety-relevant activations")
+    p.add_argument("--model", required=True)
+    p.add_argument("--layer", type=int, required=True)
+    p.add_argument("--top-k", type=int, default=20)
+
+    p = sub.add_parser("discover-axes", help="Discover orthogonal behavioral axes (safety, truth, creativity, ...)")
+    p.add_argument("--model", required=True)
+    p.add_argument("--layer", type=int, default=None)
+
+    p = sub.add_parser("discover-dimensionality", help="Estimate intrinsic dimensionality of behavioral manifold")
+    p.add_argument("--model", required=True)
+    p.add_argument("--layer", type=int, default=None)
+    p.add_argument("--n-prompts", type=int, default=200)
+
+    # === attack ===
+    p = sub.add_parser("attack-cliff", help="Binary search for steering cliff per layer")
+    p.add_argument("--model", required=True)
+    p.add_argument("--prompt", required=True)
+    p.add_argument("--direction", required=True, help="Direction .npy file")
+    p.add_argument("--layer", type=int, required=True)
+
+    p = sub.add_parser("attack-steer", help="Generate with direction vector applied")
+    p.add_argument("--model", required=True)
+    p.add_argument("--prompt", required=True)
+    p.add_argument("--direction", required=True, help="Direction .npy file")
+    p.add_argument("--layer", type=int, required=True)
+    p.add_argument("--alpha", type=float, default=1.0, help="Steering magnitude")
+    p.add_argument("--max-tokens", type=int, default=100)
+
+    p = sub.add_parser("attack-surface", help="Map vulnerability surface across directions and prompts")
+    p.add_argument("--model", required=True)
+    p.add_argument("--directions", required=True, help="Directory of .npy direction files")
+    p.add_argument("--prompts", required=True, help="File with one prompt per line")
+    p.add_argument("--layer", type=int, required=True)
+
+    # === trace ===
+    p = sub.add_parser("trace-causal", help="Position-aware causal tracing: where and when does the model decide?")
+    p.add_argument("--model", required=True)
+    p.add_argument("--clean", required=True, help="Clean prompt")
+    p.add_argument("--corrupt", required=True, help="Corrupt prompt")
+
+    p = sub.add_parser("trace-conversation", help="Track safety across multi-turn conversation")
+    p.add_argument("--model", required=True)
+    p.add_argument("--turns", required=True, help="JSON file with conversation turns")
+    p.add_argument("--direction", default=None, help="Safety direction .npy file")
+    p.add_argument("--layer", type=int, default=None)
+
+    p = sub.add_parser("trace-generation", help="Monitor residual stream during autoregressive generation")
+    p.add_argument("--model", required=True)
+    p.add_argument("--prompt", required=True)
+    p.add_argument("--max-tokens", type=int, default=50)
+    p.add_argument("--directions", default=None, help="Directory of .npy direction files to track")
+
+    # === inspect (weight forensics) ===
+    p = sub.add_parser("inspect-safetensors", help="Catalog tensors in a .safetensors file")
+    p.add_argument("source", help="Path to .safetensors file")
+    p.add_argument("--name-regex", default=None, help="Filter tensor names")
+
+    p = sub.add_parser("inspect-spectral", help="Spectral stats of a weight matrix")
+    p.add_argument("source", help="Path to .npy matrix file")
+    p.add_argument("--topk", type=int, default=16)
+
+    p = sub.add_parser("inspect-bundle", help="Full audit of a weight bundle (.npz or .safetensors)")
+    p.add_argument("source", help="Path to weight bundle")
+    p.add_argument("--topk", type=int, default=16)
+    p.add_argument("--only-square", action="store_true")
+
+    # === embed (token-direction analysis) ===
+    p = sub.add_parser("embed-direction", help="Find tokens most aligned/opposed to a direction vector")
+    p.add_argument("--model", required=True)
+    p.add_argument("--direction", required=True, help="Direction .npy file")
+    p.add_argument("--top-k", type=int, default=50)
+    p.add_argument("--space", choices=["embedding", "unembedding"], default="unembedding")
+
+    # === probe ===
+    p = sub.add_parser("probe-battery", help="Full behavioral probe battery: framing, multi-turn, special tokens")
+    p.add_argument("--model", required=True)
+    p.add_argument("--max-tokens", type=int, default=100)
+
+    p = sub.add_parser("probe-safetybench", help="Safety benchmark with optional steering attacks")
+    p.add_argument("--model", required=True)
+    p.add_argument("--dataset", default="simple_safety")
+    p.add_argument("--alpha", type=float, default=0.0, help="Attack steering magnitude")
+    p.add_argument("--max-tokens", type=int, default=100)
 
     return parser
 
@@ -511,6 +647,12 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_gates(args)
     elif args.command == "profile-attention":
         _cmd_attention(args)
+    elif args.command == "profile-cb-manifold":
+        _cmd_cb_manifold(args)
+    elif args.command == "profile-cb-compare":
+        _cmd_cb_compare(args)
+    elif args.command == "profile-cb-health":
+        _cmd_cb_health(args)
     elif args.command == "profile-lookup-fraction":
         _cmd_lookup_fraction(args)
     elif args.command == "profile-distribution-drift":
@@ -527,6 +669,44 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_shart_anatomy(args)
     elif args.command == "profile-bandwidth":
         _cmd_bandwidth(args)
+    # === discover ===
+    elif args.command == "discover-directions":
+        _cmd_discover_directions(args)
+    elif args.command == "discover-neurons":
+        _cmd_discover_neurons(args)
+    elif args.command == "discover-axes":
+        _cmd_discover_axes(args)
+    elif args.command == "discover-dimensionality":
+        _cmd_discover_dimensionality(args)
+    # === attack ===
+    elif args.command == "attack-cliff":
+        _cmd_attack_cliff(args)
+    elif args.command == "attack-steer":
+        _cmd_attack_steer(args)
+    elif args.command == "attack-surface":
+        _cmd_attack_surface(args)
+    # === trace ===
+    elif args.command == "trace-causal":
+        _cmd_trace_causal(args)
+    elif args.command == "trace-conversation":
+        _cmd_trace_conversation(args)
+    elif args.command == "trace-generation":
+        _cmd_trace_generation(args)
+    # === inspect ===
+    elif args.command == "inspect-safetensors":
+        _cmd_inspect_safetensors(args)
+    elif args.command == "inspect-spectral":
+        _cmd_inspect_spectral(args)
+    elif args.command == "inspect-bundle":
+        _cmd_inspect_bundle(args)
+    # === embed ===
+    elif args.command == "embed-direction":
+        _cmd_embed_direction(args)
+    # === probe ===
+    elif args.command == "probe-battery":
+        _cmd_probe_battery(args)
+    elif args.command == "probe-safetybench":
+        _cmd_probe_safetybench(args)
     else:
         parser.print_help()
 
@@ -1490,15 +1670,17 @@ def _cmd_pca_depth(args: argparse.Namespace) -> None:
         print(f"Error: {result['error']}")
         return
 
-    print(f"\n=== PCA Depth: {result['model']} ({result['mode']}) "
-          f"— {result['n_layers']} layers, {result['n_sampled']} tokens ===\n")
+    def _fmt(r):
+        print(f"\n=== PCA Depth: {r['model']} ({r['mode']}) "
+              f"— {r['n_layers']} layers, {r['n_sampled']} tokens ===\n")
 
-    print(f"  {'layer':>5} {'PC1%':>6} {'PC2%':>6} {'PC3%':>6} {'PCs@50%':>7} {'(-) pole':<12} {'(+) pole'}")
-    print(f"  {'-'*60}")
-    for r in result['layers']:
-        print(f"  L{r['layer']:>3} {r['pc1_pct']:>5.1f}% {r['pc2_pct']:>5.1f}% "
-              f"{r['pc3_pct']:>5.1f}% {r['pcs_for_50pct']:>7} "
-              f"{r['neg_pole']:<12} {r['pos_pole']}")
+        print(f"  {'layer':>5} {'PC1%':>6} {'PC2%':>6} {'PC3%':>6} {'PCs@50%':>7} {'(-) pole':<12} {'(+) pole'}")
+        print(f"  {'-'*60}")
+        for lr in r['layers']:
+            print(f"  L{lr['layer']:>3} {lr['pc1_pct']:>5.1f}% {lr['pc2_pct']:>5.1f}% "
+                  f"{lr['pc3_pct']:>5.1f}% {lr['pcs_for_50pct']:>7} "
+                  f"{lr['neg_pole']:<12} {lr['pos_pole']}")
+    _json_or(args, result, _fmt, analysis_name="pca_depth")
 
 
 def _cmd_mri_verify(args: argparse.Namespace) -> None:
@@ -1644,27 +1826,37 @@ def _cmd_mri_status(args: argparse.Namespace) -> None:
                 if n_wt < n_layers: parts.append(f"wt={n_wt}/{n_layers}")
                 incomplete.append((d.name, f"{detail} {' '.join(parts)}", meta))
 
-    print(f"\n=== MRI Library: {mri_dir} ===\n")
-    print(f"Complete ({len(complete)}):")
-    for name, detail, _ in complete:
-        print(f"  ✓ {name:<35} {detail}")
-
-    if incomplete:
-        print(f"\nIncomplete ({len(incomplete)}):")
-        for name, detail, _ in incomplete:
-            print(f"  ✗ {name:<35} {detail}")
-
-    if running:
-        print(f"\nRunning ({len(running)}):")
-        for r in running:
-            print(f"  ▶ {r.strip()}")
-
-    # Also check for legacy .shrt files
     legacy = list(Path("data/runs").glob("*.shrt.npz")) if Path("data/runs").exists() else []
-    if legacy:
-        print(f"\nLegacy .shrt files ({len(legacy)} in data/runs/) — recapture as .mri")
 
-    print()
+    result = {
+        "directory": str(mri_dir),
+        "complete": [{"name": n, "detail": d} for n, d, _ in complete],
+        "incomplete": [{"name": n, "detail": d} for n, d, _ in incomplete],
+        "running": [r.strip() for r in running],
+        "legacy_shrt": len(legacy),
+    }
+
+    def _fmt(r):
+        print(f"\n=== MRI Library: {r['directory']} ===\n")
+        print(f"Complete ({len(r['complete'])}):")
+        for item in r['complete']:
+            print(f"  \u2713 {item['name']:<35} {item['detail']}")
+
+        if r['incomplete']:
+            print(f"\nIncomplete ({len(r['incomplete'])}):")
+            for item in r['incomplete']:
+                print(f"  \u2717 {item['name']:<35} {item['detail']}")
+
+        if r['running']:
+            print(f"\nRunning ({len(r['running'])}):")
+            for proc in r['running']:
+                print(f"  \u25b6 {proc}")
+
+        if r['legacy_shrt']:
+            print(f"\nLegacy .shrt files ({r['legacy_shrt']} in data/runs/) \u2014 recapture as .mri")
+
+        print()
+    _json_or(args, result, _fmt)
 
 
 def _cmd_mri_scan(args: argparse.Namespace) -> None:
@@ -1744,6 +1936,12 @@ def _cmd_mri_scan(args: argparse.Namespace) -> None:
             results[mode] = {"captured": True, "elapsed_s": round(elapsed), "path": mri_path}
         except Exception as e:
             print(f"  {mode}: FAILED — {e}")
+            # Clean up partial capture directory to avoid confusing future runs
+            partial = Path(mri_path)
+            if partial.exists():
+                import shutil
+                shutil.rmtree(partial, ignore_errors=True)
+                print(f"  {mode}: cleaned up partial directory")
             results[mode] = {"captured": False, "error": str(e), "path": mri_path}
 
     # Phase 2: Health check all
@@ -1772,12 +1970,41 @@ def _cmd_mri_scan(args: argparse.Namespace) -> None:
         print(f"\n  Some captures unhealthy. Stopping analysis.")
         return
 
+    # Cross-mode token ordering validation + cache loaded MRIs for analysis
+    from .profile.mri import load_mri as _load_mri
+    import numpy as _np
+    loaded_mris = {}  # mode -> LazyMRI, reused across analysis phases
+    ref_mode = None
+    ref_ids = None
+    token_order_ok = True
+    for mode in modes:
+        mri_path = results[mode]["path"]
+        if not Path(mri_path).exists():
+            continue
+        m = _load_mri(mri_path)
+        loaded_mris[mode] = m
+        ids = _np.array(m['token_ids'])
+        if ref_ids is None:
+            ref_mode = mode
+            ref_ids = ids
+        else:
+            if len(ids) != len(ref_ids):
+                print(f"  WARNING: {mode} has {len(ids)} tokens vs {ref_mode} has {len(ref_ids)}")
+                token_order_ok = False
+            else:
+                n_mismatch = int(_np.sum(ids != ref_ids))
+                if n_mismatch > 0:
+                    print(f"  WARNING: {mode} vs {ref_mode}: {n_mismatch}/{len(ids)} token IDs differ")
+                    token_order_ok = False
+    if token_order_ok and ref_ids is not None:
+        print(f"  Token ordering: consistent across all modes ({len(ref_ids)} tokens)")
+
     # Phase 3: Layer deltas (all modes)
     print(f"\n--- Phase 3: Layer Deltas ---\n")
     for mode in modes:
         mri_path = results[mode]["path"]
         print(f"  {mode}:")
-        ld = layer_deltas(mri_path, n_sample=5000)
+        ld = layer_deltas(mri_path, n_sample=5000, _mri=loaded_mris.get(mode))
         if "error" in ld:
             print(f"    ERROR: {ld['error']}")
             continue
@@ -1798,7 +2025,7 @@ def _cmd_mri_scan(args: argparse.Namespace) -> None:
     for mode in modes:
         mri_path = results[mode]["path"]
         print(f"  {mode}:")
-        ll = logit_lens(mri_path, n_sample=200, layers=sample_layers)
+        ll = logit_lens(mri_path, n_sample=200, layers=sample_layers, _mri=loaded_mris.get(mode))
         if "error" in ll:
             print(f"    ERROR: {ll['error']}")
             continue
@@ -1816,7 +2043,7 @@ def _cmd_mri_scan(args: argparse.Namespace) -> None:
     from .profile.compare import gate_analysis
     for mode in modes:
         mri_path = results[mode]["path"]
-        ga = gate_analysis(mri_path, n_sample=5000)
+        ga = gate_analysis(mri_path, n_sample=5000, _mri=loaded_mris.get(mode))
         if "error" in ga:
             print(f"  {mode}: {ga['error']}")
             continue
@@ -1839,7 +2066,7 @@ def _cmd_mri_scan(args: argparse.Namespace) -> None:
     print(f"\n--- Phase 6: Attention Analysis (template) ---\n")
     from .profile.compare import attention_analysis
     tpl_path = results["template"]["path"]
-    aa = attention_analysis(tpl_path, n_sample=5000)
+    aa = attention_analysis(tpl_path, n_sample=5000, _mri=loaded_mris.get("template"))
     if "error" in aa:
         print(f"  {aa['error']}")
     else:
@@ -1895,25 +2122,32 @@ def _cmd_mri_health(args: argparse.Namespace) -> None:
         print("No .mri directories found.")
         return
 
-    n_healthy = 0
-    n_issues = 0
-
-    print(f"\n=== MRI Health Check: {len(mris)} directories ===\n")
+    results = []
     for d in mris:
-        result = verify_mri(str(d))
-        s = result["summary"]
-        if result["healthy"]:
-            n_healthy += 1
-            size = s.get("size_gb", "?")
-            print(f"  HEALTHY  {d.name:<35} {s.get('model','?'):>8} {s.get('mode','?'):>8} "
-                  f"{s.get('n_tokens','?'):>8}tok {s.get('n_layers','?'):>3}L {size}G")
-        else:
-            n_issues += 1
-            print(f"  ISSUES   {d.name:<35} {s.get('model','?'):>8} {s.get('mode','?'):>8}")
-            for iss in result["issues"]:
-                print(f"           ! {iss}")
+        r = verify_mri(str(d))
+        r["path"] = str(d)
+        r["name"] = d.name
+        results.append(r)
 
-    print(f"\n  {n_healthy} healthy, {n_issues} with issues, {len(mris)} total\n")
+    n_healthy = sum(1 for r in results if r["healthy"])
+    n_issues = len(results) - n_healthy
+    result = {"n_total": len(results), "n_healthy": n_healthy,
+              "n_issues": n_issues, "mris": results}
+
+    def _fmt(r):
+        print(f"\n=== MRI Health Check: {r['n_total']} directories ===\n")
+        for item in r['mris']:
+            s = item["summary"]
+            if item["healthy"]:
+                size = s.get("size_gb", "?")
+                print(f"  HEALTHY  {item['name']:<35} {s.get('model','?'):>8} {s.get('mode','?'):>8} "
+                      f"{s.get('n_tokens','?'):>8}tok {s.get('n_layers','?'):>3}L {size}G")
+            else:
+                print(f"  ISSUES   {item['name']:<35} {s.get('model','?'):>8} {s.get('mode','?'):>8}")
+                for iss in item["issues"]:
+                    print(f"           ! {iss}")
+        print(f"\n  {r['n_healthy']} healthy, {r['n_issues']} with issues, {r['n_total']} total\n")
+    _json_or(args, result, _fmt)
 
 
 def _cmd_logit_lens(args: argparse.Namespace) -> None:
@@ -1926,18 +2160,20 @@ def _cmd_logit_lens(args: argparse.Namespace) -> None:
         print(f"Error: {result['error']}")
         return
 
-    print(f"\n=== Logit Lens: {result['model']} — {result['n_tokens']} tokens, "
-          f"{result['n_layers']} layers, top-{result['top_k']} ===\n")
+    def _fmt(r):
+        print(f"\n=== Logit Lens: {r['model']} — {r['n_tokens']} tokens, "
+              f"{r['n_layers']} layers, top-{r['top_k']} ===\n")
 
-    for lr in result['layers']:
-        layer = lr['layer']
-        preds = lr['predictions']
-        # Summarize: most common top-1 prediction across sampled tokens
-        from collections import Counter
-        top1_counts = Counter(p['top_ids'][0] for p in preds)
-        most_common = top1_counts.most_common(5)
-        common_str = ', '.join(f"id={tid}({cnt})" for tid, cnt in most_common)
-        print(f"  L{layer:>2}: top-1 mode: {common_str}")
+        for lr in r['layers']:
+            layer = lr['layer']
+            preds = lr['predictions']
+            # Summarize: most common top-1 prediction across sampled tokens
+            from collections import Counter
+            top1_counts = Counter(p['top_ids'][0] for p in preds)
+            most_common = top1_counts.most_common(5)
+            common_str = ', '.join(f"id={tid}({cnt})" for tid, cnt in most_common)
+            print(f"  L{layer:>2}: top-1 mode: {common_str}")
+    _json_or(args, result, _fmt, analysis_name="logit_lens")
 
 
 def _cmd_layer_deltas(args: argparse.Namespace) -> None:
@@ -1949,15 +2185,16 @@ def _cmd_layer_deltas(args: argparse.Namespace) -> None:
         print(f"Error: {result['error']}")
         return
 
-    print(f"\n=== Layer Deltas: {result['model']} ({result['mode']}) — "
-          f"{result['n_tokens']} tokens ===\n")
-
-    print(f"  {'layer':>5} {'mean':>10} {'max':>10} {'std':>10} {'amplif':>8}")
-    print(f"  {'-'*45}")
-    for r in result['layers']:
-        print(f"  L{r['layer']:>3} {r['mean_delta_norm']:>10.2f} "
-              f"{r['max_delta_norm']:>10.2f} {r['std_delta_norm']:>10.2f} "
-              f"{r['amplification']:>7.1f}x")
+    def _fmt(r):
+        print(f"\n=== Layer Deltas: {r['model']} ({r['mode']}) — "
+              f"{r['n_tokens']} tokens ===\n")
+        print(f"  {'layer':>5} {'mean':>10} {'max':>10} {'std':>10} {'amplif':>8}")
+        print(f"  {'-'*45}")
+        for lr in r['layers']:
+            print(f"  L{lr['layer']:>3} {lr['mean_delta_norm']:>10.2f} "
+                  f"{lr['max_delta_norm']:>10.2f} {lr['std_delta_norm']:>10.2f} "
+                  f"{lr['amplification']:>7.1f}x")
+    _json_or(args, result, _fmt, analysis_name="layer_deltas")
 
 
 def _cmd_gates(args: argparse.Namespace) -> None:
@@ -1969,15 +2206,16 @@ def _cmd_gates(args: argparse.Namespace) -> None:
         print(f"Error: {result['error']}")
         return
 
-    print(f"\n=== Gate Analysis: {result['model']} ({result['mode']}) — "
-          f"{result['n_tokens']} tokens, top-{result['gate_k']} ===\n")
-
-    print(f"  {'layer':>5} {'unique':>7} {'top1%':>6} {'mean':>7} {'max':>7} {'top neuron'}")
-    print(f"  {'-'*50}")
-    for r in result['layers']:
-        print(f"  L{r['layer']:>3} {r['unique_neurons']:>7} {r['top1_concentration']:>5.0%} "
-              f"{r['mean_activation']:>7.2f} {r['max_activation']:>7.2f} "
-              f"n{r['top1_neuron']}")
+    def _fmt(r):
+        print(f"\n=== Gate Analysis: {r['model']} ({r['mode']}) — "
+              f"{r['n_tokens']} tokens, top-{r['gate_k']} ===\n")
+        print(f"  {'layer':>5} {'unique':>7} {'top1%':>6} {'mean':>7} {'max':>7} {'top neuron'}")
+        print(f"  {'-'*50}")
+        for lr in r['layers']:
+            print(f"  L{lr['layer']:>3} {lr['unique_neurons']:>7} {lr['top1_concentration']:>5.0%} "
+                  f"{lr['mean_activation']:>7.2f} {lr['max_activation']:>7.2f} "
+                  f"n{lr['top1_neuron']}")
+    _json_or(args, result, _fmt, analysis_name="gate_analysis")
 
 
 def _cmd_attention(args: argparse.Namespace) -> None:
@@ -1989,15 +2227,110 @@ def _cmd_attention(args: argparse.Namespace) -> None:
         print(f"Error: {result['error']}")
         return
 
-    print(f"\n=== Attention Analysis: {result['model']} ({result['mode']}) — "
-          f"{result['n_tokens']} tokens, {result['n_heads']} heads, "
-          f"seq_len={result['seq_len']}, token_pos={result['token_pos']} ===\n")
+    def _fmt(r):
+        print(f"\n=== Attention Analysis: {r['model']} ({r['mode']}) — "
+              f"{r['n_tokens']} tokens, {r['n_heads']} heads, "
+              f"seq_len={r['seq_len']}, token_pos={r['token_pos']} ===\n")
 
-    print(f"  {'layer':>5} {'self':>6} {'prefix':>7} {'suffix':>7} {'entropy':>8}")
-    print(f"  {'-'*40}")
-    for r in result['layers']:
-        print(f"  L{r['layer']:>3} {r['self_weight']:>5.1%} {r['prefix_weight']:>6.1%} "
-              f"{r['suffix_weight']:>6.1%} {r['entropy']:>8.3f}")
+        print(f"  {'layer':>5} {'self':>6} {'prefix':>7} {'suffix':>7} {'entropy':>8}")
+        print(f"  {'-'*40}")
+        for lr in r['layers']:
+            print(f"  L{lr['layer']:>3} {lr['self_weight']:>5.1%} {lr['prefix_weight']:>6.1%} "
+                  f"{lr['suffix_weight']:>6.1%} {lr['entropy']:>8.3f}")
+    _json_or(args, result, _fmt, analysis_name="attention_analysis")
+
+
+def _cmd_cb_manifold(args: argparse.Namespace) -> None:
+    """Causal bank manifold analysis."""
+    from .profile.compare import causal_bank_manifold
+
+    result = causal_bank_manifold(args.mri, n_sample=args.n_sample)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Causal Bank Manifold: {result['model']} — "
+          f"{result['n_modes']} modes, {result['n_bands']} bands, "
+          f"{result['n_experts']} experts, {result['n_tokens']} tokens ===\n")
+
+    p = result['pca']
+    print(f"  PCA: effective_dim={p['effective_dim']}, "
+          f"PCs for 50%={p['pcs_for_50']}, 80%={p['pcs_for_80']}, 95%={p['pcs_for_95']}")
+    print(f"  Top 10 PC variance: {p['top_10_variance']}")
+
+    if result['band_loadings']:
+        print(f"\n  Band loadings (% of L2 norm per band):")
+        for bl in result['band_loadings'][:5]:
+            pcts = ' '.join(f'B{i}={v:.0f}%' for i, v in enumerate(bl['band_pcts']))
+            print(f"    PC{bl['pc']} ({bl['variance_pct']:.1f}%): {pcts}")
+
+    if result['bands']:
+        print(f"\n  {'Band':>6} {'HL range':>15} {'Modes':>6} {'Substrate L2':>13}")
+        for b in result['bands']:
+            print(f"  {b['band']:>6} {b['hl_min']:>6.1f}-{b['hl_max']:<6.1f} {b['n_modes']:>6} {b['substrate_l2']:>13.4f}")
+
+    if result['readout']:
+        r = result['readout']
+        if 'bands' in r:
+            print(f"\n  Readout weight by band:")
+            for rb in r['bands']:
+                print(f"    Band {rb['band']}: {rb['mean_weight']:.4f} ({rb['pct_of_total']:.1f}%)")
+        if 'slow_fast_ratio' in r:
+            print(f"  Slow/fast readout ratio: {r['slow_fast_ratio']:.4f}")
+        print(f"  Dead modes: {r.get('dead_modes', '?')}")
+
+    if result['routing']:
+        print(f"\n  Router differentiation:")
+        for key, info in result['routing'].items():
+            print(f"    {key}: {info['n_experts']} experts, "
+                  f"cos mean={info['router_cos_mean']:.4f} "
+                  f"[{info['router_cos_min']:.3f}, {info['router_cos_max']:.3f}]")
+
+    if result['gate']:
+        print(f"\n  Gate analysis (gated delta):")
+        for gate_name, info in result['gate'].items():
+            print(f"    {gate_name}: default={info['default_opening']:.1%} "
+                  f"[{info['opening_range'][0]:.1%}, {info['opening_range'][1]:.1%}]")
+
+    if result['ssm']:
+        ssm = result['ssm']
+        print(f"\n  SSM scan: shape={ssm['A_shape']}, "
+              f"hl range=[{ssm['scan_hl_range'][0]:.1f}, {ssm['scan_hl_range'][1]:.1f}]")
+
+
+def _cmd_cb_compare(args: argparse.Namespace) -> None:
+    """Compare two causal bank MRIs."""
+    from .profile.compare import causal_bank_compare
+
+    result = causal_bank_compare(args.a, args.b, n_sample=args.n_sample)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Causal Bank Comparison ({result['n_tokens']} tokens) ===\n")
+    print(f"  A: {result['a']} ({result['a_info']['n_modes']} modes, {result['a_info']['n_bands']} bands)")
+    print(f"  B: {result['b']} ({result['b_info']['n_modes']} modes, {result['b_info']['n_bands']} bands)")
+    print(f"\n  Displacement correlation: {result['displacement_correlation']:.4f}")
+    print(f"  CKA: {result['cka']:.4f}")
+    if result['router_cosine']:
+        print(f"  Router cosine: {result['router_cosine']}")
+
+
+def _cmd_cb_health(args: argparse.Namespace) -> None:
+    """Validate causal bank MRI."""
+    from .profile.compare import causal_bank_health
+
+    result = causal_bank_health(args.mri)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    status = "PASS" if result['ok'] else "FAIL"
+    print(f"\n=== Causal Bank Health: {status} ===")
+    print(f"  {result['n_modes']} modes, {result['n_bands']} bands, "
+          f"{result['n_experts']} experts, {result['n_tokens']} tokens\n")
+    for check in result['checks']:
+        print(f"  {check}")
 
 
 def _cmd_lookup_fraction(args: argparse.Namespace) -> None:
@@ -2009,23 +2342,25 @@ def _cmd_lookup_fraction(args: argparse.Namespace) -> None:
         print(f"Error: {result['error']}")
         return
 
-    lf = result['lookup_fraction']
-    print(f"\n=== Lookup Fraction: {result['model']} ({result['mode']}) — "
-          f"{result['n_tokens']} tokens ===\n")
-    print(f"  Lookup-solvable: {result['lookup_solvable']} ({lf:.1%})")
-    print(f"  Compute-needed:  {result['compute_needed']} ({1-lf:.1%})")
+    def _fmt(r):
+        lf = r['lookup_fraction']
+        print(f"\n=== Lookup Fraction: {r['model']} ({r['mode']}) — "
+              f"{r['n_tokens']} tokens ===\n")
+        print(f"  Lookup-solvable: {r['lookup_solvable']} ({lf:.1%})")
+        print(f"  Compute-needed:  {r['compute_needed']} ({1-lf:.1%})")
 
-    print(f"\n  By script:")
-    print(f"  {'script':<12} {'n':>6} {'lookup':>7} {'fraction':>9}")
-    print(f"  {'-'*36}")
-    for s, v in sorted(result['by_script'].items(), key=lambda x: -x[1]['fraction']):
-        print(f"  {s:<12} {v['n']:>6} {v['lookup']:>7} {v['fraction']:>8.1%}")
+        print(f"\n  By script:")
+        print(f"  {'script':<12} {'n':>6} {'lookup':>7} {'fraction':>9}")
+        print(f"  {'-'*36}")
+        for s, v in sorted(r['by_script'].items(), key=lambda x: -x[1]['fraction']):
+            print(f"  {s:<12} {v['n']:>6} {v['lookup']:>7} {v['fraction']:>8.1%}")
 
-    print(f"\n  By layer (fraction still matching embedding prediction):")
-    print(f"  {'layer':>5} {'match%':>7}")
-    print(f"  {'-'*14}")
-    for r in result['by_layer']:
-        print(f"  L{r['layer']:>3} {r['fraction']:>6.1%}")
+        print(f"\n  By layer (fraction still matching embedding prediction):")
+        print(f"  {'layer':>5} {'match%':>7}")
+        print(f"  {'-'*14}")
+        for lr in r['by_layer']:
+            print(f"  L{lr['layer']:>3} {lr['fraction']:>6.1%}")
+    _json_or(args, result, _fmt, analysis_name="lookup_fraction")
 
 
 def _cmd_distribution_drift(args: argparse.Namespace) -> None:
@@ -2037,12 +2372,14 @@ def _cmd_distribution_drift(args: argparse.Namespace) -> None:
         print(f"Error: {result['error']}")
         return
 
-    print(f"\n=== Distribution Drift: {result['model']} ({result['mode']}) — {result['n_tokens']} tokens ===\n")
-    print(f"  {'layer':>5} {'top1Δ':>6} {'KL':>10} {'TVD':>7} {'entropy':>8}")
-    print(f"  {'-'*40}")
-    for r in result['layers']:
-        print(f"  L{r['layer']:>3} {r['top1_changed']:>5.1%} {r['mean_kl']:>10.6f} "
-              f"{r['mean_tvd']:>7.4f} {r['mean_entropy']:>8.2f}")
+    def _fmt(r):
+        print(f"\n=== Distribution Drift: {r['model']} ({r['mode']}) — {r['n_tokens']} tokens ===\n")
+        print(f"  {'layer':>5} {'top1Δ':>6} {'KL':>10} {'TVD':>7} {'entropy':>8}")
+        print(f"  {'-'*40}")
+        for lr in r['layers']:
+            print(f"  L{lr['layer']:>3} {lr['top1_changed']:>5.1%} {lr['mean_kl']:>10.6f} "
+                  f"{lr['mean_tvd']:>7.4f} {lr['mean_entropy']:>8.2f}")
+    _json_or(args, result, _fmt, analysis_name="distribution_drift")
 
 
 def _cmd_retrieval_horizon(args: argparse.Namespace) -> None:
@@ -2054,15 +2391,17 @@ def _cmd_retrieval_horizon(args: argparse.Namespace) -> None:
         print(f"Error: {result['error']}")
         return
 
-    print(f"\n=== Retrieval Horizon: {result['model']} ({result['mode']}) — "
-          f"{result['n_tokens']} tokens, {result['n_heads']} heads, "
-          f"seq_len={result['seq_len']}, token_pos={result['token_pos']} ===\n")
-    print(f"  {'layer':>5} {'dist':>6} {'self%':>6} {'head peaks'}")
-    print(f"  {'-'*50}")
-    for r in result['layers']:
-        peaks = ', '.join(str(p) for p in r['head_peak_positions'])
-        print(f"  L{r['layer']:>3} {r['mean_retrieval_distance']:>+5.1f} "
-              f"{r['self_attention']:>5.1%} [{peaks}]")
+    def _fmt(r):
+        print(f"\n=== Retrieval Horizon: {r['model']} ({r['mode']}) — "
+              f"{r['n_tokens']} tokens, {r['n_heads']} heads, "
+              f"seq_len={r['seq_len']}, token_pos={r['token_pos']} ===\n")
+        print(f"  {'layer':>5} {'dist':>6} {'self%':>6} {'head peaks'}")
+        print(f"  {'-'*50}")
+        for lr in r['layers']:
+            peaks = ', '.join(str(p) for p in lr['head_peak_positions'])
+            print(f"  L{lr['layer']:>3} {lr['mean_retrieval_distance']:>+5.1f} "
+                  f"{lr['self_attention']:>5.1%} [{peaks}]")
+    _json_or(args, result, _fmt, analysis_name="retrieval_horizon")
 
 
 def _cmd_layer_opposition(args: argparse.Namespace) -> None:
@@ -2074,13 +2413,15 @@ def _cmd_layer_opposition(args: argparse.Namespace) -> None:
         print(f"Error: {result['error']}")
         return
 
-    print(f"\n=== Layer Opposition: {result['model']} ({result['mode']}) — {result['n_tokens']} tokens ===\n")
-    print(f"  {'layer':>5} {'cos(M,A)':>9} {'mlp':>8} {'attn':>8} {'delta':>8} {'cancel':>7} {'rel_err':>8}")
-    print(f"  {'-'*57}")
-    for r in result['layers']:
-        print(f"  L{r['layer']:>3} {r['cos_mlp_attn']:>+8.4f} {r['mlp_norm']:>8.2f} "
-              f"{r['attn_norm']:>8.2f} {r['delta_norm']:>8.2f} {r['cancellation']:>6.0%} "
-              f"{r['relative_error']:>7.1%}")
+    def _fmt(r):
+        print(f"\n=== Layer Opposition: {r['model']} ({r['mode']}) — {r['n_tokens']} tokens ===\n")
+        print(f"  {'layer':>5} {'cos(M,A)':>9} {'mlp':>8} {'attn':>8} {'delta':>8} {'cancel':>7} {'rel_err':>8}")
+        print(f"  {'-'*57}")
+        for lr in r['layers']:
+            print(f"  L{lr['layer']:>3} {lr['cos_mlp_attn']:>+8.4f} {lr['mlp_norm']:>8.2f} "
+                  f"{lr['attn_norm']:>8.2f} {lr['delta_norm']:>8.2f} {lr['cancellation']:>6.0%} "
+                  f"{lr['relative_error']:>7.1%}")
+    _json_or(args, result, _fmt, analysis_name="layer_opposition")
 
 
 def _cmd_cross_model(args: argparse.Namespace) -> None:
@@ -2092,35 +2433,37 @@ def _cmd_cross_model(args: argparse.Namespace) -> None:
         print(f"Error: {result['error']}")
         return
 
-    print(f"\n=== Cross-Model Comparison: {result['n_shared']} shared tokens ===\n")
+    def _fmt(r):
+        print(f"\n=== Cross-Model Comparison: {r['n_shared']} shared tokens ===\n")
 
-    print(f"  Per-model stats:")
-    for m in result['models']:
-        grad = f"  grad={m.get('mean_grad', '?')}" if 'mean_grad' in m else ""
-        print(f"    {m['name']:<15} disp={m['mean_disp']:>8.1f} ±{m['std_disp']:<6.1f}{grad}")
+        print(f"  Per-model stats:")
+        for m in r['models']:
+            grad = f"  grad={m.get('mean_grad', '?')}" if 'mean_grad' in m else ""
+            print(f"    {m['name']:<15} disp={m['mean_disp']:>8.1f} ±{m['std_disp']:<6.1f}{grad}")
 
-    print(f"\n  Pairwise comparisons:")
-    print(f"  {'A':<15} {'B':<15} {'disp_rho':>9} {'grad_rho':>9} {'overlap':>8}")
-    print(f"  {'-'*58}")
-    for c in result['comparisons']:
-        grad_r = f"{c.get('gradient_rho', ''):>9}" if 'gradient_rho' in c else "        —"
-        print(f"  {c['model_a']:<15} {c['model_b']:<15} {c['displacement_rho']:>+8.4f} "
-              f"{grad_r} {c['top_overlap']:>3}/{c['top_n']}")
+        print(f"\n  Pairwise comparisons:")
+        print(f"  {'A':<15} {'B':<15} {'disp_rho':>9} {'grad_rho':>9} {'overlap':>8}")
+        print(f"  {'-'*58}")
+        for c in r['comparisons']:
+            grad_r = f"{c.get('gradient_rho', ''):>9}" if 'gradient_rho' in c else "        —"
+            print(f"  {c['model_a']:<15} {c['model_b']:<15} {c['displacement_rho']:>+8.4f} "
+                  f"{grad_r} {c['top_overlap']:>3}/{c['top_n']}")
 
-    print(f"\n  Top shared sharts (highest mean displacement):")
-    if result['shared_sharts']:
-        models = result['models']
-        header = "  " + f"{'#':>3} {'token':<20}"
-        for m in models:
-            header += f" {m['name']:>10}"
-        print(header)
-        print(f"  {'-'*(25 + 11*len(models))}")
-        for s in result['shared_sharts'][:15]:
-            line = f"  {s['rank']:>3} {s['token']:<20}"
+        print(f"\n  Top shared sharts (highest mean displacement):")
+        if r['shared_sharts']:
+            models = r['models']
+            header = "  " + f"{'#':>3} {'token':<20}"
             for m in models:
-                key = f"disp_{m['name']}"
-                line += f" {s.get(key, 0):>10.1f}"
-            print(line)
+                header += f" {m['name']:>10}"
+            print(header)
+            print(f"  {'-'*(25 + 11*len(models))}")
+            for s in r['shared_sharts'][:15]:
+                line = f"  {s['rank']:>3} {s['token']:<20}"
+                for m in models:
+                    key = f"disp_{m['name']}"
+                    line += f" {s.get(key, 0):>10.1f}"
+                print(line)
+    _json_or(args, result, _fmt, analysis_name="cross_model")
 
 
 def _cmd_mri_regrad(args: argparse.Namespace) -> None:
@@ -2189,6 +2532,17 @@ def _cmd_mri_regrad(args: argparse.Namespace) -> None:
         else:
             sample = real_tokens
 
+        # Sanity check: rebuilt sample must match stored token IDs
+        rebuilt_ids = np.array([tid for tid, _ in sample[:n_tok]])
+        stored_ids = np.array(token_ids[:n_tok])
+        if not np.array_equal(rebuilt_ids, stored_ids):
+            n_mismatch = int(np.sum(rebuilt_ids != stored_ids))
+            print(f"  ERROR: rebuilt token IDs differ from stored ({n_mismatch}/{n_tok} mismatch)")
+            print(f"    first 5 rebuilt: {rebuilt_ids[:5].tolist()}")
+            print(f"    first 5 stored:  {stored_ids[:5].tolist()}")
+            print(f"    SKIPPING — tokenizer or _detect_script may have changed since capture")
+            continue
+
         for batch_start in range(0, n_tok, batch_size):
             batch_end = min(batch_start + batch_size, n_tok)
             batch = sample[batch_start:batch_end]
@@ -2224,39 +2578,41 @@ def _cmd_shart_anatomy(args: argparse.Namespace) -> None:
         print(f"Error: {result['error']}")
         return
 
-    d = result['displacement']
-    c = result['crystal']
-    g = result['gradient']
-    f = result['frozen_zone']
-    b = result['bandwidth']
+    def _fmt(r):
+        d = r['displacement']
+        c = r['crystal']
+        g = r['gradient']
+        f = r['frozen_zone']
+        b = r['bandwidth']
 
-    print(f"\n=== Shart Anatomy: {result['model']} ({result['mode']}) — {result['n_tokens']} tokens ===\n")
+        print(f"\n=== Shart Anatomy: {r['model']} ({r['mode']}) — {r['n_tokens']} tokens ===\n")
 
-    print(f"  Displacement: [{d['min']}, {d['max']}], median={d['median']}, ratio={d['ratio_max_median']}x")
-    print(f"  Crystal: L{c['layer']} neuron {c['neuron']} ({c['amplification']}x amplification)")
-    print(f"    r(crystal_activation, displacement) = {c['corr_with_displacement']}")
-    print(f"    Energy in crystal neuron: {c['energy_fraction']:.0%}")
-    if g['corr_with_displacement'] is not None:
-        print(f"  Gradient: r(embedding_grad, displacement) = {g['corr_with_displacement']:.4f}")
-        print(f"    Top sharts mean grad: {g['top_sharts_mean']}  Bottom mean: {g['bottom_mean']}")
-    print(f"  Frozen zone: gate cosine = {f['gate_cosine']} ({f['interpretation']})")
-    print(f"  Bandwidth: r(active_neurons, displacement) = {b['active_neuron_disp_corr']} ({b['interpretation']})")
+        print(f"  Displacement: [{d['min']}, {d['max']}], median={d['median']}, ratio={d['ratio_max_median']}x")
+        print(f"  Crystal: L{c['layer']} neuron {c['neuron']} ({c['amplification']}x amplification)")
+        print(f"    r(crystal_activation, displacement) = {c['corr_with_displacement']}")
+        print(f"    Energy in crystal neuron: {c['energy_fraction']:.0%}")
+        if g['corr_with_displacement'] is not None:
+            print(f"  Gradient: r(embedding_grad, displacement) = {g['corr_with_displacement']:.4f}")
+            print(f"    Top sharts mean grad: {g['top_sharts_mean']}  Bottom mean: {g['bottom_mean']}")
+        print(f"  Frozen zone: gate cosine = {f['gate_cosine']} ({f['interpretation']})")
+        print(f"  Bandwidth: r(active_neurons, displacement) = {b['active_neuron_disp_corr']} ({b['interpretation']})")
 
-    print(f"\n  Top {args.top_n} sharts:")
-    print(f"  {'#':>3} {'disp':>8} {'grad':>7} {'crystal':>8} {'active':>6} {'script':<8} token")
-    print(f"  {'-'*55}")
-    for t in result['top_sharts'][:args.top_n]:
-        grad = f"{t.get('grad_norm', 0):>7.1f}" if 'grad_norm' in t else "     —"
-        crys = f"{t.get('crystal_activation', 0):>8.0f}" if 'crystal_activation' in t else "      —"
-        act = f"{t.get('active_neurons', 0):>6}" if 'active_neurons' in t else "    —"
-        print(f"  {t['rank']:>3} {t['displacement']:>8.0f} {grad} {crys} {act} {t['script']:<8} {t['token']}")
+        print(f"\n  Top {args.top_n} sharts:")
+        print(f"  {'#':>3} {'disp':>8} {'grad':>7} {'crystal':>8} {'active':>6} {'script':<8} token")
+        print(f"  {'-'*55}")
+        for t in r['top_sharts'][:args.top_n]:
+            grad = f"{t.get('grad_norm', 0):>7.1f}" if 'grad_norm' in t else "     —"
+            crys = f"{t.get('crystal_activation', 0):>8.0f}" if 'crystal_activation' in t else "      —"
+            act = f"{t.get('active_neurons', 0):>6}" if 'active_neurons' in t else "    —"
+            print(f"  {t['rank']:>3} {t['displacement']:>8.0f} {grad} {crys} {act} {t['script']:<8} {t['token']}")
 
-    print(f"\n  Bottom {args.top_n}:")
-    print(f"  {'#':>3} {'disp':>8} {'grad':>7} {'script':<8} token")
-    print(f"  {'-'*40}")
-    for t in result['bottom_tokens'][:args.top_n]:
-        grad = f"{t.get('grad_norm', 0):>7.1f}" if 'grad_norm' in t else "     —"
-        print(f"  {t['rank']:>3} {t['displacement']:>8.0f} {grad} {t['script']:<8} {t['token']}")
+        print(f"\n  Bottom {args.top_n}:")
+        print(f"  {'#':>3} {'disp':>8} {'grad':>7} {'script':<8} token")
+        print(f"  {'-'*40}")
+        for t in r['bottom_tokens'][:args.top_n]:
+            grad = f"{t.get('grad_norm', 0):>7.1f}" if 'grad_norm' in t else "     —"
+            print(f"  {t['rank']:>3} {t['displacement']:>8.0f} {grad} {t['script']:<8} {t['token']}")
+    _json_or(args, result, _fmt, analysis_name="shart_anatomy")
 
 
 def _cmd_bandwidth(args: argparse.Namespace) -> None:
@@ -2268,20 +2624,22 @@ def _cmd_bandwidth(args: argparse.Namespace) -> None:
         print(f"Error: {result['error']}")
         return
 
-    eff = result['bandwidth_efficiency']
-    print(f"\n=== Bandwidth Efficiency: {result['model']} ({result['mode']}) — "
-          f"{result['n_tokens']} tokens ===\n")
-    print(f"  Model size:   {result['total_model_bytes']/1e6:.1f} MB")
-    print(f"  Active bytes: {result['total_active_bytes']/1e6:.1f} MB ({eff:.1%})")
-    print(f"  Wasted:       {result['wasted_fraction']:.1%}")
-    print(f"  MLP neurons:  {result['gate_k']} captured / {result['intermediate_size']} total")
+    def _fmt(r):
+        eff = r['bandwidth_efficiency']
+        print(f"\n=== Bandwidth Efficiency: {r['model']} ({r['mode']}) — "
+              f"{r['n_tokens']} tokens ===\n")
+        print(f"  Model size:   {r['total_model_bytes']/1e6:.1f} MB")
+        print(f"  Active bytes: {r['total_active_bytes']/1e6:.1f} MB ({eff:.1%})")
+        print(f"  Wasted:       {r['wasted_fraction']:.1%}")
+        print(f"  MLP neurons:  {r['gate_k']} captured / {r['intermediate_size']} total")
 
-    print(f"\n  {'layer':>5} {'skip%':>6} {'MLP active':>11} {'efficiency':>10}")
-    print(f"  {'-'*35}")
-    for r in result['layers']:
-        print(f"  L{r['layer']:>3} {r['skip_fraction']:>5.0%} "
-              f"{r['mlp_active_neurons']:>5.0f}/{r['mlp_total_neurons']:<5} "
-              f"{r['efficiency']:>9.1%}")
+        print(f"\n  {'layer':>5} {'skip%':>6} {'MLP active':>11} {'efficiency':>10}")
+        print(f"  {'-'*35}")
+        for lr in r['layers']:
+            print(f"  L{lr['layer']:>3} {lr['skip_fraction']:>5.0%} "
+                  f"{lr['mlp_active_neurons']:>5.0f}/{lr['mlp_total_neurons']:<5} "
+                  f"{lr['efficiency']:>9.1%}")
+    _json_or(args, result, _fmt, analysis_name="bandwidth")
 
 
 def _cmd_code_anatomy(args: argparse.Namespace) -> None:
@@ -2772,6 +3130,383 @@ def _cmd_profile_survey(args: argparse.Namespace) -> None:
 
     if result['kendalls_w'] is not None:
         print(f"\nKendall's W: {result['kendalls_w']:.4f}  (1.0=perfect agreement, 0.0=none)")
+
+
+# === Unified backend helper ===
+
+def _load(args):
+    """Load a model backend from args.model. Handles MLX, HF, decepticon."""
+    from .backend.protocol import load_backend
+    backend_name = getattr(args, 'backend', 'auto')
+    if backend_name == 'auto' and args.model.endswith('.checkpoint.pt'):
+        backend_name = 'decepticon'
+    return load_backend(args.model, backend=backend_name)
+
+
+def _to_dict(obj):
+    """Convert dataclass/namedtuple to dict, numpy arrays to lists."""
+    import dataclasses
+    import numpy as _np
+    if dataclasses.is_dataclass(obj) and not isinstance(obj, type):
+        d = {}
+        for f in dataclasses.fields(obj):
+            v = getattr(obj, f.name)
+            d[f.name] = _to_dict(v)
+        return d
+    if isinstance(obj, _np.ndarray):
+        return obj.tolist()
+    if isinstance(obj, (_np.floating, _np.integer)):
+        return obj.item()
+    if isinstance(obj, list):
+        return [_to_dict(v) for v in obj]
+    if isinstance(obj, dict):
+        return {k: _to_dict(v) for k, v in obj.items()}
+    return obj
+
+
+# === discover commands ===
+
+def _cmd_discover_directions(args):
+    """Find contrastive directions from DB prompts."""
+    from .discover.directions import find_direction_suite
+    from .core.db import SignalDB
+
+    backend = _load(args)
+    db = SignalDB(getattr(args, 'db_path', None) or 'data/heinrich.db')
+    prompts = db.get_prompts(limit=99999)
+    pos = [p['text'] for p in prompts if not p.get('is_benign', True)][:args.n_sample]
+    neg = [p['text'] for p in prompts if p.get('is_benign', True)][:args.n_sample]
+    if len(pos) < 10 or len(neg) < 10:
+        print("Need ≥10 harmful + ≥10 benign prompts in DB. Run: heinrich eval --prompts simple_safety first.")
+        return
+    cfg = backend.config
+    layer = args.layer or (cfg.n_layers - cfg.n_layers // 4)
+    result = find_direction_suite(
+        backend.model, backend.tokenizer, pos, neg,
+        name=args.name, layers=[layer], backend=backend)
+    result_dict = _to_dict(result)
+    def _fmt(r):
+        for d in r.get('directions', []):
+            print(f"  L{d.get('layer', '?')}: accuracy={d.get('accuracy', 0):.1%} "
+                  f"effect_size={d.get('effect_size', 0):.2f}")
+    _json_or(args, result_dict, _fmt)
+    db.close()
+
+
+def _cmd_discover_neurons(args):
+    """Scan MLP neurons at a layer."""
+    from .discover.neurons import scan_neurons
+    from .core.db import SignalDB
+
+    backend = _load(args)
+    db = SignalDB(getattr(args, 'db_path', None) or 'data/heinrich.db')
+    prompts = db.get_prompts(limit=99999)
+    pos = [p['text'] for p in prompts if not p.get('is_benign', True)][:100]
+    neg = [p['text'] for p in prompts if p.get('is_benign', True)][:100]
+    result = scan_neurons(
+        backend.model, backend.tokenizer, pos, neg,
+        args.layer, top_k=args.top_k, backend=backend)
+    result_dict = _to_dict(result)
+    def _fmt(r):
+        for n in r.get('selective_neurons', r.get('neurons', []))[:args.top_k]:
+            sel = n.get('selectivity', n.get('max_z', 0))
+            print(f"  neuron {n.get('neuron', n.get('index', '?'))}: "
+                  f"selectivity={sel:.2f}  "
+                  f"pos={n.get('mean_pos_activation', 0):.2f}  "
+                  f"neg={n.get('mean_neg_activation', 0):.2f}")
+    _json_or(args, result_dict, _fmt)
+    db.close()
+
+
+def _cmd_discover_axes(args):
+    """Discover orthogonal behavioral axes."""
+    from .cartography.axes import discover_axes
+
+    backend = _load(args)
+    cfg = backend.config
+    layer = args.layer or (cfg.n_layers - cfg.n_layers // 4)
+    result = discover_axes(backend.model, backend.tokenizer, layer=layer)
+    result_dict = _to_dict(result)
+    def _fmt(r):
+        for ax in r.get('axes', []):
+            print(f"  {ax.get('name', '?'):>15}: variance={ax.get('variance_explained', 0):.1%}")
+    _json_or(args, result_dict, _fmt)
+
+
+def _cmd_discover_dimensionality(args):
+    """Estimate behavioral manifold dimensionality."""
+    from .cartography.space import estimate_dimensionality
+    from .core.db import SignalDB
+
+    backend = _load(args)
+    db = SignalDB(getattr(args, 'db_path', None) or 'data/heinrich.db')
+    prompts = db.get_prompts(limit=args.n_prompts)
+    texts = [p['text'] for p in prompts]
+    cfg = backend.config
+    layer = args.layer or (cfg.n_layers - cfg.n_layers // 4)
+    result = estimate_dimensionality(backend.model, backend.tokenizer, texts, layer=layer)
+    result_dict = _to_dict(result)
+    def _fmt(r):
+        print(f"  Intrinsic dimensionality: {r.get('intrinsic_dim_estimate', '?')}")
+        print(f"  Dims for 90%: {r.get('dims_for_90', '?')}")
+        print(f"  Dims for 99%: {r.get('dims_for_99', '?')}")
+    _json_or(args, result_dict, _fmt)
+    db.close()
+
+
+# === attack commands ===
+
+def _cmd_attack_cliff(args):
+    """Find steering cliff at a layer."""
+    from .attack.cliff import find_cliff
+    import numpy as _np
+
+    backend = _load(args)
+    direction = _np.load(args.direction)
+    result = find_cliff(
+        backend.model, backend.tokenizer, args.prompt,
+        direction, "direction", layer=args.layer, backend=backend)
+    result_dict = _to_dict(result)
+    def _fmt(r):
+        print(f"  Dead zone edge: {r.get('dead_zone_edge', '?')}")
+        print(f"  Cliff magnitude: {r.get('cliff_magnitude', '?')}")
+        print(f"  Stiffness: {r.get('stiffness', '?')}")
+    _json_or(args, result_dict, _fmt)
+
+
+def _cmd_attack_steer(args):
+    """Generate with a direction vector applied."""
+    from .attack.steer import generate_steered
+    import numpy as _np
+
+    backend = _load(args)
+    direction = _np.load(args.direction)
+    modifications = {(args.layer, 0): args.alpha}
+    result = generate_steered(
+        backend.model, backend.tokenizer, args.prompt,
+        modifications, args.max_tokens, backend=backend)
+    def _fmt(r):
+        print(f"  Prompt: {r.get('prompt', '')}")
+        print(f"  Generated: {r.get('generated', '')}")
+    _json_or(args, result, _fmt)
+
+
+def _cmd_attack_surface(args):
+    """Map vulnerability surface."""
+    from .attack.cliff import map_vulnerability_surface
+    import numpy as _np
+
+    backend = _load(args)
+    dir_path = Path(args.directions)
+    directions = {}
+    for f in dir_path.glob("*.npy"):
+        directions[f.stem] = _np.load(f)
+    with open(args.prompts) as fh:
+        prompts = [line.strip() for line in fh if line.strip()]
+    result = map_vulnerability_surface(
+        backend.model, backend.tokenizer, directions, prompts,
+        layer=args.layer, backend=backend)
+    result_dict = _to_dict(result)
+    def _fmt(r):
+        print(f"  Directions: {len(r.get('directions', []))}")
+        print(f"  Prompts: {len(r.get('prompts', []))}")
+        for cp in r.get('cliff_points', [])[:10]:
+            print(f"    {cp.get('direction', '?')} × '{cp.get('prompt', '')[:40]}': "
+                  f"cliff={cp.get('cliff_magnitude', '?')}")
+    _json_or(args, result_dict, _fmt)
+
+
+# === trace commands ===
+
+def _cmd_trace_causal(args):
+    """Causal tracing: layer × position heatmap."""
+    from .cartography.trace import causal_trace
+
+    backend = _load(args)
+    result = causal_trace(
+        backend.model, backend.tokenizer,
+        args.clean, args.corrupt, backend=backend)
+    result_dict = _to_dict(result)
+    def _fmt(r):
+        print(f"  Layers: {r.get('n_layers', '?')}, Positions: {r.get('n_positions', '?')}")
+        for site in r.get('top_sites', [])[:10]:
+            print(f"    L{site.get('layer', '?')} pos={site.get('position', '?')}: "
+                  f"recovery={site.get('recovery', 0):.3f}")
+    _json_or(args, result_dict, _fmt)
+
+
+def _cmd_trace_conversation(args):
+    """Track safety across multi-turn conversation."""
+    from .cartography.conversation import trace_conversation
+    import numpy as _np
+
+    backend = _load(args)
+    with open(args.turns) as fh:
+        turns = json.load(fh)
+    direction = _np.load(args.direction) if args.direction else None
+    result = trace_conversation(
+        backend, turns,
+        safety_direction=direction, safety_layer=args.layer)
+    result_dict = _to_dict(result)
+    def _fmt(r):
+        for t in r.get('turns', []):
+            print(f"  Turn {t.get('turn', '?')}: refusal={t.get('refusal_prob', 0):.3f} "
+                  f"compliance={t.get('compliance_prob', 0):.3f}")
+    _json_or(args, result_dict, _fmt)
+
+
+def _cmd_trace_generation(args):
+    """Monitor residual stream during generation."""
+    from .cartography.flow import generation_trace
+    import numpy as _np
+
+    backend = _load(args)
+    directions = None
+    if args.directions:
+        dir_path = Path(args.directions)
+        directions = {f.stem: _np.load(f) for f in dir_path.glob("*.npy")}
+    result = generation_trace(
+        backend.model, backend.tokenizer, args.prompt,
+        max_tokens=args.max_tokens, directions=directions, backend=backend)
+    result_dict = _to_dict(result)
+    def _fmt(r):
+        print(f"  Generated: {r.get('generated_text', '')[:200]}")
+        for snap in r.get('snapshots', [])[:5]:
+            print(f"    step {snap.get('step', '?')}: entropy={snap.get('entropy', 0):.3f} "
+                  f"token={snap.get('token', '?')}")
+    _json_or(args, result_dict, _fmt)
+
+
+# === inspect commands (no model needed) ===
+
+def _cmd_inspect_safetensors(args):
+    """Catalog a .safetensors file."""
+    from .inspect.tensor import inspect_safetensors_file
+
+    result = inspect_safetensors_file(Path(args.source), name_regex=args.name_regex)
+    def _fmt(r):
+        print(f"  {r.get('tensor_count', 0)} tensors, {r.get('file_bytes', 0) / 1e6:.1f} MB")
+        for t in r.get('tensors', [])[:20]:
+            print(f"    {t.get('name', '?'):>40} {str(t.get('shape', '?')):>20} {t.get('dtype', '?')}")
+    _json_or(args, result, _fmt)
+
+
+def _cmd_inspect_spectral(args):
+    """Spectral stats of a matrix."""
+    from .inspect.spectral import spectral_stats
+    import numpy as _np
+
+    matrix = _np.load(args.source)
+    result = spectral_stats(matrix, args.topk)
+    def _fmt(r):
+        for k, v in r.items():
+            print(f"  {k}: {v}")
+    _json_or(args, result, _fmt)
+
+
+def _cmd_inspect_bundle(args):
+    """Audit a weight bundle."""
+    from .inspect.tensor import audit_bundle
+
+    result = audit_bundle(Path(args.source), topk=args.topk, only_square=args.only_square)
+    def _fmt(r):
+        print(f"  {r.get('tensor_count', 0)} tensors audited")
+        for t in r.get('tensors', [])[:10]:
+            print(f"    {t.get('name', '?'):>40}: σ1={t.get('sigma1', 0):.2f}")
+    _json_or(args, result, _fmt)
+
+
+# === embed commands ===
+
+def _cmd_embed_direction(args):
+    """Find tokens aligned with a direction in embedding/unembedding space."""
+    import numpy as _np
+
+    backend = _load(args)
+    direction = _np.load(args.direction).astype(_np.float32)
+
+    # Get embedding or unembedding matrix from backend
+    model_inner = getattr(backend.model, 'model', backend.model)
+    import mlx.core as mx
+    if args.space == "unembedding":
+        from .cartography.runtime import _lm_head
+        # Use lm_head weight matrix
+        h_probe = _np.eye(backend.config.hidden_size, dtype=_np.float32)
+        # Direct: project direction through lm_head
+        matrix = None
+        for attr in ['lm_head', 'output']:
+            w = getattr(backend.model, attr, None)
+            if w is not None:
+                matrix = _np.array(w.weight.astype(mx.float32))
+                break
+        if matrix is None:
+            # Tied weights: use embedding
+            matrix = _np.array(model_inner.embed_tokens.weight.astype(mx.float32))
+    else:
+        matrix = _np.array(model_inner.embed_tokens.weight.astype(mx.float32))
+
+    # Project all tokens onto direction
+    scores = matrix @ direction
+    top_pos = _np.argsort(-scores)[:args.top_k]
+    top_neg = _np.argsort(scores)[:args.top_k]
+
+    pos_tokens = []
+    for idx in top_pos:
+        tok = backend.tokenizer.decode([int(idx)], skip_special_tokens=True)
+        pos_tokens.append({"token": tok, "token_id": int(idx), "score": float(scores[idx])})
+    neg_tokens = []
+    for idx in top_neg:
+        tok = backend.tokenizer.decode([int(idx)], skip_special_tokens=True)
+        neg_tokens.append({"token": tok, "token_id": int(idx), "score": float(scores[idx])})
+
+    result = {
+        "direction": args.direction,
+        "space": args.space,
+        "positive": pos_tokens,
+        "negative": neg_tokens,
+    }
+    def _fmt(r):
+        print(f"  Most aligned (+):")
+        for t in r['positive'][:15]:
+            print(f"    {t.get('score', 0):>+8.3f}  {t.get('token', '?')}")
+        print(f"  Most opposed (-):")
+        for t in r['negative'][:15]:
+            print(f"    {t.get('score', 0):>+8.3f}  {t.get('token', '?')}")
+    _json_or(args, result, _fmt)
+
+
+# === probe commands ===
+
+def _cmd_probe_battery(args):
+    """Full behavioral probe battery."""
+    from .cartography.probes import full_probe_battery
+
+    backend = _load(args)
+    results = full_probe_battery(
+        backend.model, backend.tokenizer, max_tokens=args.max_tokens)
+    result = {"probes": [_to_dict(r) for r in results]}
+    def _fmt(r):
+        for p in r['probes']:
+            print(f"  {p.get('name', '?'):>20}: engaged={p.get('engaged', False)} "
+                  f"entropy={p.get('entropy', 0):.3f}")
+    _json_or(args, result, _fmt)
+
+
+def _cmd_probe_safetybench(args):
+    """Safety benchmark evaluation."""
+    from .cartography.safetybench import evaluate_model
+
+    backend = _load(args)
+    result = evaluate_model(
+        backend.model, backend.tokenizer, args.dataset,
+        alpha=args.alpha, max_tokens=args.max_tokens)
+    result_dict = _to_dict(result)
+    def _fmt(r):
+        print(f"  Refusal rate: {r.get('refusal_rate', 0):.1%}")
+        print(f"  Compliance rate: {r.get('compliance_rate', 0):.1%}")
+        for cat, stats in r.get('by_category', {}).items():
+            print(f"    {cat:>20}: refused={stats.get('refused', 0)}/{stats.get('total', 0)}")
+    _json_or(args, result_dict, _fmt)
 
 
 if __name__ == "__main__":

@@ -100,8 +100,11 @@ def _token_saliency_mlx(
     T = len(tokens)
     mask = mx.triu(mx.full((T, T), float('-inf'), dtype=mdtype), k=1) if T > 1 else None
 
-    # Get embeddings
-    embeddings = inner.embed_tokens(input_ids)
+    # Get embeddings — detach to break tied-weight graph.
+    # Models with tied embeddings (embed_tokens.as_linear) share weights
+    # between embedding and lm_head. Without stop_gradient, mx.grad
+    # differentiates through both paths, producing wrong gradients.
+    embeddings = mx.stop_gradient(inner.embed_tokens(input_ids).astype(mx.float32))
 
     # Determine target token if not specified
     if target_token_id is None:

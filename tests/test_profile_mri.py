@@ -6,6 +6,7 @@ from __future__ import annotations
 import json
 import numpy as np
 import pytest
+from heinrich.profile.mri import MRI_VERSION
 
 
 def _make_mri(tmp_path, *, n_tok=20, n_layers=2, hidden=8, vocab=32,
@@ -16,7 +17,7 @@ def _make_mri(tmp_path, *, n_tok=20, n_layers=2, hidden=8, vocab=32,
     d.mkdir()
 
     meta = {
-        "version": "0.7",
+        "version": MRI_VERSION,
         "type": "mri",
         "model": {"n_layers": n_layers, "hidden_size": hidden,
                    "vocab_size": vocab, "name": "test", "n_heads": n_heads},

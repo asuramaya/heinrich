@@ -305,19 +305,19 @@ L{NN}_exit.npy                       # residual stream after each layer [N, hidd
 L{NN}_entry.npy                      # (template only) residual at token_pos [N, hidden]
 embedding.npy, lmhead.npy, lmhead_raw.npy, norms.npz
 weights/L{NN}/*.npy                  # all projection weights
-attention/L{NN}_attn.npy             # (template only) attention weights [N, heads, seq_len]
-gates/L{NN}_gates.npz                # MLP gate top-K: indices [N, K] + values [N, K]
+attention/L{NN}_weights.npy          # (template only) attention weights [N, heads, seq_len]
+mlp/L{NN}_gate.npy                   # MLP gate activations [N, intermediate] (full, all modes)
+mlp/L{NN}_up.npy                     # MLP up activations [N, intermediate] (full, all modes)
 ```
 
 Raw/naked mode: no entry arrays (single-token, entry == exit). No attention (self-attention = 1.0).
 Template mode: entry + exit (different positions) + attention weights + gate activations.
-Gate activations captured in all modes — these are from the exact pre-MLP state via decomposed forward.
+Gate and up activations captured in all modes — full intermediate values from the exact pre-MLP state via decomposed forward.
 
 **Key metadata fields:**
 - `has_entry`: whether L{NN}_entry.npy files exist (False for raw/naked)
 - `has_attention`: whether attention/ directory exists (True for template only)
-- `has_gates`: whether gates/ directory exists (True for all new captures)
-- `gate_k`: number of top-K gate activations stored (default 32)
+- `has_gates`: whether mlp/ directory exists (True for all new captures)
 - `seq_len`: template sequence length (for attention shape)
 
 **Causal bank MRI** (`.mri/`):

@@ -2618,7 +2618,7 @@ def pca_depth(mri_path: str, n_sample: int = 5000,
     }
 
 
-def gate_analysis(mri_path: str, *, n_sample: int | None = None) -> dict:
+def gate_analysis(mri_path: str, *, n_sample: int | None = None, _mri=None) -> dict:
     """Which MLP neurons fire and how they specialize.
 
     Per-layer: diversity, concentration, top neurons, per-script differences.
@@ -2626,7 +2626,7 @@ def gate_analysis(mri_path: str, *, n_sample: int | None = None) -> dict:
     from .mri import load_mri
     from collections import Counter
 
-    mri = load_mri(mri_path)
+    mri = _mri or load_mri(mri_path)
     meta = mri['metadata']
     n_layers = meta['model']['n_layers']
     n_tok = meta['capture']['n_tokens']
@@ -2649,11 +2649,13 @@ def gate_analysis(mri_path: str, *, n_sample: int | None = None) -> dict:
         idx = list(range(n_tok))
         n_sample = n_tok
 
+    import sys
     sampled_scripts = scripts[idx]
     gate_k = 32  # default for analysis reporting
 
     layers = []
     for i in range(n_layers):
+        print(f"  gate_analysis L{i}/{n_layers}", end="\r", file=sys.stderr)
         if has_full_gates and f"gate_L{i}" in mri:
             # Full gate values: [n_tok, intermediate]
             g_full = mri[f"gate_L{i}"][idx].astype(np.float32)
@@ -2705,20 +2707,22 @@ def gate_analysis(mri_path: str, *, n_sample: int | None = None) -> dict:
             "script_top1": script_top1,
         })
 
+    print(" " * 40, end="\r", file=sys.stderr)
+
     return {
         "model": model_name, "mode": mode, "n_tokens": n_sample,
         "gate_k": gate_k, "n_layers": len(layers), "layers": layers,
     }
 
 
-def attention_analysis(mri_path: str, *, n_sample: int | None = None) -> dict:
+def attention_analysis(mri_path: str, *, n_sample: int | None = None, _mri=None) -> dict:
     """Where does the token attend in template mode?
 
     Per-layer: self vs prefix vs suffix weight, entropy, per-head focus.
     """
     from .mri import load_mri
 
-    mri = load_mri(mri_path)
+    mri = _mri or load_mri(mri_path)
     meta = mri['metadata']
     n_layers = meta['model']['n_layers']
     n_tok = meta['capture']['n_tokens']
@@ -2742,11 +2746,13 @@ def attention_analysis(mri_path: str, *, n_sample: int | None = None) -> dict:
         idx = list(range(n_tok))
         n_sample = n_tok
 
+    import sys
     prefix_range = list(range(token_pos))
     suffix_range = list(range(token_pos + 1, seq_len))
 
     layers = []
     for i in range(n_layers):
+        print(f"  attention_analysis L{i}/{n_layers}", end="\r", file=sys.stderr)
         akey = f"{attn_prefix}{i}"
         if akey not in mri:
             continue
@@ -2777,6 +2783,8 @@ def attention_analysis(mri_path: str, *, n_sample: int | None = None) -> dict:
             "prefix_weight": round(prefix_w, 4), "suffix_weight": round(suffix_w, 4),
             "entropy": round(entropy, 3), "head_focus": head_focus,
         })
+
+    print(" " * 40, end="\r", file=sys.stderr)
 
     return {
         "model": model_name, "mode": mode, "n_tokens": n_sample,
@@ -2873,9 +2881,16 @@ def bandwidth_efficiency(mri_path: str, *, n_sample: int | None = None,
             skip_frac = 0.0
 
         # MLP active fraction from gates
-        if gate_k and f"gate_indices_L{i}" in mri:
-            g_idx = mri[f"gate_indices_L{i}"][idx]
-            # Unique neurons per token
+        gate_key_full = f"gate_L{i}"
+        gate_key_topk = f"gate_indices_L{i}"
+        if gate_key_full in mri:
+            # Full gate activations: count neurons above threshold
+            g = mri[gate_key_full][idx].astype(np.float32)
+            active_per_token = np.sum(np.abs(g) > 1.0, axis=1)
+            mean_active = float(active_per_token.mean())
+            mlp_active_frac = mean_active / intermediate_size
+        elif gate_k and gate_key_topk in mri:
+            g_idx = mri[gate_key_topk][idx]
             unique_per_token = np.array([len(set(row)) for row in g_idx])
             mean_active = float(unique_per_token.mean())
             mlp_active_frac = mean_active / intermediate_size
@@ -2933,6 +2948,7 @@ def lookup_fraction(mri_path: str, *, n_sample: int | None = None) -> dict:
     If top-1 matches, the layers added nothing — the token was lookup-solvable.
     """
     from .mri import load_mri
+    import sys
 
     mri = load_mri(mri_path)
     meta = mri['metadata']
@@ -2947,6 +2963,7 @@ def lookup_fraction(mri_path: str, *, n_sample: int | None = None) -> dict:
     embedding = mri['embedding'].astype(np.float32)  # [vocab, hidden]
     token_ids = mri['token_ids']
     n_tok = len(token_ids)
+    vocab_size = lmhead.shape[0]
 
     final_norm_w = mri.get('norm_final')
     if final_norm_w is not None:
@@ -2956,12 +2973,19 @@ def lookup_fraction(mri_path: str, *, n_sample: int | None = None) -> dict:
     if last_layer not in mri:
         return {"error": f"Missing {last_layer}"}
 
-    if n_sample and n_sample < n_tok:
+    # OOM guard: [n_sample, vocab] logits at float32 per layer
+    if n_sample is None:
+        n_sample = min(n_tok, 5000)
+    peak_bytes = n_sample * vocab_size * 4
+    if peak_bytes > 4 * 1024**3:
+        print(f"  WARNING: lookup_fraction peak alloc ~{peak_bytes / 1024**3:.1f} GB "
+              f"({n_sample} tokens x {vocab_size} vocab)", file=sys.stderr)
+
+    if n_sample < n_tok:
         rng = np.random.RandomState(42)
         idx = sorted(rng.choice(n_tok, n_sample, replace=False))
     else:
         idx = list(range(n_tok))
-        n_sample = n_tok
 
     sampled_ids = token_ids[idx]
     exit_states = mri[last_layer][idx].astype(np.float32)
@@ -3040,6 +3064,7 @@ def distribution_drift(mri_path: str, *, n_sample: int | None = None,
     probability mass moves between layers?
     """
     from .mri import load_mri
+    import sys
 
     mri = load_mri(mri_path)
     meta = mri['metadata']
@@ -3047,15 +3072,26 @@ def distribution_drift(mri_path: str, *, n_sample: int | None = None,
     model_name = meta['model']['name']
     mode = meta.get('capture', {}).get('mode', '?')
     n_tok = len(mri['token_ids'])
+    vocab_size = meta['model'].get('vocab_size', 0)
 
     if 'lmhead_raw' not in mri:
         return {"error": "MRI missing lmhead_raw"}
     lmhead = mri['lmhead_raw'].astype(np.float32)
+    vocab_size = vocab_size or lmhead.shape[0]
     final_norm_w = mri.get('norm_final')
     if final_norm_w is not None:
         final_norm_w = np.array(final_norm_w).astype(np.float32)
 
-    if n_sample and n_sample < n_tok:
+    # OOM guard: [n_sample, vocab] logits at float32 is the peak per-layer alloc
+    # Cap at 5000 by default; warn if requested size would exceed 4 GB
+    if n_sample is None:
+        n_sample = min(n_tok, 5000)
+    peak_bytes = n_sample * vocab_size * 4 * 3  # logits + probs + prev_probs
+    if peak_bytes > 4 * 1024**3:
+        print(f"  WARNING: distribution_drift peak alloc ~{peak_bytes / 1024**3:.1f} GB "
+              f"({n_sample} tokens x {vocab_size} vocab)", file=sys.stderr)
+
+    if n_sample < n_tok:
         rng = np.random.RandomState(42)
         idx = sorted(rng.choice(n_tok, n_sample, replace=False))
     else:
@@ -3641,7 +3677,7 @@ def inspect_profile(path: str) -> dict:
 
 def logit_lens(mri_path: str, *, top_k: int = 5,
                layers: list[int] | None = None,
-               n_sample: int | None = None) -> dict:
+               n_sample: int | None = None, _mri=None) -> dict:
     """Logit lens: what would the model predict at each layer?
 
     Applies final_norm + lmhead to each layer's exit state.
@@ -3650,7 +3686,7 @@ def logit_lens(mri_path: str, *, top_k: int = 5,
     """
     from .mri import load_mri
 
-    mri = load_mri(mri_path)
+    mri = _mri or load_mri(mri_path)
     meta = mri['metadata']
     n_layers = meta['model']['n_layers']
     hidden = meta['model']['hidden_size']
@@ -3680,8 +3716,10 @@ def logit_lens(mri_path: str, *, top_k: int = 5,
         idx = list(range(n_tokens))
         n_sample = n_tokens
 
+    import sys
     results = []
-    for layer in layers:
+    for li, layer in enumerate(layers):
+        print(f"  logit_lens {li+1}/{len(layers)}", end="\r", file=sys.stderr)
         exit_key = f"exit_L{layer}"
         if exit_key not in mri:
             continue
@@ -3716,6 +3754,8 @@ def logit_lens(mri_path: str, *, top_k: int = 5,
             "predictions": layer_preds,
         })
 
+    print(" " * 40, end="\r", file=sys.stderr)
+
     return {
         "model": model_name,
         "n_tokens": n_sample,
@@ -3725,7 +3765,7 @@ def logit_lens(mri_path: str, *, top_k: int = 5,
     }
 
 
-def layer_deltas(mri_path: str, *, n_sample: int | None = None) -> dict:
+def layer_deltas(mri_path: str, *, n_sample: int | None = None, _mri=None) -> dict:
     """Layer deltas: what each layer actually computes.
 
     Delta at layer i = exit_L[i] - exit_L[i-1].
@@ -3735,7 +3775,7 @@ def layer_deltas(mri_path: str, *, n_sample: int | None = None) -> dict:
     """
     from .mri import load_mri
 
-    mri = load_mri(mri_path)
+    mri = _mri or load_mri(mri_path)
     meta = mri['metadata']
     n_layers = meta['model']['n_layers']
     model_name = meta['model']['name']
@@ -3752,9 +3792,11 @@ def layer_deltas(mri_path: str, *, n_sample: int | None = None) -> dict:
     scripts = mri.get('scripts', np.array(['?'] * n_tokens))
     sampled_scripts = scripts[idx]
 
+    import sys
     results = []
     prev = None
     for i in range(n_layers):
+        print(f"  layer_deltas L{i}/{n_layers}", end="\r", file=sys.stderr)
         exit_key = f"exit_L{i}"
         if exit_key not in mri:
             continue
@@ -3775,6 +3817,7 @@ def layer_deltas(mri_path: str, *, n_sample: int | None = None) -> dict:
                 if results else 1.0,
         })
         prev = curr
+    print(" " * 40, end="\r", file=sys.stderr)
 
     return {
         "model": model_name,
@@ -3782,4 +3825,382 @@ def layer_deltas(mri_path: str, *, n_sample: int | None = None) -> dict:
         "n_tokens": n_sample,
         "n_layers": len(results),
         "layers": results,
+    }
+
+
+# ---------------------------------------------------------------------------
+# Causal bank analysis tools
+# ---------------------------------------------------------------------------
+
+def _cb_sample(mri, n_sample: int | None):
+    """Sample indices and scripts from an MRI (shared helper)."""
+    n_tok = len(mri['token_ids'])
+    scripts = mri.get('scripts', np.array(['?'] * n_tok))
+    if n_sample and n_sample < n_tok:
+        rng = np.random.RandomState(42)
+        idx = sorted(rng.choice(n_tok, n_sample, replace=False))
+    else:
+        idx = list(range(n_tok))
+        n_sample = n_tok
+    return idx, n_sample, scripts
+
+
+def causal_bank_manifold(mri_path: str, *, n_sample: int | None = None, _mri=None) -> dict:
+    """Manifold structure of causal bank substrate states.
+
+    PCA decomposition, effective dimensionality, band loadings,
+    readout alignment, and weight analysis from a single MRI.
+    """
+    from .mri import load_mri
+
+    mri = _mri or load_mri(mri_path)
+    meta = mri['metadata']
+    if meta.get('architecture') != 'causal_bank':
+        return {"error": "Not a causal bank MRI"}
+
+    model_info = meta['model']
+    n_modes = model_info['n_modes']
+    n_bands = model_info.get('n_bands', 1)
+    n_experts = model_info.get('n_experts', 1)
+    embed_dim = model_info.get('embed_dim', 0)
+
+    idx, n_sample, scripts = _cb_sample(mri, n_sample)
+    sampled_scripts = scripts[idx]
+
+    sub = mri['substrate_states'][idx].astype(np.float32)
+    half_lives = mri.get('half_lives')
+    if half_lives is not None:
+        half_lives = np.asarray(half_lives, dtype=np.float32)
+
+    # --- PCA ---
+    sub_c = sub - sub.mean(axis=0)
+    _, S, Vt = np.linalg.svd(sub_c, full_matrices=False)
+    var_exp = (S ** 2) / (S ** 2).sum()
+    cum = np.cumsum(var_exp)
+    eff_dim = float(np.exp(-(var_exp * np.log(var_exp + 1e-10)).sum()))
+
+    pca = {
+        "effective_dim": round(eff_dim, 1),
+        "pcs_for_50": int(np.searchsorted(cum, 0.5)) + 1,
+        "pcs_for_80": int(np.searchsorted(cum, 0.8)) + 1,
+        "pcs_for_95": int(np.searchsorted(cum, 0.95)) + 1,
+        "top_10_variance": [round(float(v) * 100, 2) for v in var_exp[:10]],
+    }
+
+    # --- Band loadings of top PCs ---
+    band_loadings = []
+    if half_lives is not None and n_bands > 1:
+        band_size = n_modes // n_bands
+        for pc_i in range(min(10, Vt.shape[0])):
+            pc_vec = Vt[pc_i]
+            bnorms = [float(np.linalg.norm(pc_vec[b * band_size:(b + 1) * band_size]))
+                      for b in range(n_bands)]
+            total = sum(bnorms) + 1e-10
+            band_loadings.append({
+                "pc": pc_i + 1,
+                "variance_pct": round(float(var_exp[pc_i]) * 100, 2),
+                "band_pcts": [round(bn / total * 100, 1) for bn in bnorms],
+            })
+
+    # --- Half-life bands ---
+    bands_info = []
+    if half_lives is not None:
+        band_size = n_modes // max(n_bands, 1)
+        for b in range(max(n_bands, 4)):
+            sl = slice(b * band_size, min((b + 1) * band_size, n_modes))
+            if sl.start >= n_modes:
+                break
+            hl_b = half_lives[sl]
+            sub_b = sub[:, sl]
+            bands_info.append({
+                "band": b,
+                "hl_min": round(float(hl_b.min()), 1),
+                "hl_max": round(float(hl_b.max()), 1),
+                "n_modes": int(sl.stop - sl.start),
+                "substrate_l2": round(float(np.linalg.norm(sub_b, axis=1).mean()), 4),
+            })
+
+    # --- Readout alignment ---
+    readout = {}
+    # Find expert_in weights to measure what the readout sees
+    band_size_r = n_modes // max(n_bands, 1)
+    mode_attention = np.zeros(n_modes)
+    expert_count = 0
+    for b in range(n_bands):
+        for e in range(n_experts):
+            wkey = f"weight__band_readouts_{b}_experts_in_{e}_weight"
+            if wkey not in mri:
+                # Try single-readout path
+                wkey = f"weight_linear_readout_experts_in_{e}_weight"
+            if wkey in mri:
+                w = mri[wkey].astype(np.float32)
+                # Per-band substrate columns
+                col_start = 0
+                col_end = min(band_size_r, w.shape[1])
+                if n_bands > 1:
+                    col_end = min(band_size_r, w.shape[1] - embed_dim)
+                elif w.shape[1] > n_modes:
+                    col_end = n_modes
+                mode_cols = w[:, :col_end]
+                contrib = np.linalg.norm(mode_cols, axis=0)
+                if n_bands > 1:
+                    mode_attention[b * band_size_r:b * band_size_r + len(contrib)] += contrib
+                else:
+                    mode_attention[:len(contrib)] += contrib
+                expert_count += 1
+
+    if expert_count > 0:
+        mode_attention /= expert_count
+        # Per-band readout weight
+        readout_bands = []
+        for b in range(max(n_bands, 4)):
+            sl = slice(b * band_size_r, min((b + 1) * band_size_r, n_modes))
+            if sl.start >= n_modes:
+                break
+            ma = mode_attention[sl]
+            readout_bands.append({
+                "band": b,
+                "mean_weight": round(float(ma.mean()), 4),
+                "pct_of_total": round(float(ma.sum()) / (mode_attention.sum() + 1e-10) * 100, 1),
+            })
+
+        # Slow vs fast ratio
+        if half_lives is not None:
+            slow_mask = half_lives > (half_lives.max() * 0.4)
+            fast_mask = half_lives < (half_lives.min() * 5)
+            slow_w = float(mode_attention[slow_mask].mean()) if slow_mask.any() else 0
+            fast_w = float(mode_attention[fast_mask].mean()) if fast_mask.any() else 1
+            readout["slow_fast_ratio"] = round(slow_w / (fast_w + 1e-10), 4)
+
+        readout["bands"] = readout_bands
+        readout["dead_modes"] = int((mode_attention < mode_attention.mean() * 0.01).sum())
+
+    # --- Router differentiation ---
+    routing_info = {}
+    for b in range(n_bands):
+        rw_key = f"weight__band_readouts_{b}_router_weight"
+        if rw_key not in mri:
+            rw_key = "weight_linear_readout_router_weight"
+        if rw_key in mri:
+            rw = mri[rw_key].astype(np.float32)
+            ne = rw.shape[0]
+            norms = np.linalg.norm(rw, axis=1, keepdims=True)
+            rw_n = rw / (norms + 1e-10)
+            cos = rw_n @ rw_n.T
+            off = cos[np.triu_indices(ne, k=1)]
+            routing_info[f"band_{b}" if n_bands > 1 else "global"] = {
+                "n_experts": int(ne),
+                "router_cos_mean": round(float(off.mean()), 4),
+                "router_cos_min": round(float(off.min()), 4),
+                "router_cos_max": round(float(off.max()), 4),
+            }
+
+    # --- Gate analysis (for gated_delta models) ---
+    gate_info = {}
+    for gate_name in ["write", "retain", "erase"]:
+        bias_key = f"weight__gated_delta_{gate_name}_gate_bias"
+        if bias_key in mri:
+            bias = mri[bias_key].astype(np.float32)
+            sigmoid_bias = 1.0 / (1.0 + np.exp(-bias))
+            gate_info[gate_name] = {
+                "default_opening": round(float(sigmoid_bias.mean()), 4),
+                "opening_range": [round(float(sigmoid_bias.min()), 4),
+                                  round(float(sigmoid_bias.max()), 4)],
+            }
+
+    # --- SSM analysis (for scan models) ---
+    ssm_info = {}
+    if "weight__ssm_A" in mri:
+        A = mri["weight__ssm_A"].astype(np.float32)
+        retention = np.exp(np.clip(A, -20, 0))
+        scan_hl = np.log(0.5) / np.log(np.clip(retention, 1e-6, 1 - 1e-6))
+        ssm_info["A_shape"] = list(A.shape)
+        ssm_info["scan_hl_range"] = [round(float(scan_hl.min()), 1),
+                                     round(float(scan_hl.max()), 1)]
+        if A.ndim == 2:
+            ssm_info["per_head"] = [
+                {"head": int(h),
+                 "hl_range": [round(float(scan_hl[h].min()), 1),
+                              round(float(scan_hl[h].max()), 1)]}
+                for h in range(A.shape[0])
+            ]
+
+    return {
+        "model": model_info.get('name', '?'),
+        "n_modes": n_modes,
+        "n_bands": n_bands,
+        "n_experts": n_experts,
+        "embed_dim": embed_dim,
+        "n_tokens": n_sample,
+        "pca": pca,
+        "band_loadings": band_loadings,
+        "bands": bands_info,
+        "readout": readout,
+        "routing": routing_info,
+        "gate": gate_info,
+        "ssm": ssm_info,
+    }
+
+
+def causal_bank_compare(mri_path_a: str, mri_path_b: str, *,
+                        n_sample: int | None = None) -> dict:
+    """Compare two causal bank MRIs: CKA, displacement correlation, routing."""
+    from .mri import load_mri
+
+    mri_a = load_mri(mri_path_a)
+    mri_b = load_mri(mri_path_b)
+
+    for label, mri in [("a", mri_a), ("b", mri_b)]:
+        if mri['metadata'].get('architecture') != 'causal_bank':
+            return {"error": f"MRI {label} is not a causal bank MRI"}
+
+    n_tok = min(len(mri_a['token_ids']), len(mri_b['token_ids']))
+    if n_sample and n_sample < n_tok:
+        rng = np.random.RandomState(42)
+        idx = sorted(rng.choice(n_tok, n_sample, replace=False))
+    else:
+        idx = list(range(n_tok))
+        n_sample = n_tok
+
+    sub_a = mri_a['substrate_states'][idx].astype(np.float32)
+    sub_b = mri_b['substrate_states'][idx].astype(np.float32)
+
+    # Displacement correlation
+    disp_a = np.linalg.norm(sub_a, axis=1)
+    disp_b = np.linalg.norm(sub_b, axis=1)
+    disp_corr = float(np.corrcoef(disp_a, disp_b)[0, 1])
+
+    # CKA
+    def _linear_cka(X, Y):
+        n = X.shape[0]
+        X, Y = X - X.mean(0), Y - Y.mean(0)
+        XX, YY = X @ X.T, Y @ Y.T
+        H = np.eye(n) - np.ones((n, n)) / n
+        hxy = np.trace(XX @ H @ YY @ H) / (n - 1) ** 2
+        hxx = np.trace(XX @ H @ XX @ H) / (n - 1) ** 2
+        hyy = np.trace(YY @ H @ YY @ H) / (n - 1) ** 2
+        return float(hxy / (np.sqrt(hxx * hyy) + 1e-10))
+
+    # Subsample for CKA (expensive)
+    cka_n = min(500, n_sample)
+    cka_idx = list(range(cka_n))
+    cka = _linear_cka(sub_a[cka_idx], sub_b[cka_idx])
+
+    # Router weight comparison (if both have routers)
+    router_cos = {}
+    meta_a = mri_a['metadata']['model']
+    meta_b = mri_b['metadata']['model']
+    n_bands_a = meta_a.get('n_bands', 1)
+    n_bands_b = meta_b.get('n_bands', 1)
+    if n_bands_a == n_bands_b:
+        for b in range(n_bands_a):
+            rw_key = f"weight__band_readouts_{b}_router_weight"
+            if rw_key not in mri_a or rw_key not in mri_b:
+                rw_key = "weight_linear_readout_router_weight"
+            if rw_key in mri_a and rw_key in mri_b:
+                rw_a = mri_a[rw_key].astype(np.float32)
+                rw_b = mri_b[rw_key].astype(np.float32)
+                if rw_a.shape == rw_b.shape:
+                    cos = float(np.sum(rw_a * rw_b) / (
+                        np.linalg.norm(rw_a) * np.linalg.norm(rw_b) + 1e-10))
+                    router_cos[f"band_{b}" if n_bands_a > 1 else "global"] = round(cos, 4)
+
+    return {
+        "a": mri_path_a, "b": mri_path_b,
+        "n_tokens": n_sample,
+        "displacement_correlation": round(disp_corr, 4),
+        "cka": round(cka, 4),
+        "a_info": {"n_modes": meta_a['n_modes'], "n_bands": n_bands_a},
+        "b_info": {"n_modes": meta_b['n_modes'], "n_bands": n_bands_b},
+        "router_cosine": router_cos,
+    }
+
+
+def causal_bank_health(mri_path: str, *, _mri=None) -> dict:
+    """Validate causal bank MRI: shapes, NaN, architecture consistency."""
+    from .mri import load_mri
+
+    mri = _mri or load_mri(mri_path)
+    meta = mri['metadata']
+    if meta.get('architecture') != 'causal_bank':
+        return {"error": "Not a causal bank MRI"}
+
+    model = meta['model']
+    n_modes = model['n_modes']
+    n_bands = model.get('n_bands', 1)
+    n_experts = model.get('n_experts', 1)
+    n_tokens = meta['capture']['n_tokens']
+
+    checks = []
+    ok = True
+
+    # Substrate shape
+    if 'substrate_states' in mri:
+        sub = mri['substrate_states']
+        expected = (n_tokens, n_modes)
+        if sub.shape != expected:
+            checks.append(f"FAIL substrate shape {sub.shape} != {expected}")
+            ok = False
+        elif np.isnan(sub).any():
+            checks.append(f"FAIL substrate has NaN ({np.isnan(sub).sum()} values)")
+            ok = False
+        else:
+            checks.append(f"OK substrate {sub.shape} {sub.dtype}")
+    else:
+        checks.append("FAIL substrate missing")
+        ok = False
+
+    # Half-lives
+    if 'half_lives' in mri:
+        hl = np.asarray(mri['half_lives'])
+        if hl.shape != (n_modes,):
+            checks.append(f"FAIL half_lives shape {hl.shape} != ({n_modes},)")
+            ok = False
+        elif (hl <= 0).any():
+            checks.append(f"FAIL half_lives has non-positive values")
+            ok = False
+        else:
+            checks.append(f"OK half_lives [{hl.min():.1f}, {hl.max():.1f}]")
+    else:
+        checks.append("WARN half_lives missing")
+
+    # Routing
+    if 'routing' in mri and n_experts > 1:
+        rt = mri['routing']
+        if rt.shape[0] != n_tokens:
+            checks.append(f"FAIL routing shape {rt.shape}")
+            ok = False
+        else:
+            checks.append(f"OK routing {rt.shape}")
+
+    # Band logits
+    if 'band_logits' in mri and n_bands > 1:
+        bl = mri['band_logits']
+        expected_bl = (n_tokens, n_bands, model.get('vocab_size', 1024))
+        if bl.shape != expected_bl:
+            checks.append(f"FAIL band_logits shape {bl.shape} != {expected_bl}")
+            ok = False
+        else:
+            checks.append(f"OK band_logits {bl.shape}")
+
+    # Embedding
+    if 'embedding' in mri:
+        emb = mri['embedding']
+        checks.append(f"OK embedding {emb.shape}")
+    else:
+        checks.append("WARN embedding missing")
+
+    # Weight count
+    weight_keys = [k for k in mri.keys() if k.startswith("weight_")]
+    checks.append(f"OK {len(weight_keys)} weight arrays")
+
+    return {
+        "path": str(mri_path),
+        "architecture": "causal_bank",
+        "n_modes": n_modes,
+        "n_bands": n_bands,
+        "n_experts": n_experts,
+        "n_tokens": n_tokens,
+        "ok": ok,
+        "checks": checks,
     }
