@@ -68,9 +68,9 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   </div>
   <div id="mid">
     <div class="vp" id="vp0"><canvas id="c0"></canvas><div class="info" id="info0"><span class="t" id="ht"></span><span class="s" id="hs"></span><div style="color:#555;font-size:8px" id="hst"></div></div><div class="axes" id="ax0"></div></div>
-    <div class="vp" id="vp1"><canvas id="c1"></canvas><div class="axes" id="ax1"></div><div class="badge">⊥</div></div>
-    <div class="vp" id="vp2"><canvas id="c2"></canvas><div class="axes" id="ax2"></div><div class="badge">→</div></div>
-    <div class="vp" id="vp3"><canvas id="c3"></canvas><div class="axes" id="ax3"></div><div class="badge">?</div></div>
+    <div class="vp" id="vp1"><canvas id="c1"></canvas><div class="axes" id="ax1"></div></div>
+    <div class="vp" id="vp2"><canvas id="c2"></canvas><div class="axes" id="ax2"></div></div>
+    <div class="vp" id="vp3"><canvas id="c3"></canvas><div class="axes" id="ax3"></div></div>
   </div>
   <div id="right">
     <div class="hd">L<span id="rl">00</span> <span id="ri" style="color:#444"></span></div>
@@ -112,8 +112,19 @@ for(let v=0;v<4;v++){
   views.push({el,cv,sc,cam,rdr,ctl,geo,mtl,pts,pcX:0,pcY:1,pcZ:2,layer:0,trajGroup:null});
 }
 
-// Link orbit: rotate vp0, vp1 follows
-views[0].ctl.addEventListener('change',()=>{views[1].cam.position.copy(views[0].cam.position);views[1].cam.quaternion.copy(views[0].cam.quaternion);});
+// Link orbits: left pair shares rotation, right pair shares rotation
+// Top-left(0) ↔ Bottom-left(2), Top-right(1) ↔ Bottom-right(3)
+let syncing=false;
+function syncCam(src,dst){
+  if(syncing)return;syncing=true;
+  dst.cam.position.copy(src.cam.position);dst.cam.quaternion.copy(src.cam.quaternion);
+  dst.ctl.target.copy(src.ctl.target);
+  syncing=false;
+}
+views[0].ctl.addEventListener('change',()=>syncCam(views[0],views[2]));
+views[2].ctl.addEventListener('change',()=>syncCam(views[2],views[0]));
+views[1].ctl.addEventListener('change',()=>syncCam(views[1],views[3]));
+views[3].ctl.addEventListener('change',()=>syncCam(views[3],views[1]));
 
 function resizeV(v){const w=v.el.clientWidth,h=v.el.clientHeight;if(w&&h){v.cam.aspect=w/h;v.cam.updateProjectionMatrix();v.rdr.setSize(w,h);v.rdr.setPixelRatio(devicePixelRatio);}}
 function resizeAll(){views.forEach(resizeV);}
@@ -122,38 +133,67 @@ const ro=new ResizeObserver(()=>resizeAll());
 views.forEach(v=>ro.observe(v.el));
 requestAnimationFrame(resizeAll);
 
-// Raycaster on ALL viewports
+// Raycaster on ALL viewports + cross-highlight
 const ray=new THREE.Raycaster();const ms=new THREE.Vector2();
+let hoveredToken=-1;
+
+// Highlight markers — one per viewport, shows the hovered token
+const highlightMarkers=views.map(v=>{
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));
+  const m=new THREE.PointsMaterial({size:0.06,color:0xFFFFFF,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false});
+  const p=new THREE.Points(g,m);p.visible=false;
+  v.sc.add(p);return p;
+});
+
+function highlightToken(idx){
+  hoveredToken=idx;
+  views.forEach((v,vi)=>{
+    const mk=highlightMarkers[vi];
+    if(idx<0){mk.visible=false;return;}
+    mk.visible=true;
+    const pos=mk.geometry.attributes.position.array;
+    if(vi<2){
+      // Cloud viewports — use the cloud positions
+      const cpos=v.geo.attributes.position?.array;
+      if(cpos){pos[0]=cpos[idx*3];pos[1]=cpos[idx*3+1];pos[2]=cpos[idx*3+2];}
+    }else{
+      // Trajectory viewports — find token at current layer depth
+      const S=allL[cL];if(!S)return;
+      let mx=0;for(const SS of allL)for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(SS[i][v.pcX]||0),Math.abs(SS[i][v.pcY]||0));mx=mx||1;
+      pos[0]=(S[idx][v.pcX]||0)/mx;
+      pos[1]=(S[idx][v.pcY]||0)/mx;
+      pos[2]=(cL/(nL-1))*2-1;
+    }
+    mk.geometry.attributes.position.needsUpdate=true;
+  });
+}
+
 function setupRaycast(vi){
   const v=views[vi];
   v.cv.addEventListener('mousemove',e=>{
     if(!nN)return;const r=v.cv.getBoundingClientRect();
     ms.x=((e.clientX-r.left)/r.width)*2-1;ms.y=-((e.clientY-r.top)/r.height)*2+1;
-    ray.setFromCamera(ms,v.cam);ray.params.Points.threshold=Math.max(0.005,v.cam.position.length()*0.008);
-    // Raycast against points in this viewport
-    const targets=[v.pts];if(v.trajGroup)v.trajGroup.children.forEach(c=>{if(c.isPoints)targets.push(c);});
+    ray.setFromCamera(ms,v.cam);ray.params.Points.threshold=Math.max(0.008,v.cam.position.length()*0.01);
+    const targets=[v.pts];
+    if(v.trajGroup)v.trajGroup.children.forEach(c=>{if(c.isPoints)targets.push(c);});
     let hit=null;
     for(const t of targets){const h=ray.intersectObject(t);if(h.length>0){hit=h[0];break;}}
     const td=document.getElementById('detail');
     if(hit){
-      const i=hit.index%nN; // modulo for trajectory cloud indices
+      const i=hit.index%nN;
+      highlightToken(i);
       const S=allL[cL][i];
       document.getElementById('tt').textContent=texts[i]||'?';
       document.getElementById('tt').style.color=CLh[scripts[i]]||'#aaa';
-      let m=`${scripts[i]}  #${i}\n`;
-      m+=`\nPC scores at L${cL}:\n`;
-      for(let p=0;p<Math.min(nK,8);p++)m+=`  PC${p}: ${(S[p]||0).toFixed(3)}\n`;
-      const lm=dm?.layers[cL]||{};
-      m+=`\nL${cL} dim:${lm.intrinsic_dim||'?'} nbr:${(lm.neighbor_stability||0).toFixed(3)}`;
+      let m=`${scripts[i]}  #${i}\n\n`;
+      for(let p=0;p<Math.min(nK,8);p++)m+=`PC${p}: ${(S[p]||0).toFixed(3)}\n`;
       document.getElementById('tm').textContent=m;
-      // Position popup near the viewport that triggered it
-      td.style.left=v.el.offsetLeft+v.el.clientWidth/2+'px';
-      td.style.top=v.el.offsetTop+v.el.clientHeight/2+'px';
-      td.style.transform='translate(-50%,-50%)';
-      td.style.display='block';
-    }else{td.style.display='none';}
+      td.style.left=e.clientX+15+'px';td.style.top=e.clientY-10+'px';
+      td.style.transform='none';td.style.display='block';
+    }else{highlightToken(-1);td.style.display='none';}
   });
-  v.cv.addEventListener('mouseleave',()=>{document.getElementById('detail').style.display='none';});
+  v.cv.addEventListener('mouseleave',()=>{highlightToken(-1);document.getElementById('detail').style.display='none';});
 }
 views.forEach((_,i)=>setupRaycast(i));
 
@@ -177,9 +217,10 @@ function updateVP(vi,pcX,pcY,pcZ,layer){
   if(!v._fitted){v.cam.position.set(0,0,2.5);v.ctl.target.set(0,0,0);v.ctl.update();v._fitted=true;}
 }
 
-// === Update trajectory viewport (vp2) ===
-function updateTraj(pcX,pcY){
-  const v=views[2];
+// === Update trajectory viewport ===
+function updateTraj(vi,pcX,pcY){
+  const v=views[vi];
+  v.pcX=pcX;v.pcY=pcY;
   if(v.trajGroup)v.sc.remove(v.trajGroup);v.sc.remove(v.pts);
   v.trajGroup=new THREE.Group();
   let mx=0;for(const S of allL)for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(S[i][pcX]||0),Math.abs(S[i][pcY]||0));mx=mx||1;
@@ -199,32 +240,38 @@ function updateTraj(pcX,pcY){
   const pm=new THREE.Points(pg,new THREE.PointsMaterial({size:0.01,vertexColors:true,transparent:true,opacity:0.9,sizeAttenuation:true}));
   v.trajGroup.add(pm);
   v.sc.add(v.trajGroup);
-  document.getElementById('ax2').textContent=`${pcX}/${pcY}/depth`;
+  document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}+d`;
+}
+
+// === Find orthogonal PC pair ===
+function orthoPair(a,b){
+  const used=new Set([a,b]);
+  let oa=-1,ob=-1;
+  for(let i=0;i<nK;i++){if(!used.has(i)){if(oa<0)oa=i;else if(ob<0){ob=i;break;}}}
+  if(oa<0)oa=0;if(ob<0)ob=1;
+  return[oa,ob];
+}
+function thirdPC(a,b){
+  for(let i=0;i<nK;i++){if(i!==a&&i!==b)return i;}return 0;
 }
 
 // === Auto-select the 4 viewports ===
+// Top row: clouds (current layer). Bottom row: trajectories (all layers + depth)
+// Left column: selected pair. Right column: orthogonal pair.
 function updateAllViewports(){
   const a=selA,b=selB;
-  // Find best third PC (highest variance not in a,b)
-  const lm=dm?.layers[cL];
-  let bestC=0,bestV=-1;
-  for(let i=0;i<Math.min(nK,10);i++){if(i!==a&&i!==b){const v=lm?.pc1_pct||0;if(i===0||bestV<0){bestC=i;bestV=1;break;}}}
-  if(bestC===a||bestC===b)bestC=(a+b+1)%nK;
-  const c=bestC;
+  const c=thirdPC(a,b);
+  const[oa,ob]=orthoPair(a,b);
+  const oc=thirdPC(oa,ob);
 
-  // VP0: selected pair + best third (the main cloud)
+  // VP0: cloud, selected pair, current layer
   updateVP(0,a,b,c,cL);
-  // VP1: orthogonal pair (⊥) — next two PCs
-  const oa=Math.min(a+1,nK-1)===b?Math.min(a+2,nK-1):Math.min(a+1,nK-1);
-  const ob=Math.min(b+1,nK-1)===oa?Math.min(b+2,nK-1):Math.min(b+1,nK-1);
-  const oc=(oa+ob+1)%nK;
-  updateVP(1,oa,ob,oc===oa||oc===ob?(oa+ob+2)%nK:oc,cL);
-  // VP2: trajectory
-  updateTraj(a,b);
-  // VP3: adjacent layer (same PCs, L+1)
-  const adjL=Math.min(cL+1,nL-1);
-  updateVP(3,a,b,c,adjL);
-  document.getElementById('ax3').textContent=`${a}/${b}/${c} L${adjL}`;
+  // VP1: cloud, orthogonal pair, current layer
+  updateVP(1,oa,ob,oc,cL);
+  // VP2: trajectory, selected pair + depth
+  updateTraj(2,a,b);
+  // VP3: trajectory, orthogonal pair + depth
+  updateTraj(3,oa,ob);
 }
 
 // === Left panel ===
