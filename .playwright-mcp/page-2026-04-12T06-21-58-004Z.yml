@@ -1,0 +1,32 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - combobox [ref=e3] [cursor=pointer]:
+      - option "qwen-0.5b" [selected]
+      - option "smollm2-135m"
+      - option "smollm2-360m"
+    - combobox [ref=e4] [cursor=pointer]:
+      - option "raw" [selected]
+      - option "naked"
+      - option "template"
+    - spinbutton [ref=e5] [cursor=pointer]: "5000"
+    - button "Load" [ref=e6] [cursor=pointer]
+    - generic [ref=e7]: No decomposition. Run mri-decompose.
+  - generic [ref=e11]:
+    - generic [ref=e12]:
+      - generic [ref=e13]: AXES
+      - generic [ref=e14]:
+        - generic [ref=e15]:
+          - text: X
+          - combobox "X" [ref=e16]
+        - generic [ref=e17]:
+          - text: "Y"
+          - combobox "Y" [ref=e18]
+        - generic [ref=e19]:
+          - text: Z
+          - combobox "Z" [ref=e20]
+    - generic [ref=e22]: VARIANCE
+    - generic [ref=e27]: SLICES
+  - generic [ref=e29]:
+    - button "Play" [ref=e30] [cursor=pointer]
+    - generic [ref=e31]: L00
+    - slider [ref=e32]: "0"

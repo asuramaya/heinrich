@@ -1,0 +1,30 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - combobox [ref=e3] [cursor=pointer]:
+      - option "qwen-0.5b" [selected]
+      - option "smollm2-135m"
+      - option "smollm2-360m"
+    - combobox [ref=e4] [cursor=pointer]:
+      - option "raw" [selected]
+      - option "naked"
+      - option "template"
+    - spinbutton [ref=e5] [cursor=pointer]: "5000"
+    - button "Load" [ref=e6] [cursor=pointer]
+    - generic [ref=e7]: Loading...
+  - generic [ref=e8]:
+    - generic [ref=e10]:
+      - combobox [ref=e11]
+      - text: ×
+      - combobox [ref=e12]
+    - generic [ref=e14]:
+      - generic [ref=e17]:
+        - generic: ⊥
+      - generic [ref=e19]:
+        - generic: →
+      - generic [ref=e21]:
+        - generic: "?"
+    - generic [ref=e24]: L00
+  - generic [ref=e26]:
+    - button "▶" [ref=e27] [cursor=pointer]
+    - generic [ref=e28]: L00
+    - slider [ref=e29]: "0"

@@ -1,0 +1,22 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - combobox [ref=e3] [cursor=pointer]:
+      - option "qwen-0.5b" [selected]
+      - option "smollm2-135m"
+      - option "smollm2-360m"
+    - combobox [ref=e4] [cursor=pointer]:
+      - option "raw" [selected]
+      - option "naked"
+      - option "template"
+    - spinbutton [ref=e5] [cursor=pointer]: "5000"
+    - combobox [ref=e6] [cursor=pointer]:
+      - option "PCA" [selected]
+      - option "UMAP"
+    - button "Load" [ref=e7] [cursor=pointer]
+    - generic [ref=e8]: "|"
+    - combobox [ref=e9] [cursor=pointer]
+    - button "Run" [ref=e10] [cursor=pointer]
+  - generic [ref=e13]:
+    - button "Play" [ref=e14] [cursor=pointer]
+    - generic [ref=e15]: L00
+    - slider [ref=e16]: "0"

@@ -1,0 +1,33 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - combobox [ref=e3] [cursor=pointer]:
+      - option "qwen-0.5b" [selected]
+      - option "smollm2-135m"
+      - option "smollm2-360m"
+    - combobox [ref=e4] [cursor=pointer]:
+      - option "raw" [selected]
+      - option "naked"
+      - option "template"
+    - spinbutton [ref=e5] [cursor=pointer]: "5000"
+    - button "Load" [ref=e6] [cursor=pointer]
+    - generic [ref=e7]: Loading...
+  - generic [ref=e8]:
+    - generic [ref=e10]:
+      - text: "Depth:"
+      - combobox [ref=e11]
+      - text: vs
+      - combobox [ref=e12]
+    - generic [ref=e17]:
+      - generic: trajectory
+    - generic [ref=e20]:
+      - text: Layer
+      - generic [ref=e21]: L00
+  - generic [ref=e23]:
+    - button "Play" [ref=e24] [cursor=pointer]
+    - generic [ref=e25]: L00
+    - slider [ref=e26]: "0"
+    - generic [ref=e27]: "|"
+    - generic [ref=e28]: "3D:"
+    - combobox [ref=e29]
+    - combobox [ref=e30]
+    - combobox [ref=e31]

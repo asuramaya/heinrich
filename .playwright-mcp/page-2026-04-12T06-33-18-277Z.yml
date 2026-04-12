@@ -1,0 +1,36 @@
+- generic [active] [ref=e1]:
+  - generic [ref=e2]:
+    - combobox [ref=e3] [cursor=pointer]:
+      - option "qwen-0.5b" [selected]
+      - option "smollm2-135m"
+      - option "smollm2-360m"
+    - combobox [ref=e4] [cursor=pointer]:
+      - option "raw" [selected]
+      - option "naked"
+      - option "template"
+    - spinbutton [ref=e5] [cursor=pointer]: "5000"
+    - button "Load" [ref=e6] [cursor=pointer]
+    - generic [ref=e7]: Loading L0/24...
+  - generic [ref=e11]:
+    - generic [ref=e12]:
+      - generic [ref=e13]: Axes
+      - generic [ref=e14]:
+        - generic [ref=e15]:
+          - text: X
+          - combobox "X" [ref=e16]
+        - generic [ref=e17]:
+          - text: "Y"
+          - combobox "Y" [ref=e18]
+        - generic [ref=e19]:
+          - text: Z
+          - combobox "Z" [ref=e20]
+    - generic [ref=e22]: Variance
+    - generic [ref=e26]: Slices
+  - generic [ref=e28]:
+    - button "Play" [ref=e29] [cursor=pointer]
+    - generic [ref=e30]: L00
+    - slider [ref=e31]: "0"
+    - generic [ref=e32]: "|"
+    - combobox [ref=e33] [cursor=pointer]:
+      - option "Cloud" [selected]
+      - option "Trajectory"
