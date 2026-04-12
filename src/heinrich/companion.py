@@ -945,7 +945,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
         qs = parse_qs(parsed.query)
 
         # WebSocket upgrade
-        if path == '/ws' and 'upgrade' in self.headers.get('Connection', '').lower():
+        if path == '/ws' and self.headers.get('Upgrade', '').lower() == 'websocket':
             _ws_handshake(self)
             return
 
@@ -1087,7 +1087,7 @@ def run_companion(port: int = 8377):
     class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
         daemon_threads = True
 
-    server = ThreadedHTTPServer(('127.0.0.1', port), CompanionHandler)
+    server = ThreadedHTTPServer(('0.0.0.0', port), CompanionHandler)
     print(f"Heinrich companion: http://localhost:{port}")
     print("  Cloud view: 3D PCA point cloud, scrub layers, orbit, hover tokens")
     print("  Depth view: signal DB charts per model")
