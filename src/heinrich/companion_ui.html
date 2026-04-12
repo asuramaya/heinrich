@@ -26,7 +26,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #detail .meta{color:#777;font-size:9px;white-space:pre}
 #live{position:absolute;top:6px;left:50%;transform:translateX(-50%);color:#555;z-index:5;pointer-events:none;font-size:10px}
 
-#rp{width:200px;background:#0e0e0e;border-left:1px solid #1a1a1a;display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto;font-size:10px}
+#rp{width:280px;background:#0e0e0e;border-left:1px solid #1a1a1a;display:flex;flex-direction:column;flex-shrink:0;overflow-y:auto;font-size:10px}
 .sec{padding:5px 7px;border-bottom:1px solid #161616}
 .sec-t{color:#555;margin-bottom:3px;font-size:9px;text-transform:uppercase;letter-spacing:0.5px}
 #axes-sel{display:flex;gap:3px;align-items:center}
@@ -34,7 +34,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #axes-sel label{color:#666;font-size:9px}
 #vc{width:100%;height:60px}
 #li{color:#777;line-height:1.5;white-space:pre;font-size:9px}
-#sg{display:grid;grid-template-columns:1fr 1fr 1fr;gap:2px;padding:2px}
+#sg{display:grid;grid-template-columns:repeat(4,1fr);gap:2px;padding:2px;flex:1;overflow-y:auto}
 .sl{background:#111;aspect-ratio:1;position:relative;cursor:pointer;border-radius:2px}
 .sl canvas{width:100%;height:100%;border-radius:2px}
 .sl .sll{position:absolute;top:1px;left:2px;font-size:8px;color:#666;pointer-events:none}
@@ -177,7 +177,7 @@ function renderTrajectory(){
   // Max tokens for trajectory lines (performance)
   const maxLines=Math.min(N,1000);
   const step=Math.max(1,Math.floor(N/maxLines));
-  const lineMtl=new THREE.LineBasicMaterial({transparent:true,opacity:0.15,depthWrite:false});
+  const lineMtl=new THREE.LineBasicMaterial({transparent:true,opacity:0.25,depthWrite:false,linewidth:1});
 
   for(let i=0;i<N;i+=step){
     const points=[];
@@ -209,7 +209,7 @@ function renderTrajectory(){
       allPos[idx+1]=(S[i][axY]||0)/mx;
       allPos[idx+2]=z;
       const hex=CL[scripts[i]]||0xAAAAAA;
-      const bright=isCurrentLayer?1.0:0.3;
+      const bright=isCurrentLayer?1.0:0.12;
       allCol[idx]=((hex>>16)&0xFF)/255*bright;
       allCol[idx+1]=((hex>>8)&0xFF)/255*bright;
       allCol[idx+2]=(hex&0xFF)/255*bright;
@@ -218,7 +218,7 @@ function renderTrajectory(){
   }
   cloudGeo.setAttribute('position',new THREE.BufferAttribute(allPos,3));
   cloudGeo.setAttribute('color',new THREE.BufferAttribute(allCol,3));
-  const cloudMtl=new THREE.PointsMaterial({size:0.008,vertexColors:true,transparent:true,opacity:0.7,sizeAttenuation:true,depthWrite:false});
+  const cloudMtl=new THREE.PointsMaterial({size:0.006,vertexColors:true,transparent:true,opacity:0.4,sizeAttenuation:true,depthWrite:false});
   trajCloud=new THREE.Points(cloudGeo,cloudMtl);
   sc.add(trajCloud);
 }
@@ -249,7 +249,10 @@ function drawVariance(variance){
 function updateSlices(){
   if(!allLayers[cL])return;const S=allLayers[cL];const N=S.length;
   const grid=document.getElementById('sg');grid.textContent='';
-  const pairs=[[0,1],[0,2],[1,2],[0,3],[0,4],[1,4],[2,3],[3,4],[4,5]];
+  // All pairs of PC0-PC7 = 28 slices
+  const pairs=[];
+  const maxPC=Math.min(allLayers[cL]?.[0]?.length||8,8);
+  for(let a=0;a<maxPC;a++)for(let b=a+1;b<maxPC;b++)pairs.push([a,b]);
   pairs.forEach(([a,b])=>{
     const cell=document.createElement('div');cell.className='sl';
     const lbl=document.createElement('div');lbl.className='sll';lbl.textContent=a+'v'+b;cell.appendChild(lbl);
