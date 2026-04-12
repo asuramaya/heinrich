@@ -269,26 +269,57 @@ function updateSlices(){
 async function loadAllLayers(){
   model=document.getElementById('sm').value;mode=document.getElementById('smd').value;
   document.getElementById('st').textContent='Loading...';
+
+  // Load metadata
   decompMeta=await api(`decomp-meta/${model}/${mode}`);
   if(decompMeta.error){document.getElementById('st').textContent=decompMeta.error;return;}
   const nL=decompMeta.n_layers;
   document.getElementById('ls').max=nL-1;
 
-  // Load ALL layers for trajectory mode
-  allLayers=[];
-  for(let l=0;l<nL;l++){
-    document.getElementById('st').textContent=`Loading L${l}/${nL}...`;
-    const d=await api(`decomp/${model}/${mode}?layer=${l}`);
-    if(d.error){document.getElementById('st').textContent=d.error;return;}
-    d.scores._variance=d.variance;
-    allLayers.push(d.scores);
-    if(l===0){scripts=d.scripts;texts=d.texts;populateAxes(d.n_components);}
-  }
+  // Load token metadata from first layer
+  const d0=await api(`decomp/${model}/${mode}?layer=0`);
+  if(d0.error){document.getElementById('st').textContent=d0.error;return;}
+  scripts=d0.scripts;texts=d0.texts;
+  const nN=d0.n_tokens;const nK=d0.n_components;
+  populateAxes(nK);
 
-  // Attach variance to each layer's scores for the chart
-  for(let l=0;l<nL;l++){allLayers[l]._variance=decompMeta.layers[l]?
-    // Load variance from individual layer file
-    (await api(`decomp/${model}/${mode}?layer=${l}`)).variance:null;}
+  // Load ALL scores as single binary blob
+  document.getElementById('st').textContent='Loading scores...';
+  const resp=await fetch(`/api/scores/${model}/${mode}`);
+  const buf=await resp.arrayBuffer();
+  const dv=new DataView(buf);
+  const magic=dv.getUint32(0,true);
+  const bnL=dv.getUint32(4,true);
+  const bnN=dv.getUint32(8,true);
+  const bnK=dv.getUint32(12,true);
+
+  // Variance: [nL, K] float32 starting at offset 16
+  const varOff=16;
+  const varData=new Float32Array(buf,varOff,bnL*bnK);
+
+  // Scores: [nL, N, K] float16 starting after variance
+  const scoreOff=varOff+bnL*bnK*4;
+  const scoreU16=new Uint16Array(buf,scoreOff,bnL*bnN*bnK);
+
+  // Convert float16 to float32 for fast indexing
+  // (DataView getFloat16 not available everywhere, manual decode)
+  function f16to32(h){const s=(h>>15)&1,e=(h>>10)&0x1f,m=h&0x3ff;if(e===0)return(s?-1:1)*Math.pow(2,-14)*(m/1024);if(e===31)return m?NaN:(s?-Infinity:Infinity);return(s?-1:1)*Math.pow(2,e-15)*(1+m/1024);}
+
+  const allScoresF32=new Float32Array(bnL*bnN*bnK);
+  for(let i=0;i<scoreU16.length;i++)allScoresF32[i]=f16to32(scoreU16[i]);
+
+  // Build layer accessor
+  allLayers=[];
+  for(let l=0;l<bnL;l++){
+    const layerScores=[];
+    const off=l*bnN*bnK;
+    for(let t=0;t<bnN;t++){
+      const tOff=off+t*bnK;
+      layerScores.push(allScoresF32.subarray(tOff,tOff+bnK));
+    }
+    layerScores._variance=varData.subarray(l*bnK,(l+1)*bnK);
+    allLayers.push(layerScores);
+  }
 
   // Build geometry for cloud mode
   const N=allLayers[0].length;

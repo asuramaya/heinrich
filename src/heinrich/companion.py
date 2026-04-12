@@ -974,6 +974,25 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                     self._send_json(result)
             else:
                 self._send_json({"error": "Usage: /api/pca/<model>/<mode>?n=5000"})
+        elif path.startswith('/api/scores/'):
+            # /api/scores/model/mode — serves all_scores.bin (single binary, all layers)
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                bin_path = Path(f"/Volumes/sharts/{model}/{mode}.mri/decomp/all_scores.bin")
+                if bin_path.exists():
+                    data = bin_path.read_bytes()
+                    self.send_response(200)
+                    self.send_header('Content-Type', 'application/octet-stream')
+                    self.send_header('Content-Length', len(data))
+                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self.send_header('Cache-Control', 'public, max-age=3600')
+                    self.end_headers()
+                    self.wfile.write(data)
+                else:
+                    self._send_json({"error": f"No scores at {bin_path}"})
+            else:
+                self._send_json({"error": "Usage: /api/scores/<model>/<mode>"})
         elif path.startswith('/api/decomp/'):
             # /api/decomp/model/mode?layer=5
             parts = path.split('/')
