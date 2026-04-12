@@ -56,7 +56,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 <div id="bar">
   <select id="sm"></select>
   <select id="smd"><option>raw</option><option>naked</option><option>template</option></select>
-  <input id="in" type="number" value="5000" style="width:40px">
+  <input id="in" type="number" value="10" style="width:28px" title="% of max tokens">%
   <button id="bl">Load</button>
   <span style="flex:1"></span>
   <span id="st" style="color:#444;font-size:8px"></span>
@@ -218,30 +218,95 @@ function updateVP(vi,pcX,pcY,pcZ,layer){
 }
 
 // === Update trajectory viewport ===
-function updateTraj(vi,pcX,pcY){
-  const v=views[vi];
-  v.pcX=pcX;v.pcY=pcY;
-  if(v.trajGroup)v.sc.remove(v.trajGroup);v.sc.remove(v.pts);
+// Build trajectory geometry ONCE, then only update marker on layer change
+function buildTraj(vi,pcX,pcY){
+  const v=views[vi];v.pcX=pcX;v.pcY=pcY;
+  if(v.trajGroup)v.sc.remove(v.trajGroup);
+  if(v.trajMarker)v.sc.remove(v.trajMarker);
+  if(v.trajHighlight)v.sc.remove(v.trajHighlight);
+  v.sc.remove(v.pts);
   v.trajGroup=new THREE.Group();
-  let mx=0;for(const S of allL)for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(S[i][pcX]||0),Math.abs(S[i][pcY]||0));mx=mx||1;
-  const maxL=Math.min(nN,600);const step=Math.max(1,Math.floor(nN/maxL));
+  let mx=0;for(const S of allL)for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(S[i][pcX]||0),Math.abs(S[i][pcY]||0));
+  v._trajScale=mx||1;
+  const maxLines=Math.min(nN,800);const step=Math.max(1,Math.floor(nN/maxLines));
   for(let i=0;i<nN;i+=step){
     const pts=[];for(let l=0;l<nL;l++){const S=allL[l];pts.push(new THREE.Vector3((S[i][pcX]||0)/mx,(S[i][pcY]||0)/mx,(l/(nL-1))*2-1));}
     const g=new THREE.BufferGeometry().setFromPoints(pts);
-    v.trajGroup.add(new THREE.Line(g,new THREE.LineBasicMaterial({color:CL[scripts[i]]||0xAAAAAA,transparent:true,opacity:0.2,depthWrite:false})));
+    const line=new THREE.Line(g,new THREE.LineBasicMaterial({color:CL[scripts[i]]||0xAAAAAA,transparent:true,opacity:0.15,depthWrite:false}));
+    line.userData={ti:i};
+    v.trajGroup.add(line);
   }
   v.sc.add(v.trajGroup);
-  // Current layer points
-  const pg=new THREE.BufferGeometry();const pp=new Float32Array(nN*3);const pc=new Float32Array(nN*3);
-  const z=(cL/(nL-1))*2-1;const S=allL[cL];
-  for(let i=0;i<nN;i++){pp[i*3]=(S[i][pcX]||0)/mx;pp[i*3+1]=(S[i][pcY]||0)/mx;pp[i*3+2]=z;
-    const hex=CL[scripts[i]]||0xAAAAAA;pc[i*3]=((hex>>16)&0xFF)/255;pc[i*3+1]=((hex>>8)&0xFF)/255;pc[i*3+2]=(hex&0xFF)/255;}
-  pg.setAttribute('position',new THREE.BufferAttribute(pp,3));pg.setAttribute('color',new THREE.BufferAttribute(pc,3));
-  const pm=new THREE.Points(pg,new THREE.PointsMaterial({size:0.01,vertexColors:true,transparent:true,opacity:0.9,sizeAttenuation:true}));
-  v.trajGroup.add(pm);
-  v.sc.add(v.trajGroup);
+  // Layer marker — persistent, just update positions
+  const pg=new THREE.BufferGeometry();
+  pg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(nN*3),3));
+  pg.setAttribute('color',new THREE.BufferAttribute(new Float32Array(nN*3),3));
+  v.trajMarker=new THREE.Points(pg,new THREE.PointsMaterial({size:0.012,vertexColors:true,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false}));
+  v.sc.add(v.trajMarker);
+  // Highlight line for hovered trajectory
+  v.trajHighlight=new THREE.Line(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFFFFFF,transparent:true,opacity:0.9,linewidth:2}));
+  v.trajHighlight.visible=false;
+  v.sc.add(v.trajHighlight);
+  updateTrajMarker(vi);
   document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}+d`;
 }
+function updateTrajMarker(vi){
+  const v=views[vi];if(!v.trajMarker)return;
+  const mx=v._trajScale;const z=(cL/(nL-1))*2-1;const S=allL[cL];
+  const pp=v.trajMarker.geometry.attributes.position.array;
+  const pc=v.trajMarker.geometry.attributes.color.array;
+  for(let i=0;i<nN;i++){
+    pp[i*3]=(S[i][v.pcX]||0)/mx;pp[i*3+1]=(S[i][v.pcY]||0)/mx;pp[i*3+2]=z;
+    const hex=CL[scripts[i]]||0xAAAAAA;
+    pc[i*3]=((hex>>16)&0xFF)/255;pc[i*3+1]=((hex>>8)&0xFF)/255;pc[i*3+2]=(hex&0xFF)/255;
+  }
+  v.trajMarker.geometry.attributes.position.needsUpdate=true;
+  v.trajMarker.geometry.attributes.color.needsUpdate=true;
+}
+// Highlight one trajectory line across both trajectory viewports
+function highlightTraj(tokenIdx){
+  [2,3].forEach(vi=>{
+    const v=views[vi];if(!v.trajHighlight||!v._trajScale)return;
+    if(tokenIdx<0){v.trajHighlight.visible=false;
+      v.trajGroup?.children.forEach(c=>{if(c.material)c.material.opacity=0.15;});return;}
+    // Build highlight path
+    const mx=v._trajScale;const pts=[];
+    for(let l=0;l<nL;l++){const S=allL[l];pts.push(new THREE.Vector3((S[tokenIdx][v.pcX]||0)/mx,(S[tokenIdx][v.pcY]||0)/mx,(l/(nL-1))*2-1));}
+    v.trajHighlight.geometry.dispose();
+    v.trajHighlight.geometry=new THREE.BufferGeometry().setFromPoints(pts);
+    v.trajHighlight.visible=true;
+    // Dim other lines
+    v.trajGroup?.children.forEach(c=>{if(c.material)c.material.opacity=c.userData?.ti===tokenIdx?0.6:0.05;});
+  });
+}
+// Trajectory hover — find nearest line
+function setupTrajHover(vi){
+  const v=views[vi];
+  v.cv.addEventListener('mousemove',e=>{
+    if(!nN||!v.trajMarker)return;
+    const r=v.cv.getBoundingClientRect();
+    ms.x=((e.clientX-r.left)/r.width)*2-1;ms.y=-((e.clientY-r.top)/r.height)*2+1;
+    ray.setFromCamera(ms,v.cam);ray.params.Points.threshold=Math.max(0.01,v.cam.position.length()*0.012);
+    const h=ray.intersectObject(v.trajMarker);
+    const td=document.getElementById('detail');
+    if(h.length>0){
+      const i=h[0].index;
+      highlightTraj(i);highlightToken(i);
+      document.getElementById('tt').textContent=texts[i]||'?';
+      document.getElementById('tt').style.color=CLh[scripts[i]]||'#aaa';
+      // Trajectory summary
+      const S0=allL[0][i],SL=allL[nL-1][i];
+      let totalMove=0;for(let l=1;l<nL;l++){let d=0;for(let p=0;p<Math.min(nK,10);p++)d+=(allL[l][i][p]-allL[l-1][i][p])**2;totalMove+=Math.sqrt(d);}
+      let maxDelta=0,maxL=0;for(let l=1;l<nL;l++){let d=0;for(let p=0;p<Math.min(nK,10);p++)d+=(allL[l][i][p]-allL[l-1][i][p])**2;d=Math.sqrt(d);if(d>maxDelta){maxDelta=d;maxL=l;}}
+      let m=`${scripts[i]}  #${i}\n\ntrajectory:\n  total dist: ${totalMove.toFixed(1)}\n  max step: L${maxL} (${maxDelta.toFixed(1)})\n  start PC0: ${(S0[0]||0).toFixed(2)}\n  end PC0: ${(SL[0]||0).toFixed(2)}`;
+      document.getElementById('tm').textContent=m;
+      td.style.left=e.clientX+15+'px';td.style.top=e.clientY-10+'px';
+      td.style.transform='none';td.style.display='block';
+    }else{highlightTraj(-1);td.style.display='none';}
+  });
+  v.cv.addEventListener('mouseleave',()=>{highlightTraj(-1);document.getElementById('detail').style.display='none';});
+}
+setupTrajHover(2);setupTrajHover(3);
 
 // === Find orthogonal PC pair ===
 function orthoPair(a,b){
@@ -258,20 +323,28 @@ function thirdPC(a,b){
 // === Auto-select the 4 viewports ===
 // Top row: clouds (current layer). Bottom row: trajectories (all layers + depth)
 // Left column: selected pair. Right column: orthogonal pair.
+let _lastPair='';
 function updateAllViewports(){
   const a=selA,b=selB;
   const c=thirdPC(a,b);
   const[oa,ob]=orthoPair(a,b);
   const oc=thirdPC(oa,ob);
+  const pairKey=`${a},${b}`;
 
   // VP0: cloud, selected pair, current layer
   updateVP(0,a,b,c,cL);
   // VP1: cloud, orthogonal pair, current layer
   updateVP(1,oa,ob,oc,cL);
-  // VP2: trajectory, selected pair + depth
-  updateTraj(2,a,b);
-  // VP3: trajectory, orthogonal pair + depth
-  updateTraj(3,oa,ob);
+
+  // Trajectories: rebuild only when PC pair changes, otherwise just update marker
+  if(pairKey!==_lastPair){
+    buildTraj(2,a,b);
+    buildTraj(3,oa,ob);
+    _lastPair=pairKey;
+  }else{
+    updateTrajMarker(2);
+    updateTrajMarker(3);
+  }
 }
 
 // === Left panel ===
@@ -391,8 +464,12 @@ async function init(){
 
 document.addEventListener('keydown',e=>{
   if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;
-  if(e.key==='ArrowRight'||e.key==='ArrowDown')setLayer(Math.min(cL+1,nL-1));
-  if(e.key==='ArrowLeft'||e.key==='ArrowUp')setLayer(Math.max(cL-1,0));
+  if(e.key==='ArrowRight')setLayer(Math.min(cL+1,nL-1));
+  if(e.key==='ArrowLeft')setLayer(Math.max(cL-1,0));
+  // Up/down: cycle PC pair
+  if(e.key==='ArrowUp'){e.preventDefault();selA=Math.max(0,selA-1);if(selA===selB)selA=Math.max(0,selA-1);_lastPair='';updateAllViewports();updateRight();}
+  if(e.key==='ArrowDown'){e.preventDefault();selA=Math.min(nK-1,selA+1);if(selA===selB)selA=Math.min(nK-1,selA+1);_lastPair='';updateAllViewports();updateRight();}
+  if(e.key===' '){e.preventDefault();play=!play;if(play)pT=setInterval(()=>setLayer((cL+1)%nL),300);else clearInterval(pT);}
 });
 
 (function anim(){
