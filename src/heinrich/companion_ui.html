@@ -472,12 +472,17 @@ function buildBrowser(){
   _brBuilt=true;_updateBrowserLayer();_updateBrowserOverlay();
   if(!brCam._fitted){const cx=w/2*_SP,cy=-w/3*_SP;brCam.position.set(cx,cy,25);brCtl.target.set(cx,cy,cL*_ZSP);brCtl.update();brCam._fitted=true;}
 }
-// Scroll to pan the PC window
+// Scroll to pan the PC window (debounced — rebuild is expensive)
+let _brScrollTimer=null;
 brEl.addEventListener('wheel',e=>{
   e.preventDefault();
   const dir=e.deltaY>0?1:-1;
   const newStart=Math.max(0,Math.min(nK-_BR_WIN,_brStart+dir*2));
-  if(newStart!==_brStart){_brStart=newStart;buildBrowser();_markDirty();}
+  if(newStart!==_brStart){
+    _brStart=newStart;
+    clearTimeout(_brScrollTimer);
+    _brScrollTimer=setTimeout(()=>{buildBrowser();_markDirty();},200);
+  }
 },{passive:false});
 function _updateBrowserLayer(){
   if(!_brBuilt)return;
