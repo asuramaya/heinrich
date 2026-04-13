@@ -951,54 +951,57 @@ function buildRightColumn(){
   _buildRV2Attention();
 }
 
-// rv0: Variance spectrum — X=PC, Y=variance, Z=layer. One bar-row per layer.
+// rv0: Variance spectrum — X=PC, Y=log(variance), Z=layer
 function _buildRV0Variance(){
   const rv=rightViews[0];if(!rv||!_layerVar.length)return;
   _clearRV(rv);
   const nPC=Math.min(nK,20);rv._rvSlices=[];
+  // Use log scale so small PCs are visible alongside dominant ones
+  const logV=(v)=>v>0?Math.log10(v*1000+1)/3:0;// maps 0.001->0.3, 0.1->0.7, 1.0->1.0
   for(let l=0;l<_nRealLayers;l++){
     const z=(l/(_nRealLayers-1))*2-1;
     const pos=[];const cols=[];
     for(let pc=0;pc<nPC;pc++){
       const v=_layerVar[l]?_layerVar[l][pc]||0:0;
-      const x=(pc/(nPC-1))*2-1;
-      // Vertical bar: two points per bar (base + top)
-      pos.push(x,0,z, x,v*3,z);
-      const hue=pc/nPC;const c=new THREE.Color().setHSL(hue,0.7,0.5);
-      cols.push(c.r,c.g,c.b, c.r,c.g,c.b);
+      const x=(pc/(nPC-1||1))*2-1;
+      const h=logV(v)*1.5;
+      pos.push(x,0,z, x,h,z);
+      const hue=pc/nPC;const c=new THREE.Color().setHSL(hue,0.8,0.5);
+      cols.push(c.r*0.3,c.g*0.3,c.b*0.3, c.r,c.g,c.b);// dark base, bright top
     }
     const geo=new THREE.BufferGeometry();
     geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
     geo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(cols),3));
-    const mat=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.15,linewidth:2}));
-    mat.frustumCulled=false;rv.sc.add(mat);rv._rvSlices.push({mesh:mat,layer:l});
+    const seg=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.15}));
+    seg.frustumCulled=false;rv.sc.add(seg);rv._rvSlices.push({mesh:seg,layer:l});
   }
-  rv.cam.position.set(0,2,2.5);rv.ctl.target.set(0,0.7,0);rv.ctl.update();rv.built=true;
+  rv.cam.position.set(1.5,1.5,2);rv.ctl.target.set(0,0.5,0);rv.ctl.update();rv.built=true;
   _updateRVLayer();
 }
 
-// rv1: Neurons — per-token gate×up bars at each layer
+// rv1: Neurons — per-token neuron contribution bars at each layer
 async function _buildRV1Neurons(){
   const rv=rightViews[1];if(!rv)return;
   _clearRV(rv);rv._rvSlices=[];
-  // Load neuron data for pinned tokens
-  const loadTok=async(tok)=>{if(tok<0)return null;try{return await api(`token-neurons/${model}/${mode}?token=${tok}`);}catch(e){return null;}};
+  if(pinnedToken<0&&pinnedTokenB<0){rv.built=true;return;}
+  const loadTok=async(tok)=>{if(tok<0)return null;try{return await api(`token-neurons/${model}/${mode}?token=${tok}`);}catch(e){console.error('neuron load:',e);return null;}};
   const[dA,dB]=await Promise.all([loadTok(pinnedToken),loadTok(pinnedTokenB)]);
   _rvNeuronDataA=dA;_rvNeuronDataB=dB;
-  if(!dA&&!dB){rv.built=true;_updateRVLayer();return;}
+  if(!dA&&!dB){rv.built=true;return;}
+  // Global max for consistent scale
+  let globalMx=0;[dA,dB].forEach(d=>{if(!d?.layers)return;d.layers.forEach(l=>{(l.neurons||[]).forEach(n=>{globalMx=Math.max(globalMx,Math.abs(n.contrib||0));});});});
+  globalMx=globalMx||1;
   // Build bar geometry per layer
   for(let l=0;l<_nRealLayers;l++){
     const z=(l/(_nRealLayers-1))*2-1;const pos=[];const cols=[];
     [dA,dB].forEach((d,ti)=>{
-      if(!d||!d.layers||!d.layers[l])return;
-      const neurons=d.layers[l].neurons||[];const xOff=ti===0?-0.6:0.6;
-      const rgb=ti===0?[1,0.4,0.2]:[0.2,0.4,0.8];
-      let mx=0;neurons.forEach(n=>{mx=Math.max(mx,Math.abs(n.contrib||0));});mx=mx||1;
-      neurons.slice(0,20).forEach((n,ni)=>{
-        const x=xOff+(ni/20)*1;const v=(n.contrib||0)/mx;
-        pos.push(x,0,z, x,Math.abs(v)*1.2,z);
-        const bright=Math.abs(v);
-        cols.push(rgb[0]*bright,rgb[1]*bright,rgb[2]*bright, rgb[0],rgb[1],rgb[2]);
+      if(!d?.layers?.[l])return;
+      const neurons=d.layers[l].neurons||[];const xOff=ti===0?-0.8:0.3;
+      const rgb=ti===0?[1,0.4,0.2]:[0.2,0.5,1];
+      neurons.slice(0,15).forEach((n,ni)=>{
+        const x=xOff+(ni/15)*1;const v=Math.abs(n.contrib||0)/globalMx;
+        pos.push(x,0,z, x,v*1.5,z);
+        cols.push(rgb[0]*0.2,rgb[1]*0.2,rgb[2]*0.2, rgb[0]*(v+0.1),rgb[1]*(v+0.1),rgb[2]*(v+0.1));
       });
     });
     if(!pos.length)continue;
