@@ -7,15 +7,12 @@
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-size:11px;overflow:hidden;height:100vh;display:flex;flex-direction:column}
 #glCanvas{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none}
-#main{flex:1;display:grid;grid-template-columns:1fr 1fr 1fr 1.5fr 1.5fr;grid-template-rows:2fr 2fr 1fr;gap:1px;overflow:hidden;position:relative;z-index:1}
+#main{flex:1;display:grid;grid-template-columns:1fr 1fr 1fr 1.3fr 1.3fr;grid-template-rows:1fr 1fr 0.7fr;gap:1px;overflow:hidden;position:relative;z-index:1}
 #vp0{grid-column:1;grid-row:1}#vp1{grid-column:2;grid-row:1}#vp2{grid-column:3;grid-row:1}
 #vp3{grid-column:1;grid-row:2}#vp4{grid-column:2;grid-row:2}#vp5{grid-column:3;grid-row:2}
-#br0{grid-column:4;grid-row:1/3}
-#tokpanel{grid-column:5;grid-row:1/3}
-#lv0{grid-column:1;grid-row:3}
-#lv1{grid-column:2;grid-row:3}
-#lv2{grid-column:3;grid-row:3}
-#lvInfo{grid-column:4/6;grid-row:3}
+#lv0{grid-column:1;grid-row:3}#lv1{grid-column:2;grid-row:3}#lv2{grid-column:3;grid-row:3}
+#br0{grid-column:4;grid-row:1/4}
+#tokpanel{grid-column:5;grid-row:1/4}
 .lvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .lvp .llbl{position:absolute;top:2px;left:4px;font-size:7px;color:#444;pointer-events:none;z-index:2}
 .lv-btn{position:absolute;right:2px;z-index:10}
@@ -84,10 +81,9 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
     <hr style="border:none;border-top:1px solid #1a1a1a;margin:6px 0">
     <div id="attnPanel" style="display:none"><div style="color:#555;font-size:7px;margin-bottom:2px">Attention (Token A, current layer)</div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
   </div>
-  <div class="lvp" id="lv0"><div class="llbl">Internals A</div></div>
-  <div class="lvp" id="lv1"><div class="llbl">Internals Δ</div></div>
-  <div class="lvp" id="lv2"><div class="llbl">Internals B</div></div>
-  <div id="lvInfo" style="background:#0a0a0a;overflow:hidden;padding:4px;font-size:7px;color:#444"><div id="lvInfoText"></div></div>
+  <div class="lvp" id="lv0"><div class="llbl" id="lv0i">Internals A</div><div class="cbtn lv-btn lv-top" data-v="l0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+  <div class="lvp" id="lv1"><div class="llbl" id="lv1i">Internals Δ</div><div class="cbtn lv-btn lv-top" data-v="l1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+  <div class="lvp" id="lv2"><div class="llbl" id="lv2i">Internals B</div><div class="cbtn lv-btn lv-top" data-v="l2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
 </div>
 <div id="cam-hub">
   <div class="row master"><div class="cbtn" data-v="all"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
@@ -629,18 +625,13 @@ brCv.addEventListener('pointerup',e=>{if(Math.abs(e.clientX-_bdx)+Math.abs(e.cli
 const leftViews=[];
 for(let i=0;i<3;i++){
   const el=document.getElementById('lv'+i);
-  if(!el)continue;
-  const sc=new THREE.Scene();sc.background=new THREE.Color(0x080808);
+  const sc=new THREE.Scene();sc.background=new THREE.Color(0x060606);
   const cam=new THREE.PerspectiveCamera(50,1,0.001,200);cam.position.set(0,1,3);
   const ctl=new OrbitControls(cam,el);ctl.enableDamping=true;ctl.dampingFactor=0.08;
   ctl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};
   leftViews.push({el,sc,cam,ctl,built:false});
 }
 leftViews.forEach(v=>ro.observe(v.el));
-// Sync cameras: when any left viewport orbits, copy to others
-leftViews.forEach((v,i)=>{v.ctl.addEventListener('change',()=>{
-  leftViews.forEach((o,j)=>{if(j!==i){o.cam.position.copy(v.cam.position);o.cam.quaternion.copy(v.cam.quaternion);o.ctl.target.copy(v.ctl.target);o.ctl.update();}});
-});});
 
 // Delta viewports (vp1=cloud, vp4=trajectory) are now handled by the main viewport pipeline
 // No separate delta geometry — _syncAllPins handles pin markers through views[1] and views[4]
@@ -684,67 +675,81 @@ async function _loadWeightData(){
 
 function buildWeightLandscape(){
   _wlBuiltKey='';
-  _loadWeightData().then(()=>{_rebuildWeightLines();leftViews.forEach(v=>{v.built=true;});_markDirty();});
+  leftViews.forEach(lv=>{lv._wlLines=null;lv._varLines=null;lv._layerDots=null;lv._gateLineA=null;lv._gateLineB=null;lv._attnLines=null;lv._grid=null;lv._camSet=false;});
+  _loadWeightData().then(()=>{_rebuildWeightLines();leftViews.forEach(lv=>{lv.built=true;});_markDirty();});
 }
 
 function _rebuildWeightLines(){
-  if(!_wlData||!Array.isArray(_wlData)||!_wlData.length||!leftViews.length)return;
-  const key=`${vpPairs[0]},${vpPairs[2]}`;
+  if(!_wlData||!Array.isArray(_wlData)||!_wlData.length)return;
+  const key=`${vpPairs[0]},${vpPairs[1]},${vpPairs[2]}`;
   const needsRebuild=key!==_wlBuiltKey;
+  // Build/update each of the 3 internals viewports
+  for(let vi=0;vi<3;vi++){_rebuildInternals(vi,vpPairs[vi],needsRebuild);}
+  if(needsRebuild)_wlBuiltKey=key;
+}
+function _rebuildInternals(vi,pair,needsRebuild){
+  const lv=leftViews[vi];if(!lv)return;
+  const pcs=new Set(pair);
+  if(!lv._grid){lv._grid=new THREE.GridHelper(2,6,0x1a1a1a,0x141414);lv._grid.rotation.x=Math.PI/2;lv.sc.add(lv._grid);}
   const z=(cL/(_nRealLayers-1||1))*2-1;
-  const nMat=_wlData[0]?.matrices?.length||0;if(!nMat)return;
-  // Each left viewport shows its respective pair: lv0=A, lv1=delta, lv2=B
-  const pairPCs=[[vpPairs[0][0],vpPairs[0][1]],[vpPairs[1][0],vpPairs[1][1]],[vpPairs[2][0],vpPairs[2][1]]];
-  const pairColors=[0xFF6644,0xAABBCC,0x4477AA];
-  leftViews.forEach((lv,li)=>{
-    if(!lv)return;
-    if(!lv._grid){lv._grid=new THREE.GridHelper(2,6,0x1a1a1a,0x141414);lv._grid.rotation.x=Math.PI/2;lv.sc.add(lv._grid);}
-    const pcs=pairPCs[li]||[0,1];
-    // Layer dots — weight alignment + variance + gate at current layer
+  const nMat=_wlData[0]?.matrices?.length||0;
+  // Update layer dots (weight alignment + variance + gate at current layer)
+  if(lv._wlLines){
     if(!lv._layerDots){
-      const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(150*3),3));g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(150*3),3));
+      const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(300),3));g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(300),3));
       lv._layerDots=new THREE.Points(g,new THREE.PointsMaterial({size:0.08,vertexColors:true,transparent:true,opacity:0.95,sizeAttenuation:true,depthWrite:false,depthTest:false}));
       lv._layerDots.renderOrder=10;lv._layerDots.frustumCulled=false;lv.sc.add(lv._layerDots);
     }
     const pos=lv._layerDots.geometry.attributes.position.array;
     const col=lv._layerDots.geometry.attributes.color.array;
     let di=0;
-    // Weight dots for this pair's PCs
-    pcs.forEach(pc=>{for(let mi=0;mi<nMat&&di<60;mi++){
+    // Weight alignment dots for THIS pair's PCs
+    lv._wlLines.forEach(({mi,pc})=>{
+      if(!pcs.has(pc)||di>=50)return;
       const al=_wlData[cL]?.matrices?.[mi]?.alignment||[];
-      pos[di*3]=(mi/(nMat-1))*2-1;pos[di*3+1]=(al[pc]||0)*1.2;pos[di*3+2]=z;
-      const hex=_WL_COLORS[mi];col[di*3]=((hex>>16)&0xFF)/255;col[di*3+1]=((hex>>8)&0xFF)/255;col[di*3+2]=(hex&0xFF)/255;di++;}});
-    // Variance dots
-    pcs.forEach((pc,pi)=>{if(!_layerVar[cL]||di>=80)return;const v=_layerVar[cL][pc]||0;
-      pos[di*3]=-1.2+pi*0.2;pos[di*3+1]=v*2;pos[di*3+2]=z;const hx=pairColors[li];col[di*3]=((hx>>16)&0xFF)/255;col[di*3+1]=((hx>>8)&0xFF)/255;col[di*3+2]=(hx&0xFF)/255;di++;});
-    // Gate dots for pinned tokens
-    if(pinnedToken>=0&&_gateHeat){const row=getGateRow(pinnedToken);if(row){const mx=Math.max(...row)||1;
-      for(let l=0;l<_nRealLayers&&di<120;l++){pos[di*3]=1.3;pos[di*3+1]=(row[l]/mx)*1.5;pos[di*3+2]=(l/(_nRealLayers-1))*2-1;col[di*3]=1;col[di*3+1]=0.4;col[di*3+2]=0.1;di++;}}}
-    if(pinnedTokenB>=0&&_gateHeat){const row=getGateRow(pinnedTokenB);if(row){const mx=Math.max(...row)||1;
-      for(let l=0;l<_nRealLayers&&di<150;l++){pos[di*3]=1.5;pos[di*3+1]=(row[l]/mx)*1.5;pos[di*3+2]=(l/(_nRealLayers-1))*2-1;col[di*3]=0.2;col[di*3+1]=0.4;col[di*3+2]=0.8;di++;}}}
-    for(let i=di;i<150;i++){pos[i*3]=9999;pos[i*3+1]=9999;pos[i*3+2]=9999;}
+      pos[di*3]=(mi/(nMat-1||1))*2-1;pos[di*3+1]=(al[pc]||0)*1.2;pos[di*3+2]=z;
+      const hex=_WL_COLORS[mi];col[di*3]=((hex>>16)&0xFF)/255;col[di*3+1]=((hex>>8)&0xFF)/255;col[di*3+2]=(hex&0xFF)/255;
+      di++;
+    });
+    // Variance dots for THIS pair's PCs
+    pair.forEach((pc,pi)=>{if(di>=60||!_layerVar[cL])return;
+      const v=_layerVar[cL][pc]||0;
+      pos[di*3]=-1.2+pi*0.2;pos[di*3+1]=v*2;pos[di*3+2]=z;
+      col[di*3]=pi===0?0.9:0.3;col[di*3+1]=pi===0?0.4:0.5;col[di*3+2]=pi===0?0.2:0.9;
+      di++;
+    });
+    // Gate dots for pinned tokens at current layer
+    if(pinnedToken>=0&&_gateHeat&&di<80){const row=getGateRow(pinnedToken);if(row){const mx=Math.max(...row)||1;const gv=row[cL]/mx;
+      pos[di*3]=1.4;pos[di*3+1]=gv*1.5;pos[di*3+2]=z;col[di*3]=1;col[di*3+1]=0.4;col[di*3+2]=0.1;di++;}}
+    if(pinnedTokenB>=0&&_gateHeat&&di<80){const row=getGateRow(pinnedTokenB);if(row){const mx=Math.max(...row)||1;const gv=row[cL]/mx;
+      pos[di*3]=1.6;pos[di*3+1]=gv*1.5;pos[di*3+2]=z;col[di*3]=0.2;col[di*3+1]=0.4;col[di*3+2]=0.9;di++;}}
+    for(let i=di;i<100;i++){pos[i*3]=9999;pos[i*3+1]=9999;pos[i*3+2]=9999;}
     lv._layerDots.geometry.attributes.position.needsUpdate=true;lv._layerDots.geometry.attributes.color.needsUpdate=true;lv._layerDots.geometry.setDrawRange(0,di);
-    _updateGateLines(lv);
-    // Build weight lines on first call
-    if(needsRebuild){
-      if(lv._wlLines){lv._wlLines.forEach(({line})=>{lv.sc.remove(line);line.geometry.dispose();line.material.dispose();});lv._wlLines=null;}
-      if(lv._varLines){lv._varLines.forEach(({line})=>{lv.sc.remove(line);line.geometry.dispose();line.material.dispose();});lv._varLines=null;}
-      lv._wlLines=[];lv._varLines=[];
-      pcs.forEach(pc=>{
-        for(let mi=0;mi<nMat;mi++){
-          const pts=[];for(let l=0;l<_nRealLayers;l++){const al=_wlData[l]?.matrices?.[mi]?.alignment||[];
-            pts.push(new THREE.Vector3((mi/(nMat-1))*2-1,(al[pc]||0)*1.2,(l/(_nRealLayers-1))*2-1));}
-          const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:_WL_COLORS[mi],transparent:true,opacity:0.7}));
-          line.frustumCulled=false;lv.sc.add(line);lv._wlLines.push({line,mi,pc});}
-        // Variance line
-        if(_layerVar.length){const pts=[];for(let l=0;l<_nRealLayers;l++){const v=_layerVar[l]?_layerVar[l][pc]||0:0;pts.push(new THREE.Vector3(-1.2,v*2,(l/(_nRealLayers-1))*2-1));}
-          const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:pairColors[li],transparent:true,opacity:0.6}));
-          line.frustumCulled=false;lv.sc.add(line);lv._varLines.push({line,pc});}
-      });
-      if(!lv._camSet){lv.cam.position.set(0,1.5,3);lv.ctl.target.set(0,0.5,0);lv.ctl.update();lv._camSet=true;}
+  }
+  _updateGateLines(lv);
+  if(!needsRebuild)return;
+  // Build weight lines for THIS pair's PCs
+  if(!lv._wlLines&&nMat){
+    lv._wlLines=[];lv._varLines=[];
+    for(let mi=0;mi<nMat;mi++){
+      for(let pc=0;pc<Math.min(_wlData[0].matrices[mi]?.alignment?.length||0,nK);pc++){
+        const pts=[];for(let l=0;l<_nRealLayers;l++){const al=_wlData[l]?.matrices?.[mi]?.alignment||[];pts.push(new THREE.Vector3((mi/(nMat-1||1))*2-1,(al[pc]||0)*1.2,(l/(_nRealLayers-1))*2-1));}
+        const geo=new THREE.BufferGeometry().setFromPoints(pts);const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:_WL_COLORS[mi],transparent:true,opacity:0}));
+        line.frustumCulled=false;line.visible=false;lv.sc.add(line);lv._wlLines.push({line,mi,pc});
+      }
     }
-  });
-  if(needsRebuild)_wlBuiltKey=key;
+    for(let pc=0;pc<nK;pc++){if(!_layerVar.length)break;
+      const pts=[];for(let l=0;l<_nRealLayers;l++){const v=_layerVar[l]?_layerVar[l][pc]||0:0;pts.push(new THREE.Vector3(-1.2+(pc%2)*0.2,v*2,(l/(_nRealLayers-1))*2-1));}
+      const geo=new THREE.BufferGeometry().setFromPoints(pts);const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:0x666666,transparent:true,opacity:0}));
+      line.frustumCulled=false;line.visible=false;lv.sc.add(line);lv._varLines.push({line,pc});
+    }
+  }
+  // Show only THIS pair's PCs
+  if(lv._wlLines)lv._wlLines.forEach(({line,pc})=>{const sel=pcs.has(pc);line.visible=sel;line.material.opacity=sel?0.7:0;});
+  if(lv._varLines)lv._varLines.forEach(({line,pc})=>{const sel=pcs.has(pc);line.visible=sel;line.material.opacity=sel?0.6:0;line.material.color.set(pc===pair[0]?0xFF6644:0x4477AA);});
+  // Label
+  const lbl=document.getElementById('lv'+vi+'i');if(lbl)lbl.textContent=vi===0?`A: PC${pair[0]}/${pair[1]}`:vi===1?`Δ: PC${pair[0]}×PC${pair[1]}`:` B: PC${pair[0]}/${pair[1]}`;
+  if(!lv._camSet){lv.cam.position.set(0,1.5,3);lv.ctl.target.set(0,0.5,0);lv.ctl.update();lv._camSet=true;}
 }
 
 // --- Neuron activation charts (2D canvas) ---
