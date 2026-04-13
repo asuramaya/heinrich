@@ -4204,3 +4204,315 @@ def causal_bank_health(mri_path: str, *, _mri=None) -> dict:
         "ok": ok,
         "checks": checks,
     }
+
+
+def mri_decompose(mri_path: str, *, n_sample: int = 0,
+                  n_components: int = 50) -> dict:
+    """PCA decomposition at every layer, saved to decomp/ for the companion viewer.
+
+    Produces:
+      decomp/L{NN}_scores.npy     — [N, K] float16 PCA scores
+      decomp/L{NN}_variance.npy   — [K] float32 variance explained per PC
+      decomp/L{NN}_components.npy — [K, D] float32 principal components
+      decomp/all_scores.bin       — single binary blob for the companion viewer
+      decomp/meta.json            — per-layer stats + sample info
+
+    Args:
+        mri_path: Path to .mri directory
+        n_sample: Number of tokens to sample. 0 = full vocabulary.
+        n_components: Number of PCA components to keep (default 50).
+    """
+    import struct
+    import sys
+
+    mri_dir = Path(mri_path)
+    meta = json.loads((mri_dir / 'metadata.json').read_text())
+    n_layers = meta['model']['n_layers']
+    model_name = meta['model']['name']
+    mode = meta.get('capture', {}).get('mode', '?')
+
+    tokens = dict(np.load(mri_dir / 'tokens.npz', allow_pickle=True))
+    n_tok = len(tokens['token_ids'])
+
+    # Sample selection
+    if n_sample <= 0 or n_sample >= n_tok:
+        idx = np.arange(n_tok)
+        n_sample = n_tok
+    else:
+        rng = np.random.RandomState(42)
+        idx = np.sort(rng.choice(n_tok, n_sample, replace=False))
+
+    decomp_dir = mri_dir / 'decomp'
+    decomp_dir.mkdir(exist_ok=True)
+
+    K = n_components
+    layer_meta = []
+
+    # Collect all scores for the binary blob
+    all_variances = []  # [n_layers, K]
+    all_scores = []     # [n_layers, N, K]
+
+    for li in range(n_layers):
+        exit_path = mri_dir / f'L{li:02d}_exit.npy'
+        if not exit_path.exists():
+            print(f"  L{li:02d}: no exit vectors, skipping", file=sys.stderr)
+            layer_meta.append({"layer": li, "pc1_pct": 0, "intrinsic_dim": 0,
+                               "neighbor_stability": 0})
+            all_variances.append(np.zeros(K, dtype=np.float32))
+            all_scores.append(np.zeros((n_sample, K), dtype=np.float16))
+            continue
+
+        print(f"  L{li:02d}/{n_layers}  ({n_sample} tokens, {K} PCs)...",
+              end="\r", file=sys.stderr)
+
+        vecs = np.load(str(exit_path), mmap_mode='r')[idx].astype(np.float32)
+        centered = vecs - vecs.mean(axis=0)
+        # Randomized SVD: O(n*k*d) instead of O(n*d^2). 18x faster for 150K tokens.
+        from sklearn.utils.extmath import randomized_svd
+        U, S, Vt = randomized_svd(centered, n_components=K, random_state=42)
+
+        # Keep top K
+        k = min(K, len(S))
+        scores = (U[:, :k] * S[:k]).astype(np.float16)   # [N, k]
+        variance = ((S[:k] ** 2) / (S ** 2).sum()).astype(np.float32)
+        components = Vt[:k].astype(np.float32)            # [k, D]
+
+        # Pad to K if fewer components available
+        if k < K:
+            scores = np.pad(scores, ((0, 0), (0, K - k)))
+            variance = np.pad(variance, (0, K - k))
+            components = np.pad(components, ((0, K - k), (0, 0)))
+
+        np.save(decomp_dir / f'L{li:02d}_scores.npy', scores)
+        np.save(decomp_dir / f'L{li:02d}_variance.npy', variance)
+        np.save(decomp_dir / f'L{li:02d}_components.npy', components)
+
+        all_variances.append(variance)
+        all_scores.append(scores)
+
+        # Per-layer stats
+        var_ratio = (S ** 2) / (S ** 2).sum()
+        cum = np.cumsum(var_ratio)
+        intrinsic = float(np.searchsorted(cum, 0.5)) + 1
+
+        # Neighbor stability: fraction of 5-NN consistent between full and 3D
+        nbr_stab = 0.0
+        if n_sample <= 10000:
+            try:
+                from sklearn.neighbors import NearestNeighbors
+                nn_full = NearestNeighbors(n_neighbors=6).fit(scores.astype(np.float32))
+                nn_3d = NearestNeighbors(n_neighbors=6).fit(scores[:, :3].astype(np.float32))
+                _, idx_full = nn_full.kneighbors()
+                _, idx_3d = nn_3d.kneighbors()
+                overlaps = [len(set(a[1:]) & set(b[1:])) / 5
+                            for a, b in zip(idx_full, idx_3d)]
+                nbr_stab = float(np.mean(overlaps))
+            except ImportError:
+                nbr_stab = 0.0
+
+        layer_meta.append({
+            "layer": li,
+            "pc1_pct": round(float(var_ratio[0]) * 100, 1),
+            "intrinsic_dim": round(intrinsic, 1),
+            "neighbor_stability": round(nbr_stab, 2),
+        })
+
+    print(f"  {n_layers} layers done.{' ' * 30}", file=sys.stderr)
+
+    # Virtual layers: embedding and lm_head
+    token_ids = tokens['token_ids']
+    for vname, vpath in [('emb', 'embedding.npy'), ('lmh', 'lmhead.npy')]:
+        vf = mri_dir / vpath
+        if not vf.exists():
+            print(f"  {vname}: not found, skipping", file=sys.stderr)
+            all_variances.append(np.zeros(K, dtype=np.float32))
+            all_scores.append(np.zeros((n_sample, K), dtype=np.float16))
+            layer_meta.append({"layer": vname, "pc1_pct": 0, "intrinsic_dim": 0, "neighbor_stability": 0})
+            continue
+        print(f"  {vname} PCA...", file=sys.stderr)
+        raw = np.load(str(vf), mmap_mode='r')
+        vecs = raw[token_ids[idx]].astype(np.float32) if raw.shape[0] > n_sample else raw[idx].astype(np.float32)
+        centered = vecs - vecs.mean(axis=0)
+        from sklearn.utils.extmath import randomized_svd
+        U, S, Vt = randomized_svd(centered, n_components=K, random_state=42)
+        k = min(K, len(S))
+        scores = (U[:, :k] * S[:k]).astype(np.float16)
+        variance = ((S[:k] ** 2) / (S ** 2).sum()).astype(np.float32)
+        if k < K:
+            scores = np.pad(scores, ((0, 0), (0, K - k)))
+            variance = np.pad(variance, (0, K - k))
+        all_variances.append(variance)
+        all_scores.append(scores)
+        var_ratio = (S ** 2) / (S ** 2).sum()
+        cum = np.cumsum(var_ratio)
+        layer_meta.append({"layer": vname, "pc1_pct": round(float(var_ratio[0]) * 100, 1),
+                           "intrinsic_dim": round(float(np.searchsorted(cum, 0.5)) + 1, 1), "neighbor_stability": 0})
+        np.save(decomp_dir / f'{vname}_scores.npy', scores)
+        np.save(decomp_dir / f'{vname}_variance.npy', variance)
+
+    # Precompute weight-PC alignment per layer
+    align_data = []
+    weights_root = mri_dir / 'weights'
+    for li in range(n_layers):
+        comp_path = decomp_dir / f'L{li:02d}_components.npy'
+        wdir = weights_root / f'L{li:02d}'
+        la = {"layer": li, "matrices": []}
+        if comp_path.exists() and wdir.exists():
+            Vt = np.load(str(comp_path)).astype(np.float32)[:10]  # top 10 PCs
+            for wname in ["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"]:
+                wp = wdir / f"{wname}.npy"
+                if not wp.exists(): continue
+                W = np.load(str(wp), mmap_mode='r').astype(np.float32)
+                if W.shape[1] == Vt.shape[1]:
+                    al = np.abs(Vt @ W.T).max(axis=1)
+                elif W.shape[0] == Vt.shape[1]:
+                    al = np.abs(Vt @ W).max(axis=1)
+                else: continue
+                al = al / (al.max() + 1e-8)
+                la["matrices"].append({"name": wname, "alignment": [round(float(a), 3) for a in al]})
+        align_data.append(la)
+    (decomp_dir / 'weight_alignment.json').write_text(json.dumps(align_data))
+    print(f"  Weight alignment: {len(align_data)} layers", file=sys.stderr)
+
+    # Precompute gate biography summary per token (top neurons per layer)
+    gate_summary = {}
+    mlp_dir = mri_dir / 'mlp'
+    if mlp_dir.exists():
+        gate_layers = []
+        for li in range(n_layers):
+            gp = mlp_dir / f'L{li:02d}_gate.npy'
+            if gp.exists():
+                g = np.load(str(gp), mmap_mode='r')  # [N, intermediate]
+                # Per-layer stats: mean_abs and max_abs per token (for fast lookup)
+                gate_layers.append({"layer": li, "shape": list(g.shape)})
+            else:
+                gate_layers.append({"layer": li, "shape": None})
+        gate_summary["layers"] = gate_layers
+        gate_summary["n_tokens"] = n_sample
+        (decomp_dir / 'gate_summary.json').write_text(json.dumps(gate_summary))
+        # Precompute per-token gate heatmap: max |gate * up| per layer (actual neuron contribution)
+        print(f"  Gate heatmap...", file=sys.stderr)
+        gate_heat = np.zeros((n_sample, n_layers), dtype=np.float16)
+        for li in range(n_layers):
+            gp = mlp_dir / f'L{li:02d}_gate.npy'
+            up = mlp_dir / f'L{li:02d}_up.npy'
+            if gp.exists() and up.exists():
+                g = np.load(str(gp), mmap_mode='r')
+                u = np.load(str(up), mmap_mode='r')
+                gate_heat[:, li] = np.abs(g * u).max(axis=1).astype(np.float16)
+            elif gp.exists():
+                g = np.load(str(gp), mmap_mode='r')
+                gate_heat[:, li] = np.abs(g).max(axis=1).astype(np.float16)
+        np.save(decomp_dir / 'gate_heatmap.npy', gate_heat)
+        print(f"  Gate heatmap: {gate_heat.shape}", file=sys.stderr)
+
+    # === Precompute delta PCA (exit - entry) ===
+    delta_scores_all = []
+    delta_var_all = []
+    for li in range(n_layers):
+        entry_path = mri_dir / f'L{li:02d}_entry.npy'
+        exit_path = mri_dir / f'L{li:02d}_exit.npy'
+        if entry_path.exists() and exit_path.exists():
+            print(f"  delta L{li:02d}...", end="\r", file=sys.stderr)
+            entry = np.load(str(entry_path), mmap_mode='r')[idx].astype(np.float32)
+            exits = np.load(str(exit_path), mmap_mode='r')[idx].astype(np.float32)
+            delta = exits - entry
+            centered = delta - delta.mean(axis=0)
+            from sklearn.utils.extmath import randomized_svd
+            U, S, Vt = randomized_svd(centered, n_components=K, random_state=42)
+            k = min(K, len(S))
+            ds = (U[:, :k] * S[:k]).astype(np.float16)
+            dv = ((S[:k] ** 2) / (S ** 2).sum()).astype(np.float32)
+            if k < K: ds = np.pad(ds, ((0, 0), (0, K - k))); dv = np.pad(dv, (0, K - k))
+            delta_scores_all.append(ds); delta_var_all.append(dv)
+        else:
+            delta_scores_all.append(np.zeros((n_sample, K), dtype=np.float16))
+            delta_var_all.append(np.zeros(K, dtype=np.float32))
+    if any(v.any() for v in delta_var_all):
+        d_header = struct.pack('<III', n_layers, n_sample, K)
+        d_var = np.concatenate(delta_var_all).tobytes()
+        d_sc = np.concatenate([s.view(np.uint16).ravel() for s in delta_scores_all]).tobytes()
+        with open(decomp_dir / 'delta_scores.bin', 'wb') as f:
+            f.write(d_header); f.write(d_var); f.write(d_sc)
+        print(f"  Delta PCA: {len(delta_scores_all)} layers", file=sys.stderr)
+
+    # === Precompute per-token neuron profiles (top neurons by contribution) ===
+    mlp_dir = mri_dir / 'mlp'
+    if mlp_dir.exists():
+        print(f"  Neuron profiles...", file=sys.stderr)
+        # For each layer, compute |gate * up| contribution per neuron, averaged across tokens
+        neuron_importance = []  # per-layer top neuron indices
+        for li in range(n_layers):
+            gp = mlp_dir / f'L{li:02d}_gate.npy'
+            up_p = mlp_dir / f'L{li:02d}_up.npy'
+            if gp.exists() and up_p.exists():
+                g = np.load(str(gp), mmap_mode='r').astype(np.float32)
+                u = np.load(str(up_p), mmap_mode='r').astype(np.float32)
+                contrib = np.abs(g * u).mean(axis=0)  # [intermediate]
+                top50 = np.argsort(contrib)[-50:][::-1]
+                neuron_importance.append({"layer": li, "top_neurons": top50.tolist(),
+                    "top_contrib": contrib[top50].tolist()})
+            else:
+                neuron_importance.append({"layer": li, "top_neurons": [], "top_contrib": []})
+        (decomp_dir / 'neuron_importance.json').write_text(json.dumps(neuron_importance))
+
+    # === Precompute attention summary ===
+    attn_dir = mri_dir / 'attention'
+    if attn_dir.exists():
+        print(f"  Attention summary...", file=sys.stderr)
+        attn_summary = []
+        for li in range(n_layers):
+            wp = attn_dir / f'L{li:02d}_weights.npy'
+            lp = attn_dir / f'L{li:02d}_logits.npy'
+            fp = wp if wp.exists() else lp
+            if fp.exists():
+                a = np.load(str(fp), mmap_mode='r')  # [N, heads, seq_len]
+                # Mean attention per head across all tokens
+                mean_attn = np.abs(a).mean(axis=0).tolist()  # [heads, seq_len]
+                attn_summary.append({"layer": li, "n_heads": a.shape[1],
+                    "seq_len": a.shape[2], "mean_attn": mean_attn})
+            else:
+                attn_summary.append({"layer": li, "n_heads": 0, "seq_len": 0, "mean_attn": []})
+        (decomp_dir / 'attention_summary.json').write_text(json.dumps(attn_summary))
+
+    total_layers = len(all_scores)  # n_layers + 2 virtual layers
+
+    # Build all_scores.bin (includes virtual layers)
+    # Format: [4B magic 'HEIN'][4B n_layers][4B n_tokens][4B n_components]
+    #         [float32 variance: n_layers * K]
+    #         [uint16 scores: n_layers * N * K]  (float16 as raw uint16)
+    header = struct.pack('<4sIII', b'HEIN', total_layers, n_sample, K)
+    var_block = np.concatenate(all_variances).tobytes()  # float32
+    score_block = np.concatenate([s.view(np.uint16).ravel()
+                                  for s in all_scores]).tobytes()
+    bin_path = decomp_dir / 'all_scores.bin'
+    with open(bin_path, 'wb') as f:
+        f.write(header)
+        f.write(var_block)
+        f.write(score_block)
+
+    bin_size = len(header) + len(var_block) + len(score_block)
+
+    # Save metadata (sample_indices as "all" for full vocab to avoid huge JSON)
+    meta_out = {
+        "n_sample": n_sample,
+        "n_components": K,
+        "n_layers": total_layers,
+        "n_real_layers": n_layers,
+        "method": "pca",
+        "virtual_layers": ["emb", "lmh"],
+        "sample_indices": "all" if n_sample == n_tok else idx.tolist(),
+        "layers": layer_meta,
+    }
+    (decomp_dir / 'meta.json').write_text(json.dumps(meta_out, indent=2))
+
+    return {
+        "model": model_name,
+        "mode": mode,
+        "mri_path": str(mri_dir),
+        "n_tokens": n_sample,
+        "n_components": K,
+        "n_layers": n_layers,
+        "bin_size_mb": round(bin_size / 1024 / 1024, 1),
+        "layers": layer_meta,
+    }
