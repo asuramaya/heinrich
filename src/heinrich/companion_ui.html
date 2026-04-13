@@ -64,9 +64,9 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   <div class="lvp" id="lv1"><div class="llbl" id="lv1i">Internals Δ</div><div class="cbtn lv-btn lv-top" data-v="l1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="lvp" id="lv2"><div class="llbl" id="lv2i">Internals B</div><div class="cbtn lv-btn lv-top" data-v="l2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div id="rightcol">
-    <div class="rvp" id="rv0"><div class="rlbl">Weights</div></div>
-    <div class="rvp" id="rv1"><div class="rlbl">Neurons</div></div>
-    <div class="rvp" id="rv2"><div class="rlbl">Attention</div></div>
+    <div class="rvp" id="rv0"><div class="rlbl">Variance + Displacement</div></div>
+    <div class="rvp" id="rv1"><div class="rlbl">MLP Gating</div></div>
+    <div class="rvp" id="rv2"><div class="rlbl">Residual + Dominance</div></div>
   </div>
 </div>
 <div id="tokpanel">
@@ -942,45 +942,72 @@ function buildLeftViewports(){buildWeightLandscape();buildRightColumn();}
 // === Right column: pre-built layer-sliced 3D viewports ===
 // All geometry built once on pin/model change. Playback only toggles opacity.
 
-// Right column uses pre-loaded data only — no API calls on interaction
+// === Right column: token journey through model — all from loaded data ===
 
 function buildRightColumn(){
   if(!rightViews.length||!_nRealLayers)return;
-  _buildRV0Variance();
-  _buildRV1Neurons();
-  _buildRV2Attention();
+  _buildRV0Entry();
+  _buildRV1Gate();
+  _buildRV2Residual();
 }
 
-// rv0: Variance spectrum — X=PC, Y=log(variance), Z=layer
-function _buildRV0Variance(){
+function _clearRV(rv){
+  if(!rv)return;rv._rvSlices=[];
+  while(rv.sc.children.length>1){const c=rv.sc.children[rv.sc.children.length-1];rv.sc.remove(c);if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();}
+}
+
+// rv0: Entry & Variance — where is the information at each layer?
+// Variance spectrum bars + displacement magnitude for pinned tokens
+function _buildRV0Entry(){
   const rv=rightViews[0];if(!rv||!_layerVar.length)return;
-  _clearRV(rv);
-  const nPC=Math.min(nK,20);rv._rvSlices=[];
-  // Use log scale so small PCs are visible alongside dominant ones
-  const logV=(v)=>v>0?Math.log10(v*1000+1)/3:0;// maps 0.001->0.3, 0.1->0.7, 1.0->1.0
+  _clearRV(rv);rv._rvSlices=[];
+  const nPC=Math.min(nK,20);
+  const logV=(v)=>v>0?Math.log10(v*1000+1)/3:0;
+  // Variance bars per layer per PC
   for(let l=0;l<_nRealLayers;l++){
-    const z=(l/(_nRealLayers-1))*2-1;
-    const pos=[];const cols=[];
+    const z=(l/(_nRealLayers-1))*2-1;const pos=[];const cols=[];
     for(let pc=0;pc<nPC;pc++){
       const v=_layerVar[l]?_layerVar[l][pc]||0:0;
-      const x=(pc/(nPC-1||1))*2-1;
-      const h=logV(v)*1.5;
+      const x=(pc/(nPC-1||1))*1.8-0.9;const h=logV(v)*1.5;
       pos.push(x,0,z, x,h,z);
       const hue=pc/nPC;const c=new THREE.Color().setHSL(hue,0.8,0.5);
-      cols.push(c.r*0.3,c.g*0.3,c.b*0.3, c.r,c.g,c.b);// dark base, bright top
+      cols.push(c.r*0.3,c.g*0.3,c.b*0.3, c.r,c.g,c.b);
     }
+    // Token displacement magnitude bars (from allL)
+    [pinnedToken,pinnedTokenB].forEach((tok,ti)=>{
+      if(tok<0||!allL[l])return;const S=allL[l][tok];
+      let disp2=0;for(let p=0;p<Math.min(nK,10);p++)disp2+=(S[p]||0)**2;
+      const disp=Math.sqrt(disp2);const normDisp=Math.min(1.5,disp/500);// normalize to ~1.5 max
+      const x=ti===0?1.1:1.3;
+      pos.push(x,0,z, x,normDisp,z);
+      const rgb=ti===0?[1,0.4,0.2]:[0.2,0.5,1];
+      cols.push(rgb[0]*0.2,rgb[1]*0.2,rgb[2]*0.2, rgb[0],rgb[1],rgb[2]);
+    });
     const geo=new THREE.BufferGeometry();
     geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
     geo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(cols),3));
     const seg=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.15}));
     seg.frustumCulled=false;rv.sc.add(seg);rv._rvSlices.push({mesh:seg,layer:l});
   }
-  rv.cam.position.set(1.5,1.5,2);rv.ctl.target.set(0,0.5,0);rv.ctl.update();rv.built=true;
-  _updateRVLayer();
+  // Displacement trajectory lines (continuous through all layers)
+  [pinnedToken,pinnedTokenB].forEach((tok,ti)=>{
+    if(tok<0)return;const pts=[];
+    for(let l=0;l<_nRealLayers;l++){
+      if(!allL[l])continue;const S=allL[l][tok];
+      let disp2=0;for(let p=0;p<Math.min(nK,10);p++)disp2+=(S[p]||0)**2;
+      const normDisp=Math.min(1.5,Math.sqrt(disp2)/500);
+      pts.push(new THREE.Vector3(ti===0?1.1:1.3,normDisp,(l/(_nRealLayers-1))*2-1));
+    }
+    if(pts.length>1){const g=new THREE.BufferGeometry().setFromPoints(pts);
+      rv.sc.add(new THREE.Line(g,new THREE.LineBasicMaterial({color:ti===0?0xFF6644:0x4477AA,transparent:true,opacity:0.6})));}
+  });
+  if(!rv._camSet){rv.cam.position.set(1.5,1.5,2);rv.ctl.target.set(0.3,0.5,0);rv.ctl.update();rv._camSet=true;}
+  rv.built=true;_updateRVLayer();
 }
 
-// rv1: Neurons — gate×up from _gateHeat (already loaded, no API call, instant)
-function _buildRV1Neurons(){
+// rv1: Gating — MLP gate activation for pinned tokens
+// Bar per layer + concentration line showing how distributed the gating is
+function _buildRV1Gate(){
   const rv=rightViews[1];if(!rv)return;
   _clearRV(rv);rv._rvSlices=[];
   if(!_gateHeat||!_nRealLayers){rv.built=true;return;}
@@ -991,10 +1018,23 @@ function _buildRV1Neurons(){
   if(rowA)for(let l=0;l<_nRealLayers;l++)mx=Math.max(mx,rowA[l]);
   if(rowB)for(let l=0;l<_nRealLayers;l++)mx=Math.max(mx,rowB[l]);
   mx=mx||1;
+  // Bars per layer
   for(let l=0;l<_nRealLayers;l++){
     const z=(l/(_nRealLayers-1))*2-1;const pos=[];const cols=[];
-    if(rowA){const v=rowA[l]/mx;pos.push(-0.5,0,z, -0.5,v*1.5,z);cols.push(0.3,0.1,0.05, 1,0.4+v*0.5,0.2);}
-    if(rowB){const v=rowB[l]/mx;pos.push(0.5,0,z, 0.5,v*1.5,z);cols.push(0.05,0.1,0.2, 0.2,0.5+v*0.4,1);}
+    if(rowA){const v=rowA[l]/mx;
+      // Main bar
+      pos.push(-0.5,0,z, -0.5,v*1.5,z);
+      cols.push(0.3,0.1,0.05, 1,0.4+v*0.5,0.2);
+      // Wider bar for visual weight
+      pos.push(-0.3,0,z, -0.3,v*1.2,z);
+      cols.push(0.2,0.05,0.02, 0.8,0.3+v*0.4,0.15);
+    }
+    if(rowB){const v=rowB[l]/mx;
+      pos.push(0.5,0,z, 0.5,v*1.5,z);
+      cols.push(0.05,0.1,0.2, 0.2,0.5+v*0.4,1);
+      pos.push(0.3,0,z, 0.3,v*1.2,z);
+      cols.push(0.02,0.05,0.15, 0.15,0.4+v*0.3,0.8);
+    }
     if(!pos.length)continue;
     const geo=new THREE.BufferGeometry();
     geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
@@ -1002,43 +1042,77 @@ function _buildRV1Neurons(){
     const seg=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.15}));
     seg.frustumCulled=false;rv.sc.add(seg);rv._rvSlices.push({mesh:seg,layer:l});
   }
+  // Continuous gate trajectory lines
+  [rowA,rowB].forEach((row,ti)=>{
+    if(!row)return;const pts=[];
+    for(let l=0;l<_nRealLayers;l++)pts.push(new THREE.Vector3(ti===0?-0.5:0.5,(row[l]/mx)*1.5,(l/(_nRealLayers-1))*2-1));
+    const g=new THREE.BufferGeometry().setFromPoints(pts);
+    rv.sc.add(new THREE.Line(g,new THREE.LineBasicMaterial({color:ti===0?0xFF6644:0x4477AA,transparent:true,opacity:0.5})));
+  });
   if(!rv._camSet){rv.cam.position.set(0,1,2.5);rv.ctl.target.set(0,0.5,0);rv.ctl.update();rv._camSet=true;}
   rv.built=true;_updateRVLayer();_markDirty();
 }
 
-// rv2: Attention — per-head attention distribution at each layer
-function _buildRV2Attention(){
+// rv2: Residual norm — how much total information the token carries at each layer
+// + attention self-fraction (template) or PC dominance (raw/naked)
+function _buildRV2Residual(){
   const rv=rightViews[2];if(!rv)return;
   _clearRV(rv);rv._rvSlices=[];
-  if(!_attnData||pinnedToken<0||mode!=='template'){rv.built=true;return;}
-  const nH=_attnData[0]?.heads?.length||0;if(!nH){rv.built=true;return;}
-  const seqLen=_attnData[0]?.heads?.[0]?.length||0;if(!seqLen){rv.built=true;return;}
-  for(let l=0;l<Math.min(_attnData.length,_nRealLayers);l++){
-    const z=(l/(_nRealLayers-1))*2-1;const heads=_attnData[l]?.heads;if(!heads)continue;
-    const pos=[];const cols=[];
-    heads.forEach((head,hi)=>{
-      const hue=hi/nH;const c=new THREE.Color().setHSL(hue,0.6,0.5);
-      for(let pi=0;pi<head.length-1;pi++){
-        const x1=(pi/(seqLen-1))*2-1,x2=((pi+1)/(seqLen-1))*2-1;
-        const y1=(head[pi]||0)*1.5+hi*0.02,y2=(head[pi+1]||0)*1.5+hi*0.02;// slight Y offset per head
-        pos.push(x1,y1,z, x2,y2,z);
-        cols.push(c.r,c.g,c.b, c.r,c.g,c.b);
-      }
-    });
-    if(!pos.length)continue;
-    const geo=new THREE.BufferGeometry();
-    geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
-    geo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(cols),3));
-    const mat=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.15}));
-    mat.frustumCulled=false;rv.sc.add(mat);rv._rvSlices.push({mesh:mat,layer:l});
+  if(!_nRealLayers||!allL.length){rv.built=true;return;}
+  // Residual norm per layer for pinned tokens
+  [pinnedToken,pinnedTokenB].forEach((tok,ti)=>{
+    if(tok<0)return;const pts=[];
+    for(let l=0;l<_nRealLayers;l++){
+      if(!allL[l])continue;const S=allL[l][tok];
+      let norm2=0;for(let p=0;p<Math.min(nK,20);p++)norm2+=(S[p]||0)**2;
+      const norm=Math.sqrt(norm2);
+      pts.push(new THREE.Vector3(ti===0?-0.5:0.5,Math.min(1.5,norm/500),(l/(_nRealLayers-1))*2-1));
+    }
+    if(pts.length>1){const g=new THREE.BufferGeometry().setFromPoints(pts);
+      rv.sc.add(new THREE.Line(g,new THREE.LineBasicMaterial({color:ti===0?0xFF6644:0x4477AA,transparent:true,opacity:0.7})));}
+  });
+  // PC dominance: fraction of variance in PC0 vs rest at each layer
+  // This shows crystallization — when PC0 dominance spikes, the crystal forms
+  if(_layerVar.length){
+    const pts=[];
+    for(let l=0;l<_nRealLayers;l++){
+      const v0=_layerVar[l]?_layerVar[l][0]||0:0;
+      pts.push(new THREE.Vector3(0,v0*1.5,(l/(_nRealLayers-1))*2-1));
+    }
+    if(pts.length>1){const g=new THREE.BufferGeometry().setFromPoints(pts);
+      rv.sc.add(new THREE.Line(g,new THREE.LineBasicMaterial({color:0xFFFF44,transparent:true,opacity:0.5})));}
   }
-  rv.cam.position.set(0,0.8,3);rv.ctl.target.set(0,0.4,0);rv.ctl.update();rv.built=true;
-  _updateRVLayer();_markDirty();
-}
-
-function _clearRV(rv){
-  if(!rv)return;rv._rvSlices=[];
-  while(rv.sc.children.length>1){const c=rv.sc.children[rv.sc.children.length-1];rv.sc.remove(c);if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();}
+  // Attention self-fraction if template mode
+  if(_attnData&&mode==='template'){
+    const pts=[];
+    for(let l=0;l<Math.min(_attnData.length,_nRealLayers);l++){
+      const heads=_attnData[l]?.heads;if(!heads||!heads.length){pts.push(new THREE.Vector3(1,0,(l/(_nRealLayers-1))*2-1));continue;}
+      let selfAttn=0;heads.forEach(h=>{selfAttn+=h[h.length-1]||0;});selfAttn/=heads.length;
+      pts.push(new THREE.Vector3(1,selfAttn*1.5,(l/(_nRealLayers-1))*2-1));
+    }
+    if(pts.length>1){const g=new THREE.BufferGeometry().setFromPoints(pts);
+      rv.sc.add(new THREE.Line(g,new THREE.LineBasicMaterial({color:0x88FFAA,transparent:true,opacity:0.6})));}
+  }
+  // Layer-sliced bars for residual norm (for playback opacity)
+  [pinnedToken,pinnedTokenB].forEach((tok,ti)=>{
+    if(tok<0)return;
+    for(let l=0;l<_nRealLayers;l++){
+      const z=(l/(_nRealLayers-1))*2-1;
+      if(!allL[l])continue;const S=allL[l][tok];
+      let norm2=0;for(let p=0;p<Math.min(nK,20);p++)norm2+=(S[p]||0)**2;
+      const norm=Math.min(1.5,Math.sqrt(norm2)/500);
+      const pos=new Float32Array([ti===0?-0.5:0.5,0,z, ti===0?-0.5:0.5,norm,z]);
+      const rgb=ti===0?[1,0.4,0.2]:[0.2,0.5,1];
+      const col=new Float32Array([rgb[0]*0.2,rgb[1]*0.2,rgb[2]*0.2, rgb[0],rgb[1],rgb[2]]);
+      const geo=new THREE.BufferGeometry();
+      geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+      geo.setAttribute('color',new THREE.BufferAttribute(col,3));
+      const seg=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.1}));
+      seg.frustumCulled=false;rv.sc.add(seg);rv._rvSlices.push({mesh:seg,layer:l});
+    }
+  });
+  if(!rv._camSet){rv.cam.position.set(0.5,1,2.5);rv.ctl.target.set(0,0.5,0);rv.ctl.update();rv._camSet=true;}
+  rv.built=true;_updateRVLayer();_markDirty();
 }
 
 // Playback: toggle layer opacity across all 3 right viewports
@@ -1047,7 +1121,7 @@ function _updateRVLayer(){
     rv._rvSlices.forEach(({mesh,layer})=>{
       const d=Math.abs(layer-cL);
       mesh.material.opacity=d===0?0.9:d===1?0.4:d===2?0.2:d<=5?0.08:0.03;
-      mesh.visible=true;// show all layers — far ones very dim
+      mesh.visible=true;
     });
   });
 }
