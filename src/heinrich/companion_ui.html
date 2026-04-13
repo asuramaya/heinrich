@@ -659,85 +659,75 @@ function getGateRow(tokIdx){
   return row;
 }
 
-// Weight + Norms landscape: per-matrix alignment spectrum through layers
+// Weight landscape: reacts to selected PCs — shows weight alignment for current pairs
 const _WL_COLORS=[0xFF4444,0xFF8844,0xFFCC44,0x44CC44,0x44CCCC,0x4488FF,0xAA44FF];
 const _WL_NAMES=['Q','K','V','O','gate','up','down'];
-async function buildWeightLandscape(){
-  const lv=leftViews[0];if(!model)return;
-  const allAlign=await api(`weight-align-all/${model}/${mode}`);
-  if(!Array.isArray(allAlign)||!allAlign.length){lv.built=true;return;}
-  if(!allAlign[0]?.matrices?.length)return;
-  const nMat=allAlign[0].matrices.length;
-  // For each matrix type, show alignment with top 10 PCs across layers
-  // X = PC index, Y = layer depth, Z = alignment value
-  // This creates a surface per matrix showing where each weight matrix "looks" in PC space
-  let globalMax=0;
-  for(let l=0;l<_nRealLayers;l++){
-    const la=allAlign[l];if(!la)continue;
-    for(let mi=0;mi<nMat;mi++){const al=la.matrices?.[mi]?.alignment||[];al.forEach(v=>{if(v>globalMax)globalMax=v;});}
-  }
-  globalMax=globalMax||1;
+let _wlData=null;// cached weight alignment data from server
+let _wlBuiltKey='';// tracks what's currently built
+
+async function _loadWeightData(){
+  if(_wlData)return _wlData;
+  _wlData=await api(`weight-align-all/${model}/${mode}`);
+  return _wlData;
+}
+
+function buildWeightLandscape(){
+  const lv=leftViews[0];if(!lv)return;
+  _wlBuiltKey='';
+  _loadWeightData().then(()=>{_rebuildWeightLines();lv.built=true;_markDirty();});
+}
+
+function _rebuildWeightLines(){
+  const lv=leftViews[0];if(!lv||!_wlData||!Array.isArray(_wlData)||!_wlData.length)return;
+  const key=`${vpPairs[0]},${vpPairs[2]},${cL}`;
+  if(key===_wlBuiltKey)return;
+  _wlBuiltKey=key;
+  // Clear old lines but keep grid/plane
+  const keep=[];
+  while(lv.sc.children.length){const c=lv.sc.children[0];lv.sc.remove(c);
+    if(c===lv._layerPlane||c===lv._grid){keep.push(c);}
+    else{if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();}}
+  keep.forEach(c=>lv.sc.add(c));
+  if(!lv._grid){lv._grid=new THREE.GridHelper(2,6,0x1a1a1a,0x141414);lv._grid.rotation.x=Math.PI/2;lv.sc.add(lv._grid);}
+  if(!lv._layerPlane){const g=new THREE.PlaneGeometry(3,2);const m=new THREE.MeshBasicMaterial({color:0xFFFFFF,transparent:true,opacity:0.05,side:THREE.DoubleSide});lv._layerPlane=new THREE.Mesh(g,m);lv.sc.add(lv._layerPlane);}
+  lv._layerPlane.position.set(0,0.75,(cL/(_nRealLayers-1||1))*2-1);
+
+  const nMat=_wlData[0]?.matrices?.length||0;if(!nMat)return;
+  // Show alignment for the SELECTED PCs only (pair A's 2 + pair B's 2 = 4 PCs)
+  const selectedPCs=[...new Set([vpPairs[0][0],vpPairs[0][1],vpPairs[2][0],vpPairs[2][1]])].sort((a,b)=>a-b);
+  // For each matrix type: one line per selected PC
   for(let mi=0;mi<nMat;mi++){
-    const nPC=allAlign[0].matrices[mi]?.alignment?.length||0;if(!nPC)continue;
-    // One line per PC showing this matrix's alignment with that PC across layers
-    for(let pc=0;pc<Math.min(nPC,6);pc++){
+    selectedPCs.forEach((pc,pi)=>{
       const pts=[];
       for(let l=0;l<_nRealLayers;l++){
-        const al=allAlign[l]?.matrices?.[mi]?.alignment||[];
-        const v=(al[pc]||0)/globalMax;
-        const x=(mi/(nMat-1))*2-1+pc*0.03;// slight X offset per PC
-        const y=v*1.5;
+        const al=_wlData[l]?.matrices?.[mi]?.alignment||[];
+        const v=al[pc]||0;
+        const x=(mi/(nMat-1))*2-1;
+        const y=v*1.2;
         const z=(l/(_nRealLayers-1))*2-1;
-        pts.push(new THREE.Vector3(x,y,z));
+        pts.push(new THREE.Vector3(x+pi*0.06,y,z));
       }
       const geo=new THREE.BufferGeometry().setFromPoints(pts);
-      const opacity=pc===0?0.8:0.3;// first PC bright, rest dim
-      const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:_WL_COLORS[mi],transparent:true,opacity}));
+      // Color: matrix color, opacity by which pair the PC belongs to
+      const isPairA=vpPairs[0].includes(pc);
+      const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:_WL_COLORS[mi],transparent:true,opacity:isPairA?0.9:0.4}));
       line.frustumCulled=false;lv.sc.add(line);
-    }
-    // Label sprite
-    const sp=new THREE.Sprite(new THREE.SpriteMaterial({color:_WL_COLORS[mi],transparent:true,opacity:0.7}));
-    sp.scale.set(0.1,0.1,1);
-    sp.position.set((mi/(nMat-1))*2-1,-0.15,-1.1);
-    lv.sc.add(sp);
+    });
   }
-  // Norms: layer norm weight magnitude as white trajectory
-  try{
-    const norms=await api(`norms/${model}/${mode}`);
-    if(norms&&!norms.error){
-      const normKeys=Object.keys(norms).filter(k=>k.startsWith('ln')||k.startsWith('norm')).sort();
-      if(normKeys.length>1){
-        const vals=normKeys.map(k=>norms[k].mean);
-        const vmax=Math.max(...vals)||1;
-        const pts=vals.map((v,i)=>new THREE.Vector3(1.3,(v/vmax)*1.5,(i/(vals.length-1))*2-1));
-        const geo=new THREE.BufferGeometry().setFromPoints(pts);
-        lv.sc.add(new THREE.Line(geo,new THREE.LineBasicMaterial({color:0xFFFFFF,transparent:true,opacity:0.4})));
-      }
+  // Variance lines for selected PCs
+  selectedPCs.forEach((pc,pi)=>{
+    if(!_layerVar.length)return;
+    const pts=[];
+    for(let l=0;l<_nRealLayers;l++){
+      const v=_layerVar[l]?_layerVar[l][pc]||0:0;
+      pts.push(new THREE.Vector3(-1.3+pi*0.15,v*2,(l/(_nRealLayers-1))*2-1));
     }
-  }catch(e){}
-  // Variance spectrum: show per-layer PC variance as brightness
-  if(_layerVar.length){
-    const nShow=Math.min(10,nK);
-    for(let pc=0;pc<nShow;pc++){
-      const pts=[];
-      for(let l=0;l<_nRealLayers;l++){
-        const v=_layerVar[l]?_layerVar[l][pc]||0:0;
-        pts.push(new THREE.Vector3(-1.3+pc*0.12,v*3,(l/(_nRealLayers-1))*2-1));
-      }
-      const geo=new THREE.BufferGeometry().setFromPoints(pts);
-      const hue=pc/nShow;const c=new THREE.Color().setHSL(hue,0.7,0.5);
-      lv.sc.add(new THREE.Line(geo,new THREE.LineBasicMaterial({color:c,transparent:true,opacity:0.5})));
-    }
-  }
-  // Current layer indicator plane
-  const clGeo=new THREE.PlaneGeometry(3,2);
-  const clMat=new THREE.MeshBasicMaterial({color:0xFFFFFF,transparent:true,opacity:0.03,side:THREE.DoubleSide});
-  lv._layerPlane=new THREE.Mesh(clGeo,clMat);
-  lv._layerPlane.position.set(0,0.75,(cL/(_nRealLayers-1))*2-1);
-  lv.sc.add(lv._layerPlane);
-  const grid=new THREE.GridHelper(2,6,0x1a1a1a,0x141414);grid.rotation.x=Math.PI/2;lv.sc.add(grid);
-  lv.cam.position.set(0,1.5,3);lv.ctl.target.set(0,0.5,0);lv.ctl.update();
-  lv.built=true;
+    const geo=new THREE.BufferGeometry().setFromPoints(pts);
+    const isPairA=vpPairs[0].includes(pc);
+    const c=isPairA?0xFF6644:0x4477AA;
+    lv.sc.add(new THREE.Line(geo,new THREE.LineBasicMaterial({color:c,transparent:true,opacity:0.7})));
+  });
+  if(!lv._camSet){lv.cam.position.set(0,1.5,3);lv.ctl.target.set(0,0.5,0);lv.ctl.update();lv._camSet=true;}
 }
 
 // --- Neuron activation charts (2D canvas) ---
@@ -819,8 +809,7 @@ function renderAttnChart(){
 function buildLeftViewports(){buildWeightLandscape();}
 function updateLeftViewports(){
   _updateDeltaPins();
-  // Update weights layer indicator
-  const lv=leftViews[0];if(lv&&lv._layerPlane&&_nRealLayers>1){lv._layerPlane.position.z=(cL/(_nRealLayers-1))*2-1;_markDirty();}
+  _rebuildWeightLines();// updates layer plane + rebuilds if PCs changed
   if(!play){renderNeuronChart(pinnedToken,'neuronA','200,80,50');renderNeuronChart(pinnedTokenB,'neuronB','60,100,180');renderAttnChart();}
 }
 
@@ -916,7 +905,7 @@ async function loadAll(){
   const prevLayer=isSameModel?cL:0;
 
   // Reset interaction state
-  pinnedToken=-1;pinnedTokenB=-1;hoveredToken=-1;_lastDimState=-1;_trajCache={};
+  pinnedToken=-1;pinnedTokenB=-1;hoveredToken=-1;_lastDimState=-1;_trajCache={};_wlData=null;_wlBuiltKey='';
   const _tsEl=document.getElementById('tsearch');if(_tsEl)_tsEl.value='';
   const _tsR=document.getElementById('tsresults');if(_tsR)_tsR.textContent='';
 
