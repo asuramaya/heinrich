@@ -582,20 +582,41 @@ function _updateBrowserPinPositions(){
   });
 }
 
-// Browser click — raycast against dot grid, resolve to cell (a,b)
+// Browser hover + click
 brCv.addEventListener('contextmenu',e=>e.preventDefault(),true);
 const bray=new THREE.Raycaster();const bms=new THREE.Vector2();let _bdx=0,_bdy=0;
-brCv.addEventListener('pointerdown',e=>{_bdx=e.clientX;_bdy=e.clientY;});
-brCv.addEventListener('pointerup',e=>{if(Math.abs(e.clientX-_bdx)+Math.abs(e.clientY-_bdy)>5)return;
+// Hover highlight box
+const _brHoverBox=(()=>{const eg=new THREE.EdgesGeometry(new THREE.PlaneGeometry(_BR_RAD*2.4,_BR_RAD*2.4));const e=new THREE.LineSegments(eg,new THREE.LineBasicMaterial({color:0xFFFFFF,transparent:true,opacity:0.6}));e.visible=false;e.frustumCulled=false;brSc.add(e);return e;})();
+let _brHoverLabel=null;// HUD text for hovered cell
+function _brResolveCell(e){
   const r=brCv.getBoundingClientRect();bms.x=((e.clientX-r.left)/r.width)*2-1;bms.y=-((e.clientY-r.top)/r.height)*2+1;
   bray.setFromCamera(bms,brCam);bray.params.Points.threshold=_SP*0.4;
-  // Raycast against dot grid + any active cloud
-  const targets=_brLayers.map(l=>l.pts);
-  const hits=bray.intersectObjects(targets);if(!hits.length)return;
+  const targets=_brLayers.map(l=>l.pts).filter(Boolean);
+  const hits=bray.intersectObjects(targets);if(!hits.length)return null;
   const p=hits[0].point;
-  const b=Math.round(p.x/_SP);const a=Math.round(-p.y/_SP);
-  if(a>=0&&a<nK&&b>a&&b<nK){
-    const slot=_isRightClick(e)?2:0;vpPairs[slot]=[a,b];updateAllViewports();_updateBrowserOverlay();_saveState();}
+  const b=Math.round(p.x/_SP),a=Math.round(-p.y/_SP);
+  if(a>=0&&a<nK&&b>a&&b<nK)return{a,b};
+  return null;
+}
+brCv.addEventListener('mousemove',e=>{
+  const cell=_brResolveCell(e);
+  if(cell){
+    _brHoverBox.position.set(cell.b*_SP,-cell.a*_SP,cL*_ZSP);
+    _brHoverBox.visible=true;
+    // Show label in blbl
+    const lbl=document.querySelector('#br0 .blbl');
+    if(lbl)lbl.textContent=`PC${cell.a}/${cell.b}  L-click=A  R-click=B`;
+  }else{
+    _brHoverBox.visible=false;
+    const lbl=document.querySelector('#br0 .blbl');if(lbl)lbl.textContent='R-click=Token B';
+  }
+  _markDirty();
+});
+brCv.addEventListener('mouseleave',()=>{_brHoverBox.visible=false;const lbl=document.querySelector('#br0 .blbl');if(lbl)lbl.textContent='R-click=Token B';_markDirty();});
+brCv.addEventListener('pointerdown',e=>{_bdx=e.clientX;_bdy=e.clientY;});
+brCv.addEventListener('pointerup',e=>{if(Math.abs(e.clientX-_bdx)+Math.abs(e.clientY-_bdy)>5)return;
+  const cell=_brResolveCell(e);if(!cell)return;
+  const slot=_isRightClick(e)?2:0;vpPairs[slot]=[cell.a,cell.b];updateAllViewports();_updateBrowserOverlay();_saveState();
 });
 
 // === 2 left viewports: Delta + Weight Landscape ===
@@ -638,61 +659,78 @@ function getGateRow(tokIdx){
   return row;
 }
 
-// Weight Landscape: weight-PC alignment as 3D line chart + norms
-let _weightLines=null;
-const _WL_COLORS=[0xFF4444,0xFF8844,0xFFCC44,0x44CC44,0x44CCCC,0x4488FF,0xAA44FF];// Q K V O gate up down
+// Weight + Norms landscape: per-matrix alignment spectrum through layers
+const _WL_COLORS=[0xFF4444,0xFF8844,0xFFCC44,0x44CC44,0x44CCCC,0x4488FF,0xAA44FF];
 const _WL_NAMES=['Q','K','V','O','gate','up','down'];
 async function buildWeightLandscape(){
   const lv=leftViews[0];if(!model)return;
-  // Load all layers in ONE request
   const allAlign=await api(`weight-align-all/${model}/${mode}`);
   if(!Array.isArray(allAlign)||!allAlign.length){lv.built=true;return;}
   if(!allAlign[0]?.matrices?.length)return;
-  // Build 7 lines: X = matrix index, Y = alignment (normalized per-matrix), Z = layer
-  // Per-matrix normalization: each line fills the Y range, showing relative dynamics
   const nMat=allAlign[0].matrices.length;
-  for(let mi=0;mi<nMat;mi++){
-    const peaks=[];
-    for(let l=0;l<_nRealLayers;l++){const la=allAlign[l]?.matrices?.[mi]?.alignment||[];peaks.push(Math.max(...la,0));}
-    const pmin=Math.min(...peaks),pmax=Math.max(...peaks),prange=pmax-pmin||1;
-    const pts=[];
-    for(let l=0;l<_nRealLayers;l++){
-      const z=(l/(_nRealLayers-1))*2-1;
-      const y=((peaks[l]-pmin)/prange)*1.5-0.25;// spread to [-0.25, 1.25]
-      pts.push(new THREE.Vector3((mi/(nMat-1))*2-1,y,z));
-    }
-    const geo=new THREE.BufferGeometry().setFromPoints(pts);
-    const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:_WL_COLORS[mi],transparent:true,opacity:0.85,linewidth:2}));
-    line.frustumCulled=false;lv.sc.add(line);
-    const sp=new THREE.Sprite(new THREE.SpriteMaterial({color:_WL_COLORS[mi],transparent:true,opacity:0.6}));
-    sp.scale.set(0.08,0.08,1);sp.position.copy(pts[0]);sp.position.y+=0.15;lv.sc.add(sp);
+  // For each matrix type, show alignment with top 10 PCs across layers
+  // X = PC index, Y = layer depth, Z = alignment value
+  // This creates a surface per matrix showing where each weight matrix "looks" in PC space
+  let globalMax=0;
+  for(let l=0;l<_nRealLayers;l++){
+    const la=allAlign[l];if(!la)continue;
+    for(let mi=0;mi<nMat;mi++){const al=la.matrices?.[mi]?.alignment||[];al.forEach(v=>{if(v>globalMax)globalMax=v;});}
   }
-  // Norms overlay: layer norm weight magnitudes as a white line
+  globalMax=globalMax||1;
+  for(let mi=0;mi<nMat;mi++){
+    const nPC=allAlign[0].matrices[mi]?.alignment?.length||0;if(!nPC)continue;
+    // One line per PC showing this matrix's alignment with that PC across layers
+    for(let pc=0;pc<Math.min(nPC,6);pc++){
+      const pts=[];
+      for(let l=0;l<_nRealLayers;l++){
+        const al=allAlign[l]?.matrices?.[mi]?.alignment||[];
+        const v=(al[pc]||0)/globalMax;
+        const x=(mi/(nMat-1))*2-1+pc*0.03;// slight X offset per PC
+        const y=v*1.5;
+        const z=(l/(_nRealLayers-1))*2-1;
+        pts.push(new THREE.Vector3(x,y,z));
+      }
+      const geo=new THREE.BufferGeometry().setFromPoints(pts);
+      const opacity=pc===0?0.8:0.3;// first PC bright, rest dim
+      const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:_WL_COLORS[mi],transparent:true,opacity}));
+      line.frustumCulled=false;lv.sc.add(line);
+    }
+    // Label sprite
+    const sp=new THREE.Sprite(new THREE.SpriteMaterial({color:_WL_COLORS[mi],transparent:true,opacity:0.7}));
+    sp.scale.set(0.1,0.1,1);
+    sp.position.set((mi/(nMat-1))*2-1,-0.15,-1.1);
+    lv.sc.add(sp);
+  }
+  // Norms: layer norm weight magnitude as white trajectory
   try{
     const norms=await api(`norms/${model}/${mode}`);
     if(norms&&!norms.error){
       const normKeys=Object.keys(norms).filter(k=>k.startsWith('ln')||k.startsWith('norm')).sort();
       if(normKeys.length>1){
-        const means=normKeys.map(k=>norms[k].mean);
-        const nmin=Math.min(...means),nmax=Math.max(...means),nrange=nmax-nmin||1;
-        const pts=[];
-        for(let i=0;i<normKeys.length;i++){
-          const z=(i/(normKeys.length-1))*2-1;
-          const y=((means[i]-nmin)/nrange)*1.5-0.25;
-          pts.push(new THREE.Vector3(1.3,y,z));// right edge
-        }
+        const vals=normKeys.map(k=>norms[k].mean);
+        const vmax=Math.max(...vals)||1;
+        const pts=vals.map((v,i)=>new THREE.Vector3(1.3,(v/vmax)*1.5,(i/(vals.length-1))*2-1));
         const geo=new THREE.BufferGeometry().setFromPoints(pts);
-        const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:0xFFFFFF,transparent:true,opacity:0.3}));
-        line.frustumCulled=false;lv.sc.add(line);
+        lv.sc.add(new THREE.Line(geo,new THREE.LineBasicMaterial({color:0xFFFFFF,transparent:true,opacity:0.4})));
       }
     }
   }catch(e){}
-  // Current layer indicator line
-  const clGeo=new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(-1.2,0,0),new THREE.Vector3(1.2,0,0)]);
-  const clLine=new THREE.Line(clGeo,new THREE.LineBasicMaterial({color:0x444444,transparent:true,opacity:0.4}));
-  lv.sc.add(clLine);lv._clLine=clLine;
+  // Variance spectrum: show per-layer PC variance as brightness
+  if(_layerVar.length){
+    const nShow=Math.min(10,nK);
+    for(let pc=0;pc<nShow;pc++){
+      const pts=[];
+      for(let l=0;l<_nRealLayers;l++){
+        const v=_layerVar[l]?_layerVar[l][pc]||0:0;
+        pts.push(new THREE.Vector3(-1.3+pc*0.12,v*3,(l/(_nRealLayers-1))*2-1));
+      }
+      const geo=new THREE.BufferGeometry().setFromPoints(pts);
+      const hue=pc/nShow;const c=new THREE.Color().setHSL(hue,0.7,0.5);
+      lv.sc.add(new THREE.Line(geo,new THREE.LineBasicMaterial({color:c,transparent:true,opacity:0.5})));
+    }
+  }
   const grid=new THREE.GridHelper(2,6,0x1a1a1a,0x141414);grid.rotation.x=Math.PI/2;lv.sc.add(grid);
-  lv.cam.position.set(0,1,3);lv.ctl.target.set(0,0.5,0);lv.ctl.update();
+  lv.cam.position.set(0,1.5,3);lv.ctl.target.set(0,0.5,0);lv.ctl.update();
   lv.built=true;
 }
 
