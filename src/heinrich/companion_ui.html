@@ -270,8 +270,8 @@ function _snapBrowser(axis){
   else if(axis==='y')brCam.position.set(cx,cy+d,cz);
   else if(axis==='z')brCam.position.set(cx,cy,cz+d);
   else if(axis==='f1'||axis==='f2'){
-    const pi=axis==='f1'?0:1;
-    _brFollow=_brFollow===pi?-1:pi;// toggle follow mode
+    const pi=axis==='f1'?0:2;// F1=pair A, F2=pair B
+    _brFollow=_brFollow===pi?-1:pi;
     const[a,b]=vpPairs[pi];
     const tx=Math.max(a,b)*_SP,ty=-Math.min(a,b)*_SP;
     brCtl.target.set(tx,ty,cz);brCam.position.set(tx,ty,cz+5);
@@ -779,7 +779,8 @@ function updateHUD(){
   document.getElementById('llbl').textContent=ln;
 }
 function setLayer(l,light){cL=l;updateAllViewports();updateHUD();
-  if(!play){_updateBrowserLayer();_updateBrowserSelBoxes();_updateBrowserOverlay();}
+  _updateBrowserLayer();_updateBrowserSelBoxes();
+  if(!light)_updateBrowserOverlay();
   updateLeftViewports();
   if(pinnedToken>=0||pinnedTokenB>=0){_syncAllPins(!play);if(!play)showPinDetail(pinnedToken);}
   _markDirty();if(!light)_saveState();}
