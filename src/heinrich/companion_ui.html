@@ -970,10 +970,10 @@ function _buildRV0Variance(){
     const geo=new THREE.BufferGeometry();
     geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
     geo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(cols),3));
-    const mat=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.05}));
+    const mat=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.15,linewidth:2}));
     mat.frustumCulled=false;rv.sc.add(mat);rv._rvSlices.push({mesh:mat,layer:l});
   }
-  rv.cam.position.set(0,1.5,3);rv.ctl.target.set(0,0.7,0);rv.ctl.update();rv.built=true;
+  rv.cam.position.set(0,2,2.5);rv.ctl.target.set(0,0.7,0);rv.ctl.update();rv.built=true;
   _updateRVLayer();
 }
 
@@ -1005,7 +1005,7 @@ async function _buildRV1Neurons(){
     const geo=new THREE.BufferGeometry();
     geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
     geo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(cols),3));
-    const mat=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.05}));
+    const mat=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.15}));
     mat.frustumCulled=false;rv.sc.add(mat);rv._rvSlices.push({mesh:mat,layer:l});
   }
   rv.cam.position.set(0,0.8,3);rv.ctl.target.set(0,0.4,0);rv.ctl.update();rv.built=true;
@@ -1035,7 +1035,7 @@ function _buildRV2Attention(){
     const geo=new THREE.BufferGeometry();
     geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
     geo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(cols),3));
-    const mat=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.05}));
+    const mat=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.15}));
     mat.frustumCulled=false;rv.sc.add(mat);rv._rvSlices.push({mesh:mat,layer:l});
   }
   rv.cam.position.set(0,0.8,3);rv.ctl.target.set(0,0.4,0);rv.ctl.update();rv.built=true;
@@ -1052,8 +1052,8 @@ function _updateRVLayer(){
   rightViews.forEach(rv=>{if(!rv._rvSlices)return;
     rv._rvSlices.forEach(({mesh,layer})=>{
       const d=Math.abs(layer-cL);
-      mesh.material.opacity=d===0?0.9:d===1?0.3:d===2?0.12:d<=4?0.04:0;
-      mesh.visible=d<=4;
+      mesh.material.opacity=d===0?0.9:d===1?0.4:d===2?0.2:d<=5?0.08:0.03;
+      mesh.visible=true;// show all layers — far ones very dim
     });
   });
 }
