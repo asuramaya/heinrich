@@ -1,0 +1,113 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage[margin=1in]{geometry}
+
+\title{Visualizing the Projection Problem: \\
+Real-Time 3D Forensics of Transformer Internal Geometry}
+
+\author{Heinrich Project — Session 8}
+\date{April 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We describe the design and findings from building a real-time 3D viewer for transformer model internals, operating on pre-computed PCA decompositions of residual stream states across all layers. The viewer reveals that the ``dead zones'' in token trajectories — layers where no movement is visible in a given PC pair — are not computational silence but rather \emph{rotations into orthogonal subspaces not captured by the current projection}. We identify structured alternating-bias oscillations in the frozen zone of crystallized single-token representations, visible only in the cross-pair delta view. We demonstrate that the projection problem — viewing a 50+ dimensional space through 2D slices — can be partially addressed through synchronized multi-view comparison (A/$\Delta$/B grids) and a PC-pair prism navigator showing the full $\binom{n}{2}$ geometric space simultaneously.
+\end{abstract}
+
+\section{Introduction}
+
+Model forensics tools typically present internal states as static measurements: scalar metrics, 2D projections, or tabular data. Heinrich's companion viewer takes a different approach: all model internals are rendered as interactive 3D point clouds with real-time layer playback, allowing the analyst to orbit, compare, and discover structure through direct manipulation.
+
+The fundamental challenge is the \emph{projection problem}. A model with hidden dimension $d=896$ (Qwen 0.5B) has $\binom{50}{2} = 1225$ possible 2-PC projections from its PCA decomposition. Each projection reveals different structure. A token trajectory that appears ``dead'' in one projection may show significant movement in another. The viewer addresses this through three mechanisms:
+
+\begin{enumerate}
+\item \textbf{A/$\Delta$/B comparison grid}: Three synchronized viewports showing two selected PC pairs and their cross-pair delta simultaneously.
+\item \textbf{PC prism navigator}: A 3D grid showing all $\binom{n}{2}$ PC pairs as miniature point clouds, with pinned-token trajectories threading through every cell.
+\item \textbf{Layer playback}: RAF-synchronized animation at 100ms/layer with precomputed position buffers, enabling real-time observation of representational dynamics.
+\end{enumerate}
+
+\section{Architecture}
+
+\subsection{Single-Renderer Design}
+
+The viewer uses a single WebGL renderer with scissor/viewport regions, replacing the original 7 separate WebGL contexts. Each viewport is a transparent DOM element for event handling (OrbitControls) overlaid on a shared canvas. This eliminates GPU context-switching overhead and enables consistent frame timing.
+
+The grid layout is $3 \times 3$: clouds (row 1), trajectories (row 2), and internals (row 3), each replicated for pairs A, $\Delta$, and B. A PC prism and floating token panel complete the interface.
+
+\subsection{Precomputed Buffer Architecture}
+
+All token positions are precomputed at PC-pair selection time as \texttt{Float32Array} buffers — one per layer per viewport. Layer changes during playback are a single \texttt{.set()} memcpy ($\sim$584KB for 48,660 tokens $\times$ 3 coordinates $\times$ 4 bytes), completing in $<$1ms.
+
+The precomputation cost is amortized: $\mathcal{O}(N_L \times N_T)$ per viewport at pair-change time, but $\mathcal{O}(1)$ per frame during playback. For SmolLM2-135M ($N_L=30$, $N_T=48660$), precomputation takes $\sim$30ms.
+
+\subsection{Category Filtering}
+
+Tokens are colored by script category (Latin, CJK, Cyrillic, code, etc.). Clicking a legend entry toggles category visibility by moving those tokens' positions to $(9999, 9999, 9999)$ — effectively removing them from the point cloud without rebuilding geometry. This operates on the same precomputed buffers and is instant.
+
+\section{The Delta View}
+
+The delta viewport sits between A and B, showing the cross-pair relationship. With pair A showing PC$_a$/PC$_b$ and pair B showing PC$_c$/PC$_d$, the delta shows PC$_b$ vs PC$_c$ — the second axis of A against the first axis of B, with no shared axes.
+
+\subsection{The Zigzag Discovery}
+
+In the delta trajectory view of Qwen 0.5B (naked mode, L2-L20), a structured zigzag pattern appears in the frozen zone. The representation oscillates between two orthogonal directions at alternating layers:
+
+\begin{itemize}
+\item Even layers push toward $+$PC$_1$/$-$PC$_2$
+\item Odd layers push toward $-$PC$_1$/$+$PC$_2$
+\end{itemize}
+
+This oscillation is invisible in the A and B views separately (it's a tiny perturbation along the crystal axis) but amplified in the delta view because the delta strips away the dominant axis and shows only the residual. The zigzag confirms Session 7's finding that the frozen zone applies ``constant bias'' — but reveals the bias has \emph{alternating structure} across adjacent layers.
+
+\section{The Projection Problem}
+
+The central finding of this session: what appears as ``nothing happening'' in a trajectory view is computational activity in dimensions not captured by the current 2-PC projection.
+
+\subsection{Evidence}
+
+\begin{enumerate}
+\item \textbf{Selective dead zones}: Different tokens go dead at different layers in the same PC pair, indicating token-specific routing through different computational subspaces.
+\item \textbf{Complementary activity}: When pair A shows a dead zone at layers 5-10, pair B often shows activity at those same layers, confirming the computation moved to a different subspace.
+\item \textbf{The prism view}: Examining all PC pairs simultaneously reveals that at any given layer, \emph{some} pairs show activity. True computational silence (all pairs dead) only occurs in the verified frozen zone.
+\end{enumerate}
+
+\subsection{Implications}
+
+The projection problem means that any single 2D visualization of a transformer's internal state is inherently incomplete. The $\binom{50}{2} = 1225$ possible views each reveal different aspects of the same high-dimensional dynamics. The viewer's contribution is making this explicit through the prism navigator and cross-pair delta, rather than hiding it behind a single projection.
+
+\section{Crystallization Revisited}
+
+The crystal phenomenon (Session 5-6) is confirmed from a new angle. At L2 in Qwen 0.5B naked mode:
+
+\begin{itemize}
+\item \textbf{Cloud view}: All tokens collapse to a single axis (PC0 captures 99.7\% of variance).
+\item \textbf{Trajectory view}: The ``mushroom'' shape — broad at early layers, narrow stalk through the frozen zone, slight flare at output assembly.
+\item \textbf{Prism view}: \emph{All} PC pair cells show the same straight-line pattern, confirming the crystal is not a rotation into another subspace — it's a genuine dimensionality collapse.
+\item \textbf{Delta view}: The zigzag oscillation within the crystal.
+\item \textbf{Variance spectrum}: PC0 variance jumps from 0.15 (L0) to 0.997 (L15), visible as the dominant rainbow bar in the weights viewport.
+\end{itemize}
+
+The L20-21 rotation — where the crystal begins unwinding for output assembly — is visible as a kink in the trajectory where the token path bends away from the crystal axis and starts exploring multiple dimensions again.
+
+\section{Technical Contributions}
+
+\begin{itemize}
+\item Pixel-accurate raycasting for 3D point clouds using projection-corrected thresholds: $\text{threshold} = \text{pickRadius}_\text{px} \times \frac{2 \tan(\text{fov}/2)}{H_\text{viewport}} \times d_\text{camera}$
+\item Layer-sliced opacity for 3D time-series visualization: pre-built geometry with per-layer visibility toggling during playback
+\item Selection-based LOD for PC prism: full point clouds with auto-capping for large models
+\item Unified pin synchronization across 9+ viewports through single \texttt{\_syncAllPins} function
+\item URL state serialization for shareable viewport configurations
+\end{itemize}
+
+\section{Conclusion}
+
+The companion viewer demonstrates that real-time 3D interaction with model internals reveals structure invisible to static analysis. The projection problem is not a limitation to be solved but a \emph{property of the space to be navigated}. The appropriate tool is not a better projection but a better navigator — one that shows you where you're looking, what you're missing, and how the different views relate through the cross-pair delta.
+
+The data that remains unvisualized — embeddings, lm\_head projections, decomposed gate/up activations, full attention patterns, baseline references — represents the next layer of the forensic stack. Each would add a new dimension to the token's journey through the model.
+
+\end{document}
