@@ -264,7 +264,7 @@ function _snapOne(vi,axis){
   v.ctl.update();_markDirty();
 }
 function _snapBrowser(axis){
-  const w=Math.min(nK-_brStart,_BR_WIN);const cx=w/2*_SP,cy=-w/3*_SP,cz=cL*_ZSP;
+  const n=nK;const cx=Math.min(n,15)/2*_SP,cy=-Math.min(n,15)/3*_SP,cz=cL*_ZSP;
   brCtl.target.set(cx,cy,cz);const d=brCam.position.distanceTo(brCtl.target)||15;
   if(axis==='x')brCam.position.set(cx+d,cy,cz);
   else if(axis==='y')brCam.position.set(cx,cy+d,cz);
@@ -327,21 +327,6 @@ function _ensureColors(v){
     col[i*3]=((hex>>16)&0xFF)/255;col[i*3+1]=((hex>>8)&0xFF)/255;col[i*3+2]=(hex&0xFF)/255;
   }
   v.geo.setAttribute('color',new THREE.BufferAttribute(col,3));
-}
-function _applyBrowserFilter(){
-  // Apply category filter to prism clouds
-  if(!_brBuilt)return;
-  const hasFilter=_hiddenScripts.size>0;
-  _brLayers.forEach(({pts,origPos,tokMap})=>{
-    if(!origPos||!tokMap)return;
-    const pos=pts.geometry.attributes.position.array;
-    if(!hasFilter){pos.set(origPos);}
-    else{for(let j=0;j<tokMap.length;j++){
-      if(_hiddenScripts.has(scripts[tokMap[j]])){pos[j*3]=9999;pos[j*3+1]=9999;pos[j*3+2]=9999;}
-      else{pos[j*3]=origPos[j*3];pos[j*3+1]=origPos[j*3+1];pos[j*3+2]=origPos[j*3+2];}
-    }}
-    pts.geometry.attributes.position.needsUpdate=true;
-  });
 }
 function _applyFilter(){
   if(!nN)return;
@@ -414,101 +399,123 @@ function updateAllViewports(){
   for(let i=NC;i<NV;i++)updateTrajMarker(i);
 }
 
-// 3D prism — paged window into PC space. Scroll to pan through all PCs.
-const _BR_WIN=12;// visible window size (fixed)
-const _SP=1.6,_ZSP=0.3,_BR_PTS=150,_BR_RAD=0.55;
-let _BR_N=12;// total available PCs (set on load)
-let _brStart=0;// first PC index in visible window
-let _brLayers=[]; // {pts, layer} — one Points per layer
+// 3D LOD prism — scales to any number of PCs.
+// Dot grid for all cells. Point clouds bloom around selected pairs.
+const _SP=1.6,_ZSP=0.3,_BR_RAD=0.55,_BR_PTS=80;
+const _BLOOM_RADIUS=4;// cells within this PC-index distance get clouds
+const _BLOOM_MAX=40;// max cloud cells
 let _brOverlay=[];
 let _brBuilt=false;
-let _brFollow=-1; // -1=free, 0=follow VP1 pair, 1=follow VP2 pair
-let _brMxCache={}; // precomputed max per (a,b,layer) — key: `${a},${b},${l}`
+let _brFollow=-1;
+let _brMxCache={};
+let _brDotGrid=null;
+let _brNPairs=0;
+let _brCellIndex=[];// [{a,b}]
+let _brCloudGroup=null;
+let _brClouds=[];// [{pts,a,b}]
+let _brBloomKey='';// tracks when to rebuild clouds
 
 function _disposeScene(sc){
   while(sc.children.length){const c=sc.children[0];sc.remove(c);if(c.geometry)c.geometry.dispose();if(c.material){if(Array.isArray(c.material))c.material.forEach(m=>m.dispose());else c.material.dispose();}}}
+
 function buildBrowser(){
   _disposeScene(brSc);
-  _brLayers=[];_brOverlay=[];brMeshes=[];_brMxCache={};_brSelBoxes=[];
-  const w=Math.min(nK-_brStart,_BR_WIN);// visible window size
-  const nPairs=w*(w-1)/2;if(nPairs<=0)return;
-  const step=Math.max(1,Math.floor(nN/_BR_PTS));const ptsPerPair=Math.ceil(nN/step);
-  // Build using WINDOW-LOCAL grid coords but ABSOLUTE PC indices
-  for(let l=0;l<nL;l++){
-    const S=allL[l];if(!S)continue;
-    const pos=new Float32Array(nPairs*ptsPerPair*3);
-    const col=new Float32Array(nPairs*ptsPerPair*3);
-    const origPos=new Float32Array(nPairs*ptsPerPair*3);
-    const tokMap=new Uint16Array(nPairs*ptsPerPair);
-    let idx=0;
-    for(let ga=0;ga<w;ga++)for(let gb=ga+1;gb<w;gb++){
-      const pa=ga+_brStart,pb=gb+_brStart;// absolute PC indices
-      let mx=0;for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(S[i][pa]||0),Math.abs(S[i][pb]||0));mx=mx||1;
-      _brMxCache[`${pa},${pb},${l}`]=mx;
-      for(let i=0;i<nN;i+=step){
-        const sx=Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[i][pa]||0)/mx*_BR_RAD));
-        const sy=Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[i][pb]||0)/mx*_BR_RAD));
-        pos[idx*3]=gb*_SP+sx;pos[idx*3+1]=-ga*_SP-sy;pos[idx*3+2]=l*_ZSP;// grid coords are window-local
-        origPos[idx*3]=pos[idx*3];origPos[idx*3+1]=pos[idx*3+1];origPos[idx*3+2]=pos[idx*3+2];
-        tokMap[idx]=i;
-        const hex=CL[scripts[i]]||0xAAAAAA;
-        col[idx*3]=((hex>>16)&0xFF)/255;col[idx*3+1]=((hex>>8)&0xFF)/255;col[idx*3+2]=(hex&0xFF)/255;
-        idx++;
-      }
+  _brOverlay=[];_brMxCache={};_brClouds=[];_brBloomKey='';
+  const n=nK;
+  _brNPairs=n*(n-1)/2;
+  _brCellIndex=[];
+  for(let a=0;a<n;a++)for(let b=a+1;b<n;b++)_brCellIndex.push({a,b});
+
+  // Dot grid: one point per cell
+  const pos=new Float32Array(_brNPairs*3);
+  const col=new Float32Array(_brNPairs*3);
+  for(let ci=0;ci<_brNPairs;ci++){
+    const{a,b}=_brCellIndex[ci];
+    pos[ci*3]=b*_SP;pos[ci*3+1]=-a*_SP;pos[ci*3+2]=cL*_ZSP;
+    // Variance-based brightness
+    const va=_layerVar[cL]?_layerVar[cL][a]||0:0;
+    const vb=_layerVar[cL]?_layerVar[cL][b]||0:0;
+    const t=Math.min(1,Math.sqrt(va*vb)*3);
+    col[ci*3]=0.15+t*0.5;col[ci*3+1]=0.2+t*0.6;col[ci*3+2]=0.3+t*0.7;
+  }
+  const geo=new THREE.BufferGeometry();
+  geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  geo.setAttribute('color',new THREE.BufferAttribute(col,3));
+  _brDotGrid=new THREE.Points(geo,new THREE.PointsMaterial({size:0.08,vertexColors:true,transparent:true,opacity:0.6,sizeAttenuation:true,depthWrite:false}));
+  _brDotGrid.frustumCulled=false;brSc.add(_brDotGrid);
+
+  _brCloudGroup=new THREE.Group();brSc.add(_brCloudGroup);
+
+  _brBuilt=true;_updateBrowserLayer();_rebuildBloom();_updateBrowserOverlay();
+  if(!brCam._fitted){const cx=Math.min(n,15)/2*_SP,cy=-Math.min(n,15)/3*_SP;brCam.position.set(cx,cy,25);brCtl.target.set(cx,cy,cL*_ZSP);brCtl.update();brCam._fitted=true;}
+}
+
+function _updateBrowserLayer(){
+  if(!_brBuilt||!_brDotGrid)return;
+  const pos=_brDotGrid.geometry.attributes.position.array;
+  const z=cL*_ZSP;
+  for(let ci=0;ci<_brNPairs;ci++)pos[ci*3+2]=z;
+  _brDotGrid.geometry.attributes.position.needsUpdate=true;
+  // Update existing cloud Z positions
+  _brClouds.forEach(c=>{
+    const p=c.pts.geometry.attributes.position.array;
+    for(let i=0;i<p.length;i+=3)p[i+2]=z;
+    c.pts.geometry.attributes.position.needsUpdate=true;
+  });
+  if(_brFollow>=0){
+    const[a,b]=vpPairs[_brFollow];
+    const tx=Math.max(a,b)*_SP,ty=-Math.min(a,b)*_SP,tz=z;
+    const off=brCam.position.clone().sub(brCtl.target);
+    brCtl.target.set(tx,ty,tz);brCam.position.set(tx+off.x,ty+off.y,tz+off.z);brCtl.update();
+  }
+}
+
+// Bloom: rebuild clouds around selected pairs. Only when selection or layer changes.
+function _rebuildBloom(){
+  if(!_brBuilt||!allL[cL])return;
+  const key=`${vpPairs[0]},${vpPairs[2]},${cL}`;
+  if(key===_brBloomKey)return;
+  _brBloomKey=key;
+  // Dispose old clouds
+  _brClouds.forEach(c=>{_brCloudGroup.remove(c.pts);c.pts.geometry.dispose();c.pts.material.dispose();});
+  _brClouds=[];
+  // Find cells near selected pairs A and B
+  const centers=[[vpPairs[0][0],vpPairs[0][1]],[vpPairs[2][0],vpPairs[2][1]]];
+  const nearCells=[];
+  _brCellIndex.forEach(({a,b})=>{
+    let minD=Infinity;
+    centers.forEach(([ca,cb])=>{const da=Math.abs(a-Math.min(ca,cb)),db=Math.abs(b-Math.max(ca,cb));minD=Math.min(minD,Math.max(da,db));});
+    if(minD<=_BLOOM_RADIUS)nearCells.push({a,b,d:minD});
+  });
+  nearCells.sort((x,y)=>x.d-y.d);
+  const cells=nearCells.slice(0,_BLOOM_MAX);
+  // Build clouds for selected cells
+  const S=allL[cL];const step=Math.max(1,Math.floor(nN/_BR_PTS));const z=cL*_ZSP;
+  cells.forEach(({a,b,d})=>{
+    let mx=_brMxCache[`${a},${b},${cL}`];
+    if(!mx){mx=0;for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(S[i][a]||0),Math.abs(S[i][b]||0));mx=mx||1;_brMxCache[`${a},${b},${cL}`]=mx;}
+    const n=Math.ceil(nN/step);const pos=new Float32Array(n*3),col=new Float32Array(n*3);
+    let idx=0;const fade=1-d/(_BLOOM_RADIUS+1);
+    for(let i=0;i<nN;i+=step){
+      pos[idx*3]=b*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[i][a]||0)/mx*_BR_RAD));
+      pos[idx*3+1]=-a*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[i][b]||0)/mx*_BR_RAD));
+      pos[idx*3+2]=z;
+      const hex=_hiddenScripts.has(scripts[i])?0x0a0a0a:(CL[scripts[i]]||0xAAAAAA);
+      col[idx*3]=((hex>>16)&0xFF)/255;col[idx*3+1]=((hex>>8)&0xFF)/255;col[idx*3+2]=(hex&0xFF)/255;
+      idx++;
     }
     const geo=new THREE.BufferGeometry();
     geo.setAttribute('position',new THREE.BufferAttribute(pos.subarray(0,idx*3),3));
     geo.setAttribute('color',new THREE.BufferAttribute(col.subarray(0,idx*3),3));
-    const mat=new THREE.PointsMaterial({size:0.03,vertexColors:true,transparent:true,opacity:0.05,sizeAttenuation:true,depthWrite:false});
-    const pts=new THREE.Points(geo,mat);pts.frustumCulled=false;
-    brSc.add(pts);_brLayers.push({pts,layer:l,origPos:origPos.subarray(0,idx*3),tokMap:tokMap.subarray(0,idx)});
-  }
-  // Add axis labels as sprites
-  for(let g=0;g<w;g++){
-    const pc=g+_brStart;
-    const sp=new THREE.Sprite(new THREE.SpriteMaterial({color:0x444444}));
-    sp.scale.set(0.3,0.15,1);sp.position.set(g*_SP+_SP/2,0.5,0);brSc.add(sp);
-  }
-  _brBuilt=true;_updateBrowserLayer();_updateBrowserOverlay();
-  if(!brCam._fitted){const cx=w/2*_SP,cy=-w/3*_SP;brCam.position.set(cx,cy,25);brCtl.target.set(cx,cy,cL*_ZSP);brCtl.update();brCam._fitted=true;}
-}
-// Scroll to pan the PC window (debounced — rebuild is expensive)
-let _brScrollTimer=null;
-brEl.addEventListener('wheel',e=>{
-  e.preventDefault();
-  const dir=e.deltaY>0?1:-1;
-  const newStart=Math.max(0,Math.min(nK-_BR_WIN,_brStart+dir*2));
-  if(newStart!==_brStart){
-    _brStart=newStart;
-    clearTimeout(_brScrollTimer);
-    _brScrollTimer=setTimeout(()=>{buildBrowser();_markDirty();},200);
-  }
-},{passive:false});
-function _updateBrowserLayer(){
-  if(!_brBuilt)return;
-  _brLayers.forEach(({pts,layer})=>{
-    const d=Math.abs(layer-cL);
-    pts.material.opacity=d===0?0.7:d===1?0.2:d===2?0.1:d<=4?0.04:0.015;
-    pts.material.size=d===0?0.04:0.025;
+    const pts=new THREE.Points(geo,new THREE.PointsMaterial({size:0.03,vertexColors:true,transparent:true,opacity:Math.max(0.1,fade*0.7),sizeAttenuation:true,depthWrite:false}));
+    pts.frustumCulled=false;_brCloudGroup.add(pts);_brClouds.push({pts,a,b});
   });
-  // Follow mode: auto-track the selected pair through layers
-  if(_brFollow>=0){
-    const fi=_brFollow===0?0:2;// follow pair A or B
-    const[pa,pb]=vpPairs[fi];const w=Math.min(nK-_brStart,_BR_WIN);
-    const ga=Math.min(pa,pb)-_brStart,gb=Math.max(pa,pb)-_brStart;
-    if(ga>=0&&gb>=0&&ga<w&&gb<w){
-      const tx=gb*_SP,ty=-ga*_SP,tz=cL*_ZSP;
-      const off=brCam.position.clone().sub(brCtl.target);
-      brCtl.target.set(tx,ty,tz);brCam.position.set(tx+off.x,ty+off.y,tz+off.z);
-      brCtl.update();
-    }
-  }
 }
+function _applyBrowserFilter(){_brBloomKey='';_rebuildBloom();}
 // Persistent selection box markers for playback — cheap to update
 let _brSelBoxes=[];// {mesh, pair, layer} — current layer selection boxes
 function _updateBrowserSelBoxes(){
-  // Move existing boxes to current layer Z or rebuild if pair changed
-  const n=Math.min(nK,_BR_N);
+  const n=nK;
   if(_brSelBoxes.length){
     // Just update opacity based on distance to current layer
     _brSelBoxes.forEach(b=>{
@@ -518,15 +525,12 @@ function _updateBrowserSelBoxes(){
     });
     return;
   }
-  // Build persistent boxes for pair A (0) and pair B (2) — map to window-local coords
-  const w=Math.min(nK-_brStart,_BR_WIN);
-  [0,2].forEach(pi=>{const[pa,pb]=vpPairs[pi];
-    const ga=Math.min(pa,pb)-_brStart,gb=Math.max(pa,pb)-_brStart;
-    if(ga<0||gb<0||ga>=w||gb>=w)return;// pair not visible in current window
+  // Build persistent boxes for pair A (0) and pair B (2) only — skip delta (1)
+  [0,2].forEach(pi=>{const[pa,pb]=vpPairs[pi];if(pa>=n||pb>=n)return;const a=Math.min(pa,pb),b=Math.max(pa,pb);
     for(let l=0;l<nL;l++){
       const eg=new THREE.EdgesGeometry(new THREE.PlaneGeometry(_BR_RAD*2.2,_BR_RAD*2.2));
       const e=new THREE.LineSegments(eg,new THREE.LineBasicMaterial({color:pi===0?0xFF6644:0x4477AA,transparent:true,opacity:0}));
-      e.position.set(gb*_SP,-ga*_SP,l*_ZSP);brSc.add(e);
+      e.position.set(b*_SP,-a*_SP,l*_ZSP);brSc.add(e);
       _brSelBoxes.push({mesh:e,pair:pi,layer:l});
     }
   });
@@ -538,68 +542,72 @@ function _clearBrowserSelBoxes(){
 }
 function _updateBrowserOverlay(){
   _brOverlay.forEach(o=>{brSc.remove(o);if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose();});_brOverlay=[];
-  _clearBrowserSelBoxes();_updateBrowserSelBoxes();// rebuild persistent boxes
-  const w=Math.min(nK-_brStart,_BR_WIN);
-  // Token A (orange) and Token B (blue) — paths + markers in visible window
+  _clearBrowserSelBoxes();_updateBrowserSelBoxes();
+  // Pin paths and markers only for SELECTED pairs (not all C(n,2) — would be too many)
+  _brOverlay.forEach(o=>{brSc.remove(o);if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose();});_brOverlay=[];
   [pinnedToken,pinnedTokenB].forEach((tok,ti)=>{
     if(tok<0)return;const color=ti===0?0xFF6644:0x4477AA;
-    for(let ga=0;ga<w;ga++)for(let gb=ga+1;gb<w;gb++){
-      const pa=ga+_brStart,pb=gb+_brStart;
-      const isSelected=[vpPairs[0],vpPairs[2]].some(([sa,sb])=>(Math.min(sa,sb)===pa&&Math.max(sa,sb)===pb));
+    // Pin paths through selected A and B pairs only
+    [vpPairs[0],vpPairs[2]].forEach(([pa,pb])=>{
+      const a=Math.min(pa,pb),b=Math.max(pa,pb);
       const pts=[];
-      for(let l=0;l<nL;l++){const mx=_brMxCache[`${pa},${pb},${l}`]||1;const S=allL[l];
-        const tx=Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][pa]||0)/mx*_BR_RAD));
-        const ty=Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][pb]||0)/mx*_BR_RAD));
-        pts.push(new THREE.Vector3(gb*_SP+tx,-ga*_SP-ty,l*_ZSP));}
+      for(let l=0;l<nL;l++){
+        let mx=_brMxCache[`${a},${b},${l}`];
+        if(!mx){const S=allL[l];mx=0;for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(S[i][a]||0),Math.abs(S[i][b]||0));mx=mx||1;_brMxCache[`${a},${b},${l}`]=mx;}
+        const S=allL[l];
+        pts.push(new THREE.Vector3(
+          b*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][a]||0)/mx*_BR_RAD)),
+          -a*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][b]||0)/mx*_BR_RAD)),
+          l*_ZSP));
+      }
       const g=new THREE.BufferGeometry().setFromPoints(pts);
-      const line=new THREE.Line(g,new THREE.LineBasicMaterial({color,transparent:true,opacity:isSelected?0.9:0.2}));
+      const line=new THREE.Line(g,new THREE.LineBasicMaterial({color,transparent:true,opacity:0.9}));
       line.frustumCulled=false;brSc.add(line);_brOverlay.push(line);
-    }
-    // Token marker dots at current layer
+    });
+    // Pin marker dot at current layer for selected pairs
     const S=allL[cL];if(!S)return;
-    const nPairs=w*(w-1)/2;
-    const mkPos=new Float32Array(nPairs*3);let mi=0;
-    for(let ga=0;ga<w;ga++)for(let gb=ga+1;gb<w;gb++){
-      const pa=ga+_brStart,pb=gb+_brStart;
-      const mx=_brMxCache[`${pa},${pb},${cL}`]||1;
-      mkPos[mi*3]=gb*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][pa]||0)/mx*_BR_RAD));
-      mkPos[mi*3+1]=-ga*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][pb]||0)/mx*_BR_RAD));
-      mkPos[mi*3+2]=cL*_ZSP;mi++;
-    }
+    const mkPos=new Float32Array(2*3);
+    [vpPairs[0],vpPairs[2]].forEach(([pa,pb],pi)=>{
+      const a=Math.min(pa,pb),b=Math.max(pa,pb);
+      const mx=_brMxCache[`${a},${b},${cL}`]||1;
+      mkPos[pi*3]=b*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][a]||0)/mx*_BR_RAD));
+      mkPos[pi*3+1]=-a*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][b]||0)/mx*_BR_RAD));
+      mkPos[pi*3+2]=cL*_ZSP;
+    });
     const mg=new THREE.BufferGeometry();mg.setAttribute('position',new THREE.BufferAttribute(mkPos,3));
     const mp=new THREE.Points(mg,new THREE.PointsMaterial({size:0.12,color,transparent:true,opacity:0.95,sizeAttenuation:true,depthWrite:false,depthTest:false}));
-    mp.renderOrder=10;mp.frustumCulled=false;mp.userData={tok,n};brSc.add(mp);_brOverlay.push(mp);
+    mp.renderOrder=10;mp.frustumCulled=false;mp.userData={tok};brSc.add(mp);_brOverlay.push(mp);
   });
 }
-// Update prism pin marker positions for playback (cheap — no geometry rebuild)
 function _updateBrowserPinPositions(){
-  const w=Math.min(nK-_brStart,_BR_WIN);const S=allL[cL];if(!S)return;
-  _brOverlay.forEach(o=>{if(!o.userData?.tok&&o.userData?.tok!==0)return;
-    const tok=o.userData.tok;const pos=o.geometry.attributes.position.array;let mi=0;
-    for(let ga=0;ga<w;ga++)for(let gb=ga+1;gb<w;gb++){
-      const pa=ga+_brStart,pb=gb+_brStart;
-      const mx=_brMxCache[`${pa},${pb},${cL}`]||1;
-      pos[mi*3]=gb*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][pa]||0)/mx*_BR_RAD));
-      pos[mi*3+1]=-ga*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][pb]||0)/mx*_BR_RAD));
-      pos[mi*3+2]=cL*_ZSP;mi++;
-    }
+  const S=allL[cL];if(!S)return;
+  _brOverlay.forEach(o=>{
+    if(o.userData?.tok===undefined)return;
+    const tok=o.userData.tok;const pos=o.geometry.attributes.position?.array;if(!pos||pos.length!==6)return;
+    [vpPairs[0],vpPairs[2]].forEach(([pa,pb],pi)=>{
+      const a=Math.min(pa,pb),b=Math.max(pa,pb);const mx=_brMxCache[`${a},${b},${cL}`]||1;
+      pos[pi*3]=b*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][a]||0)/mx*_BR_RAD));
+      pos[pi*3+1]=-a*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][b]||0)/mx*_BR_RAD));
+      pos[pi*3+2]=cL*_ZSP;
+    });
     o.geometry.attributes.position.needsUpdate=true;
   });
 }
 
-// Browser click
+// Browser click — raycast against dot grid, resolve to cell (a,b)
 brCv.addEventListener('contextmenu',e=>e.preventDefault(),true);
 const bray=new THREE.Raycaster();const bms=new THREE.Vector2();let _bdx=0,_bdy=0;
 brCv.addEventListener('pointerdown',e=>{_bdx=e.clientX;_bdy=e.clientY;});
 brCv.addEventListener('pointerup',e=>{if(Math.abs(e.clientX-_bdx)+Math.abs(e.clientY-_bdy)>5)return;
   const r=brCv.getBoundingClientRect();bms.x=((e.clientX-r.left)/r.width)*2-1;bms.y=-((e.clientY-r.top)/r.height)*2+1;
-  bray.setFromCamera(bms,brCam);bray.params.Points.threshold=0.2;
-  const allPts=_brLayers.map(l=>l.pts);const hits=bray.intersectObjects(allPts);if(!hits.length)return;
-  const p=hits[0].point;const w=Math.min(nK-_brStart,_BR_WIN);
-  const gb=Math.round(p.x/_SP);const ga=Math.round(-p.y/_SP);
-  if(ga>=0&&ga<w&&gb>ga&&gb<w){
-    const pa=ga+_brStart,pb=gb+_brStart;// absolute PC indices
-    const slot=_isRightClick(e)?2:0;vpPairs[slot]=[pa,pb];updateAllViewports();_updateBrowserOverlay();_saveState();}
+  bray.setFromCamera(bms,brCam);bray.params.Points.threshold=_SP*0.4;
+  // Raycast against dot grid + any active cloud
+  const targets=[_brDotGrid,..._brClouds.map(c=>c.pts)].filter(Boolean);
+  const hits=bray.intersectObjects(targets);if(!hits.length)return;
+  const p=hits[0].point;
+  const b=Math.round(p.x/_SP);const a=Math.round(-p.y/_SP);
+  if(a>=0&&a<nK&&b>a&&b<nK){
+    const slot=_isRightClick(e)?2:0;vpPairs[slot]=[a,b];updateAllViewports();_updateBrowserOverlay();_saveState();}
 });
 
 // === 2 left viewports: Delta + Weight Landscape ===
@@ -794,7 +802,7 @@ function updateHUD(){
   document.getElementById('hst').textContent=`PC1:${p1}% dim:${lm.intrinsic_dim||'?'}`;
   document.getElementById('llbl').textContent=ln;
 }
-function setLayer(l,light){cL=l;updateAllViewports();updateHUD();_updateBrowserLayer();_updateBrowserSelBoxes();updateLeftViewports();if(!light)_updateBrowserOverlay();if(pinnedToken>=0||pinnedTokenB>=0){_syncAllPins(!play);if(!play)showPinDetail(pinnedToken);}_markDirty();if(!light)_saveState();}
+function setLayer(l,light){cL=l;updateAllViewports();updateHUD();_updateBrowserLayer();if(!play)_rebuildBloom();_updateBrowserSelBoxes();updateLeftViewports();if(!light)_updateBrowserOverlay();if(pinnedToken>=0||pinnedTokenB>=0){_syncAllPins(!play);if(!play)showPinDetail(pinnedToken);}_markDirty();if(!light)_saveState();}
 
 // --- URL state serialization (#43) ---
 function _saveState(){
@@ -835,7 +843,6 @@ async function loadAll(){
     api(`decomp/${model}/${mode}?layer=0`)
   ]);
   scripts=d0.scripts;texts=d0.texts;nN=d0.n_tokens;nK=d0.n_components;tokenIds=d0.token_ids||[];
-  _BR_N=Math.min(nK,Math.max(6,Math.ceil(nK*0.4)));
   document.getElementById('ntok').textContent=nN+' tok / '+nK+' PC';
   document.getElementById('st').textContent='Parsing...';
 
