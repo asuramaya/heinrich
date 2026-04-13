@@ -942,7 +942,7 @@ function buildLeftViewports(){buildWeightLandscape();buildRightColumn();}
 // === Right column: pre-built layer-sliced 3D viewports ===
 // All geometry built once on pin/model change. Playback only toggles opacity.
 
-let _rvNeuronDataA=null,_rvNeuronDataB=null;// cached neuron API responses
+// Right column uses pre-loaded data only — no API calls on interaction
 
 function buildRightColumn(){
   if(!rightViews.length||!_nRealLayers)return;
@@ -979,43 +979,31 @@ function _buildRV0Variance(){
   _updateRVLayer();
 }
 
-// rv1: Neurons — per-token neuron contribution bars at each layer
-async function _buildRV1Neurons(){
-  console.log('_buildRV1Neurons START: rightViews.length=',rightViews.length,'pinnedToken=',pinnedToken);
-  const rv=rightViews[1];
-  console.log('_buildRV1Neurons: rv=',!!rv);
-  if(!rv){console.log('rv1: NO VIEWPORT');return;}
+// rv1: Neurons — gate×up from _gateHeat (already loaded, no API call, instant)
+function _buildRV1Neurons(){
+  const rv=rightViews[1];if(!rv)return;
   _clearRV(rv);rv._rvSlices=[];
-  if(pinnedToken<0&&pinnedTokenB<0){console.log('rv1: no pins');rv.built=true;return;}
-  const loadTok=async(tok)=>{if(tok<0)return null;console.log('rv1: loading tok',tok);try{const r=await api(`token-neurons/${model}/${mode}?token=${tok}`);console.log('rv1: loaded tok',tok,'layers=',r?.layers?.length);return r;}catch(e){console.error('neuron load:',e);return null;}};
-  const[dA,dB]=await Promise.all([loadTok(pinnedToken),loadTok(pinnedTokenB)]);
-  _rvNeuronDataA=dA;_rvNeuronDataB=dB;
-  if(!dA&&!dB){rv.built=true;return;}
-  // Global max for consistent scale
-  let globalMx=0;[dA,dB].forEach(d=>{if(!d?.layers)return;d.layers.forEach(l=>{(l.neurons||[]).forEach(n=>{globalMx=Math.max(globalMx,Math.abs(n.contrib||0));});});});
-  globalMx=globalMx||1;
-  // Build bar geometry per layer
+  if(!_gateHeat||!_nRealLayers){rv.built=true;return;}
+  const rowA=pinnedToken>=0?getGateRow(pinnedToken):null;
+  const rowB=pinnedTokenB>=0?getGateRow(pinnedTokenB):null;
+  if(!rowA&&!rowB){rv.built=true;return;}
+  let mx=0;
+  if(rowA)for(let l=0;l<_nRealLayers;l++)mx=Math.max(mx,rowA[l]);
+  if(rowB)for(let l=0;l<_nRealLayers;l++)mx=Math.max(mx,rowB[l]);
+  mx=mx||1;
   for(let l=0;l<_nRealLayers;l++){
     const z=(l/(_nRealLayers-1))*2-1;const pos=[];const cols=[];
-    [dA,dB].forEach((d,ti)=>{
-      if(!d?.layers?.[l])return;
-      const neurons=d.layers[l].neurons||[];const xOff=ti===0?-0.8:0.3;
-      const rgb=ti===0?[1,0.4,0.2]:[0.2,0.5,1];
-      neurons.slice(0,15).forEach((n,ni)=>{
-        const x=xOff+(ni/15)*1;const v=Math.abs(n.contrib||0)/globalMx;
-        pos.push(x,0,z, x,v*1.5,z);
-        cols.push(rgb[0]*0.2,rgb[1]*0.2,rgb[2]*0.2, rgb[0]*(v+0.1),rgb[1]*(v+0.1),rgb[2]*(v+0.1));
-      });
-    });
+    if(rowA){const v=rowA[l]/mx;pos.push(-0.5,0,z, -0.5,v*1.5,z);cols.push(0.3,0.1,0.05, 1,0.4+v*0.5,0.2);}
+    if(rowB){const v=rowB[l]/mx;pos.push(0.5,0,z, 0.5,v*1.5,z);cols.push(0.05,0.1,0.2, 0.2,0.5+v*0.4,1);}
     if(!pos.length)continue;
     const geo=new THREE.BufferGeometry();
     geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
     geo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(cols),3));
-    const mat=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.15}));
-    mat.frustumCulled=false;rv.sc.add(mat);rv._rvSlices.push({mesh:mat,layer:l});
+    const seg=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.15}));
+    seg.frustumCulled=false;rv.sc.add(seg);rv._rvSlices.push({mesh:seg,layer:l});
   }
-  rv.cam.position.set(0,0.8,3);rv.ctl.target.set(0,0.4,0);rv.ctl.update();rv.built=true;
-  _updateRVLayer();_markDirty();
+  if(!rv._camSet){rv.cam.position.set(0,1,2.5);rv.ctl.target.set(0,0.5,0);rv.ctl.update();rv._camSet=true;}
+  rv.built=true;_updateRVLayer();_markDirty();
 }
 
 // rv2: Attention — per-head attention distribution at each layer
@@ -1074,8 +1062,7 @@ function updateLeftViewports(){
 }
 // Rebuild right column neurons/attention when pins change
 function _onPinChange(){
-  console.log('_onPinChange: pinnedToken=',pinnedToken,'pinnedTokenB=',pinnedTokenB,'rightViews=',rightViews.length);
-  _buildRV1Neurons().catch(e=>console.error('rv1 build failed:',e));
+  _buildRV1Neurons();
   _buildRV2Attention();
 }
 
