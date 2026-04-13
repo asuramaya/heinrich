@@ -7,12 +7,15 @@
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-size:11px;overflow:hidden;height:100vh;display:flex;flex-direction:column}
 #glCanvas{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none}
-#main{flex:1;display:grid;grid-template-columns:1fr 1fr 1fr 1.3fr 1.3fr;grid-template-rows:1fr 1fr 0.7fr;gap:1px;overflow:hidden;position:relative;z-index:1}
+#main{flex:1;display:grid;grid-template-columns:1fr 1fr 1fr 1.2fr 1.2fr;grid-template-rows:1fr 1fr 0.7fr;gap:1px;overflow:hidden;position:relative;z-index:1}
 #vp0{grid-column:1;grid-row:1}#vp1{grid-column:2;grid-row:1}#vp2{grid-column:3;grid-row:1}
 #vp3{grid-column:1;grid-row:2}#vp4{grid-column:2;grid-row:2}#vp5{grid-column:3;grid-row:2}
 #lv0{grid-column:1;grid-row:3}#lv1{grid-column:2;grid-row:3}#lv2{grid-column:3;grid-row:3}
 #br0{grid-column:4;grid-row:1/4}
-#tokpanel{grid-column:5;grid-row:1/4}
+#rightcol{grid-column:5;grid-row:1/4;display:flex;flex-direction:column;gap:1px;overflow:hidden}
+.rvp{flex:1;position:relative;overflow:hidden;background:transparent}
+.rvp .rlbl{position:absolute;top:2px;left:4px;font-size:7px;color:#444;pointer-events:none;z-index:2}
+#tokpanel{position:fixed;right:8px;top:8px;width:280px;max-height:50vh;overflow-y:auto;background:rgba(10,10,10,0.95);border:1px solid #222;border-radius:4px;padding:8px;z-index:20;font-size:9px;backdrop-filter:blur(4px)}
 .lvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .lvp .llbl{position:absolute;top:2px;left:4px;font-size:7px;color:#444;pointer-events:none;z-index:2}
 .lv-btn{position:absolute;right:2px;z-index:10}
@@ -56,34 +59,39 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   <div class="vp" id="vp3"><div class="axes" id="ax3"></div><div class="cbtn lv-btn lv-bot" data-v="3"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="vp" id="vp4"><div class="axes" id="ax4"></div><div class="cbtn lv-btn lv-bot" data-v="4"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="vp" id="vp5"><div class="axes" id="ax5"></div><div class="cbtn lv-btn lv-bot" data-v="5"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
-  <div id="tokpanel">
-    <div id="ctrlbar" style="display:flex;gap:3px;align-items:center;margin-bottom:4px;flex-wrap:wrap">
-      <select id="sm" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px;max-width:90px"></select>
-      <select id="smd" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"><option>raw</option><option>naked</option><option>template</option></select>
-      <button id="bl" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">Go</button>
-      <span style="color:#333">|</span>
-      <button id="lprev" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9664;</button>
-      <span id="llbl" style="color:#aaa;font-size:9px;min-width:24px;text-align:center">L00</span>
-      <button id="lplay" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9654;</button>
-      <button id="lnext" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9654;</button>
-      <span id="ntok" style="color:#444;font-size:7px"></span>
-      <button id="lemb" style="background:#1a1a1a;border:1px solid #333;color:#666;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">emb</button>
-      <button id="llmh" style="background:#1a1a1a;border:1px solid #333;color:#666;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">lmh</button>
-    </div>
-    <div style="margin-bottom:4px"><span id="ht" style="font-weight:bold;font-size:10px"></span> <span id="hs" style="font-weight:bold;font-size:10px"></span><div style="color:#555;font-size:7px" id="hst"></div><span id="st" style="color:#444;font-size:7px"></span><div id="legend2" style="font-size:7px;color:#555;margin-top:2px"></div></div>
-    <hr style="border:none;border-top:1px solid #1a1a1a;margin:4px 0">
-    <div style="margin-bottom:4px"><input id="tsearch" type="text" placeholder="search tokens..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:8px;font-family:inherit;border-radius:2px"><div id="tsresults" style="max-height:80px;overflow-y:auto;font-size:8px;color:#555"></div></div>
-    <hr style="border:none;border-top:1px solid #1a1a1a;margin:4px 0">
-    <div class="th">Token A (click) · Token B (R-click)</div>
-    <div id="tokA"><div class="tn" id="taName" style="color:#FF6644">—</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><div class="tm" id="taMeta">click a token to pin</div></div>
-    <hr style="border:none;border-top:1px solid #1a1a1a;margin:6px 0">
-    <div id="tokB"><div class="tn" id="tbName" style="color:#4477AA">—</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><div class="tm" id="tbMeta">R-click for comparison</div></div>
-    <hr style="border:none;border-top:1px solid #1a1a1a;margin:6px 0">
-    <div id="attnPanel" style="display:none"><div style="color:#555;font-size:7px;margin-bottom:2px">Attention (Token A, current layer)</div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
-  </div>
   <div class="lvp" id="lv0"><div class="llbl" id="lv0i">Internals A</div><div class="cbtn lv-btn lv-top" data-v="l0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="lvp" id="lv1"><div class="llbl" id="lv1i">Internals Δ</div><div class="cbtn lv-btn lv-top" data-v="l1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="lvp" id="lv2"><div class="llbl" id="lv2i">Internals B</div><div class="cbtn lv-btn lv-top" data-v="l2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+  <div id="rightcol">
+    <div class="rvp" id="rv0"><div class="rlbl">Weights</div></div>
+    <div class="rvp" id="rv1"><div class="rlbl">Neurons</div></div>
+    <div class="rvp" id="rv2"><div class="rlbl">Attention</div></div>
+  </div>
+</div>
+<div id="tokpanel">
+  <div id="ctrlbar" style="display:flex;gap:3px;align-items:center;margin-bottom:4px;flex-wrap:wrap">
+    <select id="sm" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px;max-width:90px"></select>
+    <select id="smd" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"><option>raw</option><option>naked</option><option>template</option></select>
+    <button id="bl" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">Go</button>
+    <span style="color:#333">|</span>
+    <button id="lprev" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9664;</button>
+    <span id="llbl" style="color:#aaa;font-size:9px;min-width:24px;text-align:center">L00</span>
+    <button id="lplay" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9654;</button>
+    <button id="lnext" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9654;</button>
+    <span id="ntok" style="color:#444;font-size:7px"></span>
+    <button id="lemb" style="background:#1a1a1a;border:1px solid #333;color:#666;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">emb</button>
+    <button id="llmh" style="background:#1a1a1a;border:1px solid #333;color:#666;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">lmh</button>
+  </div>
+  <div style="margin-bottom:4px"><span id="ht" style="font-weight:bold;font-size:10px"></span> <span id="hs" style="font-weight:bold;font-size:10px"></span><div style="color:#555;font-size:7px" id="hst"></div><span id="st" style="color:#444;font-size:7px"></span><div id="legend2" style="font-size:7px;color:#555;margin-top:2px"></div></div>
+  <hr style="border:none;border-top:1px solid #1a1a1a;margin:4px 0">
+  <div style="margin-bottom:4px"><input id="tsearch" type="text" placeholder="search tokens..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:8px;font-family:inherit;border-radius:2px"><div id="tsresults" style="max-height:80px;overflow-y:auto;font-size:8px;color:#555"></div></div>
+  <hr style="border:none;border-top:1px solid #1a1a1a;margin:4px 0">
+  <div class="th">Token A (click) · Token B (R-click)</div>
+  <div id="tokA"><div class="tn" id="taName" style="color:#FF6644">—</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><div class="tm" id="taMeta">click a token to pin</div></div>
+  <hr style="border:none;border-top:1px solid #1a1a1a;margin:6px 0">
+  <div id="tokB"><div class="tn" id="tbName" style="color:#4477AA">—</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><div class="tm" id="tbMeta">R-click for comparison</div></div>
+  <hr style="border:none;border-top:1px solid #1a1a1a;margin:6px 0">
+  <div id="attnPanel" style="display:none"><div style="color:#555;font-size:7px;margin-bottom:2px">Attention (Token A, current layer)</div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
 </div>
 <div id="cam-hub">
   <div class="row master"><div class="cbtn" data-v="all"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
