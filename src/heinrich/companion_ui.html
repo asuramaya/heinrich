@@ -777,7 +777,11 @@ function updateHUD(){
   document.getElementById('hst').textContent=`PC1:${p1}% dim:${lm.intrinsic_dim||'?'}`;
   document.getElementById('llbl').textContent=ln;
 }
-function setLayer(l,light){cL=l;updateAllViewports();updateHUD();_updateBrowserLayer();_updateBrowserSelBoxes();updateLeftViewports();if(!light)_updateBrowserOverlay();if(pinnedToken>=0||pinnedTokenB>=0){_syncAllPins(!play);if(!play)showPinDetail(pinnedToken);}_markDirty();if(!light)_saveState();}
+function setLayer(l,light){cL=l;updateAllViewports();updateHUD();
+  if(!play){_updateBrowserLayer();_updateBrowserSelBoxes();_updateBrowserOverlay();}
+  updateLeftViewports();
+  if(pinnedToken>=0||pinnedTokenB>=0){_syncAllPins(!play);if(!play)showPinDetail(pinnedToken);}
+  _markDirty();if(!light)_saveState();}
 
 // --- URL state serialization (#43) ---
 function _saveState(){
@@ -940,7 +944,7 @@ function _playFrame(t){
 function _togglePlay(){
   play=!play;document.getElementById('lplay').textContent=play?'\u23F8':'\u25B6';
   if(play){_playLastT=performance.now();_playRAF=requestAnimationFrame(_playFrame);}
-  else{if(_playRAF){cancelAnimationFrame(_playRAF);_playRAF=null;}_updateBrowserOverlay();if(pinnedToken>=0){updatePinMarkers();showPinDetail(pinnedToken);}}
+  else{if(_playRAF){cancelAnimationFrame(_playRAF);_playRAF=null;}_updateBrowserLayer();_updateBrowserSelBoxes();_updateBrowserOverlay();if(pinnedToken>=0){updatePinMarkers();showPinDetail(pinnedToken);}}
 }
 document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;if(e.key==='ArrowRight')setLayer((cL+1)%_nRealLayers);if(e.key==='ArrowLeft')setLayer((cL-1+_nRealLayers)%_nRealLayers);if(e.key===' '){e.preventDefault();_togglePlay();}if(e.key==='Escape'&&(pinnedToken>=0||pinnedTokenB>=0)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();}});
 let _needsRender=true;
@@ -962,7 +966,7 @@ leftViews.forEach(v=>v.ctl.addEventListener('change',_markDirty));
     if(pinMarkersB[vi].visible)pinMarkersB[vi].material.size=ms;
     if(highlightMarkers[vi].visible)highlightMarkers[vi].material.size=ms*0.7;
     _renderRegion(v.el,v.sc,v.cam);});
-  brCtl.update();_renderRegion(brEl,brSc,brCam);
+  if(!play){brCtl.update();_renderRegion(brEl,brSc,brCam);}
   leftViews.forEach(v=>{if(v.built){v.ctl.update();_renderRegion(v.el,v.sc,v.cam);}});})();
 // WebSocket disabled — not needed for static data viewing
 </script>
