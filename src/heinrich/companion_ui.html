@@ -264,7 +264,7 @@ function _snapOne(vi,axis){
   v.ctl.update();_markDirty();
 }
 function _snapBrowser(axis){
-  const n=Math.min(nK,_BR_N);const cx=n/2*_SP,cy=-n/3*_SP,cz=cL*_ZSP;
+  const w=Math.min(nK-_brStart,_BR_WIN);const cx=w/2*_SP,cy=-w/3*_SP,cz=cL*_ZSP;
   brCtl.target.set(cx,cy,cz);const d=brCam.position.distanceTo(brCtl.target)||15;
   if(axis==='x')brCam.position.set(cx+d,cy,cz);
   else if(axis==='y')brCam.position.set(cx,cy+d,cz);
@@ -414,8 +414,11 @@ function updateAllViewports(){
   for(let i=NC;i<NV;i++)updateTrajMarker(i);
 }
 
-// 3D prism — real point clouds, no textures. One Points object per layer.
-let _BR_N=12;const _SP=1.6,_ZSP=0.3,_BR_PTS=150,_BR_RAD=0.55;
+// 3D prism — paged window into PC space. Scroll to pan through all PCs.
+const _BR_WIN=12;// visible window size (fixed)
+const _SP=1.6,_ZSP=0.3,_BR_PTS=150,_BR_RAD=0.55;
+let _BR_N=12;// total available PCs (set on load)
+let _brStart=0;// first PC index in visible window
 let _brLayers=[]; // {pts, layer} — one Points per layer
 let _brOverlay=[];
 let _brBuilt=false;
@@ -426,25 +429,26 @@ function _disposeScene(sc){
   while(sc.children.length){const c=sc.children[0];sc.remove(c);if(c.geometry)c.geometry.dispose();if(c.material){if(Array.isArray(c.material))c.material.forEach(m=>m.dispose());else c.material.dispose();}}}
 function buildBrowser(){
   _disposeScene(brSc);
-  _brLayers=[];_brOverlay=[];brMeshes=[];_brMxCache={};
-  const n=Math.min(nK,_BR_N);const nPairs=n*(n-1)/2;
+  _brLayers=[];_brOverlay=[];brMeshes=[];_brMxCache={};_brSelBoxes=[];
+  const w=Math.min(nK-_brStart,_BR_WIN);// visible window size
+  const nPairs=w*(w-1)/2;if(nPairs<=0)return;
   const step=Math.max(1,Math.floor(nN/_BR_PTS));const ptsPerPair=Math.ceil(nN/step);
-  // Build one point cloud per layer — all pairs merged. Cache mx values.
-  // Store per-point token index so category filter can hide them.
+  // Build using WINDOW-LOCAL grid coords but ABSOLUTE PC indices
   for(let l=0;l<nL;l++){
     const S=allL[l];if(!S)continue;
     const pos=new Float32Array(nPairs*ptsPerPair*3);
     const col=new Float32Array(nPairs*ptsPerPair*3);
-    const origPos=new Float32Array(nPairs*ptsPerPair*3);// unfiltered copy
-    const tokMap=new Uint16Array(nPairs*ptsPerPair);// token index per point
+    const origPos=new Float32Array(nPairs*ptsPerPair*3);
+    const tokMap=new Uint16Array(nPairs*ptsPerPair);
     let idx=0;
-    for(let a=0;a<n;a++)for(let b=a+1;b<n;b++){
-      let mx=0;for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(S[i][a]||0),Math.abs(S[i][b]||0));mx=mx||1;
-      _brMxCache[`${a},${b},${l}`]=mx;
+    for(let ga=0;ga<w;ga++)for(let gb=ga+1;gb<w;gb++){
+      const pa=ga+_brStart,pb=gb+_brStart;// absolute PC indices
+      let mx=0;for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(S[i][pa]||0),Math.abs(S[i][pb]||0));mx=mx||1;
+      _brMxCache[`${pa},${pb},${l}`]=mx;
       for(let i=0;i<nN;i+=step){
-        const sx=Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[i][a]||0)/mx*_BR_RAD));
-        const sy=Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[i][b]||0)/mx*_BR_RAD));
-        pos[idx*3]=b*_SP+sx;pos[idx*3+1]=-a*_SP-sy;pos[idx*3+2]=l*_ZSP;
+        const sx=Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[i][pa]||0)/mx*_BR_RAD));
+        const sy=Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[i][pb]||0)/mx*_BR_RAD));
+        pos[idx*3]=gb*_SP+sx;pos[idx*3+1]=-ga*_SP-sy;pos[idx*3+2]=l*_ZSP;// grid coords are window-local
         origPos[idx*3]=pos[idx*3];origPos[idx*3+1]=pos[idx*3+1];origPos[idx*3+2]=pos[idx*3+2];
         tokMap[idx]=i;
         const hex=CL[scripts[i]]||0xAAAAAA;
@@ -459,9 +463,22 @@ function buildBrowser(){
     const pts=new THREE.Points(geo,mat);pts.frustumCulled=false;
     brSc.add(pts);_brLayers.push({pts,layer:l,origPos:origPos.subarray(0,idx*3),tokMap:tokMap.subarray(0,idx)});
   }
+  // Add axis labels as sprites
+  for(let g=0;g<w;g++){
+    const pc=g+_brStart;
+    const sp=new THREE.Sprite(new THREE.SpriteMaterial({color:0x444444}));
+    sp.scale.set(0.3,0.15,1);sp.position.set(g*_SP+_SP/2,0.5,0);brSc.add(sp);
+  }
   _brBuilt=true;_updateBrowserLayer();_updateBrowserOverlay();
-  if(!brCam._fitted){const cx=n/2*_SP,cy=-n/3*_SP;brCam.position.set(cx,cy,25);brCtl.target.set(cx,cy,cL*_ZSP);brCtl.update();brCam._fitted=true;}
+  if(!brCam._fitted){const cx=w/2*_SP,cy=-w/3*_SP;brCam.position.set(cx,cy,25);brCtl.target.set(cx,cy,cL*_ZSP);brCtl.update();brCam._fitted=true;}
 }
+// Scroll to pan the PC window
+brEl.addEventListener('wheel',e=>{
+  e.preventDefault();
+  const dir=e.deltaY>0?1:-1;
+  const newStart=Math.max(0,Math.min(nK-_BR_WIN,_brStart+dir*2));
+  if(newStart!==_brStart){_brStart=newStart;buildBrowser();_markDirty();}
+},{passive:false});
 function _updateBrowserLayer(){
   if(!_brBuilt)return;
   _brLayers.forEach(({pts,layer})=>{
@@ -471,9 +488,11 @@ function _updateBrowserLayer(){
   });
   // Follow mode: auto-track the selected pair through layers
   if(_brFollow>=0){
-    const[a,b]=vpPairs[_brFollow];const n=Math.min(nK,_BR_N);
-    if(a<n&&b<n){
-      const tx=Math.max(a,b)*_SP,ty=-Math.min(a,b)*_SP,tz=cL*_ZSP;
+    const fi=_brFollow===0?0:2;// follow pair A or B
+    const[pa,pb]=vpPairs[fi];const w=Math.min(nK-_brStart,_BR_WIN);
+    const ga=Math.min(pa,pb)-_brStart,gb=Math.max(pa,pb)-_brStart;
+    if(ga>=0&&gb>=0&&ga<w&&gb<w){
+      const tx=gb*_SP,ty=-ga*_SP,tz=cL*_ZSP;
       const off=brCam.position.clone().sub(brCtl.target);
       brCtl.target.set(tx,ty,tz);brCam.position.set(tx+off.x,ty+off.y,tz+off.z);
       brCtl.update();
@@ -494,12 +513,15 @@ function _updateBrowserSelBoxes(){
     });
     return;
   }
-  // Build persistent boxes for pair A (0) and pair B (2) only — skip delta (1)
-  [0,2].forEach(pi=>{const[pa,pb]=vpPairs[pi];if(pa>=n||pb>=n)return;const a=Math.min(pa,pb),b=Math.max(pa,pb);
+  // Build persistent boxes for pair A (0) and pair B (2) — map to window-local coords
+  const w=Math.min(nK-_brStart,_BR_WIN);
+  [0,2].forEach(pi=>{const[pa,pb]=vpPairs[pi];
+    const ga=Math.min(pa,pb)-_brStart,gb=Math.max(pa,pb)-_brStart;
+    if(ga<0||gb<0||ga>=w||gb>=w)return;// pair not visible in current window
     for(let l=0;l<nL;l++){
       const eg=new THREE.EdgesGeometry(new THREE.PlaneGeometry(_BR_RAD*2.2,_BR_RAD*2.2));
       const e=new THREE.LineSegments(eg,new THREE.LineBasicMaterial({color:pi===0?0xFF6644:0x4477AA,transparent:true,opacity:0}));
-      e.position.set(b*_SP,-a*_SP,l*_ZSP);brSc.add(e);
+      e.position.set(gb*_SP,-ga*_SP,l*_ZSP);brSc.add(e);
       _brSelBoxes.push({mesh:e,pair:pi,layer:l});
     }
   });
@@ -512,30 +534,31 @@ function _clearBrowserSelBoxes(){
 function _updateBrowserOverlay(){
   _brOverlay.forEach(o=>{brSc.remove(o);if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose();});_brOverlay=[];
   _clearBrowserSelBoxes();_updateBrowserSelBoxes();// rebuild persistent boxes
-  const n=Math.min(nK,_BR_N);
-  // Token A (orange) and Token B (blue) — paths + markers at every cell
+  const w=Math.min(nK-_brStart,_BR_WIN);
+  // Token A (orange) and Token B (blue) — paths + markers in visible window
   [pinnedToken,pinnedTokenB].forEach((tok,ti)=>{
     if(tok<0)return;const color=ti===0?0xFF6644:0x4477AA;
-    // Bright path lines through SELECTED pairs, dim through others
-    for(let a=0;a<n;a++)for(let b=a+1;b<n;b++){
-      const isSelected=[vpPairs[0],vpPairs[2]].some(([pa,pb])=>(Math.min(pa,pb)===a&&Math.max(pa,pb)===b));
+    for(let ga=0;ga<w;ga++)for(let gb=ga+1;gb<w;gb++){
+      const pa=ga+_brStart,pb=gb+_brStart;
+      const isSelected=[vpPairs[0],vpPairs[2]].some(([sa,sb])=>(Math.min(sa,sb)===pa&&Math.max(sa,sb)===pb));
       const pts=[];
-      for(let l=0;l<nL;l++){const mx=_brMxCache[`${a},${b},${l}`]||1;const S=allL[l];
-        const tx=Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][a]||0)/mx*_BR_RAD));
-        const ty=Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][b]||0)/mx*_BR_RAD));
-        pts.push(new THREE.Vector3(b*_SP+tx,-a*_SP-ty,l*_ZSP));}
+      for(let l=0;l<nL;l++){const mx=_brMxCache[`${pa},${pb},${l}`]||1;const S=allL[l];
+        const tx=Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][pa]||0)/mx*_BR_RAD));
+        const ty=Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][pb]||0)/mx*_BR_RAD));
+        pts.push(new THREE.Vector3(gb*_SP+tx,-ga*_SP-ty,l*_ZSP));}
       const g=new THREE.BufferGeometry().setFromPoints(pts);
       const line=new THREE.Line(g,new THREE.LineBasicMaterial({color,transparent:true,opacity:isSelected?0.9:0.2}));
       line.frustumCulled=false;brSc.add(line);_brOverlay.push(line);
     }
-    // Token marker dots at current layer — stored as persistent objects for playback
+    // Token marker dots at current layer
     const S=allL[cL];if(!S)return;
-    const nPairs=n*(n-1)/2;
+    const nPairs=w*(w-1)/2;
     const mkPos=new Float32Array(nPairs*3);let mi=0;
-    for(let a=0;a<n;a++)for(let b=a+1;b<n;b++){
-      const mx=_brMxCache[`${a},${b},${cL}`]||1;
-      mkPos[mi*3]=b*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][a]||0)/mx*_BR_RAD));
-      mkPos[mi*3+1]=-a*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][b]||0)/mx*_BR_RAD));
+    for(let ga=0;ga<w;ga++)for(let gb=ga+1;gb<w;gb++){
+      const pa=ga+_brStart,pb=gb+_brStart;
+      const mx=_brMxCache[`${pa},${pb},${cL}`]||1;
+      mkPos[mi*3]=gb*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][pa]||0)/mx*_BR_RAD));
+      mkPos[mi*3+1]=-ga*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][pb]||0)/mx*_BR_RAD));
       mkPos[mi*3+2]=cL*_ZSP;mi++;
     }
     const mg=new THREE.BufferGeometry();mg.setAttribute('position',new THREE.BufferAttribute(mkPos,3));
@@ -545,13 +568,14 @@ function _updateBrowserOverlay(){
 }
 // Update prism pin marker positions for playback (cheap — no geometry rebuild)
 function _updateBrowserPinPositions(){
-  const n=Math.min(nK,_BR_N);const S=allL[cL];if(!S)return;
+  const w=Math.min(nK-_brStart,_BR_WIN);const S=allL[cL];if(!S)return;
   _brOverlay.forEach(o=>{if(!o.userData?.tok&&o.userData?.tok!==0)return;
     const tok=o.userData.tok;const pos=o.geometry.attributes.position.array;let mi=0;
-    for(let a=0;a<n;a++)for(let b=a+1;b<n;b++){
-      const mx=_brMxCache[`${a},${b},${cL}`]||1;
-      pos[mi*3]=b*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][a]||0)/mx*_BR_RAD));
-      pos[mi*3+1]=-a*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][b]||0)/mx*_BR_RAD));
+    for(let ga=0;ga<w;ga++)for(let gb=ga+1;gb<w;gb++){
+      const pa=ga+_brStart,pb=gb+_brStart;
+      const mx=_brMxCache[`${pa},${pb},${cL}`]||1;
+      pos[mi*3]=gb*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][pa]||0)/mx*_BR_RAD));
+      pos[mi*3+1]=-ga*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][pb]||0)/mx*_BR_RAD));
       pos[mi*3+2]=cL*_ZSP;mi++;
     }
     o.geometry.attributes.position.needsUpdate=true;
@@ -566,10 +590,11 @@ brCv.addEventListener('pointerup',e=>{if(Math.abs(e.clientX-_bdx)+Math.abs(e.cli
   const r=brCv.getBoundingClientRect();bms.x=((e.clientX-r.left)/r.width)*2-1;bms.y=-((e.clientY-r.top)/r.height)*2+1;
   bray.setFromCamera(bms,brCam);bray.params.Points.threshold=0.2;
   const allPts=_brLayers.map(l=>l.pts);const hits=bray.intersectObjects(allPts);if(!hits.length)return;
-  const p=hits[0].point;const n=Math.min(nK,_BR_N);
-  const b=Math.round(p.x/_SP);const a=Math.round(-p.y/_SP);const l=Math.round(p.z/_ZSP);
-  if(a>=0&&a<n&&b>a&&b<n){
-    const slot=_isRightClick(e)?2:0;vpPairs[slot]=[a,b];updateAllViewports();_updateBrowserOverlay();_saveState();}
+  const p=hits[0].point;const w=Math.min(nK-_brStart,_BR_WIN);
+  const gb=Math.round(p.x/_SP);const ga=Math.round(-p.y/_SP);
+  if(ga>=0&&ga<w&&gb>ga&&gb<w){
+    const pa=ga+_brStart,pb=gb+_brStart;// absolute PC indices
+    const slot=_isRightClick(e)?2:0;vpPairs[slot]=[pa,pb];updateAllViewports();_updateBrowserOverlay();_saveState();}
 });
 
 // === 2 left viewports: Delta + Weight Landscape ===
