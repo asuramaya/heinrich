@@ -350,7 +350,7 @@ function _applyFilter(){
   });
   // Filter trajectory lines
   views.forEach((v,vi)=>{if(vi>=NC&&v.trajGroup){
-    v.trajGroup.children.forEach(c=>{const ti=c.userData?.ti;if(ti!==undefined)c.visible=!_hiddenScripts.has(scripts[ti]);});
+    _filterTrajSegments(v);
   }});
   _applyBrowserFilter();
   _markDirty();
@@ -369,7 +369,44 @@ function updateVP(vi,pcX,pcY,pcZ,layer){const v=views[vi];v.pcX=pcX;v.pcY=pcY;v.
   v.geo.attributes.position.needsUpdate=true;if(!play)v.geo.computeBoundingSphere();
   document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}/${pcZ}`;
   if(!v._fitted){v.cam.position.set(0,0,2.5);v.ctl.target.set(0,0,0);v.ctl.update();v._fitted=true;}}
-function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;if(v.trajGroup){v.trajGroup.children.forEach(c=>{if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();});v.sc.remove(v.trajGroup);}if(v.trajMarker){v.trajMarker.geometry.dispose();v.trajMarker.material.dispose();v.sc.remove(v.trajMarker);}v.trajGroup=new THREE.Group();let mx=0;for(const S of allL)for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(S[i][pcX]||0),Math.abs(S[i][pcY]||0));v._trajScale=mx||1;const maxLines=Math.min(nN,800);const step=Math.max(1,Math.floor(nN/maxLines));for(let i=0;i<nN;i+=step){const pts=[];for(let l=0;l<nL;l++){const S=allL[l];pts.push(new THREE.Vector3((S[i][pcX]||0)/mx,(S[i][pcY]||0)/mx,(l/(nL-1))*2-1));}const g=new THREE.BufferGeometry().setFromPoints(pts);const line=new THREE.Line(g,new THREE.LineBasicMaterial({color:CL[scripts[i]]||0xAAAAAA,transparent:true,opacity:0.15,depthWrite:false}));line.userData={ti:i};v.trajGroup.add(line);}v.sc.add(v.trajGroup);const pg=new THREE.BufferGeometry();const _tp=new Float32Array(nN*3),_tc=new Float32Array(nN*3);for(let i=0;i<nN;i++){const hex=CL[scripts[i]]||0xAAAAAA;_tc[i*3]=((hex>>16)&0xFF)/255;_tc[i*3+1]=((hex>>8)&0xFF)/255;_tc[i*3+2]=(hex&0xFF)/255;}pg.setAttribute('position',new THREE.BufferAttribute(_tp,3));pg.setAttribute('color',new THREE.BufferAttribute(_tc,3));v.trajMarker=new THREE.Points(pg,new THREE.PointsMaterial({size:0.018,vertexColors:true,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false}));v.sc.add(v.trajMarker);updateTrajMarker(vi);document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}+d`;}
+function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
+  if(v.trajGroup){v.trajGroup.children.forEach(c=>{if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();});v.sc.remove(v.trajGroup);}
+  if(v.trajMarker){v.trajMarker.geometry.dispose();v.trajMarker.material.dispose();v.sc.remove(v.trajMarker);}
+  v.trajGroup=new THREE.Group();
+  let mx=0;for(const S of allL)for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(S[i][pcX]||0),Math.abs(S[i][pcY]||0));
+  v._trajScale=mx||1;
+  // Merged LineSegments: all trajectories in one draw call
+  // Each trajectory: nL-1 segments, each segment = 2 vertices
+  const nSeg=(nL-1)*nN;const pos=new Float32Array(nSeg*6),col=new Float32Array(nSeg*6);
+  let si=0;
+  for(let i=0;i<nN;i++){
+    const hex=CL[scripts[i]]||0xAAAAAA;
+    const r=((hex>>16)&0xFF)/255,g=((hex>>8)&0xFF)/255,b=(hex&0xFF)/255;
+    for(let l=0;l<nL-1;l++){
+      const S0=allL[l],S1=allL[l+1];
+      const z0=(l/(nL-1))*2-1,z1=((l+1)/(nL-1))*2-1;
+      pos[si*6]=(S0[i][pcX]||0)/mx;pos[si*6+1]=(S0[i][pcY]||0)/mx;pos[si*6+2]=z0;
+      pos[si*6+3]=(S1[i][pcX]||0)/mx;pos[si*6+4]=(S1[i][pcY]||0)/mx;pos[si*6+5]=z1;
+      col[si*6]=r;col[si*6+1]=g;col[si*6+2]=b;col[si*6+3]=r;col[si*6+4]=g;col[si*6+5]=b;
+      si++;
+    }
+  }
+  const tgeo=new THREE.BufferGeometry();
+  tgeo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+  tgeo.setAttribute('color',new THREE.BufferAttribute(col,3));
+  const traj=new THREE.LineSegments(tgeo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.08,depthWrite:false}));
+  traj.frustumCulled=false;v.trajGroup.add(traj);
+  // Store token indices for category filter
+  v.trajGroup._tokPerSeg=nL-1;// segments per token
+  v.trajGroup._nTok=nN;
+  v.sc.add(v.trajGroup);
+  // Layer marker (full vocab points at current Z)
+  const pg=new THREE.BufferGeometry();const _tp=new Float32Array(nN*3),_tc=new Float32Array(nN*3);
+  for(let i=0;i<nN;i++){const hex=CL[scripts[i]]||0xAAAAAA;_tc[i*3]=((hex>>16)&0xFF)/255;_tc[i*3+1]=((hex>>8)&0xFF)/255;_tc[i*3+2]=(hex&0xFF)/255;}
+  pg.setAttribute('position',new THREE.BufferAttribute(_tp,3));pg.setAttribute('color',new THREE.BufferAttribute(_tc,3));
+  v.trajMarker=new THREE.Points(pg,new THREE.PointsMaterial({size:0.018,vertexColors:true,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false}));
+  v.sc.add(v.trajMarker);updateTrajMarker(vi);
+  document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}+d`;}
 function updateTrajMarker(vi){const v=views[vi];
   const buf=v._trajBufs&&v._trajBufs[cL];if(!buf)return;
   if(v.trajMarker){const tp=v.trajMarker.geometry.attributes.position.array;tp.set(buf);
@@ -379,6 +416,20 @@ function updateTrajMarker(vi){const v=views[vi];
   pos.set(buf);
   if(_hiddenScripts.size){for(let i=0;i<nN;i++){if(_hiddenScripts.has(scripts[i])){pos[i*3]=9999;pos[i*3+1]=9999;pos[i*3+2]=9999;}}}
   v.geo.attributes.position.needsUpdate=true;v.pts.visible=false;
+}
+function _filterTrajSegments(v){
+  if(!v.trajGroup||!v.trajGroup.children.length)return;
+  const traj=v.trajGroup.children[0];if(!traj||!traj.geometry)return;
+  const col=traj.geometry.attributes.color;if(!col)return;
+  const arr=col.array;const segs=v.trajGroup._tokPerSeg||0;
+  for(let i=0;i<(v.trajGroup._nTok||0);i++){
+    const hidden=_hiddenScripts.has(scripts[i]);
+    const hex=hidden?0x0a0a0a:(CL[scripts[i]]||0xAAAAAA);
+    const r=((hex>>16)&0xFF)/255,g=((hex>>8)&0xFF)/255,b=(hex&0xFF)/255;
+    const off=i*segs*6;
+    for(let s=0;s<segs;s++){arr[off+s*6]=r;arr[off+s*6+1]=g;arr[off+s*6+2]=b;arr[off+s*6+3]=r;arr[off+s*6+4]=g;arr[off+s*6+5]=b;}
+  }
+  col.needsUpdate=true;
 }
 function thirdPC(a,b){for(let i=0;i<nK;i++){if(i!==a&&i!==b)return i;}return 0;}
 let _lastPK='';
@@ -390,7 +441,7 @@ function updateAllViewports(){
     // PC pairs changed — precompute ALL layer buffers
     for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];views[i].pcX=a;views[i].pcY=b;views[i].pcZ=thirdPC(a,b);_precomputeCloud(i);}
     for(let i=0;i<NC;i++){buildTraj(NC+i,vpPairs[i][0],vpPairs[i][1]);_precomputeTraj(NC+i);}
-    if(_hiddenScripts.size){views.forEach((v,vi)=>{if(vi>=NC&&v.trajGroup)v.trajGroup.children.forEach(c=>{const ti=c.userData?.ti;if(ti!==undefined)c.visible=!_hiddenScripts.has(scripts[ti]);});});}
+    if(_hiddenScripts.size){views.forEach((v,vi)=>{if(vi>=NC&&v.trajGroup)_filterTrajSegments(v);});}
     // Update delta label
     const lbl=document.getElementById('lv0lbl');if(lbl)lbl.textContent=`Δ PC${vpPairs[1][0]}×PC${vpPairs[1][1]}`;
     _lastPK=pk;
