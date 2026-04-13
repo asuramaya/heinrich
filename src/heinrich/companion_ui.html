@@ -590,21 +590,12 @@ const _brHoverBox=(()=>{const eg=new THREE.EdgesGeometry(new THREE.PlaneGeometry
 let _brHoverLabel=null;// HUD text for hovered cell
 function _brResolveCell(e){
   const r=brCv.getBoundingClientRect();bms.x=((e.clientX-r.left)/r.width)*2-1;bms.y=-((e.clientY-r.top)/r.height)*2+1;
-  bray.setFromCamera(bms,brCam);bray.params.Points.threshold=_SP*0.5;
-  // Try raycasting against visible layers
-  const targets=_brLayers.filter(l=>l.pts.visible).map(l=>l.pts);
-  if(targets.length){
-    const hits=bray.intersectObjects(targets);
-    if(hits.length){const p=hits[0].point;const b=Math.round(p.x/_SP),a=Math.round(-p.y/_SP);
-      if(a>=0&&a<nK&&b>a&&b<nK)return{a,b};}
-  }
-  // Fallback: project ray onto Z=cL*_ZSP plane and resolve cell
-  const plane=new THREE.Plane(new THREE.Vector3(0,0,1),-(cL*_ZSP));
-  const pt=new THREE.Vector3();
-  if(bray.ray.intersectPlane(plane,pt)){
-    const b=Math.round(pt.x/_SP),a=Math.round(-pt.y/_SP);
-    if(a>=0&&a<nK&&b>a&&b<nK)return{a,b};
-  }
+  bray.setFromCamera(bms,brCam);bray.params.Points.threshold=_SP*0.4;
+  const targets=_brLayers.map(l=>l.pts).filter(Boolean);
+  const hits=bray.intersectObjects(targets);if(!hits.length)return null;
+  const p=hits[0].point;
+  const b=Math.round(p.x/_SP),a=Math.round(-p.y/_SP);
+  if(a>=0&&a<nK&&b>a&&b<nK)return{a,b};
   return null;
 }
 brCv.addEventListener('mousemove',e=>{
@@ -738,6 +729,12 @@ async function buildWeightLandscape(){
       lv.sc.add(new THREE.Line(geo,new THREE.LineBasicMaterial({color:c,transparent:true,opacity:0.5})));
     }
   }
+  // Current layer indicator plane
+  const clGeo=new THREE.PlaneGeometry(3,2);
+  const clMat=new THREE.MeshBasicMaterial({color:0xFFFFFF,transparent:true,opacity:0.03,side:THREE.DoubleSide});
+  lv._layerPlane=new THREE.Mesh(clGeo,clMat);
+  lv._layerPlane.position.set(0,0.75,(cL/(_nRealLayers-1))*2-1);
+  lv.sc.add(lv._layerPlane);
   const grid=new THREE.GridHelper(2,6,0x1a1a1a,0x141414);grid.rotation.x=Math.PI/2;lv.sc.add(grid);
   lv.cam.position.set(0,1.5,3);lv.ctl.target.set(0,0.5,0);lv.ctl.update();
   lv.built=true;
@@ -822,6 +819,8 @@ function renderAttnChart(){
 function buildLeftViewports(){buildWeightLandscape();}
 function updateLeftViewports(){
   _updateDeltaPins();
+  // Update weights layer indicator
+  const lv=leftViews[0];if(lv&&lv._layerPlane&&_nRealLayers>1){lv._layerPlane.position.z=(cL/(_nRealLayers-1))*2-1;_markDirty();}
   if(!play){renderNeuronChart(pinnedToken,'neuronA','200,80,50');renderNeuronChart(pinnedTokenB,'neuronB','60,100,180');renderAttnChart();}
 }
 
