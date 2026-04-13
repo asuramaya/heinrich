@@ -981,10 +981,13 @@ function _buildRV0Variance(){
 
 // rv1: Neurons — per-token neuron contribution bars at each layer
 async function _buildRV1Neurons(){
-  const rv=rightViews[1];if(!rv)return;
+  console.log('_buildRV1Neurons START: rightViews.length=',rightViews.length,'pinnedToken=',pinnedToken);
+  const rv=rightViews[1];
+  console.log('_buildRV1Neurons: rv=',!!rv);
+  if(!rv){console.log('rv1: NO VIEWPORT');return;}
   _clearRV(rv);rv._rvSlices=[];
-  if(pinnedToken<0&&pinnedTokenB<0){rv.built=true;return;}
-  const loadTok=async(tok)=>{if(tok<0)return null;try{return await api(`token-neurons/${model}/${mode}?token=${tok}`);}catch(e){console.error('neuron load:',e);return null;}};
+  if(pinnedToken<0&&pinnedTokenB<0){console.log('rv1: no pins');rv.built=true;return;}
+  const loadTok=async(tok)=>{if(tok<0)return null;console.log('rv1: loading tok',tok);try{const r=await api(`token-neurons/${model}/${mode}?token=${tok}`);console.log('rv1: loaded tok',tok,'layers=',r?.layers?.length);return r;}catch(e){console.error('neuron load:',e);return null;}};
   const[dA,dB]=await Promise.all([loadTok(pinnedToken),loadTok(pinnedTokenB)]);
   _rvNeuronDataA=dA;_rvNeuronDataB=dB;
   if(!dA&&!dB){rv.built=true;return;}
