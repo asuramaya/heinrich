@@ -184,9 +184,40 @@ function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
 let _lastDimState=-1;
 function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC)v.mtl.opacity=dim?0.35:0.85;if(vi>=NC&&v.trajGroup){const baseOp=dim?0.08:0.15;v.trajGroup.children.forEach(c=>{if(c.material)c.material.opacity=baseOp;});if(v.trajMarker)v.trajMarker.material.opacity=dim?0.35:0.9;}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible){m.material.opacity=0.95;m.material.size=dim?0.08:0.06;}});}
 function highlightToken(idx){hoveredToken=idx;views.forEach((v,vi)=>{const mk=highlightMarkers[vi];if(idx<0){mk.visible=false;hoverPaths[vi].visible=false;return;}mk.visible=true;_positionMarker(mk,v,vi,idx);_buildPathForVP(hoverPaths[vi],v,vi,idx);});_dimAll(idx>=0);_markDirty();}
+// Cross-pair ghost paths: show pinned token's path in OTHER pairs as dim lines in each traj viewport
+let _crossPaths=[];// [{line, vi}]
+function _clearCrossPaths(){_crossPaths.forEach(c=>{views[c.vi].sc.remove(c.line);c.line.geometry.dispose();c.line.material.dispose();});_crossPaths=[];}
+function _buildCrossPaths(){
+  _clearCrossPaths();
+  if(pinnedToken<0&&pinnedTokenB<0)return;
+  [pinnedToken,pinnedTokenB].forEach((tok,ti)=>{
+    if(tok<0)return;
+    const color=ti===0?0xFF6644:0x4477AA;
+    // For each trajectory viewport, show paths from OTHER pairs as dim ghosts
+    for(let vi=NC;vi<NV;vi++){
+      const myPair=vi-NC;// which pair index this viewport owns
+      for(let pi=0;pi<NC;pi++){
+        if(pi===myPair)continue;// skip own pair — handled by pinPaths
+        const[pcX,pcY]=vpPairs[pi];
+        // Compute trajectory for this token through this OTHER pair's PCs, but in THIS viewport's coordinate space
+        const v=views[vi];const mx=v._trajScale||1;
+        const pts=[];
+        for(let l=0;l<nL;l++){
+          const S=allL[l];
+          // Use the other pair's PCs for X/Y, same Z=layer depth
+          let omx=0;for(const SS of allL)omx=Math.max(omx,Math.abs(SS[tok][pcX]||0),Math.abs(SS[tok][pcY]||0));omx=omx||1;
+          pts.push(new THREE.Vector3((S[tok][pcX]||0)/omx,(S[tok][pcY]||0)/omx,(l/(nL-1))*2-1));
+        }
+        const g=new THREE.BufferGeometry().setFromPoints(pts);
+        const line=new THREE.Line(g,new THREE.LineBasicMaterial({color,transparent:true,opacity:0.15,depthWrite:false}));
+        line.frustumCulled=false;v.sc.add(line);
+        _crossPaths.push({line,vi});
+      }
+    }
+  });
+}
+
 // Unified pin sync — positions all markers in all viewports + delta + prism
-// Called every layer change (including during playback)
-// paths=true rebuilds trajectory paths (skip during playback for perf)
 function _syncAllPins(paths){
   views.forEach((v,vi)=>{
     const mk=pinMarkers[vi];
@@ -196,6 +227,7 @@ function _syncAllPins(paths){
     if(pinnedTokenB<0){mb.visible=false;pinPathsB[vi].visible=false;}
     else{mb.visible=true;_positionMarker(mb,v,vi,pinnedTokenB);if(paths)_buildPathForVP(pinPathsB[vi],v,vi,pinnedTokenB);}
   });
+  if(paths)_buildCrossPaths();
   _updateDeltaPins();
   _updateBrowserPinPositions();
   _lastDimState=-1;_dimAll(false);_markDirty();
@@ -350,7 +382,7 @@ function _applyFilter(){
   });
   // Filter trajectory lines
   views.forEach((v,vi)=>{if(vi>=NC&&v.trajGroup){
-    _filterTrajSegments(v);
+    v.trajGroup.children.forEach(c=>{const ti=c.userData?.ti;if(ti!==undefined)c.visible=!_hiddenScripts.has(scripts[ti]);});
   }});
   _applyBrowserFilter();
   _markDirty();
@@ -369,44 +401,7 @@ function updateVP(vi,pcX,pcY,pcZ,layer){const v=views[vi];v.pcX=pcX;v.pcY=pcY;v.
   v.geo.attributes.position.needsUpdate=true;if(!play)v.geo.computeBoundingSphere();
   document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}/${pcZ}`;
   if(!v._fitted){v.cam.position.set(0,0,2.5);v.ctl.target.set(0,0,0);v.ctl.update();v._fitted=true;}}
-function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
-  if(v.trajGroup){v.trajGroup.children.forEach(c=>{if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();});v.sc.remove(v.trajGroup);}
-  if(v.trajMarker){v.trajMarker.geometry.dispose();v.trajMarker.material.dispose();v.sc.remove(v.trajMarker);}
-  v.trajGroup=new THREE.Group();
-  let mx=0;for(const S of allL)for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(S[i][pcX]||0),Math.abs(S[i][pcY]||0));
-  v._trajScale=mx||1;
-  // Merged LineSegments: all trajectories in one draw call
-  // Each trajectory: nL-1 segments, each segment = 2 vertices
-  const nSeg=(nL-1)*nN;const pos=new Float32Array(nSeg*6),col=new Float32Array(nSeg*6);
-  let si=0;
-  for(let i=0;i<nN;i++){
-    const hex=CL[scripts[i]]||0xAAAAAA;
-    const r=((hex>>16)&0xFF)/255,g=((hex>>8)&0xFF)/255,b=(hex&0xFF)/255;
-    for(let l=0;l<nL-1;l++){
-      const S0=allL[l],S1=allL[l+1];
-      const z0=(l/(nL-1))*2-1,z1=((l+1)/(nL-1))*2-1;
-      pos[si*6]=(S0[i][pcX]||0)/mx;pos[si*6+1]=(S0[i][pcY]||0)/mx;pos[si*6+2]=z0;
-      pos[si*6+3]=(S1[i][pcX]||0)/mx;pos[si*6+4]=(S1[i][pcY]||0)/mx;pos[si*6+5]=z1;
-      col[si*6]=r;col[si*6+1]=g;col[si*6+2]=b;col[si*6+3]=r;col[si*6+4]=g;col[si*6+5]=b;
-      si++;
-    }
-  }
-  const tgeo=new THREE.BufferGeometry();
-  tgeo.setAttribute('position',new THREE.BufferAttribute(pos,3));
-  tgeo.setAttribute('color',new THREE.BufferAttribute(col,3));
-  const traj=new THREE.LineSegments(tgeo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.08,depthWrite:false}));
-  traj.frustumCulled=false;v.trajGroup.add(traj);
-  // Store token indices for category filter
-  v.trajGroup._tokPerSeg=nL-1;// segments per token
-  v.trajGroup._nTok=nN;
-  v.sc.add(v.trajGroup);
-  // Layer marker (full vocab points at current Z)
-  const pg=new THREE.BufferGeometry();const _tp=new Float32Array(nN*3),_tc=new Float32Array(nN*3);
-  for(let i=0;i<nN;i++){const hex=CL[scripts[i]]||0xAAAAAA;_tc[i*3]=((hex>>16)&0xFF)/255;_tc[i*3+1]=((hex>>8)&0xFF)/255;_tc[i*3+2]=(hex&0xFF)/255;}
-  pg.setAttribute('position',new THREE.BufferAttribute(_tp,3));pg.setAttribute('color',new THREE.BufferAttribute(_tc,3));
-  v.trajMarker=new THREE.Points(pg,new THREE.PointsMaterial({size:0.018,vertexColors:true,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false}));
-  v.sc.add(v.trajMarker);updateTrajMarker(vi);
-  document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}+d`;}
+function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;if(v.trajGroup){v.trajGroup.children.forEach(c=>{if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();});v.sc.remove(v.trajGroup);}if(v.trajMarker){v.trajMarker.geometry.dispose();v.trajMarker.material.dispose();v.sc.remove(v.trajMarker);}v.trajGroup=new THREE.Group();let mx=0;for(const S of allL)for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(S[i][pcX]||0),Math.abs(S[i][pcY]||0));v._trajScale=mx||1;const maxLines=Math.min(nN,800);const step=Math.max(1,Math.floor(nN/maxLines));for(let i=0;i<nN;i+=step){const pts=[];for(let l=0;l<nL;l++){const S=allL[l];pts.push(new THREE.Vector3((S[i][pcX]||0)/mx,(S[i][pcY]||0)/mx,(l/(nL-1))*2-1));}const g=new THREE.BufferGeometry().setFromPoints(pts);const line=new THREE.Line(g,new THREE.LineBasicMaterial({color:CL[scripts[i]]||0xAAAAAA,transparent:true,opacity:0.15,depthWrite:false}));line.userData={ti:i};v.trajGroup.add(line);}v.sc.add(v.trajGroup);const pg=new THREE.BufferGeometry();const _tp=new Float32Array(nN*3),_tc=new Float32Array(nN*3);for(let i=0;i<nN;i++){const hex=CL[scripts[i]]||0xAAAAAA;_tc[i*3]=((hex>>16)&0xFF)/255;_tc[i*3+1]=((hex>>8)&0xFF)/255;_tc[i*3+2]=(hex&0xFF)/255;}pg.setAttribute('position',new THREE.BufferAttribute(_tp,3));pg.setAttribute('color',new THREE.BufferAttribute(_tc,3));v.trajMarker=new THREE.Points(pg,new THREE.PointsMaterial({size:0.018,vertexColors:true,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false}));v.sc.add(v.trajMarker);updateTrajMarker(vi);document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}+d`;}
 function updateTrajMarker(vi){const v=views[vi];
   const buf=v._trajBufs&&v._trajBufs[cL];if(!buf)return;
   if(v.trajMarker){const tp=v.trajMarker.geometry.attributes.position.array;tp.set(buf);
@@ -416,20 +411,6 @@ function updateTrajMarker(vi){const v=views[vi];
   pos.set(buf);
   if(_hiddenScripts.size){for(let i=0;i<nN;i++){if(_hiddenScripts.has(scripts[i])){pos[i*3]=9999;pos[i*3+1]=9999;pos[i*3+2]=9999;}}}
   v.geo.attributes.position.needsUpdate=true;v.pts.visible=false;
-}
-function _filterTrajSegments(v){
-  if(!v.trajGroup||!v.trajGroup.children.length)return;
-  const traj=v.trajGroup.children[0];if(!traj||!traj.geometry)return;
-  const col=traj.geometry.attributes.color;if(!col)return;
-  const arr=col.array;const segs=v.trajGroup._tokPerSeg||0;
-  for(let i=0;i<(v.trajGroup._nTok||0);i++){
-    const hidden=_hiddenScripts.has(scripts[i]);
-    const hex=hidden?0x0a0a0a:(CL[scripts[i]]||0xAAAAAA);
-    const r=((hex>>16)&0xFF)/255,g=((hex>>8)&0xFF)/255,b=(hex&0xFF)/255;
-    const off=i*segs*6;
-    for(let s=0;s<segs;s++){arr[off+s*6]=r;arr[off+s*6+1]=g;arr[off+s*6+2]=b;arr[off+s*6+3]=r;arr[off+s*6+4]=g;arr[off+s*6+5]=b;}
-  }
-  col.needsUpdate=true;
 }
 function thirdPC(a,b){for(let i=0;i<nK;i++){if(i!==a&&i!==b)return i;}return 0;}
 let _lastPK='';
@@ -441,7 +422,7 @@ function updateAllViewports(){
     // PC pairs changed — precompute ALL layer buffers
     for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];views[i].pcX=a;views[i].pcY=b;views[i].pcZ=thirdPC(a,b);_precomputeCloud(i);}
     for(let i=0;i<NC;i++){buildTraj(NC+i,vpPairs[i][0],vpPairs[i][1]);_precomputeTraj(NC+i);}
-    if(_hiddenScripts.size){views.forEach((v,vi)=>{if(vi>=NC&&v.trajGroup)_filterTrajSegments(v);});}
+    if(_hiddenScripts.size){views.forEach((v,vi)=>{if(vi>=NC&&v.trajGroup)v.trajGroup.children.forEach(c=>{const ti=c.userData?.ti;if(ti!==undefined)c.visible=!_hiddenScripts.has(scripts[ti]);});});}
     // Update delta label
     const lbl=document.getElementById('lv0lbl');if(lbl)lbl.textContent=`Δ PC${vpPairs[1][0]}×PC${vpPairs[1][1]}`;
     _lastPK=pk;
