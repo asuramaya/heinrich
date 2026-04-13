@@ -184,40 +184,9 @@ function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
 let _lastDimState=-1;
 function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC)v.mtl.opacity=dim?0.35:0.85;if(vi>=NC&&v.trajGroup){const baseOp=dim?0.08:0.15;v.trajGroup.children.forEach(c=>{if(c.material)c.material.opacity=baseOp;});if(v.trajMarker)v.trajMarker.material.opacity=dim?0.35:0.9;}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible){m.material.opacity=0.95;m.material.size=dim?0.08:0.06;}});}
 function highlightToken(idx){hoveredToken=idx;views.forEach((v,vi)=>{const mk=highlightMarkers[vi];if(idx<0){mk.visible=false;hoverPaths[vi].visible=false;return;}mk.visible=true;_positionMarker(mk,v,vi,idx);_buildPathForVP(hoverPaths[vi],v,vi,idx);});_dimAll(idx>=0);_markDirty();}
-// Cross-pair ghost paths: show pinned token's path in OTHER pairs as dim lines in each traj viewport
-let _crossPaths=[];// [{line, vi}]
-function _clearCrossPaths(){_crossPaths.forEach(c=>{views[c.vi].sc.remove(c.line);c.line.geometry.dispose();c.line.material.dispose();});_crossPaths=[];}
-function _buildCrossPaths(){
-  _clearCrossPaths();
-  if(pinnedToken<0&&pinnedTokenB<0)return;
-  [pinnedToken,pinnedTokenB].forEach((tok,ti)=>{
-    if(tok<0)return;
-    const color=ti===0?0xFF6644:0x4477AA;
-    // For each trajectory viewport, show paths from OTHER pairs as dim ghosts
-    for(let vi=NC;vi<NV;vi++){
-      const myPair=vi-NC;// which pair index this viewport owns
-      for(let pi=0;pi<NC;pi++){
-        if(pi===myPair)continue;// skip own pair — handled by pinPaths
-        const[pcX,pcY]=vpPairs[pi];
-        // Compute trajectory for this token through this OTHER pair's PCs, but in THIS viewport's coordinate space
-        const v=views[vi];const mx=v._trajScale||1;
-        const pts=[];
-        for(let l=0;l<nL;l++){
-          const S=allL[l];
-          // Use the other pair's PCs for X/Y, same Z=layer depth
-          let omx=0;for(const SS of allL)omx=Math.max(omx,Math.abs(SS[tok][pcX]||0),Math.abs(SS[tok][pcY]||0));omx=omx||1;
-          pts.push(new THREE.Vector3((S[tok][pcX]||0)/omx,(S[tok][pcY]||0)/omx,(l/(nL-1))*2-1));
-        }
-        const g=new THREE.BufferGeometry().setFromPoints(pts);
-        const line=new THREE.Line(g,new THREE.LineBasicMaterial({color,transparent:true,opacity:0.15,depthWrite:false}));
-        line.frustumCulled=false;v.sc.add(line);
-        _crossPaths.push({line,vi});
-      }
-    }
-  });
-}
-
 // Unified pin sync — positions all markers in all viewports + delta + prism
+// Called every layer change (including during playback)
+// paths=true rebuilds trajectory paths (skip during playback for perf)
 function _syncAllPins(paths){
   views.forEach((v,vi)=>{
     const mk=pinMarkers[vi];
@@ -227,7 +196,6 @@ function _syncAllPins(paths){
     if(pinnedTokenB<0){mb.visible=false;pinPathsB[vi].visible=false;}
     else{mb.visible=true;_positionMarker(mb,v,vi,pinnedTokenB);if(paths)_buildPathForVP(pinPathsB[vi],v,vi,pinnedTokenB);}
   });
-  if(paths)_buildCrossPaths();
   _updateDeltaPins();
   _updateBrowserPinPositions();
   _lastDimState=-1;_dimAll(false);_markDirty();
@@ -550,13 +518,12 @@ function _clearBrowserSelBoxes(){
 function _updateBrowserOverlay(){
   _brOverlay.forEach(o=>{brSc.remove(o);if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose();});_brOverlay=[];
   _clearBrowserSelBoxes();_updateBrowserSelBoxes();
-  // Pin paths and markers only for SELECTED pairs (not all C(n,2) — would be too many)
-  _brOverlay.forEach(o=>{brSc.remove(o);if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose();});_brOverlay=[];
+  const n=_brN;
+  // Pin paths through ALL PC pair cells — selected pairs bright, others dim
   [pinnedToken,pinnedTokenB].forEach((tok,ti)=>{
     if(tok<0)return;const color=ti===0?0xFF6644:0x4477AA;
-    // Pin paths through selected A and B pairs only
-    [vpPairs[0],vpPairs[2]].forEach(([pa,pb])=>{
-      const a=Math.min(pa,pb),b=Math.max(pa,pb);
+    for(let a=0;a<n;a++)for(let b=a+1;b<n;b++){
+      const isSelected=[vpPairs[0],vpPairs[2]].some(([pa,pb])=>(Math.min(pa,pb)===a&&Math.max(pa,pb)===b));
       const pts=[];
       for(let l=0;l<nL;l++){
         let mx=_brMxCache[`${a},${b},${l}`];
@@ -568,35 +535,37 @@ function _updateBrowserOverlay(){
           l*_ZSP));
       }
       const g=new THREE.BufferGeometry().setFromPoints(pts);
-      const line=new THREE.Line(g,new THREE.LineBasicMaterial({color,transparent:true,opacity:0.9}));
+      const line=new THREE.Line(g,new THREE.LineBasicMaterial({color,transparent:true,opacity:isSelected?0.9:0.25}));
       line.frustumCulled=false;brSc.add(line);_brOverlay.push(line);
-    });
-    // Pin marker dot at current layer for selected pairs
+    }
+    // Pin marker dots at current layer in ALL cells
     const S=allL[cL];if(!S)return;
-    const mkPos=new Float32Array(2*3);
-    [vpPairs[0],vpPairs[2]].forEach(([pa,pb],pi)=>{
-      const a=Math.min(pa,pb),b=Math.max(pa,pb);
+    const nPairs=n*(n-1)/2;
+    const mkPos=new Float32Array(nPairs*3);let mi=0;
+    for(let a=0;a<n;a++)for(let b=a+1;b<n;b++){
       const mx=_brMxCache[`${a},${b},${cL}`]||1;
-      mkPos[pi*3]=b*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][a]||0)/mx*_BR_RAD));
-      mkPos[pi*3+1]=-a*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][b]||0)/mx*_BR_RAD));
-      mkPos[pi*3+2]=cL*_ZSP;
-    });
+      mkPos[mi*3]=b*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][a]||0)/mx*_BR_RAD));
+      mkPos[mi*3+1]=-a*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][b]||0)/mx*_BR_RAD));
+      mkPos[mi*3+2]=cL*_ZSP;mi++;}
+
     const mg=new THREE.BufferGeometry();mg.setAttribute('position',new THREE.BufferAttribute(mkPos,3));
     const mp=new THREE.Points(mg,new THREE.PointsMaterial({size:0.12,color,transparent:true,opacity:0.95,sizeAttenuation:true,depthWrite:false,depthTest:false}));
     mp.renderOrder=10;mp.frustumCulled=false;mp.userData={tok};brSc.add(mp);_brOverlay.push(mp);
   });
 }
 function _updateBrowserPinPositions(){
-  const S=allL[cL];if(!S)return;
+  const n=_brN;const S=allL[cL];if(!S)return;
   _brOverlay.forEach(o=>{
     if(o.userData?.tok===undefined)return;
-    const tok=o.userData.tok;const pos=o.geometry.attributes.position?.array;if(!pos||pos.length!==6)return;
-    [vpPairs[0],vpPairs[2]].forEach(([pa,pb],pi)=>{
-      const a=Math.min(pa,pb),b=Math.max(pa,pb);const mx=_brMxCache[`${a},${b},${cL}`]||1;
-      pos[pi*3]=b*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][a]||0)/mx*_BR_RAD));
-      pos[pi*3+1]=-a*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][b]||0)/mx*_BR_RAD));
-      pos[pi*3+2]=cL*_ZSP;
-    });
+    const tok=o.userData.tok;const pos=o.geometry.attributes.position?.array;if(!pos)return;
+    let mi=0;
+    for(let a=0;a<n;a++)for(let b=a+1;b<n;b++){
+      if(mi*3+2>=pos.length)break;
+      const mx=_brMxCache[`${a},${b},${cL}`]||1;
+      pos[mi*3]=b*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][a]||0)/mx*_BR_RAD));
+      pos[mi*3+1]=-a*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][b]||0)/mx*_BR_RAD));
+      pos[mi*3+2]=cL*_ZSP;mi++;
+    }
     o.geometry.attributes.position.needsUpdate=true;
   });
 }
@@ -998,7 +967,7 @@ leftViews.forEach(v=>v.ctl.addEventListener('change',_markDirty));
     if(pinMarkersB[vi].visible)pinMarkersB[vi].material.size=ms;
     if(highlightMarkers[vi].visible)highlightMarkers[vi].material.size=ms*0.7;
     _renderRegion(v.el,v.sc,v.cam);});
-  if(!play){brCtl.update();_renderRegion(brEl,brSc,brCam);}
+  brCtl.update();_renderRegion(brEl,brSc,brCam);
   leftViews.forEach(v=>{if(v.built){v.ctl.update();_renderRegion(v.el,v.sc,v.cam);}});})();
 // WebSocket disabled — not needed for static data viewing
 </script>
