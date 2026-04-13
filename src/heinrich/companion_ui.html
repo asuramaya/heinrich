@@ -1070,7 +1070,11 @@ function updateLeftViewports(){
   }
 }
 // Rebuild right column neurons/attention when pins change
-function _onPinChange(){_buildRV1Neurons();_buildRV2Attention();}
+function _onPinChange(){
+  console.log('_onPinChange: pinnedToken=',pinnedToken,'pinnedTokenB=',pinnedTokenB,'rightViews=',rightViews.length);
+  _buildRV1Neurons().catch(e=>console.error('rv1 build failed:',e));
+  _buildRV2Attention();
+}
 
 let _nRealLayers=0;
 function _layerName(l){if(l<_nRealLayers)return'L'+String(l).padStart(2,'0');const vl=dm?.virtual_layers||[];return vl[l-_nRealLayers]||'L'+l;}
