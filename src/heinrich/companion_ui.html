@@ -718,12 +718,36 @@ function _rebuildWeightLines(){
       col[di*3]=((c>>16)&0xFF)/255;col[di*3+1]=((c>>8)&0xFF)/255;col[di*3+2]=(c&0xFF)/255;
       di++;
     });
-    // Zero out unused dots
+    // Gate activity for pinned token — vertical bars showing MLP activation per layer
+    if(pinnedToken>=0&&_gateHeat){
+      const row=getGateRow(pinnedToken);
+      if(row){const mx=Math.max(...row)||1;
+        for(let l=0;l<_nRealLayers&&di<190;l++){
+          const gz=(l/(_nRealLayers-1))*2-1;const gv=row[l]/mx;
+          pos[di*3]=1.5;pos[di*3+1]=gv*1.5;pos[di*3+2]=gz;
+          col[di*3]=1;col[di*3+1]=0.5*gv;col[di*3+2]=0.1;// warm orange, brighter = more active
+          di++;
+        }
+      }
+    }
+    // Token B gate activity
+    if(pinnedTokenB>=0&&_gateHeat){
+      const row=getGateRow(pinnedTokenB);
+      if(row){const mx=Math.max(...row)||1;
+        for(let l=0;l<_nRealLayers&&di<200;l++){
+          const gz=(l/(_nRealLayers-1))*2-1;const gv=row[l]/mx;
+          pos[di*3]=1.7;pos[di*3+1]=gv*1.5;pos[di*3+2]=gz;
+          col[di*3]=0.2;col[di*3+1]=0.4;col[di*3+2]=0.8;
+          di++;
+        }
+      }
+    }
     for(let i=di;i<200;i++){pos[i*3]=9999;pos[i*3+1]=9999;pos[i*3+2]=9999;}
     lv._layerDots.geometry.attributes.position.needsUpdate=true;
     lv._layerDots.geometry.attributes.color.needsUpdate=true;
     lv._layerDots.geometry.setDrawRange(0,di);
   }
+  _updateGateLines(lv);
   if(!needsRebuild)return;
   _wlBuiltKey=key;
   // Pre-build ALL lines on first call, then just toggle visibility on PC change
@@ -851,11 +875,48 @@ function renderAttnChart(){
   });
 });
 
+// Gate activity lines in weights viewport — continuous trajectory of MLP activation
+function _updateGateLines(lv){
+  if(!lv)return;
+  // Dispose old gate lines
+  if(lv._gateLineA){lv.sc.remove(lv._gateLineA);lv._gateLineA.geometry.dispose();lv._gateLineA.material.dispose();lv._gateLineA=null;}
+  if(lv._gateLineB){lv.sc.remove(lv._gateLineB);lv._gateLineB.geometry.dispose();lv._gateLineB.material.dispose();lv._gateLineB=null;}
+  if(!_gateHeat)return;
+  // Token A gate line
+  if(pinnedToken>=0){const row=getGateRow(pinnedToken);if(row){const mx=Math.max(...row)||1;
+    const pts=[];for(let l=0;l<_nRealLayers;l++)pts.push(new THREE.Vector3(1.5,(row[l]/mx)*1.5,(l/(_nRealLayers-1))*2-1));
+    lv._gateLineA=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:0xFF6644,transparent:true,opacity:0.8}));
+    lv._gateLineA.frustumCulled=false;lv.sc.add(lv._gateLineA);}}
+  // Token B gate line
+  if(pinnedTokenB>=0){const row=getGateRow(pinnedTokenB);if(row){const mx=Math.max(...row)||1;
+    const pts=[];for(let l=0;l<_nRealLayers;l++)pts.push(new THREE.Vector3(1.7,(row[l]/mx)*1.5,(l/(_nRealLayers-1))*2-1));
+    lv._gateLineB=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:0x4477AA,transparent:true,opacity:0.8}));
+    lv._gateLineB.frustumCulled=false;lv.sc.add(lv._gateLineB);}}
+}
+// Attention pattern in weights viewport — for template mode pinned token
+function _updateAttnInWeights(lv){
+  if(!lv)return;
+  if(lv._attnLines){lv._attnLines.forEach(l=>{lv.sc.remove(l);l.geometry.dispose();l.material.dispose();});lv._attnLines=null;}
+  if(!_attnData||pinnedToken<0||mode!=='template')return;
+  lv._attnLines=[];
+  // Show self-attention fraction per layer as a line at X=-1.5
+  const pts=[];
+  for(let l=0;l<Math.min(_attnData.length,_nRealLayers);l++){
+    const heads=_attnData[l]?.heads;if(!heads||!heads.length){pts.push(new THREE.Vector3(-1.5,0,(l/(_nRealLayers-1))*2-1));continue;}
+    // Average self-attention across heads (last position = self)
+    let selfAttn=0;heads.forEach(h=>{selfAttn+=h[h.length-1]||0;});selfAttn/=heads.length;
+    pts.push(new THREE.Vector3(-1.5,selfAttn*1.5,(l/(_nRealLayers-1))*2-1));
+  }
+  if(pts.length>1){
+    const line=new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:0x88FFAA,transparent:true,opacity:0.6}));
+    line.frustumCulled=false;lv.sc.add(line);lv._attnLines.push(line);
+  }
+}
 function buildLeftViewports(){buildWeightLandscape();}
 function updateLeftViewports(){
   _updateDeltaPins();
-  _rebuildWeightLines();// updates layer plane + rebuilds if PCs changed
-  if(!play){renderNeuronChart(pinnedToken,'neuronA','200,80,50');renderNeuronChart(pinnedTokenB,'neuronB','60,100,180');renderAttnChart();}
+  _rebuildWeightLines();// updates dots + rebuilds lines if PCs changed
+  if(!play){renderNeuronChart(pinnedToken,'neuronA','200,80,50');renderNeuronChart(pinnedTokenB,'neuronB','60,100,180');renderAttnChart();_updateAttnInWeights(leftViews[0]);}
 }
 
 let _nRealLayers=0;
