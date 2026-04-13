@@ -228,12 +228,24 @@ function showPinDetail(idx){
   document.getElementById('tbMeta').textContent=pinnedTokenB>=0?_tokInfo(pinnedTokenB):'shift+click for comparison';
 }
 
-// Interaction
-function _rayHit(vi,e){const v=views[vi];const r=v.cv.getBoundingClientRect();ms.x=((e.clientX-r.left)/r.width)*2-1;ms.y=-((e.clientY-r.top)/r.height)*2+1;ray.setFromCamera(ms,v.cam);
+// Interaction — pixel-accurate raycasting
+function _rayHit(vi,e){const v=views[vi];const r=v.cv.getBoundingClientRect();
+  ms.x=((e.clientX-r.left)/r.width)*2-1;ms.y=-((e.clientY-r.top)/r.height)*2+1;
+  ray.setFromCamera(ms,v.cam);
+  // Match threshold to actual rendered point size:
+  // sizeAttenuation scales world-unit size by 1/distance in perspective.
+  // We want ~6px pick radius regardless of zoom.
+  const vpH=r.height||1;const fovRad=v.cam.fov*Math.PI/180;
+  const pixelToWorld=2*Math.tan(fovRad/2)/vpH;// world units per pixel at distance 1
   const d=v.cam.position.length()||1;
-  const ptSize=vi>=NC?Math.max(0.006,d*0.015):Math.max(0.004,d*0.012);
-  ray.params.Points.threshold=ptSize*2.5;
-  const h=ray.intersectObject(v.pts);if(h.length>0)return h[0].index%nN;
+  const pickRadiusPx=6;// pixels of pick tolerance
+  ray.params.Points.threshold=pickRadiusPx*pixelToWorld*d;
+  const h=ray.intersectObject(v.pts);
+  if(h.length>1){
+    // Multiple hits — pick the one closest to the ray (not closest to camera)
+    h.sort((a,b)=>a.distanceToRay-b.distanceToRay);
+  }
+  if(h.length>0)return h[0].index%nN;
   return -1;}
 function _isRightClick(e){return e.button===2||(e.button===0&&e.ctrlKey);} // ctrl+click=right on Mac
 function _popupText(i,vi){let m=`${scripts[i]}  #${i}\n\n`;if(vi>=NC){const ts=_trajStats(i);m+=`trajectory:\n  total: ${ts.total.toFixed(1)}\n  max Δ: L${ts.maxL} (${ts.maxDelta.toFixed(1)})`;}else{const S=allL[cL][i];for(let p=0;p<Math.min(nK,8);p++)m+=`PC${p}: ${(S[p]||0).toFixed(3)}\n`;}return m;}
