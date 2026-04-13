@@ -7,12 +7,12 @@
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-size:11px;overflow:hidden;height:100vh;display:flex;flex-direction:column}
 #glCanvas{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none}
-#main{flex:1;display:grid;grid-template-columns:1fr 1fr 1fr 1.3fr;grid-template-rows:1fr 1fr 0.7fr;gap:1px;overflow:hidden;position:relative;z-index:1}
+#main{flex:1;display:grid;grid-template-columns:1fr 1fr 1fr 1.2fr 1.2fr;grid-template-rows:1fr 1fr 0.7fr;gap:1px;overflow:hidden;position:relative;z-index:1}
 #vp0{grid-column:1;grid-row:1}#vp1{grid-column:2;grid-row:1}#vp2{grid-column:3;grid-row:1}
 #vp3{grid-column:1;grid-row:2}#vp4{grid-column:2;grid-row:2}#vp5{grid-column:3;grid-row:2}
 #lv0{grid-column:1;grid-row:3}#lv1{grid-column:2;grid-row:3}#lv2{grid-column:3;grid-row:3}
 #br0{grid-column:4;grid-row:1/4}
-#rightcol{display:none}/* hidden until populated */
+#rightcol{grid-column:5;grid-row:1/4;display:flex;flex-direction:column;gap:1px;overflow:hidden}
 .rvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .rvp .rlbl{position:absolute;top:2px;left:4px;font-size:7px;color:#444;pointer-events:none;z-index:2}
 #tokpanel{position:fixed;right:8px;top:8px;width:280px;max-height:60vh;overflow-y:auto;background:rgba(10,10,10,0.95);border:1px solid #222;border-radius:4px;padding:8px;z-index:20;font-size:9px;backdrop-filter:blur(4px);cursor:default}
@@ -769,7 +769,7 @@ function _rebuildInternals(vi,pair,needsRebuild){
   if(lv._wlLines){
     if(!lv._layerDots){
       const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(300),3));g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(300),3));
-      lv._layerDots=new THREE.Points(g,new THREE.PointsMaterial({size:0.04,vertexColors:true,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false,depthTest:false}));
+      lv._layerDots=new THREE.Points(g,new THREE.PointsMaterial({size:0.08,vertexColors:true,transparent:true,opacity:0.95,sizeAttenuation:true,depthWrite:false,depthTest:false}));
       lv._layerDots.renderOrder=10;lv._layerDots.frustumCulled=false;lv.sc.add(lv._layerDots);
     }
     const pos=lv._layerDots.geometry.attributes.position.array;
@@ -937,11 +937,102 @@ function _updateAttnInWeights(lv){
     line.frustumCulled=false;lv.sc.add(line);lv._attnLines.push(line);
   }
 }
-function buildLeftViewports(){buildWeightLandscape();}
+function buildLeftViewports(){buildWeightLandscape();buildRightColumn();}
+
+// Right column: rv0=weights overview, rv1=neurons, rv2=attention
+function buildRightColumn(){
+  if(!rightViews.length)return;
+  // rv0: Weight alignment overview — ALL matrices × ALL PCs as a landscape
+  const rv0=rightViews[0];if(rv0&&_wlData&&Array.isArray(_wlData)&&_wlData.length){
+    // Clear old content (keep grid)
+    while(rv0.sc.children.length>1)rv0.sc.remove(rv0.sc.children[rv0.sc.children.length-1]);
+    const nMat=_wlData[0]?.matrices?.length||0;
+    const nPC=Math.min(_wlData[0]?.matrices?.[0]?.alignment?.length||0,10);
+    // One line per matrix showing PC0 alignment through layers (the dominant alignment)
+    for(let mi=0;mi<nMat;mi++){
+      const pts=[];
+      for(let l=0;l<_nRealLayers;l++){
+        const al=_wlData[l]?.matrices?.[mi]?.alignment||[];
+        const v=al[0]||0;// PC0 alignment
+        pts.push(new THREE.Vector3((mi/(nMat-1||1))*2-1,v*1.5,(l/(_nRealLayers-1))*2-1));
+      }
+      const geo=new THREE.BufferGeometry().setFromPoints(pts);
+      rv0.sc.add(new THREE.Line(geo,new THREE.LineBasicMaterial({color:_WL_COLORS[mi],transparent:true,opacity:0.7})));
+    }
+    // Variance spectrum: all PCs as heatmap-like lines
+    for(let pc=0;pc<nPC;pc++){
+      const pts=[];
+      for(let l=0;l<_nRealLayers;l++){const v=_layerVar[l]?_layerVar[l][pc]||0:0;pts.push(new THREE.Vector3(-1.3+pc*0.25,v*3,(l/(_nRealLayers-1))*2-1));}
+      const c=new THREE.Color().setHSL(pc/nPC,0.7,0.5);
+      rv0.sc.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:c,transparent:true,opacity:0.5})));
+    }
+    rv0.cam.position.set(0,1.5,3);rv0.ctl.target.set(0,0.5,0);rv0.ctl.update();rv0.built=true;
+  }
+  // rv1: Neurons — gate heatmap for pinned tokens through all layers
+  _updateRightNeurons();
+  // rv2: Attention — self-attention pattern for pinned token
+  _updateRightAttention();
+}
+
+function _updateRightNeurons(){
+  const rv=rightViews[1];if(!rv||!_gateHeat)return;
+  // Clear old (keep grid)
+  while(rv.sc.children.length>1)rv.sc.remove(rv.sc.children[rv.sc.children.length-1]);
+  // Token A gate trajectory
+  if(pinnedToken>=0){const row=getGateRow(pinnedToken);if(row){const mx=Math.max(...row)||1;
+    const pts=[];for(let l=0;l<_nRealLayers;l++)pts.push(new THREE.Vector3(-0.5,(row[l]/mx)*1.5,(l/(_nRealLayers-1))*2-1));
+    rv.sc.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:0xFF6644,transparent:true,opacity:0.8})));
+  }}
+  // Token B gate trajectory
+  if(pinnedTokenB>=0){const row=getGateRow(pinnedTokenB);if(row){const mx=Math.max(...row)||1;
+    const pts=[];for(let l=0;l<_nRealLayers;l++)pts.push(new THREE.Vector3(0.5,(row[l]/mx)*1.5,(l/(_nRealLayers-1))*2-1));
+    rv.sc.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:0x4477AA,transparent:true,opacity:0.8})));
+  }}
+  // Current layer dots
+  const z=(cL/(_nRealLayers-1||1))*2-1;
+  [pinnedToken,pinnedTokenB].forEach((tok,ti)=>{if(tok<0)return;const row=getGateRow(tok);if(!row)return;const mx=Math.max(...row)||1;
+    const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array([ti===0?-0.5:0.5,(row[cL]/mx)*1.5,z]),3));
+    const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.1,color:ti===0?0xFF6644:0x4477AA,depthTest:false}));
+    p.renderOrder=10;rv.sc.add(p);
+  });
+  if(!rv.built){rv.cam.position.set(0,0.8,3);rv.ctl.target.set(0,0.5,0);rv.ctl.update();rv.built=true;}
+}
+
+function _updateRightAttention(){
+  const rv=rightViews[2];if(!rv)return;
+  while(rv.sc.children.length>1)rv.sc.remove(rv.sc.children[rv.sc.children.length-1]);
+  if(!_attnData||pinnedToken<0||mode!=='template'){
+    if(!rv.built){rv.cam.position.set(0,0.8,3);rv.ctl.target.set(0,0.5,0);rv.ctl.update();rv.built=true;}
+    return;
+  }
+  // Self-attention fraction per layer as a line
+  const pts=[];
+  for(let l=0;l<Math.min(_attnData.length,_nRealLayers);l++){
+    const heads=_attnData[l]?.heads;if(!heads||!heads.length){pts.push(new THREE.Vector3(0,0,(l/(_nRealLayers-1))*2-1));continue;}
+    let selfAttn=0;heads.forEach(h=>{selfAttn+=h[h.length-1]||0;});selfAttn/=heads.length;
+    pts.push(new THREE.Vector3(0,selfAttn*1.5,(l/(_nRealLayers-1))*2-1));
+  }
+  if(pts.length>1)rv.sc.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts),new THREE.LineBasicMaterial({color:0x88FFAA,transparent:true,opacity:0.7})));
+  // Per-head lines at current layer
+  const layerData=_attnData[cL];
+  if(layerData?.heads){
+    layerData.heads.forEach((head,hi)=>{
+      const hpts=[];
+      head.forEach((v,pi)=>hpts.push(new THREE.Vector3((pi/(head.length-1||1))*2-1,v*1.5,(cL/(_nRealLayers-1))*2-1)));
+      const c=new THREE.Color().setHSL(hi/layerData.heads.length,0.6,0.5);
+      rv.sc.add(new THREE.Line(new THREE.BufferGeometry().setFromPoints(hpts),new THREE.LineBasicMaterial({color:c,transparent:true,opacity:0.4})));
+    });
+  }
+  if(!rv.built){rv.cam.position.set(0,0.8,3);rv.ctl.target.set(0,0.5,0);rv.ctl.update();rv.built=true;}
+}
 function updateLeftViewports(){
   _updateDeltaPins();
   _rebuildWeightLines();
-  if(!play){renderNeuronChart(pinnedToken,'neuronA','200,80,50');renderNeuronChart(pinnedTokenB,'neuronB','60,100,180');renderAttnChart();leftViews.forEach(lv=>_updateAttnInWeights(lv));}
+  if(!play){
+    renderNeuronChart(pinnedToken,'neuronA','200,80,50');renderNeuronChart(pinnedTokenB,'neuronB','60,100,180');
+    renderAttnChart();leftViews.forEach(lv=>_updateAttnInWeights(lv));
+    _updateRightNeurons();_updateRightAttention();
+  }
 }
 
 let _nRealLayers=0;
@@ -1149,7 +1240,7 @@ rightViews.forEach(v=>v.ctl.addEventListener('change',_markDirty));
     _renderRegion(v.el,v.sc,v.cam);});
   brCtl.update();_renderRegion(brEl,brSc,brCam);
   leftViews.forEach(v=>{if(v.built){v.ctl.update();_renderRegion(v.el,v.sc,v.cam);}});
-  rightViews.forEach(v=>{if(v.built){v.ctl.update();_renderRegion(v.el,v.sc,v.cam);}});
+  rightViews.forEach(v=>{v.ctl.update();_renderRegion(v.el,v.sc,v.cam);});
   // FPS counter
   _frameCount++;const now=performance.now();if(now-_fpsTime>1000){const fps=Math.round(_frameCount*1000/(now-_fpsTime));const el=document.getElementById('fpsDisplay');if(el)el.textContent=fps+'fps';_frameCount=0;_fpsTime=now;}
 })();
