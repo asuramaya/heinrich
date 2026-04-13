@@ -89,9 +89,9 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   <div style="margin-bottom:4px"><input id="tsearch" type="text" placeholder="search tokens..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:8px;font-family:inherit;border-radius:2px"><div id="tsresults" style="max-height:80px;overflow-y:auto;font-size:8px;color:#555"></div></div>
   <hr style="border:none;border-top:1px solid #1a1a1a;margin:4px 0">
   <div class="th">Token A (click) · Token B (R-click)</div>
-  <div id="tokA"><div class="tn" id="taName" style="color:#FF6644">—</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><div class="tm" id="taMeta">click a token to pin</div></div>
+  <div id="tokA"><div class="tn" id="taName" style="color:#FF6644">—</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarA" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="taMeta" style="font-size:8px">click a token to pin</div></div>
   <hr style="border:none;border-top:1px solid #1a1a1a;margin:6px 0">
-  <div id="tokB"><div class="tn" id="tbName" style="color:#4477AA">—</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><div class="tm" id="tbMeta">R-click for comparison</div></div>
+  <div id="tokB"><div class="tn" id="tbName" style="color:#4477AA">—</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarB" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="tbMeta" style="font-size:8px">R-click for comparison</div></div>
   <hr style="border:none;border-top:1px solid #1a1a1a;margin:6px 0">
   <div id="attnPanel" style="display:none"><div style="color:#555;font-size:7px;margin-bottom:2px">Attention (Token A, current layer)</div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
 </div>
@@ -224,18 +224,59 @@ function _trajStats(idx){
 }
 function _tokInfo(idx){if(idx<0)return'—';const S=allL[cL][idx];
   let m=`${scripts[idx]}  #${idx}`;if(tokenIds[idx]!==undefined)m+=`  id:${tokenIds[idx]}`;
-  m+=`\nbytes: ${new TextEncoder().encode(texts[idx]||'').length}  script: ${scripts[idx]}\n\n`;
-  for(let p=0;p<Math.min(nK,8);p++)m+=`PC${p}: ${(S[p]||0).toFixed(3)}\n`;
+  m+=`  ${new TextEncoder().encode(texts[idx]||'').length}B`;
+  // Most extreme PCs (positive and negative)
+  const pcs=[];for(let p=0;p<Math.min(nK,20);p++)pcs.push({p,v:S[p]||0});
+  pcs.sort((a,b)=>Math.abs(b.v)-Math.abs(a.v));
+  m+='\n';pcs.slice(0,4).forEach(({p,v})=>m+=`PC${p}:${v>0?'+':''}${v.toFixed(1)} `);
   const ts=_trajStats(idx);
-  m+=`\ntraj: ${ts.total.toFixed(1)}  maxΔ: L${ts.maxL}`;
+  m+=`\ntraj:${ts.total.toFixed(0)} maxΔ:L${ts.maxL}(${ts.maxDelta.toFixed(0)})`;
   return m;}
+
+// PC distribution bar chart — shows where this token sits relative to all tokens
+function renderPCBar(idx,canvasId,rgb){
+  const cv=document.getElementById(canvasId);if(!cv)return;
+  if(idx<0||!allL[cL]){cv.style.display='none';return;}
+  cv.style.display='block';
+  const w=cv.parentElement.clientWidth||260,h=50;
+  cv.width=w*2;cv.height=h*2;
+  const ctx=cv.getContext('2d');ctx.scale(2,2);ctx.clearRect(0,0,w,h);
+  const S=allL[cL][idx];const nShow=Math.min(nK,12);
+  const bw=w/nShow;
+  // Compute percentile of this token for each PC (sample 1000 tokens)
+  const sampleStep=Math.max(1,Math.floor(nN/1000));
+  for(let p=0;p<nShow;p++){
+    const v=S[p]||0;
+    // Find min/max from sample
+    let mn=Infinity,mx=-Infinity;
+    for(let i=0;i<nN;i+=sampleStep){const sv=allL[cL][i][p]||0;if(sv<mn)mn=sv;if(sv>mx)mx=sv;}
+    const range=mx-mn||1;
+    const pct=(v-mn)/range;// 0-1 percentile
+    const barH=(h-12)*Math.abs(pct-0.5)*2;// taller = more extreme
+    const isPos=v>0;
+    const midY=h/2;
+    // Bar: extends up if positive, down if negative
+    ctx.fillStyle=`rgba(${rgb},${0.3+Math.abs(pct-0.5)*1.4})`;
+    if(isPos)ctx.fillRect(p*bw+1,midY-barH,bw-2,barH);
+    else ctx.fillRect(p*bw+1,midY,bw-2,barH);
+    // Center line
+    ctx.fillStyle='rgba(255,255,255,0.1)';ctx.fillRect(p*bw,midY,bw,0.5);
+    // PC label
+    ctx.font='5px monospace';ctx.fillStyle=`rgba(${rgb},0.5)`;
+    ctx.fillText(p.toString(),p*bw+1,h-1);
+    // Value
+    if(Math.abs(pct-0.5)>0.3){ctx.fillStyle=`rgba(${rgb},0.8)`;ctx.fillText(v.toFixed(1),p*bw+1,isPos?midY-barH-1:midY+barH+5);}
+  }
+}
 function showPinDetail(idx){
   document.getElementById('taName').textContent=idx>=0?(texts[idx]||'?'):'—';
   document.getElementById('taName').style.color=idx>=0?(CLh[scripts[idx]]||'#aaa'):'#555';
   document.getElementById('taMeta').textContent=idx>=0?_tokInfo(idx):'click a token to pin';
+  renderPCBar(idx,'pcBarA','200,80,50');
   document.getElementById('tbName').textContent=pinnedTokenB>=0?(texts[pinnedTokenB]||'?'):'—';
   document.getElementById('tbName').style.color=pinnedTokenB>=0?(CLh[scripts[pinnedTokenB]]||'#aaa'):'#555';
   document.getElementById('tbMeta').textContent=pinnedTokenB>=0?_tokInfo(pinnedTokenB):'shift+click for comparison';
+  renderPCBar(pinnedTokenB,'pcBarB','60,100,180');
 }
 
 // Interaction — pixel-accurate raycasting
