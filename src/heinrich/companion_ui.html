@@ -15,7 +15,8 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #rightcol{grid-column:5;grid-row:1/4;display:flex;flex-direction:column;gap:1px;overflow:hidden}
 .rvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .rvp .rlbl{position:absolute;top:2px;left:4px;font-size:7px;color:#444;pointer-events:none;z-index:2}
-#tokpanel{position:fixed;right:8px;top:8px;width:280px;max-height:50vh;overflow-y:auto;background:rgba(10,10,10,0.95);border:1px solid #222;border-radius:4px;padding:8px;z-index:20;font-size:9px;backdrop-filter:blur(4px)}
+#tokpanel{position:fixed;right:8px;top:8px;width:280px;max-height:60vh;overflow-y:auto;background:rgba(10,10,10,0.95);border:1px solid #222;border-radius:4px;padding:8px;z-index:20;font-size:9px;backdrop-filter:blur(4px);cursor:default}
+#tokpanel .drag-handle{cursor:move;padding:2px 0;margin-bottom:4px;border-bottom:1px solid #222;color:#444;font-size:7px;user-select:none}
 .lvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .lvp .llbl{position:absolute;top:2px;left:4px;font-size:7px;color:#444;pointer-events:none;z-index:2}
 .lv-btn{position:absolute;right:2px;z-index:10}
@@ -69,6 +70,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   </div>
 </div>
 <div id="tokpanel">
+  <div class="drag-handle" id="tokDrag"><span id="fpsDisplay" style="color:#555">--fps</span> :: drag ::</div>
   <div id="ctrlbar" style="display:flex;gap:3px;align-items:center;margin-bottom:4px;flex-wrap:wrap">
     <select id="sm" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px;max-width:90px"></select>
     <select id="smd" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"><option>raw</option><option>naked</option><option>template</option></select>
@@ -641,6 +643,27 @@ for(let i=0;i<3;i++){
 }
 leftViews.forEach(v=>ro.observe(v.el));
 
+// Right column: weights, neurons, attention
+const rightViews=[];
+for(let i=0;i<3;i++){
+  const el=document.getElementById('rv'+i);if(!el)continue;
+  const sc=new THREE.Scene();sc.background=new THREE.Color(0x060606);
+  const cam=new THREE.PerspectiveCamera(50,1,0.001,200);cam.position.set(0,1,3);
+  const ctl=new OrbitControls(cam,el);ctl.enableDamping=true;ctl.dampingFactor=0.08;
+  ctl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};
+  const grid=new THREE.GridHelper(2,6,0x1a1a1a,0x141414);grid.rotation.x=Math.PI/2;sc.add(grid);
+  rightViews.push({el,sc,cam,ctl,built:false});
+  ro.observe(el);
+}
+
+// Drag tokpanel
+(function(){const d=document.getElementById('tokDrag'),p=document.getElementById('tokpanel');if(!d||!p)return;
+  let dx=0,dy=0,dragging=false;
+  d.addEventListener('pointerdown',e=>{dx=e.clientX-p.offsetLeft;dy=e.clientY-p.offsetTop;dragging=true;e.preventDefault();});
+  addEventListener('pointermove',e=>{if(!dragging)return;p.style.left=(e.clientX-dx)+'px';p.style.top=(e.clientY-dy)+'px';p.style.right='auto';});
+  addEventListener('pointerup',()=>{dragging=false;});
+})();
+
 // Delta viewports (vp1=cloud, vp4=trajectory) are now handled by the main viewport pipeline
 // No separate delta geometry — _syncAllPins handles pin markers through views[1] and views[4]
 function _updateDeltaPins(){}// no-op, handled by _syncAllPins
@@ -1063,11 +1086,12 @@ function _togglePlay(){
   else{if(_playRAF){cancelAnimationFrame(_playRAF);_playRAF=null;}_updateBrowserLayer();_updateBrowserSelBoxes();_updateBrowserOverlay();if(pinnedToken>=0){updatePinMarkers();showPinDetail(pinnedToken);}}
 }
 document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;if(e.key==='ArrowRight')setLayer((cL+1)%_nRealLayers);if(e.key==='ArrowLeft')setLayer((cL-1+_nRealLayers)%_nRealLayers);if(e.key===' '){e.preventDefault();_togglePlay();}if(e.key==='Escape'&&(pinnedToken>=0||pinnedTokenB>=0)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();}});
-let _needsRender=true;
+let _needsRender=true,_frameCount=0,_fpsTime=performance.now();
 function _markDirty(){_needsRender=true;}
 views.forEach(v=>v.ctl.addEventListener('change',_markDirty));
 brCtl.addEventListener('change',_markDirty);
 leftViews.forEach(v=>v.ctl.addEventListener('change',_markDirty));
+rightViews.forEach(v=>v.ctl.addEventListener('change',_markDirty));
 (function anim(){requestAnimationFrame(anim);
   const damping=views.some(v=>v.ctl.enableDamping&&v.ctl._needsUpdate)||brCtl._needsUpdate||leftViews.some(v=>v.ctl._needsUpdate);
   if(!_needsRender&&!damping&&!play)return;
@@ -1083,7 +1107,11 @@ leftViews.forEach(v=>v.ctl.addEventListener('change',_markDirty));
     if(highlightMarkers[vi].visible)highlightMarkers[vi].material.size=ms*0.7;
     _renderRegion(v.el,v.sc,v.cam);});
   brCtl.update();_renderRegion(brEl,brSc,brCam);
-  leftViews.forEach(v=>{if(v.built){v.ctl.update();_renderRegion(v.el,v.sc,v.cam);}});})();
+  leftViews.forEach(v=>{if(v.built){v.ctl.update();_renderRegion(v.el,v.sc,v.cam);}});
+  rightViews.forEach(v=>{v.ctl.update();_renderRegion(v.el,v.sc,v.cam);});
+  // FPS counter
+  _frameCount++;const now=performance.now();if(now-_fpsTime>1000){const fps=Math.round(_frameCount*1000/(now-_fpsTime));const el=document.getElementById('fpsDisplay');if(el)el.textContent=fps+'fps';_frameCount=0;_fpsTime=now;}
+})();
 // WebSocket disabled — not needed for static data viewing
 </script>
 </body>
