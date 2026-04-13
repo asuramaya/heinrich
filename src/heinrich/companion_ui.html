@@ -7,12 +7,13 @@
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-size:11px;overflow:hidden;height:100vh;display:flex;flex-direction:column}
 #glCanvas{position:fixed;top:0;left:0;width:100%;height:100%;z-index:0;pointer-events:none}
-#main{flex:1;display:grid;grid-template-columns:0.7fr 2fr 1.2fr 2fr 2.5fr;grid-template-rows:1fr 1fr;gap:1px;overflow:hidden;position:relative;z-index:1}
-#leftcol{grid-column:1;grid-row:1/3;display:flex;flex-direction:column;gap:1px;overflow:hidden}
+#main{flex:1;display:grid;grid-template-columns:1fr 2fr 1.2fr 2fr 2.5fr 2.5fr;grid-template-rows:1fr 1fr;gap:1px;overflow:hidden;position:relative;z-index:1}
+#lv0{grid-column:1;grid-row:1}
+#lv1{grid-column:1;grid-row:2}
 #vp0{grid-column:2;grid-row:1}#vp1{grid-column:3;grid-row:1}#vp2{grid-column:4;grid-row:1}
-#br0{grid-column:5;grid-row:1}
 #vp3{grid-column:2;grid-row:2}#vp4{grid-column:3;grid-row:2}#vp5{grid-column:4;grid-row:2}
-#tokpanel{grid-column:5;grid-row:2}
+#br0{grid-column:5;grid-row:1/3}
+#tokpanel{grid-column:6;grid-row:1/3}
 .lvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .lvp .llbl{position:absolute;top:2px;left:4px;font-size:7px;color:#444;pointer-events:none;z-index:2}
 .lv-btn{position:absolute;left:50%;transform:translateX(-50%);z-index:10}
@@ -48,9 +49,8 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 <body>
 <canvas id="glCanvas"></canvas>
 <div id="main">
-  <div id="leftcol">
-    <div class="lvp" id="lv0"><div class="llbl">Weights + Norms</div><div class="cbtn lv-btn lv-top" data-v="l0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
-  </div>
+  <div class="lvp" id="lv0"><div class="llbl">Weights + Norms</div><div class="cbtn lv-btn lv-top" data-v="l0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+  <div class="lvp" id="lv1"><div class="llbl" style="color:#333">reserved</div></div>
   <div class="vp" id="vp0"><div class="axes" id="ax0"></div><div class="cbtn lv-btn lv-top" data-v="0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="vp" id="vp1"><div class="axes" id="ax1"></div><div class="llbl" id="lv0lbl">Delta A×B</div><div class="cbtn lv-btn lv-top" data-v="1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="vp" id="vp2"><div class="axes" id="ax2"></div><div class="cbtn lv-btn lv-top" data-v="2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
@@ -83,11 +83,6 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
     <div id="tokB"><div class="tn" id="tbName" style="color:#4477AA">—</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><div class="tm" id="tbMeta">R-click for comparison</div></div>
     <hr style="border:none;border-top:1px solid #1a1a1a;margin:6px 0">
     <div id="attnPanel" style="display:none"><div style="color:#555;font-size:7px;margin-bottom:2px">Attention (Token A, current layer)</div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
-    <div id="trajAnalyzer" style="display:none">
-      <div style="color:#555;font-size:7px;margin-bottom:2px">Token trajectory — all PCs × all layers (click to navigate)</div>
-      <canvas id="trajHeatmap" style="width:100%;height:120px;cursor:crosshair"></canvas>
-      <canvas id="trajDisplacement" style="width:100%;height:30px;cursor:crosshair"></canvas>
-    </div>
   </div>
 </div>
 <div id="cam-hub">
@@ -414,6 +409,8 @@ function updateAllViewports(){
   }
   for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];updateVP(i,a,b,thirdPC(a,b),cL);}
   for(let i=NC;i<NV;i++)updateTrajMarker(i);
+  // Refresh pins after any viewport update (PC change or layer change)
+  if(pinnedToken>=0||pinnedTokenB>=0)_syncAllPins(true);
 }
 
 // 3D prism — all PC pairs as mini point clouds. One merged geometry per layer.
@@ -777,126 +774,10 @@ function renderAttnChart(){
   });
 });
 
-// --- Token Trajectory Analyzer ---
-// Heatmap: X=layer, Y=PC index, color=token's score on that PC
-// Displacement bar: total 50D movement per layer
-// Click: X=jump to layer, Y=snap viewports to that PC pair
-function renderTrajAnalyzer(){
-  const panel=document.getElementById('trajAnalyzer');
-  const hmCv=document.getElementById('trajHeatmap');
-  const dpCv=document.getElementById('trajDisplacement');
-  if(!panel||!hmCv||!dpCv)return;
-  if(pinnedToken<0||!allL.length){panel.style.display='none';return;}
-  panel.style.display='block';
-  const tok=pinnedToken;
-  const nPC=Math.min(nK,50);// cap at 50 PCs for display
-  const w=hmCv.parentElement.clientWidth||200;
-  const hmH=120,dpH=30;
-
-  // === Heatmap ===
-  hmCv.width=w*2;hmCv.height=hmH*2;
-  const hctx=hmCv.getContext('2d');hctx.scale(2,2);hctx.clearRect(0,0,w,hmH);
-  const cellW=w/_nRealLayers,cellH=hmH/nPC;
-
-  // Find global max score for this token across all layers/PCs
-  let gmx=0;
-  for(let l=0;l<_nRealLayers;l++){const S=allL[l];if(!S)continue;for(let p=0;p<nPC;p++)gmx=Math.max(gmx,Math.abs(S[tok][p]||0));}
-  gmx=gmx||1;
-
-  // Compute per-layer delta for highlighting active PCs
-  const deltas=new Float32Array(nPC);
-  if(cL>0&&allL[cL]&&allL[cL-1]){
-    const S=allL[cL],P=allL[cL-1];
-    for(let p=0;p<nPC;p++)deltas[p]=Math.abs((S[tok][p]||0)-(P[tok][p]||0));
-  }
-  let dmax=0;for(let p=0;p<nPC;p++)dmax=Math.max(dmax,deltas[p]);dmax=dmax||1;
-
-  // Draw heatmap cells
-  for(let l=0;l<_nRealLayers;l++){
-    const S=allL[l];if(!S)continue;
-    for(let p=0;p<nPC;p++){
-      const v=S[tok][p]||0;const nv=v/gmx;// -1 to 1
-      // Blue for negative, orange for positive, brightness = magnitude
-      const mag=Math.abs(nv);
-      let r,g,b;
-      if(nv>=0){r=Math.floor(200*mag);g=Math.floor(120*mag);b=Math.floor(40*mag);}
-      else{r=Math.floor(40*mag);g=Math.floor(120*mag);b=Math.floor(200*mag);}
-      hctx.fillStyle=`rgb(${r},${g},${b})`;
-      hctx.fillRect(l*cellW,p*cellH,cellW+0.5,cellH+0.5);
-    }
-  }
-
-  // Current layer marker
-  hctx.fillStyle='rgba(255,255,255,0.6)';hctx.fillRect(cL*cellW,0,1.5,hmH);
-
-  // Highlight active PCs at current layer (right edge marks)
-  for(let p=0;p<nPC;p++){
-    const act=deltas[p]/dmax;
-    if(act>0.3){hctx.fillStyle=`rgba(255,255,255,${act*0.8})`;hctx.fillRect(w-3,p*cellH,3,cellH);}
-  }
-
-  // Selected pair indicators on Y axis
-  [vpPairs[0],vpPairs[2]].forEach(([pa,pb],pi)=>{
-    const col=pi===0?'rgba(255,102,68,0.8)':'rgba(68,119,170,0.8)';
-    [pa,pb].forEach(pc=>{if(pc<nPC){hctx.fillStyle=col;hctx.fillRect(0,pc*cellH,2,cellH);}});
-  });
-
-  // Labels
-  hctx.font='6px monospace';hctx.fillStyle='rgba(255,255,255,0.3)';
-  hctx.fillText('PC0',2,8);hctx.fillText(`PC${nPC-1}`,2,hmH-2);
-  hctx.fillText(`L0`,4,hmH-2);hctx.fillText(`L${_nRealLayers-1}`,w-18,hmH-2);
-
-  // === Displacement bar ===
-  dpCv.width=w*2;dpCv.height=dpH*2;
-  const dctx=dpCv.getContext('2d');dctx.scale(2,2);dctx.clearRect(0,0,w,dpH);
-
-  // Compute total displacement per layer (full nK euclidean distance)
-  const disps=new Float32Array(_nRealLayers);let dmx=0;
-  for(let l=1;l<_nRealLayers;l++){
-    const S=allL[l],P=allL[l-1];if(!S||!P)continue;
-    let d2=0;for(let p=0;p<nPC;p++){const d=(S[tok][p]||0)-(P[tok][p]||0);d2+=d*d;}
-    disps[l]=Math.sqrt(d2);dmx=Math.max(dmx,disps[l]);
-  }
-  dmx=dmx||1;
-
-  // Bar chart
-  const bw=w/_nRealLayers;
-  for(let l=0;l<_nRealLayers;l++){
-    const v=disps[l]/dmx;
-    const barH=v*(dpH-2);
-    const bright=Math.floor(100+155*v);
-    dctx.fillStyle=`rgb(${bright},${Math.floor(bright*0.6)},${Math.floor(bright*0.3)})`;
-    dctx.fillRect(l*bw,dpH-barH,bw-0.5,barH);
-  }
-  // Current layer marker
-  dctx.fillStyle='rgba(255,255,255,0.6)';dctx.fillRect(cL*bw,0,1.5,dpH);
-  dctx.font='6px monospace';dctx.fillStyle='rgba(255,255,255,0.3)';
-  dctx.fillText('displacement',2,8);
-}
-
-// Click handlers for trajectory analyzer
-document.getElementById('trajHeatmap')?.addEventListener('click',e=>{
-  const r=e.target.getBoundingClientRect();
-  const x=(e.clientX-r.left)/r.width,y=(e.clientY-r.top)/r.height;
-  const l=Math.min(_nRealLayers-1,Math.max(0,Math.floor(x*_nRealLayers)));
-  const pc=Math.min(Math.min(nK,50)-1,Math.max(0,Math.floor(y*Math.min(nK,50))));
-  setLayer(l);
-  // Snap pair A to include this PC
-  if(pc!==vpPairs[0][0]&&pc!==vpPairs[0][1]){
-    vpPairs[0]=[Math.min(pc,vpPairs[0][1]),Math.max(pc,vpPairs[0][1])];
-    if(vpPairs[0][0]===vpPairs[0][1])vpPairs[0][1]=Math.min(nK-1,vpPairs[0][0]+1);
-    updateAllViewports();_updateBrowserOverlay();_saveState();
-  }
-});
-document.getElementById('trajDisplacement')?.addEventListener('click',e=>{
-  const r=e.target.getBoundingClientRect();const x=(e.clientX-r.left)/r.width;
-  setLayer(Math.min(_nRealLayers-1,Math.max(0,Math.floor(x*_nRealLayers))));
-});
-
 function buildLeftViewports(){buildWeightLandscape();}
 function updateLeftViewports(){
   _updateDeltaPins();
-  if(!play){renderNeuronChart(pinnedToken,'neuronA','200,80,50');renderNeuronChart(pinnedTokenB,'neuronB','60,100,180');renderAttnChart();renderTrajAnalyzer();}
+  if(!play){renderNeuronChart(pinnedToken,'neuronA','200,80,50');renderNeuronChart(pinnedTokenB,'neuronB','60,100,180');renderAttnChart();}
 }
 
 let _nRealLayers=0;
