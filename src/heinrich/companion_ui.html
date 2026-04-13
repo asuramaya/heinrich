@@ -413,8 +413,8 @@ function updateAllViewports(){
 
 // 3D prism — all PC pairs as mini point clouds. One merged geometry per layer.
 // Shows nearby layers with opacity falloff. Scales to full nK.
-const _SP=1.6,_ZSP=0.3,_BR_RAD=0.55,_BR_PTS=80;
-const _BR_VISIBLE_LAYERS=5;// layers shown around cL
+const _SP=1.6,_ZSP=0.3,_BR_RAD=0.55,_BR_PTS=50;
+const _BR_VISIBLE_LAYERS=3;// layers shown around cL
 let _brOverlay=[];
 let _brBuilt=false;
 let _brFollow=-1;
@@ -443,7 +443,7 @@ function buildBrowser(){
     const tokMap=new Uint16Array(nPairs*ptsPerPair);
     let idx=0;
     for(let a=0;a<n;a++)for(let b=a+1;b<n;b++){
-      let mx=0;for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(S[i][a]||0),Math.abs(S[i][b]||0));mx=mx||1;
+      let mx=0;for(let i=0;i<nN;i+=step)mx=Math.max(mx,Math.abs(S[i][a]||0),Math.abs(S[i][b]||0));mx=mx||1;
       _brMxCache[`${a},${b},${l}`]=mx;
       for(let i=0;i<nN;i+=step){
         const sx=Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[i][a]||0)/mx*_BR_RAD));
@@ -679,53 +679,60 @@ function buildWeightLandscape(){
 
 function _rebuildWeightLines(){
   const lv=leftViews[0];if(!lv||!_wlData||!Array.isArray(_wlData)||!_wlData.length)return;
-  const key=`${vpPairs[0]},${vpPairs[2]},${cL}`;
-  if(key===_wlBuiltKey)return;
-  _wlBuiltKey=key;
-  // Clear old lines but keep grid/plane
-  const keep=[];
-  while(lv.sc.children.length){const c=lv.sc.children[0];lv.sc.remove(c);
-    if(c===lv._layerPlane||c===lv._grid){keep.push(c);}
-    else{if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();}}
-  keep.forEach(c=>lv.sc.add(c));
+  // Only rebuild lines when PC pairs change, not on every layer change
+  const key=`${vpPairs[0]},${vpPairs[2]}`;
+  const needsRebuild=key!==_wlBuiltKey;
+  // Always update layer plane position
   if(!lv._grid){lv._grid=new THREE.GridHelper(2,6,0x1a1a1a,0x141414);lv._grid.rotation.x=Math.PI/2;lv.sc.add(lv._grid);}
   if(!lv._layerPlane){const g=new THREE.PlaneGeometry(3,2);const m=new THREE.MeshBasicMaterial({color:0xFFFFFF,transparent:true,opacity:0.05,side:THREE.DoubleSide});lv._layerPlane=new THREE.Mesh(g,m);lv.sc.add(lv._layerPlane);}
   lv._layerPlane.position.set(0,0.75,(cL/(_nRealLayers-1||1))*2-1);
-
+  if(!needsRebuild)return;
+  _wlBuiltKey=key;
+  // Pre-build ALL lines on first call, then just toggle visibility on PC change
   const nMat=_wlData[0]?.matrices?.length||0;if(!nMat)return;
-  // Show alignment for the SELECTED PCs only (pair A's 2 + pair B's 2 = 4 PCs)
-  const selectedPCs=[...new Set([vpPairs[0][0],vpPairs[0][1],vpPairs[2][0],vpPairs[2][1]])].sort((a,b)=>a-b);
-  // For each matrix type: one line per selected PC
-  for(let mi=0;mi<nMat;mi++){
-    selectedPCs.forEach((pc,pi)=>{
+  const nPC=_wlData[0].matrices[0]?.alignment?.length||0;
+  const selectedPCs=new Set([vpPairs[0][0],vpPairs[0][1],vpPairs[2][0],vpPairs[2][1]]);
+  // Build lines for ALL PCs if not built yet
+  if(!lv._wlLines){
+    lv._wlLines=[];lv._varLines=[];
+    for(let mi=0;mi<nMat;mi++){
+      for(let pc=0;pc<Math.min(nPC,nK);pc++){
+        const pts=[];
+        for(let l=0;l<_nRealLayers;l++){
+          const al=_wlData[l]?.matrices?.[mi]?.alignment||[];
+          pts.push(new THREE.Vector3((mi/(nMat-1))*2-1+(pc%4)*0.04,(al[pc]||0)*1.2,(l/(_nRealLayers-1))*2-1));
+        }
+        const geo=new THREE.BufferGeometry().setFromPoints(pts);
+        const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:_WL_COLORS[mi],transparent:true,opacity:0}));
+        line.frustumCulled=false;line.visible=false;lv.sc.add(line);
+        lv._wlLines.push({line,mi,pc});
+      }
+    }
+    // Variance lines for all PCs
+    for(let pc=0;pc<Math.min(nPC,nK);pc++){
+      if(!_layerVar.length)break;
       const pts=[];
       for(let l=0;l<_nRealLayers;l++){
-        const al=_wlData[l]?.matrices?.[mi]?.alignment||[];
-        const v=al[pc]||0;
-        const x=(mi/(nMat-1))*2-1;
-        const y=v*1.2;
-        const z=(l/(_nRealLayers-1))*2-1;
-        pts.push(new THREE.Vector3(x+pi*0.06,y,z));
+        const v=_layerVar[l]?_layerVar[l][pc]||0:0;
+        pts.push(new THREE.Vector3(-1.3+(pc%6)*0.12,v*2,(l/(_nRealLayers-1))*2-1));
       }
       const geo=new THREE.BufferGeometry().setFromPoints(pts);
-      // Color: matrix color, opacity by which pair the PC belongs to
-      const isPairA=vpPairs[0].includes(pc);
-      const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:_WL_COLORS[mi],transparent:true,opacity:isPairA?0.9:0.4}));
-      line.frustumCulled=false;lv.sc.add(line);
-    });
-  }
-  // Variance lines for selected PCs
-  selectedPCs.forEach((pc,pi)=>{
-    if(!_layerVar.length)return;
-    const pts=[];
-    for(let l=0;l<_nRealLayers;l++){
-      const v=_layerVar[l]?_layerVar[l][pc]||0:0;
-      pts.push(new THREE.Vector3(-1.3+pi*0.15,v*2,(l/(_nRealLayers-1))*2-1));
+      const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:0x666666,transparent:true,opacity:0}));
+      line.frustumCulled=false;line.visible=false;lv.sc.add(line);
+      lv._varLines.push({line,pc});
     }
-    const geo=new THREE.BufferGeometry().setFromPoints(pts);
-    const isPairA=vpPairs[0].includes(pc);
-    const c=isPairA?0xFF6644:0x4477AA;
-    lv.sc.add(new THREE.Line(geo,new THREE.LineBasicMaterial({color:c,transparent:true,opacity:0.7})));
+  }
+  // Toggle visibility: only show lines for selected PCs
+  lv._wlLines.forEach(({line,pc})=>{
+    const sel=selectedPCs.has(pc);
+    line.visible=sel;
+    line.material.opacity=sel?(vpPairs[0].includes(pc)?0.9:0.4):0;
+  });
+  lv._varLines.forEach(({line,pc})=>{
+    const sel=selectedPCs.has(pc);
+    line.visible=sel;
+    line.material.opacity=sel?0.7:0;
+    line.material.color.set(vpPairs[0].includes(pc)?0xFF6644:0x4477AA);
   });
   if(!lv._camSet){lv.cam.position.set(0,1.5,3);lv.ctl.target.set(0,0.5,0);lv.ctl.update();lv._camSet=true;}
 }
