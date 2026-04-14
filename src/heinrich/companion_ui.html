@@ -1483,10 +1483,8 @@ let _pcsHoverPC=-1;
 let _pcsLayerLine=null;// current-layer indicator line
 let _pcsVarLine=null;// variance envelope line
 let _pcsTicks=null;// PC index tick marks
-let _pcsHoverMesh=null;// hover token spectrum (current layer only)
-let _pcsHoverTok=-1;// which token the hover mesh shows
-const _pcsHoverCache=new Map();// tokIdx → {nL, fK, data: Float32Array}
-let _pcsHoverLoading=-1;
+let _pcsHoverMesh=null;// hover token spectrum (current layer, from _getScore)
+let _pcsHoverTok=-1;
 // Full PCA data per token: Float32Array [n_layers × full_K]
 let _pcsFullA=null,_pcsFullB=null;
 let _pcsFullK=0,_pcsFullNL=0;
@@ -1594,21 +1592,6 @@ function _pcsHitTest(e){
   return best;
 }
 
-// Unified per-token PCA fetch — shared by pin and hover
-async function _pcsFetchToken(tokIdx){
-  if(tokIdx<0||!model)return null;
-  const cached=_pcsHoverCache.get(tokIdx);
-  if(cached)return cached;
-  const resp=await fetch(`/api/token-pca/${model}/${mode}?token=${tokIdx}`);
-  if(!resp.ok)return null;
-  const ct=resp.headers.get('content-type')||'';if(ct.includes('json'))return null;
-  const buf=await resp.arrayBuffer();
-  const dv=new DataView(buf);
-  const entry={nL:dv.getUint32(0,true),fK:dv.getUint32(4,true),data:new Float32Array(buf,8)};
-  if(_pcsHoverCache.size>64){const first=_pcsHoverCache.keys().next().value;_pcsHoverCache.delete(first);}
-  _pcsHoverCache.set(tokIdx,entry);
-  return entry;
-}
 async function _pcsLoadFull(tokIdx, slot){
   if(tokIdx<0){
     if(slot==='A'){_pcsFullA=null;_pcsLoadingA=-1;}else{_pcsFullB=null;_pcsLoadingB=-1;}
@@ -1618,10 +1601,15 @@ async function _pcsLoadFull(tokIdx, slot){
   if(slot==='B'&&_pcsLoadingB===tokIdx)return;
   if(slot==='A')_pcsLoadingA=tokIdx;else _pcsLoadingB=tokIdx;
   try{
-    const entry=await _pcsFetchToken(tokIdx);
-    if(!entry)return;
-    _pcsFullNL=entry.nL;_pcsFullK=entry.fK;
-    if(slot==='A')_pcsFullA=entry.data;else _pcsFullB=entry.data;
+    const resp=await fetch(`/api/token-pca/${model}/${mode}?token=${tokIdx}`);
+    if(!resp.ok)return;
+    const ct=resp.headers.get('content-type')||'';if(ct.includes('json'))return;
+    const buf=await resp.arrayBuffer();
+    const dv=new DataView(buf);
+    const nL=dv.getUint32(0,true),fK=dv.getUint32(4,true);
+    const data=new Float32Array(buf,8);
+    _pcsFullNL=nL;_pcsFullK=fK;
+    if(slot==='A')_pcsFullA=data;else _pcsFullB=data;
     _buildPCSSpectrum();
   }catch(e){console.error('token-pca:',e);}
 }
@@ -1807,54 +1795,29 @@ function _updatePCSDots(){
 
 function _updateTrajDots(){_updatePCSDots();}
 
-// Hover spectrum: full-coverage, no partial rendering, no race conditions
-// Cache hit → instant. Cache miss → fire fetch, render when done.
+// Hover spectrum: instant from _getScore (no fetch). Shows what's loaded.
+// PCs 0-49 always available from blob. Selected PCs available from _pcFull.
+// Unloaded PCs sit at Y=0 — honest partial data.
 function _updatePCSHover(tokIdx){
   if(!_pcsHoverMesh)return;
   if(tokIdx<0){_pcsHoverMesh.geometry.setDrawRange(0,0);_pcsHoverTok=-1;_markDirty();return;}
   _pcsHoverTok=tokIdx;
-  const cached=_pcsHoverCache.get(tokIdx);
-  if(cached){
-    _renderPCSHover(tokIdx,cached);return;
-  }
-  // Not cached: hide hover mesh, fire fetch
-  _pcsHoverMesh.geometry.setDrawRange(0,0);_markDirty();
-  if(_pcsHoverLoading!==tokIdx){
-    _pcsHoverLoading=tokIdx;
-    _pcsFetchToken(tokIdx).then(entry=>{
-      _pcsHoverLoading=-1;
-      if(!entry||_pcsHoverTok!==tokIdx)return;// moved on
-      _renderPCSHover(tokIdx,entry);
-    }).catch(()=>{_pcsHoverLoading=-1;});
-  }
-}
-function _renderPCSHover(tokIdx,entry){
-  if(!_pcsHoverMesh||_pcsHoverTok!==tokIdx)return;
-  const {fK,data,nL:hNL}=entry;
+  const k=_pcsNK||nK;if(!k)return;
   const xSpan=2.4,zSpan=3.0;
-  const nL_pcs=hNL||_pcsFullNL||_nRealLayers||nL;
+  const nL_pcs=_pcsFullNL||_nRealLayers||nL;
   const z=(cL/((nL_pcs-1)||1))*zSpan-zSpan/2;
-  // Compute scale EXACTLY as _buildPCSSpectrum would for this token
-  // This ensures hover dots land where pinning would place them
-  let maxAbs=0.001;
-  for(let i=0;i<data.length;i++)if(Math.abs(data[i])>maxAbs)maxAbs=Math.abs(data[i]);
-  // If another token is already pinned, use the combined max (same as _buildPCSSpectrum)
-  [_pcsFullA,_pcsFullB].forEach(fd=>{
-    if(!fd||fd===data)return;// skip if this IS the pinned token's data
-    for(let i=0;i<fd.length;i++)if(Math.abs(fd[i])>maxAbs)maxAbs=Math.abs(fd[i]);
-  });
-  const scale=1.2/maxAbs;
+  const scale=_pcsScale>0.01?_pcsScale:1;
   let pos=_pcsHoverMesh.geometry.attributes.position.array;
-  if(pos.length<fK*3){
-    _pcsHoverMesh.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(fK*3),3));
+  if(pos.length<k*3){
+    _pcsHoverMesh.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(k*3),3));
     pos=_pcsHoverMesh.geometry.attributes.position.array;
   }
-  for(let pc=0;pc<fK;pc++){
-    pos[pc*3]=(pc/((fK-1)||1))*xSpan-xSpan/2;
-    pos[pc*3+1]=(data[cL*fK+pc]||0)*scale;
+  for(let pc=0;pc<k;pc++){
+    pos[pc*3]=(pc/((k-1)||1))*xSpan-xSpan/2;
+    pos[pc*3+1]=_getScore(cL,tokIdx,pc)*scale;
     pos[pc*3+2]=z;
   }
-  _pcsHoverMesh.geometry.setDrawRange(0,fK);
+  _pcsHoverMesh.geometry.setDrawRange(0,k);
   _pcsHoverMesh.geometry.attributes.position.needsUpdate=true;
   _markDirty();
 }
