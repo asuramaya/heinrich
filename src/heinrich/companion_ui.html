@@ -608,6 +608,13 @@ function updateAllViewports(){
     const lbl=document.getElementById('lv0lbl');if(lbl)lbl.textContent='\u0394 PC'+vpPairs[1][0]+'\u00d7PC'+vpPairs[1][1];
     // Compute cells FIRST so _ensurePCData loads medium data for the right PCs
     _brComputeCells();
+    // Render immediately from blob data (tier 2), then upgrade when full PCs arrive
+    _rebuildClouds();
+    for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];updateVP(i,a,b,thirdPC(a,b),cL);}
+    for(let i=NC;i<NV;i++)updateTrajMarker(i);
+    if(pinnedToken>=0||pinnedTokenB>=0)_syncAllPins(true);
+    buildBrowser();_markDirty();
+    // Async: fetch full-res PC data, rebuild when ready
     _ensurePCData().then(()=>{
       _rebuildClouds();_markDirty();
       for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];updateVP(i,a,b,thirdPC(a,b),cL);}
@@ -616,7 +623,7 @@ function updateAllViewports(){
       buildBrowser();
     });
     _lastPK=pk;
-    return;// all updates happen in the .then() callback
+    return;
   }
   // PCs unchanged — just update positions for current layer (layer scrub)
   for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];updateVP(i,a,b,thirdPC(a,b),cL);}
