@@ -1143,11 +1143,13 @@ function _rebuildInternals(vi,pair,needsRebuild){
     const r=_petalLen(cL,mi);
     const a=angles[mi];
     const pos=lv._petalLines[mi].geometry.attributes.position.array;
-    const vis=lv._wlIsolated<0||mi===lv._wlIsolated;
-    pos[0]=0;pos[1]=0;pos[2]=cZ;// center
+    // Only visible during focus mode (isolated to one matrix)
+    const vis=lv._wlIsolated>=0&&mi===lv._wlIsolated;
+    pos[0]=0;pos[1]=0;pos[2]=cZ;
     pos[3]=vis?Math.cos(a)*r:0;pos[4]=vis?Math.sin(a)*r:0;pos[5]=cZ;
     lv._petalLines[mi].geometry.attributes.position.needsUpdate=true;
-    lv._petalLines[mi].material.opacity=vis?0.8:0.05;
+    lv._petalLines[mi].material.opacity=vis?0.6:0;
+    lv._petalLines[mi].visible=vis;
   }
 
   // --- Token markers + trajectories: same style as main viewports ---
@@ -1165,12 +1167,12 @@ function _rebuildInternals(vi,pair,needsRebuild){
   // Markers (current layer)
   if(!lv._tokMarkerA){
     const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));
-    lv._tokMarkerA=new THREE.Points(g,new THREE.PointsMaterial({size:0.14,color:0xFF6644,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));
+    lv._tokMarkerA=new THREE.Points(g,new THREE.PointsMaterial({size:0.06,color:0xFF6644,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));
     lv._tokMarkerA.renderOrder=11;lv._tokMarkerA.frustumCulled=false;lv._tokMarkerA.visible=false;lv.sc.add(lv._tokMarkerA);
   }
   if(!lv._tokMarkerB){
     const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));
-    lv._tokMarkerB=new THREE.Points(g,new THREE.PointsMaterial({size:0.14,color:0x4477AA,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));
+    lv._tokMarkerB=new THREE.Points(g,new THREE.PointsMaterial({size:0.06,color:0x4477AA,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));
     lv._tokMarkerB.renderOrder=11;lv._tokMarkerB.frustumCulled=false;lv._tokMarkerB.visible=false;lv.sc.add(lv._tokMarkerB);
   }
   // Position markers at current layer
@@ -1304,22 +1306,31 @@ function _rebuildInternals(vi,pair,needsRebuild){
       else{const r=_petalLen(cL,mi);const a=angles[mi];dPos[mi*3]=Math.cos(a)*r;dPos[mi*3+1]=Math.sin(a)*r;dPos[mi*3+2]=cZ;}
     }
     lv._layerDots.geometry.attributes.position.needsUpdate=true;
-    // Camera: focus = side view centered on tube, unfocus = face-on Z
+    // Camera: focus = chart view (layers L→R, alignment bottom→top), unfocus = face-on Z
     if(lv._wlIsolated>=0){
       const si=lv._wlIsolated;const fa=angles[si];
-      // Compute bounding box of tube for auto-zoom
+      // Compute tube bounding box for auto-zoom
       let minR=Infinity,maxR=-Infinity;
       for(let l=0;l<_nRealLayers;l++){const r=_petalLen(l,si);minR=Math.min(minR,r);maxR=Math.max(maxR,r);}
       const midR=(minR+maxR)/2;
-      const cx=Math.cos(fa)*midR,cy=Math.sin(fa)*midR;
-      // Distance: fit the tube's range in view (larger range = farther camera)
-      const range=Math.max(0.3,(maxR-minR)*1.2+0.5);
-      const dist=range*1.5;
-      lv.cam.position.set(cx+Math.cos(fa+Math.PI/2)*dist,cy+Math.sin(fa+Math.PI/2)*dist,0);
-      lv.ctl.target.set(cx,cy,0);lv.ctl.update();
+      // Target = midpoint of tube (along its radial direction, at z=0)
+      const tx=Math.cos(fa)*midR,ty=Math.sin(fa)*midR;
+      // Camera: look from perpendicular direction so depth (Z) maps to screen X
+      // and radial distance maps to screen Y
+      const range=Math.max(0.3,(maxR-minR)*1.5+0.5);
+      const dist=range*1.8;
+      // Position perpendicular to the petal, elevated above the radial plane
+      const perpX=Math.cos(fa+Math.PI/2);
+      const perpY=Math.sin(fa+Math.PI/2);
+      lv.cam.position.set(tx+perpX*dist,ty+perpY*dist,0);
+      lv.ctl.target.set(tx,ty,0);
+      // Rotate the camera so Z axis (layers) maps to horizontal screen axis
+      lv.cam.up.set(Math.cos(fa),Math.sin(fa),0);// "up" = radial direction = screen Y
+      lv.ctl.update();
     }else{
       // Face-on Z view — look down the depth axis at the flower
       lv.cam.position.set(0,0,zSpan*0.8);
+      lv.cam.up.set(0,1,0);// reset up vector
       lv.ctl.target.set(0,0,0);lv.ctl.update();
     }
     _updateInternalsValues(lv,pcA,pcB);
