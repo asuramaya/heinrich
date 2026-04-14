@@ -342,11 +342,34 @@ def _neuron_field(mri_path: str, token_idx: int) -> bytes | dict:
     """Full gate×up activation for one token across all layers.
 
     Returns raw bytes: float16 array [n_layers × intermediate_size], row-major.
-    ~92KB for 30 layers × 1536 neurons. Mmap'd arrays cached for speed.
+    ~92KB for 30 layers × 1536 neurons.
+
+    Uses transposed index (token_neurons.bin) for single-seek O(1) reads.
+    Falls back to per-layer mmaps if index doesn't exist.
     """
     cache_key = f"{mri_path}:{token_idx}"
     if cache_key in _neuron_result_cache:
         return _neuron_result_cache[cache_key]
+
+    # Fast path: transposed index
+    tok_idx_path = Path(mri_path) / "decomp" / "token_neurons.bin"
+    if tok_idx_path.exists():
+        import struct as _st
+        with open(tok_idx_path, 'rb') as f:
+            hdr = f.read(16)
+            magic, n_tok, n_layers, intermediate = _st.unpack('<4sIII', hdr)
+            if magic == b'TOKN' and token_idx < n_tok:
+                stride = n_layers * intermediate * 2
+                f.seek(16 + token_idx * stride)
+                data = f.read(stride)
+                if len(_neuron_result_cache) >= _NEURON_CACHE_MAX:
+                    keys = list(_neuron_result_cache.keys())
+                    for k in keys[:len(keys) // 4]:
+                        del _neuron_result_cache[k]
+                _neuron_result_cache[cache_key] = data
+                return data
+
+    # Slow path: gather from per-layer mmaps
     entry = _get_mlp_mmaps(mri_path)
     if not entry:
         return {"error": "No MLP data"}
@@ -526,14 +549,37 @@ def _pc_medium(mri_path: str, pcs: list[int], step: int = 10) -> bytes | dict:
 
 
 def _token_pca_full(mri_path: str, token_idx: int) -> bytes | dict:
-    """All PC scores for one token across all layers. Uses cached mmaps."""
+    """All PC scores for one token across all layers.
+
+    Uses transposed index (token_scores.bin) for single-seek O(1) reads.
+    Falls back to per-layer mmaps if index doesn't exist.
+    """
     decomp = Path(mri_path) / "decomp"
+    tok_idx_path = decomp / "token_scores.bin"
+
+    # Fast path: transposed index — one seek, one read
+    if tok_idx_path.exists():
+        import struct as _st
+        with open(tok_idx_path, 'rb') as f:
+            hdr = f.read(16)
+            magic, n_tok, n_layers, full_k = _st.unpack('<4sIII', hdr)
+            if magic != b'TOKS':
+                return {"error": f"Bad token index magic: {magic!r}"}
+            if token_idx >= n_tok:
+                return {"error": f"Token {token_idx} out of range (max {n_tok-1})"}
+            stride = n_layers * full_k * 2  # float16
+            f.seek(16 + token_idx * stride)
+            row = np.frombuffer(f.read(stride), dtype=np.float16).reshape(n_layers, full_k)
+        header = _st.pack('<II', n_layers, full_k)
+        return header + row.astype(np.float32).tobytes()
+
+    # Slow path: gather from per-layer mmaps
     meta_path = decomp / "meta.json"
     if not meta_path.exists():
         return {"error": "No decomposition"}
     meta = json.loads(meta_path.read_text())
     n_real = meta.get("n_real_layers", meta["n_layers"])
-    n_total = n_real + 2  # + emb + lmh
+    n_total = n_real + 2
     full_k = 0
     for li in range(n_total):
         s = _get_score_mmap(mri_path, li)

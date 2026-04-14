@@ -5311,6 +5311,25 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
         flat = mri_dir / f'L{li:02d}_exit.npy'
         return nested if nested.exists() else flat if flat.exists() else None
 
+    _score_mmaps = {}  # cache score mmaps within this decompose run
+    def _get_score_mmap_local(dd, li, n_real):
+        """Get mmap'd score array for a layer (real or virtual)."""
+        if li in _score_mmaps:
+            return _score_mmaps[li]
+        if li < n_real:
+            sp = dd / f'L{li:02d}_scores.npy'
+        elif li == n_real:
+            sp = dd / 'emb_scores.npy'
+        elif li == n_real + 1:
+            sp = dd / 'lmh_scores.npy'
+        else:
+            return None
+        if not sp.exists():
+            return None
+        arr = np.load(str(sp), mmap_mode='r')
+        _score_mmaps[li] = arr
+        return arr
+
     for li in range(n_layers):
         exit_path = _find_exit(li)
         if not exit_path:
@@ -5582,6 +5601,66 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
         f.write(score_block)
 
     bin_size = len(header) + len(var_block) + len(score_block)
+
+    # === Transposed per-token index: [N_tokens × N_layers × K] float16 ===
+    # One seek per token instead of N_layers file reads. Critical for USB/NAS.
+    print(f"  Token index (scores)...", file=sys.stderr)
+    tok_scores_path = decomp_dir / 'token_scores.bin'
+    # Header: [4B magic 'TOKS'][4B n_tokens][4B n_layers][4B full_k]
+    tok_hdr = struct.pack('<4sIII', b'TOKS', n_sample, total_layers, K)
+    stride = total_layers * K * 2  # bytes per token (float16)
+    with open(tok_scores_path, 'wb') as f:
+        f.write(tok_hdr)
+        # Write token-by-token: gather layer L's row for this token
+        for ti in range(n_sample):
+            row = np.zeros((total_layers, K), dtype=np.float16)
+            for li in range(total_layers):
+                sp = _get_score_mmap_local(decomp_dir, li, n_layers)
+                if sp is not None and ti < sp.shape[0]:
+                    nk = min(K, sp.shape[1])
+                    row[li, :nk] = sp[ti, :nk]
+            f.write(row.tobytes())
+            if (ti + 1) % 10000 == 0:
+                print(f"    {ti+1}/{n_sample}", file=sys.stderr)
+    print(f"  Token scores index: {n_sample} tokens × {total_layers} layers × {K} PCs = "
+          f"{(16 + n_sample * stride) / (1024*1024):.0f}MB", file=sys.stderr)
+
+    # === Transposed per-token neuron index: [N_tokens × N_layers × intermediate] float16 ===
+    if mlp_dir.exists() and n_layers > 0:
+        # Infer intermediate size from first gate file
+        _gp0 = mlp_dir / 'L00_gate.npy'
+        if _gp0.exists():
+            _inter = np.load(str(_gp0), mmap_mode='r').shape[1]
+            print(f"  Token index (neurons)...", file=sys.stderr)
+            tok_neurons_path = decomp_dir / 'token_neurons.bin'
+            n_hdr = struct.pack('<4sIII', b'TOKN', n_sample, n_layers, _inter)
+            n_stride = n_layers * _inter * 2
+            # Load all gate/up mmaps once
+            _g_maps = []
+            _u_maps = []
+            for li in range(n_layers):
+                gp = mlp_dir / f'L{li:02d}_gate.npy'
+                up = mlp_dir / f'L{li:02d}_up.npy'
+                _g_maps.append(np.load(str(gp), mmap_mode='r') if gp.exists() else None)
+                _u_maps.append(np.load(str(up), mmap_mode='r') if up.exists() else None)
+            with open(tok_neurons_path, 'wb') as f:
+                f.write(n_hdr)
+                for ti in range(n_sample):
+                    row = np.zeros((n_layers, _inter), dtype=np.float16)
+                    for li in range(n_layers):
+                        g = _g_maps[li]
+                        if g is not None and ti < g.shape[0]:
+                            gt = g[ti].astype(np.float32)
+                            u = _u_maps[li]
+                            if u is not None:
+                                row[li] = (gt * u[ti].astype(np.float32)).astype(np.float16)
+                            else:
+                                row[li] = gt.astype(np.float16)
+                    f.write(row.tobytes())
+                    if (ti + 1) % 10000 == 0:
+                        print(f"    {ti+1}/{n_sample}", file=sys.stderr)
+            print(f"  Token neuron index: {n_sample} tokens × {n_layers} layers × {_inter} neurons = "
+                  f"{(16 + n_sample * n_stride) / (1024*1024):.0f}MB", file=sys.stderr)
 
     # Save metadata (sample_indices as "all" for full vocab to avoid huge JSON)
     meta_out = {
