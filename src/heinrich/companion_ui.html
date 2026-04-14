@@ -1485,6 +1485,8 @@ let _pcsVarLine=null;// variance envelope line
 let _pcsTicks=null;// PC index tick marks
 let _pcsHoverMesh=null;// hover token spectrum (current layer only)
 let _pcsHoverTok=-1;// which token the hover mesh shows
+const _pcsHoverCache=new Map();// tokIdx → {nL, fK, data: Float32Array}
+let _pcsHoverLoading=-1;
 // Full PCA data per token: Float32Array [n_layers × full_K]
 let _pcsFullA=null,_pcsFullB=null;
 let _pcsFullK=0,_pcsFullNL=0;
@@ -1796,32 +1798,79 @@ function _updatePCSDots(){
 
 function _updateTrajDots(){_updatePCSDots();}
 
-// Hover spectrum: show any token's PC scores at current layer in real-time
-// Uses allL blob (first nK PCs) — always available, no fetch needed
+// Hover spectrum: full-coverage real-time PC scores
+// Cache hit → instant full data. Cache miss → partial from _getScore, fetch in background.
 function _updatePCSHover(tokIdx){
   if(!_pcsHoverMesh)return;
-  const k=_pcsNK||nK;if(!k)return;
   if(tokIdx<0){_pcsHoverMesh.geometry.setDrawRange(0,0);_pcsHoverTok=-1;_markDirty();return;}
   _pcsHoverTok=tokIdx;
+  // Check cache for full per-token PCA data
+  const cached=_pcsHoverCache.get(tokIdx);
+  if(cached){
+    _renderPCSHover(tokIdx,cached.fK,cached.data,cached.nL);
+  }else{
+    // Partial: show what _getScore has (first nK + loaded PCs)
+    const k=_pcsNK||nK;if(k)_renderPCSHoverPartial(tokIdx,k);
+    // Fire async fetch if not already loading this token
+    if(_pcsHoverLoading!==tokIdx&&model){
+      _pcsHoverLoading=tokIdx;
+      fetch(`/api/token-pca/${model}/${mode}?token=${tokIdx}`).then(r=>{
+        if(!r.ok)return;const ct=r.headers.get('content-type')||'';if(ct.includes('json'))return;
+        return r.arrayBuffer();
+      }).then(buf=>{
+        if(!buf)return;
+        const dv=new DataView(buf);
+        const hNL=dv.getUint32(0,true),hFK=dv.getUint32(4,true);
+        const data=new Float32Array(buf,8);
+        // LRU: keep last 32 tokens
+        if(_pcsHoverCache.size>32){const first=_pcsHoverCache.keys().next().value;_pcsHoverCache.delete(first);}
+        _pcsHoverCache.set(tokIdx,{nL:hNL,fK:hFK,data});
+        _pcsHoverLoading=-1;
+        // Update if still hovering this token
+        if(_pcsHoverTok===tokIdx)_renderPCSHover(tokIdx,hFK,data,hNL);
+      }).catch(()=>{_pcsHoverLoading=-1;});
+    }
+  }
+}
+function _renderPCSHover(tokIdx,fK,fullData,hNL){
   const xSpan=2.4,zSpan=3.0;
-  const nL_pcs=_pcsFullNL||_nRealLayers||nL;
+  const nL_pcs=hNL||_pcsFullNL||_nRealLayers||nL;
   const z=(cL/((nL_pcs-1)||1))*zSpan-zSpan/2;
-  // Collect scores and auto-scale from the hover data itself
-  const scores=new Float32Array(k);
+  const k=fK;
+  // Auto-scale Y from this token's data at current layer
   let mx=0.001;
-  for(let pc=0;pc<k;pc++){scores[pc]=_getScore(cL,tokIdx,pc);mx=Math.max(mx,Math.abs(scores[pc]));}
-  // Use pinned scale if available, else auto-scale from hover data
+  for(let pc=0;pc<k;pc++){const v=fullData[cL*fK+pc]||0;mx=Math.max(mx,Math.abs(v));}
   const scale=_pcsScale>0.01?_pcsScale:1.2/mx;
-  // Ensure buffer fits
+  // Ensure buffer
   let pos=_pcsHoverMesh.geometry.attributes.position.array;
   if(pos.length<k*3){
     _pcsHoverMesh.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(k*3),3));
     pos=_pcsHoverMesh.geometry.attributes.position.array;
   }
   for(let pc=0;pc<k;pc++){
-    // X: map PC index across full spectrum width (same mapping as pinned dots)
     pos[pc*3]=(pc/((k-1)||1))*xSpan-xSpan/2;
-    pos[pc*3+1]=scores[pc]*scale;
+    pos[pc*3+1]=(fullData[cL*fK+pc]||0)*scale;
+    pos[pc*3+2]=z;
+  }
+  _pcsHoverMesh.geometry.setDrawRange(0,k);
+  _pcsHoverMesh.geometry.attributes.position.needsUpdate=true;
+  _markDirty();
+}
+function _renderPCSHoverPartial(tokIdx,k){
+  const xSpan=2.4,zSpan=3.0;
+  const nL_pcs=_pcsFullNL||_nRealLayers||nL;
+  const z=(cL/((nL_pcs-1)||1))*zSpan-zSpan/2;
+  let mx=0.001;
+  for(let pc=0;pc<k;pc++){const v=_getScore(cL,tokIdx,pc);mx=Math.max(mx,Math.abs(v));}
+  const scale=_pcsScale>0.01?_pcsScale:1.2/mx;
+  let pos=_pcsHoverMesh.geometry.attributes.position.array;
+  if(pos.length<k*3){
+    _pcsHoverMesh.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(k*3),3));
+    pos=_pcsHoverMesh.geometry.attributes.position.array;
+  }
+  for(let pc=0;pc<k;pc++){
+    pos[pc*3]=(pc/((k-1)||1))*xSpan-xSpan/2;
+    pos[pc*3+1]=_getScore(cL,tokIdx,pc)*scale;
     pos[pc*3+2]=z;
   }
   _pcsHoverMesh.geometry.setDrawRange(0,k);
