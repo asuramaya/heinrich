@@ -1223,26 +1223,53 @@ function _rebuildInternals(vi,pair,needsRebuild){
   function _isolate(lv,sel){
     const wasIsolated=lv._wlIsolated===sel;
     lv._wlIsolated=wasIsolated?-1:sel;
-    lv._wlTubes.forEach((t,i)=>{
-      if(lv._wlIsolated<0){t.material.opacity=0.4;t.visible=true;}
-      else{t.material.opacity=i===lv._wlIsolated?0.7:0.02;t.visible=true;}
-    });
-    lv._wlTrajs.forEach((t,i)=>{
-      if(i>=nMat)return;
-      if(lv._wlIsolated<0){t.material.opacity=0.5;t.visible=true;}
-      else{t.material.opacity=i===lv._wlIsolated?0.8:0.03;t.visible=true;}
-    });
+    // Direct opacity — no rebuild
+    lv._wlTubes.forEach((t,i)=>{t.material.opacity=lv._wlIsolated<0?0.4:(i===lv._wlIsolated?0.7:0.02);});
+    lv._wlTrajs.forEach((t,i)=>{if(i<nMat)t.material.opacity=lv._wlIsolated<0?0.5:(i===lv._wlIsolated?0.8:0.03);});
+    // Petal lines
+    if(lv._petalLines)lv._petalLines.forEach((l,i)=>{l.material.opacity=lv._wlIsolated<0?0.8:(i===lv._wlIsolated?0.9:0.03);});
+    // Update dots directly
+    const dPos=lv._layerDots.geometry.attributes.position.array;
+    const cZ=(cL/(_nRealLayers-1))*zSpan-zSpan/2;
+    for(let mi=0;mi<nMat;mi++){
+      if(lv._wlIsolated>=0&&mi!==lv._wlIsolated){dPos[mi*3]=9999;dPos[mi*3+1]=9999;dPos[mi*3+2]=9999;}
+      else{const r=_petalLen(cL,mi);const a=angles[mi];dPos[mi*3]=Math.cos(a)*r;dPos[mi*3+1]=Math.sin(a)*r;dPos[mi*3+2]=cZ;}
+    }
+    lv._layerDots.geometry.attributes.position.needsUpdate=true;
+    // Camera: target = midpoint of selected tube, not origin
     if(lv._wlIsolated>=0){
-      const fa=angles[lv._wlIsolated];
-      lv.cam.position.set(Math.cos(fa+Math.PI/2)*1.8,Math.sin(fa+Math.PI/2)*1.8,0);
-      lv.ctl.target.set(0,0,0);lv.ctl.update();
+      const si=lv._wlIsolated;const fa=angles[si];
+      // Compute tube midpoint (average position across layers)
+      let cx=0,cy=0;
+      for(let l=0;l<_nRealLayers;l++){const r=_petalLen(l,si);cx+=Math.cos(fa)*r;cy+=Math.sin(fa)*r;}
+      cx/=_nRealLayers;cy/=_nRealLayers;
+      // Camera perpendicular to petal, targeting its midpoint
+      const dist=1.5;
+      lv.cam.position.set(cx+Math.cos(fa+Math.PI/2)*dist,cy+Math.sin(fa+Math.PI/2)*dist,0);
+      lv.ctl.target.set(cx,cy,0);lv.ctl.update();
     }else{
       lv.cam.position.set(0.3,0.3,zSpan*0.9);
       lv.ctl.target.set(0,0,0);lv.ctl.update();
     }
-    _rebuildInternals(vi,pair,false);
     _updateInternalsValues(lv,pcA,pcB);
     lv._legBtns.forEach((s,i)=>{if(s)s.style.opacity=lv._wlIsolated<0||i===lv._wlIsolated?'0.9':'0.3';});
+    _markDirty();
+  }
+  // Hover highlight on tubes — brighten on mousemove, dim on leave
+  function _highlight(lv,idx){
+    if(lv._wlIsolated>=0)return;// don't highlight during isolation
+    lv._wlTubes.forEach((t,i)=>{t.material.opacity=i===idx?0.7:0.2;});
+    lv._wlTrajs.forEach((t,i)=>{if(i<nMat)t.material.opacity=i===idx?0.9:0.15;});
+    if(lv._petalLines)lv._petalLines.forEach((l,i)=>{l.material.opacity=i===idx?0.9:0.15;});
+    lv._legBtns.forEach((s,i)=>{if(s)s.style.opacity=i===idx?'1.0':'0.3';});
+    _markDirty();
+  }
+  function _unhighlight(lv){
+    if(lv._wlIsolated>=0)return;
+    lv._wlTubes.forEach(t=>{t.material.opacity=0.4;});
+    lv._wlTrajs.forEach((t,i)=>{if(i<nMat)t.material.opacity=0.5;});
+    if(lv._petalLines)lv._petalLines.forEach(l=>{l.material.opacity=0.8;});
+    lv._legBtns.forEach(s=>{if(s)s.style.opacity='0.8';});
     _markDirty();
   }
 
@@ -1257,21 +1284,28 @@ function _rebuildInternals(vi,pair,needsRebuild){
   lv._wlIsolated=-1;
   _updateInternalsValues(lv,pcA,pcB);
 
-  // Click on tubes to isolate — raycast on 3D objects
-  if(!lv._tubeClickWired){
-    lv._tubeClickWired=true;
+  // Hover + click on tubes — raycast
+  if(!lv._tubeWired){
+    lv._tubeWired=true;
     const _lvRay=new THREE.Raycaster();const _lvMs=new THREE.Vector2();
-    lv.el.addEventListener('click',e=>{
-      if(!lv._wlTubes||!lv._wlTubes.length)return;
+    let _lvHovered=-1;
+    function _lvHitTest(e){
+      if(!lv._wlTubes||!lv._wlTubes.length)return -1;
       const r=lv.el.getBoundingClientRect();
       _lvMs.x=((e.clientX-r.left)/r.width)*2-1;
       _lvMs.y=-((e.clientY-r.top)/r.height)*2+1;
       _lvRay.setFromCamera(_lvMs,lv.cam);
       const hits=_lvRay.intersectObjects(lv._wlTubes,false);
-      if(hits.length>0){
-        const idx=lv._wlTubes.indexOf(hits[0].object);
-        if(idx>=0){e.stopPropagation();_isolate(lv,idx);}
-      }
+      return hits.length>0?lv._wlTubes.indexOf(hits[0].object):-1;
+    }
+    lv.el.addEventListener('mousemove',e=>{
+      const idx=_lvHitTest(e);
+      if(idx!==_lvHovered){_lvHovered=idx;if(idx>=0)_highlight(lv,idx);else _unhighlight(lv);}
+    });
+    lv.el.addEventListener('mouseleave',()=>{_lvHovered=-1;_unhighlight(lv);});
+    lv.el.addEventListener('click',e=>{
+      const idx=_lvHitTest(e);
+      if(idx>=0){e.stopPropagation();_isolate(lv,idx);}
     });
   }
 }
