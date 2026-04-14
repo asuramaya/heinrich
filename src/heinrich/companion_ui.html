@@ -275,7 +275,7 @@ function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
   line.geometry.attributes.position.needsUpdate=true;line.visible=true;}
 let _lastDimState=-1;
 function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC)v.mtl.opacity=dim?0.35:0.85;if(vi>=NC&&v.trajGroup){const baseOp=dim?0.08:0.15;v.trajGroup.children.forEach(c=>{if(c.material)c.material.opacity=baseOp;});if(v.trajMarker)v.trajMarker.material.opacity=dim?0.35:0.9;}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible){m.material.opacity=0.95;m.material.size=dim?0.08:0.06;}});}
-function highlightToken(idx){hoveredToken=idx;views.forEach((v,vi)=>{const mk=highlightMarkers[vi];if(idx<0){mk.visible=false;hoverPaths[vi].visible=false;return;}mk.visible=true;_positionMarker(mk,v,vi,idx);_buildPathForVP(hoverPaths[vi],v,vi,idx);});_dimAll(idx>=0);_updatePCSHover(idx);_markDirty();}
+function highlightToken(idx){hoveredToken=idx;views.forEach((v,vi)=>{const mk=highlightMarkers[vi];if(idx<0){mk.visible=false;hoverPaths[vi].visible=false;return;}mk.visible=true;_positionMarker(mk,v,vi,idx);_buildPathForVP(hoverPaths[vi],v,vi,idx);});_dimAll(idx>=0);_updatePCSHover(idx);_nfPreload(idx);_markDirty();}
 // Unified pin sync — positions all markers in all viewports + delta + prism
 // Called every layer change (including during playback)
 // paths=true rebuilds trajectory paths (skip during playback for perf)
@@ -1436,18 +1436,23 @@ async function _nfLoadToken(tokIdx, slot){
   // Show dots immediately with whatever data we have, fetch in background
   _nfBuildDots();
   try{
-    const resp=await fetch(`/api/neuron-field/${model}/${mode}?token=${tokIdx}`);
-    if(!resp.ok)return;
-    const ct=resp.headers.get('content-type')||'';
-    if(ct.includes('json'))return;
-    const buf=await resp.arrayBuffer();
-    const u16=new Uint16Array(buf);
-    const f32=new Float32Array(u16.length);
-    for(let i=0;i<u16.length;i++)f32[i]=f16(u16[i]);
-    _nfCache.set(cacheKey,f32);// cache for instant re-pin
+    // Check cache first — may have been preloaded on hover
+    let f32=_nfCache.get(cacheKey);
+    if(!f32){
+      const resp=await fetch(`/api/neuron-field/${model}/${mode}?token=${tokIdx}`);
+      if(!resp.ok)return;
+      const ct=resp.headers.get('content-type')||'';
+      if(ct.includes('json'))return;
+      const buf=await resp.arrayBuffer();
+      const u16=new Uint16Array(buf);
+      f32=new Float32Array(u16.length);
+      for(let i=0;i<u16.length;i++)f32[i]=f16(u16[i]);
+      _nfCache.set(cacheKey,f32);
+    }
     if(slot==='A')_nfActA=f32;else _nfActB=f32;
     _nfBuildDots();_nfDeferTrails();
-  }catch(e){console.error('neuron-field:',e);}
+  }catch(e){console.error('neuron-field:',e);
+  }finally{if(slot==='A')_nfLoadingA=-1;else _nfLoadingB=-1;}
 }
 
 // Build trails in idle callback so dots appear instantly
@@ -1460,6 +1465,25 @@ function _nfDeferTrails(){
 function _nfUpdateActivations(){
   _nfLoadToken(pinnedToken,'A');
   _nfLoadToken(pinnedTokenB,'B');
+}
+// Speculative preload: fetch neuron data on hover so click-to-pin is instant
+let _nfPreloading=-1;
+function _nfPreload(tokIdx){
+  if(tokIdx<0||!model||_nfPreloading===tokIdx)return;
+  const cacheKey=`${model}/${mode}/${tokIdx}`;
+  if(_nfCache.has(cacheKey))return;// already cached
+  _nfPreloading=tokIdx;
+  fetch(`/api/neuron-field/${model}/${mode}?token=${tokIdx}`).then(r=>{
+    if(!r.ok)return null;const ct=r.headers.get('content-type')||'';if(ct.includes('json'))return null;
+    return r.arrayBuffer();
+  }).then(buf=>{
+    _nfPreloading=-1;
+    if(!buf)return;
+    const u16=new Uint16Array(buf);
+    const f32=new Float32Array(u16.length);
+    for(let i=0;i<u16.length;i++)f32[i]=f16(u16[i]);
+    _nfCache.set(cacheKey,f32);
+  }).catch(()=>{_nfPreloading=-1;});
 }
 
 let _nfLastLayer=-1;
