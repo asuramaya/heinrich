@@ -56,8 +56,8 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   <div class="vp" id="vp1"><div class="axes" id="ax1"></div><div class="llbl" id="lv0lbl">Delta A×B</div><div class="cbtn lv-btn lv-top" data-v="1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="vp" id="vp2"><div class="axes" id="ax2"></div><div class="cbtn lv-btn lv-top" data-v="2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div id="br0" style="grid-column:4;grid-row:1/4;display:flex;flex-direction:column;gap:1px">
-    <div class="browse" id="br0top" style="flex:2;position:relative;overflow:hidden"><div class="blbl">R-click=Token B</div>
-      <div class="cbtn" data-v="br" style="position:absolute;bottom:2px;right:2px"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button><button data-a="f1">F1</button><button data-a="f2">F2</button></div></div>
+    <div class="browse" id="br0topA" style="flex:1;position:relative;overflow:hidden;border-top:1px solid #FF6644"><div class="blbl" id="brLblA">click=vpA  R-click=vpB</div></div>
+    <div class="browse" id="br0topB" style="flex:1;position:relative;overflow:hidden;border-top:1px solid #4477AA"><div class="blbl" id="brLblB">click=vpA  R-click=vpB</div></div>
     <div id="br0bot" style="flex:1;position:relative;overflow:hidden;background:transparent"><div style="position:absolute;top:2px;left:4px;font-size:7px;color:#444;pointer-events:none;z-index:2" id="pcsLabel">PC Spectrum</div><div id="pcsTip" style="display:none;position:absolute;z-index:20;background:rgba(10,10,10,0.9);border:1px solid #333;padding:3px 6px;font-size:8px;color:#ccc;pointer-events:none;border-radius:3px;white-space:nowrap"></div></div>
   </div>
   <div class="vp" id="vp3"><div class="axes" id="ax3"></div><div class="cbtn lv-btn lv-bot" data-v="3"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
@@ -133,15 +133,22 @@ let _lastVP=0;
 for(let v=0;v<NV;v++){const el=document.getElementById('vp'+v);const sc=new THREE.Scene();sc.background=new THREE.Color(v>=NC?0x080808:0x0a0a0a);const cam=new THREE.PerspectiveCamera(50,1,0.001,200);cam.position.set(0,0,2.5);const ctl=new OrbitControls(cam,el);ctl.enableDamping=true;ctl.dampingFactor=0.08;ctl.minDistance=0.005;ctl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};el.addEventListener('pointerenter',()=>{_lastVP=v;});const geo=new THREE.BufferGeometry();const mtl=new THREE.PointsMaterial({size:0.02,vertexColors:true,transparent:true,opacity:0.85,sizeAttenuation:true,depthWrite:false});const pts=new THREE.Points(geo,mtl);sc.add(pts);views.push({el,cv:el,sc,cam,ctl,geo,mtl,pts,pcX:0,pcY:1,pcZ:2,layer:0,trajGroup:null});}
 function _resizeCanvas(){rdr.setSize(window.innerWidth,window.innerHeight);}
 
-// Combined browser
-const brEl=document.getElementById('br0top'),brCv=brEl;
+// Dual browser panels — same scene, two cameras focused on different PC neighborhoods
 const brSc=new THREE.Scene();brSc.background=new THREE.Color(0x050505);
-const brCam=new THREE.PerspectiveCamera(50,1,0.1,500);brCam.position.set(6,-2,10);
-const brCtl=new OrbitControls(brCam,brEl);brCtl.enableDamping=true;brCtl.dampingFactor=0.08;brCtl.target.set(6,-2,0);brCtl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};
+const _brPanels=[];
+['br0topA','br0topB'].forEach((id,pi)=>{
+  const el=document.getElementById(id);
+  const cam=new THREE.PerspectiveCamera(50,1,0.1,500);cam.position.set(0,0,15);
+  const ctl=new OrbitControls(cam,el);ctl.enableDamping=true;ctl.dampingFactor=0.08;ctl.target.set(0,0,0);ctl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};
+  ctl.addEventListener('change',_markDirty);
+  _brPanels.push({el,cam,ctl,focusPC:-1});
+});
+const brEl=_brPanels[0].el,brCv=brEl;
+const brCam=_brPanels[0].cam,brCtl=_brPanels[0].ctl;
 let brMeshes=[];
 function resizeAll(){_resizeCanvas();_markDirty();}
 addEventListener('resize',resizeAll);
-const ro=new ResizeObserver(()=>{_resizeCanvas();_markDirty();});views.forEach(v=>ro.observe(v.el));ro.observe(brEl);requestAnimationFrame(resizeAll);
+const ro=new ResizeObserver(()=>{_resizeCanvas();_markDirty();});views.forEach(v=>ro.observe(v.el));_brPanels.forEach(p=>ro.observe(p.el));requestAnimationFrame(resizeAll);
 
 // Markers + paths
 const ray=new THREE.Raycaster();const ms=new THREE.Vector2();
@@ -572,39 +579,44 @@ let _brCenterPair=[0,1];// the focused PC pair
 let _brCells=[];// [{pa,pb,cx,cy,radius}] — cell positions in the scene
 
 function _brComputeCells(){
-  // Center = selected pair, rings = neighbors that share one PC
-  const [ca,cb]=_brCenterPair;
+  // Build neighborhoods around BOTH focus PCs, merged into one cell set
+  const pcA=_brPanels[0].focusPC,pcB=_brPanels[1].focusPC;
+  const [ca,cb]=_brCenterPair;// still the selected pair
   _brCells=[];
-  const R=5;// neighborhood radius in PC-index space
+  const R=5;
   const added=new Set();
+  const maxPC=Math.max(nK,_pcsFullK||0,576);
   const addCell=(pa,pb,ring)=>{
     const a=Math.min(pa,pb),b=Math.max(pa,pb);
-    const maxPC=Math.max(nK,_pcsFullK||0,576);
     if(a<0||b<0||a>=maxPC||b>=maxPC||a===b)return;
     const key=`${a},${b}`;if(added.has(key))return;added.add(key);
     _brCells.push({pa:a,pb:b,ring});
   };
-  addCell(ca,cb,0);// center
-  for(let r=1;r<=R;r++){
-    for(let d=-r;d<=r;d++)for(let e=-r;e<=r;e++){
-      if(Math.max(Math.abs(d),Math.abs(e))!==r)continue;// only the shell
-      addCell(ca+d,cb+e,r);
-    }
+  // Neighborhood around the selected pair (original behavior)
+  addCell(ca,cb,0);
+  for(let r=1;r<=R;r++)for(let d=-r;d<=r;d++)for(let e=-r;e<=r;e++){
+    if(Math.max(Math.abs(d),Math.abs(e))!==r)continue;
+    addCell(ca+d,cb+e,r);
   }
-  // Position cells: center at (0,0), rings in concentric arrangement
+  // If PCs are far apart, also build neighborhoods around each PC independently
+  if(Math.abs(pcA-pcB)>R*2&&pcA>=0&&pcB>=0){
+    // Panel A: pcA paired with nearby PCs
+    for(let d=-R;d<=R;d++)for(let e=-R;e<=R;e++)addCell(pcA+d,pcA+R+1+e,Math.max(Math.abs(d),Math.abs(e)));
+    // Panel B: pcB paired with nearby PCs
+    for(let d=-R;d<=R;d++)for(let e=-R;e<=R;e++)addCell(pcB+d,pcB+R+1+e,Math.max(Math.abs(d),Math.abs(e)));
+  }
+  // Position all cells using absolute PC indices
   _brCells.forEach(c=>{
-    if(c.ring===0){c.cx=0;c.cy=0;c.rad=_BR_RAD*1.8;return;}
-    // Offset from center pair
-    const dx=c.pa-Math.min(ca,cb), dy=c.pb-Math.max(ca,cb);
-    c.cx=(dy-dx)*_SP*0.8;
-    c.cy=-(dy+dx)*_SP*0.8;
-    c.rad=c.ring===1?_BR_RAD*1.2:_BR_RAD*0.8;
+    c.cx=c.pb*_SP*0.8;
+    c.cy=-c.pa*_SP*0.8;
+    c.rad=c.ring===0?_BR_RAD*1.8:c.ring===1?_BR_RAD*1.2:_BR_RAD*0.8;
   });
 }
 
 function buildBrowser(){
   _disposeScene(brSc);
   _brOverlay=[];_brMxCache={};_brLayers=[];
+  _brPanels[0].focusPC=vpPairs[0][0];_brPanels[1].focusPC=vpPairs[0][1];
   _brCenterPair=[Math.min(vpPairs[0][0],vpPairs[0][1]),Math.max(vpPairs[0][0],vpPairs[0][1])];
   _brComputeCells();
   _brN=_brCells.length;
@@ -642,9 +654,27 @@ function buildBrowser(){
     brSc.add(pts);_brLayers.push({pts,layer:l,origPos:origPos.subarray(0,idx*3),tokMap:tokMap.subarray(0,idx)});
   }
   _brBuilt=true;_updateBrowserLayer();_updateBrowserOverlay();
-  if(!brCam._fitted||true){// always refit on rebuild
-    brCam.position.set(0,0,15);brCtl.target.set(0,0,cL*_ZSP);brCtl.update();brCam._fitted=true;
-  }
+  // Position each panel's camera on its focus PC's neighborhood
+  _brPanels[0].focusPC=vpPairs[0][0];_brPanels[1].focusPC=vpPairs[0][1];
+  _brFocusPanels();
+}
+function _brFocusPanels(){
+  const [ca,cb]=_brCenterPair;
+  _brPanels.forEach((p,pi)=>{
+    const pc=p.focusPC;if(pc<0)return;
+    // Center on the selected pair's cell position, projected to this PC's neighborhood
+    const tx=Math.max(ca,cb)*_SP*0.8,ty=-Math.min(ca,cb)*_SP*0.8,tz=cL*_ZSP;
+    // If PCs are far apart, center each panel on its own PC's neighborhood
+    let cx=tx,cy=ty;
+    if(Math.abs(_brPanels[0].focusPC-_brPanels[1].focusPC)>10){
+      // Find a cell involving this panel's focus PC
+      const cell=_brCells.find(c=>c.pa===pc||c.pb===pc);
+      if(cell){cx=cell.cx;cy=cell.cy;}
+    }
+    p.cam.position.set(cx,cy,tz+12);p.ctl.target.set(cx,cy,tz);p.ctl.update();
+    const lbl=document.getElementById(pi===0?'brLblA':'brLblB');
+    if(lbl)lbl.textContent=`PC${pc}  click=vpA  R-click=vpB`;
+  });
 }
 
 function _updateBrowserLayer(){
@@ -656,14 +686,11 @@ function _updateBrowserLayer(){
     pts.material.opacity=d===0?0.7:d===1?0.2:d===2?0.1:d<=3?0.04:0.02;
     pts.material.size=d===0?0.04:0.025;
   });
-  if(_brFollow>=0){
-    const[a,b]=vpPairs[_brFollow];const n=_brN;
-    if(a<n&&b<n){
-      const tx=Math.max(a,b)*_SP,ty=-Math.min(a,b)*_SP,tz=cL*_ZSP;
-      const off=brCam.position.clone().sub(brCtl.target);
-      brCtl.target.set(tx,ty,tz);brCam.position.set(tx+off.x,ty+off.y,tz+off.z);brCtl.update();
-    }
-  }
+  // Update Z target for layer scrub on both panels
+  _brPanels.forEach(p=>{
+    const off=p.cam.position.clone().sub(p.ctl.target);
+    const tz=cL*_ZSP;p.ctl.target.z=tz;p.cam.position.z=tz+off.z;p.ctl.update();
+  });
 }
 
 function _applyBrowserFilter(){
@@ -811,76 +838,63 @@ function _brClearHighlight(){
   });
 }
 
-// Browser hover + click
-brCv.addEventListener('contextmenu',e=>e.preventDefault(),true);
+// Browser hover + click — shared across both panels
 const bray=new THREE.Raycaster();const bms=new THREE.Vector2();let _bdx=0,_bdy=0;
-// Hover highlight box
 const _brHoverBox=(()=>{const eg=new THREE.EdgesGeometry(new THREE.PlaneGeometry(_BR_RAD*2.4,_BR_RAD*2.4));const e=new THREE.LineSegments(eg,new THREE.LineBasicMaterial({color:0xFFFFFF,transparent:true,opacity:0.6}));e.visible=false;e.frustumCulled=false;brSc.add(e);return e;})();
-let _brHoverLabel=null;// HUD text for hovered cell
-function _brResolveCell(e){
-  const r=brCv.getBoundingClientRect();bms.x=((e.clientX-r.left)/r.width)*2-1;bms.y=-((e.clientY-r.top)/r.height)*2+1;
-  bray.setFromCamera(bms,brCam);bray.params.Points.threshold=_SP*0.4;
+let _brHoverCell=null;
+function _brResolveCell(e,pi){
+  const p=_brPanels[pi];const r=p.el.getBoundingClientRect();
+  bms.x=((e.clientX-r.left)/r.width)*2-1;bms.y=-((e.clientY-r.top)/r.height)*2+1;
+  bray.setFromCamera(bms,p.cam);bray.params.Points.threshold=_SP*0.4;
   const targets=_brLayers.map(l=>l.pts).filter(Boolean);
   const hits=bray.intersectObjects(targets);if(!hits.length)return null;
-  const p=hits[0].point;
-  // Find closest cell center
+  const pt=hits[0].point;
   let best=null,bestD=Infinity;
-  _brCells.forEach(c=>{
-    const dx=p.x-c.cx,dy=p.y-c.cy;
-    const d=dx*dx+dy*dy;
-    if(d<bestD&&d<(c.rad*2)*(c.rad*2)){bestD=d;best=c;}
-  });
+  _brCells.forEach(c=>{const dx=pt.x-c.cx,dy=pt.y-c.cy;const d=dx*dx+dy*dy;if(d<bestD&&d<(c.rad*2)*(c.rad*2)){bestD=d;best=c;}});
   return best?{a:best.pa,b:best.pb}:null;
 }
-// Pyramid tooltip
-const _brTip=(()=>{const d=document.createElement('div');d.id='brTip';d.style.cssText='display:none;position:absolute;z-index:20;background:rgba(10,10,10,0.92);border:1px solid #444;padding:4px 8px;font-size:8px;color:#ccc;pointer-events:none;border-radius:3px;white-space:nowrap';document.getElementById('br0top').appendChild(d);return d;})();
-let _brHoverCell=null;
-
-brCv.addEventListener('mousemove',e=>{
-  const cell=_brResolveCell(e);
-  _brHoverCell=cell;
-  if(cell){
-    // Position hover box at the cell's radial position
-    const hCell=_brCells.find(c=>c.pa===Math.min(cell.a,cell.b)&&c.pb===Math.max(cell.a,cell.b));
-    _brHoverBox.position.set(hCell?hCell.cx:0,hCell?hCell.cy:0,cL*_ZSP);
-    _brHoverBox.visible=true;
-    _brHoverBox.scale.set(1.1,1.1,1);// slight enlarge on hover
-    // Tooltip
-    const rect=brCv.getBoundingClientRect();
-    _brTip.style.display='block';
-    _brTip.style.left=Math.min(e.clientX-rect.left+12,rect.width-140)+'px';
-    _brTip.style.top=Math.max(e.clientY-rect.top-24,4)+'px';
-    let t=`PC${cell.a} × PC${cell.b}`;
-    const vA=_layerVar[cL]?.[cell.a]||0, vB=_layerVar[cL]?.[cell.b]||0;
-    t+=`  var:${(vA*100).toFixed(1)}%/${(vB*100).toFixed(1)}%`;
-    if(pinnedToken>=0)t+=`  A:${_getScore(cL,pinnedToken,cell.a).toFixed(1)},${_getScore(cL,pinnedToken,cell.b).toFixed(1)}`;
-    if(pinnedTokenB>=0)t+=`  B:${_getScore(cL,pinnedTokenB,cell.a).toFixed(1)},${_getScore(cL,pinnedTokenB,cell.b).toFixed(1)}`;
-    const selA=vpPairs[0][0]===cell.a&&vpPairs[0][1]===cell.b;
-    const selB=vpPairs[2][0]===cell.a&&vpPairs[2][1]===cell.b;
-    if(selA)t+='  [vpA]';if(selB)t+='  [vpB]';
-    _brTip.textContent=t;
-    const lbl=document.querySelector('#br0top .blbl');
-    if(lbl)lbl.textContent=`PC${cell.a}×PC${cell.b}  click=vpA  R-click=vpB`;
-    // Cross-highlight both PCs in spectrum
-    _pcsHoverPC=cell.a;_updatePCSDots();
-  }else{
-    _brHoverBox.visible=false;_brHoverBox.scale.set(1,1,1);
-    _brTip.style.display='none';
-    const lbl=document.querySelector('#br0top .blbl');if(lbl)lbl.textContent='click=vpA  R-click=vpB';
-    if(_pcsHoverPC>=0){_pcsHoverPC=-1;_updatePCSDots();}
-  }
-  _markDirty();
-});
-brCv.addEventListener('mouseleave',()=>{_brHoverBox.visible=false;_brHoverBox.scale.set(1,1,1);_brTip.style.display='none';_brClearHighlight();_brHoverCell=null;const lbl=document.querySelector('#br0top .blbl');if(lbl)lbl.textContent='click=vpA  R-click=vpB';if(_pcsHoverPC>=0){_pcsHoverPC=-1;_updatePCSDots();}_markDirty();});
-brCv.addEventListener('pointerdown',e=>{_bdx=e.clientX;_bdy=e.clientY;});
-brCv.addEventListener('pointerup',e=>{if(Math.abs(e.clientX-_bdx)+Math.abs(e.clientY-_bdy)>5)return;
-  const cell=_brResolveCell(e);if(!cell)return;
-  const slot=_isRightClick(e)?2:0;
-  vpPairs[slot]=[cell.a,cell.b];
-  _brFollow=slot;
-  updateAllViewports();_rebuildWeightLines();_updatePCSDots();_saveState();
-  // Rebuild pyramid centered on the clicked pair
-  buildBrowser();
+// Per-panel tooltips
+_brPanels.forEach((p,pi)=>{
+  const tip=document.createElement('div');tip.style.cssText='display:none;position:absolute;z-index:20;background:rgba(10,10,10,0.92);border:1px solid #444;padding:4px 8px;font-size:8px;color:#ccc;pointer-events:none;border-radius:3px;white-space:nowrap';
+  p.el.appendChild(tip);p.tip=tip;
+  p.el.addEventListener('contextmenu',e=>e.preventDefault(),true);
+  p.el.addEventListener('mousemove',e=>{
+    const cell=_brResolveCell(e,pi);_brHoverCell=cell;
+    if(cell){
+      const hCell=_brCells.find(c=>c.pa===Math.min(cell.a,cell.b)&&c.pb===Math.max(cell.a,cell.b));
+      _brHoverBox.position.set(hCell?hCell.cx:0,hCell?hCell.cy:0,cL*_ZSP);_brHoverBox.visible=true;_brHoverBox.scale.set(1.1,1.1,1);
+      const rect=p.el.getBoundingClientRect();tip.style.display='block';
+      tip.style.left=Math.min(e.clientX-rect.left+12,rect.width-140)+'px';
+      tip.style.top=Math.max(e.clientY-rect.top-24,4)+'px';
+      let t=`PC${cell.a} × PC${cell.b}`;
+      const vA=_layerVar[cL]?.[cell.a]||0,vB=_layerVar[cL]?.[cell.b]||0;
+      t+=`  var:${(vA*100).toFixed(1)}%/${(vB*100).toFixed(1)}%`;
+      if(pinnedToken>=0)t+=`  A:${_getScore(cL,pinnedToken,cell.a).toFixed(1)},${_getScore(cL,pinnedToken,cell.b).toFixed(1)}`;
+      if(pinnedTokenB>=0)t+=`  B:${_getScore(cL,pinnedTokenB,cell.a).toFixed(1)},${_getScore(cL,pinnedTokenB,cell.b).toFixed(1)}`;
+      const selA=vpPairs[0][0]===cell.a&&vpPairs[0][1]===cell.b,selB=vpPairs[2][0]===cell.a&&vpPairs[2][1]===cell.b;
+      if(selA)t+='  [vpA]';if(selB)t+='  [vpB]';
+      tip.textContent=t;
+      const lbl=document.getElementById(pi===0?'brLblA':'brLblB');
+      if(lbl)lbl.textContent=`PC${cell.a}×PC${cell.b}  click=vpA  R-click=vpB`;
+      _pcsHoverPC=cell.a;_updatePCSDots();
+    }else{
+      _brHoverBox.visible=false;_brHoverBox.scale.set(1,1,1);tip.style.display='none';
+      const lbl=document.getElementById(pi===0?'brLblA':'brLblB');if(lbl)lbl.textContent=`PC${p.focusPC>=0?p.focusPC:'—'}  click=vpA  R-click=vpB`;
+      if(_pcsHoverPC>=0){_pcsHoverPC=-1;_updatePCSDots();}
+    }
+    _markDirty();
+  });
+  p.el.addEventListener('mouseleave',()=>{_brHoverBox.visible=false;_brHoverBox.scale.set(1,1,1);tip.style.display='none';_brClearHighlight();_brHoverCell=null;
+    const lbl=document.getElementById(pi===0?'brLblA':'brLblB');if(lbl)lbl.textContent=`PC${p.focusPC>=0?p.focusPC:'—'}  click=vpA  R-click=vpB`;
+    if(_pcsHoverPC>=0){_pcsHoverPC=-1;_updatePCSDots();}_markDirty();});
+  p.el.addEventListener('pointerdown',e=>{_bdx=e.clientX;_bdy=e.clientY;});
+  p.el.addEventListener('pointerup',e=>{if(Math.abs(e.clientX-_bdx)+Math.abs(e.clientY-_bdy)>5)return;
+    const cell=_brResolveCell(e,pi);if(!cell)return;
+    const slot=_isRightClick(e)?2:0;
+    vpPairs[slot]=[cell.a,cell.b];_brFollow=slot;
+    updateAllViewports();_rebuildWeightLines();_updatePCSDots();_saveState();
+    buildBrowser();
+  });
 });
 
 // === 2 left viewports: Delta + Weight Landscape ===
@@ -1937,7 +1951,7 @@ rightViews.forEach(v=>v.ctl.addEventListener('change',_markDirty));
     if(pinMarkersB[vi].visible)pinMarkersB[vi].material.size=ms;
     if(highlightMarkers[vi].visible)highlightMarkers[vi].material.size=ms*0.7;
     _renderRegion(v.el,v.sc,v.cam);});
-  brCtl.update();_renderRegion(brEl,brSc,brCam);
+  _brPanels.forEach(p=>{p.ctl.update();_renderRegion(p.el,brSc,p.cam);});
   leftViews.forEach(v=>{if(v.built){v.ctl.update();_renderRegion(v.el,v.sc,v.cam);}});
   rightViews.forEach(v=>{v.ctl.update();_renderRegion(v.el,v.sc,v.cam);});
   if(_pcsSc&&_pcsEl){_pcsCtl.update();_renderRegion(_pcsEl,_pcsSc,_pcsCam);}
