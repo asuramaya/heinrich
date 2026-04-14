@@ -1068,6 +1068,22 @@ function _rebuildWeightLines(){
   if(needsRebuild)_wlBuiltKey=key;
 }
 
+function _updateInternalsValues(lv,pcA,pcB){
+  if(!lv._valOverlay||!_wlData)return;
+  const nMat=_wlData[0]?.matrices?.length||0;
+  while(lv._valOverlay.firstChild)lv._valOverlay.removeChild(lv._valOverlay.firstChild);
+  for(let mi=0;mi<nMat;mi++){
+    if(lv._wlIsolated>=0&&mi!==lv._wlIsolated)continue;
+    const al=_wlData[cL]?.matrices?.[mi]?.alignment||[];
+    const vA=(al[pcA]||0),vB=(al[pcB]||0);
+    const mag=Math.sqrt(vA*vA+vB*vB);
+    const c='#'+_WL_COLORS[mi].toString(16).padStart(6,'0');
+    const sp=document.createElement('span');sp.style.color=c;sp.textContent=_WL_NAMES[mi];
+    const tx=document.createTextNode(' '+mag.toFixed(3));
+    lv._valOverlay.appendChild(sp);lv._valOverlay.appendChild(tx);
+    lv._valOverlay.appendChild(document.createElement('br'));
+  }
+}
 function _rebuildInternals(vi,pair,needsRebuild){
   const lv=leftViews[vi];if(!lv)return;
   const nMat=_wlData[0]?.matrices?.length||0;if(!nMat)return;
@@ -1196,6 +1212,17 @@ function _rebuildInternals(vi,pair,needsRebuild){
   if(!lv._camSet){lv.cam.position.set(0.3,0.3,zSpan*0.9);lv.ctl.target.set(0,0,0);lv.ctl.update();lv._camSet=true;}
   lv._wlLines=true;
 
+  // Value overlay: shows alignment values at current layer
+  let valOv=lv.el.querySelector('.wl-values');
+  if(!valOv){
+    valOv=document.createElement('div');valOv.className='wl-values';
+    valOv.style.cssText='position:absolute;top:16px;right:4px;z-index:2;font-size:7px;color:#888;pointer-events:none;text-align:right;line-height:1.6;font-family:monospace';
+    lv.el.appendChild(valOv);
+  }
+  lv._valOverlay=valOv;
+  // Update values (also called on layer change)
+  _updateInternalsValues(lv,pcA,pcB);
+
   // --- Interactive legend ---
   let leg=lv.el.querySelector('.wl-legend');
   if(!leg){
@@ -1215,16 +1242,31 @@ function _rebuildInternals(vi,pair,needsRebuild){
       const sel=parseInt(btn.dataset.mi);
       const wasIsolated=lv._wlIsolated===sel;
       lv._wlIsolated=wasIsolated?-1:sel;
+      // Fade/show tubes and lines
       lv._wlTubes.forEach((t,i)=>{
         if(lv._wlIsolated<0){t.material.opacity=0.4;t.visible=true;}
         else{t.material.opacity=i===lv._wlIsolated?0.7:0.02;t.visible=true;}
       });
       lv._wlTrajs.forEach((t,i)=>{
-        if(i>=nMat)return;// ghost petals
+        if(i>=nMat)return;
         if(lv._wlIsolated<0){t.material.opacity=0.5;t.visible=true;}
         else{t.material.opacity=i===lv._wlIsolated?0.8:0.03;t.visible=true;}
       });
-      _rebuildInternals(vi,pair,false);// update dots+petals
+      // Camera: focus = look along petal axis (chart view), unfocus = radial default
+      if(lv._wlIsolated>=0){
+        // Side view: camera perpendicular to the petal angle, looking at depth
+        const fa=angles[lv._wlIsolated];
+        // Position camera to the side of the petal — perpendicular angle, elevated
+        const perpX=Math.cos(fa+Math.PI/2)*1.8;
+        const perpY=Math.sin(fa+Math.PI/2)*1.8;
+        lv.cam.position.set(perpX,perpY,0);
+        lv.ctl.target.set(0,0,0);lv.ctl.update();
+      }else{
+        // Default: overhead radial view
+        lv.cam.position.set(0.3,0.3,zSpan*0.9);
+        lv.ctl.target.set(0,0,0);lv.ctl.update();
+      }
+      _rebuildInternals(vi,pair,false);
       leg.querySelectorAll('span').forEach((s,i)=>{s.style.opacity=lv._wlIsolated<0||i===lv._wlIsolated?'0.9':'0.3';});
       _markDirty();
     });
@@ -2045,6 +2087,8 @@ function _updateRVLayer(){
 function updateLeftViewports(){
   _updateDeltaPins();
   _rebuildWeightLines();
+  // Update value overlays on layer change
+  for(let vi=0;vi<3;vi++){const lv=leftViews[vi];if(lv&&lv._valOverlay)_updateInternalsValues(lv,vpPairs[vi][0],vpPairs[vi][1]);}
   _updateRVLayer();// always runs — just toggles opacity, instant
   if(!play){
     renderNeuronChart(pinnedToken,'neuronA','200,80,50');renderNeuronChart(pinnedTokenB,'neuronB','60,100,180');
