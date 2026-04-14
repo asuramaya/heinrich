@@ -109,7 +109,9 @@ heinrich sht-profile --model X --n-index 3000               # output distributio
 # MRI capture (the primary format)
 heinrich mri --model X --mode raw --output X.mri            # single mode capture
 heinrich mri --model X.checkpoint.pt --output X.mri         # causal bank MRI (auto-detects)
+heinrich mri --model X.pt --mode sequence --data val.bin --output X.mri  # causal bank sequence mode
 heinrich mri-scan --model X --output DIR                    # full workup: 3 modes + health + analysis
+heinrich mri-scan --model X.pt --data val.bin --output DIR  # causal bank: raw + sequence modes
 heinrich mri-backfill --model X --mri X.mri                 # fill missing weights in existing MRI
 heinrich mri-health --dir /Volumes/sharts                   # deep health check (shapes, NaN, gates, attn)
 heinrich mri-status --dir /Volumes/sharts                   # what's complete, incomplete, running
@@ -124,6 +126,21 @@ heinrich profile-pca-depth --mri X.mri                      # per-layer PCA stru
 heinrich profile-pca-anatomy --shrt S --frt F               # name unnamed PCA axes
 heinrich profile-pca-survey --pairs S1:F1 S2:F2             # cross-model PCA comparison
 
+# Causal bank sequence tools (reads sequence.mri, no model needed)
+heinrich profile-cb-loss --mri X.mri                        # per-position loss decomposition
+heinrich profile-cb-routing --mri X.mri                     # sequence-level expert routing
+heinrich profile-cb-temporal --mri X.mri                    # temporal attention forensics
+heinrich profile-cb-modes --mri X.mri                       # mode utilization by half-life quartile
+heinrich profile-cb-decompose --mri X.mri                   # manifold decomposition (position/content/ghost)
+heinrich profile-cb-gate-forensics --mri X.mri               # write gate: position dependence, difficulty, rank
+heinrich profile-cb-substrate-local --mri X.mri             # substrate vs local path balance
+heinrich profile-tokenizer-difficulty --mri X.mri           # embedding norm = difficulty
+heinrich profile-tokenizer-compare --tokenizers A.model B.model  # multi-tokenizer comparison
+
+# Causal bank diagnostics (needs model)
+heinrich profile-cb-causality --model X.checkpoint.pt       # finite-difference causality verification
+heinrich profile-cb-reproduce --model X.checkpoint.pt       # determinism check
+
 # Profile analysis (reads .npz or .mri, no model needed)
 heinrich profile-chain --frt F --shrt S --sht T             # three-stage correlation
 heinrich profile-cross --a S1 --b S2 --frt F                # two-model comparison
@@ -137,7 +154,8 @@ heinrich eval --model X --prompts simple_safety --scorers word_match
 
 # Infrastructure
 heinrich serve                   # MCP stdio server
-heinrich viz                     # web visualizer sidecar (http://localhost:8377)
+heinrich companion               # Live 3D MRI viewer (http://localhost:8377)
+heinrich viz                     # alias for companion
 heinrich audit <model_id>        # full behavioral security audit
 heinrich db summary              # database stats
 ```
@@ -185,7 +203,9 @@ All unit tests run without GPU. Integration tests need MLX + cached Qwen 0.5B.
 - `discover/` — direction finding, neuron profiling (legacy shrt.py here is stale — use profile/)
 - `attack/` — cliff search, steering, distributed attacks
 - `cartography/` — model config, templates, datasets, runtime, audit
-- `viz.py` — web visualizer sidecar (zero dependencies, reads from same DB)
+- `companion.py` — Live 3D MRI viewer server (companion_ui.html frontend)
+- `companion_ui.html` — Single-page 3D viewer: cloud/trajectory/prism/spectrum/neurons
+- `viz.py` — [deprecated] old DB-based visualizer, use `companion` instead
 - `mcp.py` — MCP tool definitions and ToolServer
 - `mcp_transport.py` — JSON-RPC stdio transport
 
@@ -239,6 +259,23 @@ Judge scorers disagree: qwen3guard says 97% safe, llamaguard says 63% safe on th
 - `heinrich_db_summary` — database overview
 - `heinrich_sql` — read-only SQL (blocks DROP/ATTACH/PRAGMA)
 - `heinrich_discover_results` — directions, neurons, sharts from DB
+
+**Causal bank sequence tools (reads sequence.mri, no model):**
+- `heinrich_cb_loss` — per-position loss decomposition, per-band, autocorrelation
+- `heinrich_cb_routing` — sequence-level expert routing, switch rate, margin
+- `heinrich_cb_temporal` — temporal attention forensics, correlation chain
+- `heinrich_cb_modes` — mode utilization by half-life quartile, growth curve
+- `heinrich_cb_decompose` — manifold decomposition (position/content/ghost PCA)
+- `heinrich_cb_gate_forensics` — write gate: position dependence, difficulty, effective rank
+- `heinrich_cb_substrate_local` — substrate vs local path balance by position
+
+**Tokenizer tools (no model):**
+- `heinrich_tokenizer_difficulty` — embedding norm analysis from MRI
+- `heinrich_tokenizer_compare` — multi-tokenizer comparison
+
+**Causal bank diagnostics (needs model):**
+- `heinrich_cb_causality` — finite-difference causality verification
+- `heinrich_cb_reproduce` — determinism check (two identical forward passes)
 
 **Note:** `heinrich_total_capture` is deprecated — use `heinrich_mri` instead. Analysis CLI commands (`profile-logit-lens`, `profile-gates`, `profile-attention`, `profile-layer-deltas`, `profile-pca-depth`) are available via CLI but not yet wired as MCP tools.
 

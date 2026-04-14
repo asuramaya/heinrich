@@ -28,16 +28,15 @@ def _json_or(args, result, formatter, *, analysis_name: str | None = None):
         try:
             from .profile.signals import emit_signals
             from .core.db import SignalDB
-            # Use project-relative DB path, not cwd-relative
-            _db_path = Path(__file__).resolve().parent.parent.parent / "data" / "heinrich.db"
-            db = SignalDB(str(_db_path))
+            db = SignalDB()
             mri_path = getattr(args, 'mri', None)
             n = emit_signals(analysis_name, result, db, mri_path=mri_path)
             if n > 0 and not getattr(args, 'json_output', False):
                 print(f"  ({n} signals → DB)", file=sys.stderr)
             db.close()
         except Exception as e:
-            print(f"  (DB write failed: {e})", file=sys.stderr)
+            print(f"  WARNING: DB write failed: {e}", file=sys.stderr)
+            print(f"  Results above are correct but were NOT recorded.", file=sys.stderr)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -153,13 +152,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_eval.add_argument("--db", default=None, help="Database path for eval (default: ./data/heinrich.db)")
     p_eval.add_argument("--max-prompts", type=int, default=None, help="Max prompts per set")
 
-    # Visualizer
-    p_viz = sub.add_parser("viz", help="Start the web visualizer sidecar (legacy DB browser)")
-    p_viz.add_argument("--port", type=int, default=8377, help="Port (default: 8377)")
-    p_viz.add_argument("--db", default=None, help="Database path")
-
-    p_comp = sub.add_parser("companion", help="Live 3D viewer + command runner + signal browser")
+    # Visualizer (companion is primary, viz is alias)
+    p_comp = sub.add_parser("companion", aliases=["viz"], help="Live 3D MRI viewer (http://localhost:8377)")
     p_comp.add_argument("--port", type=int, default=8377, help="Port (default: 8377)")
+
+    p_vizdeprecated = sub.add_parser("viz-legacy", help="[deprecated] Old DB-based visualizer")
+    p_vizdeprecated.add_argument("--port", type=int, default=8378, help="Port (default: 8378)")
+    p_vizdeprecated.add_argument("--db", default=None, help="Database path")
 
     # Tokenizer profile (.frt)
     p_frt = sub.add_parser("frt-profile", help="Generate a .frt tokenizer profile")
@@ -273,10 +272,18 @@ def build_parser() -> argparse.ArgumentParser:
     p_mriscan.add_argument("--n-index", type=int, default=None, help="Number of tokens (default: full vocabulary)")
     p_mriscan.add_argument("--result-json", default=None, help="Decepticon: path to result.json")
     p_mriscan.add_argument("--tokenizer-path", default=None, help="Decepticon: path to tokenizer model")
+    p_mriscan.add_argument("--data", default=None, help="Validation data .bin (causal bank sequence mode)")
+    p_mriscan.add_argument("--n-seqs", type=int, default=50, help="Sequences for sequence mode (default: 50)")
+    p_mriscan.add_argument("--seq-len", type=int, default=512, help="Sequence length (default: 512)")
 
     p_mrihealth = sub.add_parser("mri-health", help="Deep health check: verify shapes, NaN, weights, consistency for every MRI")
     p_mrihealth.add_argument("--dir", default="/Volumes/sharts", help="MRI directory (default: /Volumes/sharts)")
     p_mrihealth.add_argument("--mri", nargs="*", default=None, help="Specific .mri directories to check (default: all)")
+
+    p_decompose = sub.add_parser("mri-decompose", help="PCA decompose an MRI for the companion viewer. Writes decomp/ directory with scores, variance, and binary blob")
+    p_decompose.add_argument("--mri", required=True, help=".mri directory")
+    p_decompose.add_argument("--n-sample", type=int, default=0, help="Tokens to sample (0 = full vocabulary)")
+    p_decompose.add_argument("--n-components", type=int, default=0, help="PCA components (0 = all directions = hidden_size)")
 
     p_logitlens = sub.add_parser("profile-logit-lens", help="What would the model predict at each layer? Applies norm+lmhead to exit states")
     p_logitlens.add_argument("--mri", required=True, help=".mri directory")
@@ -307,6 +314,48 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_cb_health = sub.add_parser("profile-cb-health", help="Validate causal bank MRI: shapes, NaN, consistency")
     p_cb_health.add_argument("--mri", required=True, help=".mri directory (causal bank)")
+
+    p_cb_loss = sub.add_parser("profile-cb-loss", help="Causal bank loss decomposition by position, band, and autocorrelation")
+    p_cb_loss.add_argument("--mri", required=True, help=".mri directory (causal bank, sequence mode)")
+
+    p_cb_routing = sub.add_parser("profile-cb-routing", help="Causal bank sequence-level expert routing")
+    p_cb_routing.add_argument("--mri", required=True, help=".mri directory (causal bank, sequence mode)")
+
+    p_cb_temporal = sub.add_parser("profile-cb-temporal", help="Causal bank temporal attention forensics")
+    p_cb_temporal.add_argument("--mri", required=True, help=".mri directory (causal bank, sequence mode)")
+
+    p_cb_modes = sub.add_parser("profile-cb-modes", help="Causal bank mode utilization by half-life quartile")
+    p_cb_modes.add_argument("--mri", required=True, help=".mri directory (causal bank, sequence mode)")
+
+    p_cb_decompose = sub.add_parser("profile-cb-decompose", help="Causal bank manifold decomposition: position/content/ghost")
+    p_cb_decompose.add_argument("--mri", required=True, help=".mri directory (causal bank, sequence mode)")
+    p_cb_decompose.add_argument("--n-sample", type=int, default=None, help="Tokens to sample (default: all)")
+
+    p_cb_gate = sub.add_parser("profile-cb-gate-forensics", help="Causal bank write gate forensics: position dependence, difficulty correlation, effective rank")
+    p_cb_gate.add_argument("--mri", required=True, help=".mri directory (causal bank, sequence mode)")
+
+    p_cb_substrate = sub.add_parser("profile-cb-substrate-local", help="Causal bank substrate vs local path balance")
+    p_cb_substrate.add_argument("--mri", required=True, help=".mri directory (causal bank, sequence mode)")
+
+    p_tok_diff = sub.add_parser("profile-tokenizer-difficulty", help="Per-token difficulty from embedding norms (reads MRI)")
+    p_tok_diff.add_argument("--mri", required=True, help=".mri directory (causal bank)")
+
+    p_tok_compare = sub.add_parser("profile-tokenizer-compare", help="Compare sentencepiece tokenizers: compression, overlap, byte fallback")
+    p_tok_compare.add_argument("--tokenizers", nargs="+", required=True, help=".model files to compare")
+    p_tok_compare.add_argument("--text", default=None, help="Sample text file for compression stats")
+
+    p_cb_causality = sub.add_parser("profile-cb-causality", help="Finite-difference causality verification for causal bank models")
+    p_cb_causality.add_argument("--model", required=True, help="Checkpoint path (.checkpoint.pt)")
+    p_cb_causality.add_argument("--seq-len", type=int, default=256, help="Sequence length (default: 256)")
+    p_cb_causality.add_argument("--n-tests", type=int, default=8, help="Number of test positions (default: 8)")
+    p_cb_causality.add_argument("--result-json", default=None, help="Path to result.json")
+    p_cb_causality.add_argument("--tokenizer-path", default=None, help="Path to tokenizer model")
+
+    p_cb_reproduce = sub.add_parser("profile-cb-reproduce", help="Determinism check for causal bank models")
+    p_cb_reproduce.add_argument("--model", required=True, help="Checkpoint path (.checkpoint.pt)")
+    p_cb_reproduce.add_argument("--seq-len", type=int, default=256, help="Sequence length (default: 256)")
+    p_cb_reproduce.add_argument("--result-json", default=None, help="Path to result.json")
+    p_cb_reproduce.add_argument("--tokenizer-path", default=None, help="Path to tokenizer model")
 
     p_lookup = sub.add_parser("profile-lookup-fraction", help="How much of language modeling is a table lookup vs computation?")
     p_lookup.add_argument("--mri", required=True, help=".mri directory")
@@ -384,12 +433,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_mri = sub.add_parser("mri", help="Complete model residual image: tokenizer + state + baselines + directions in one file")
     p_mri.add_argument("--model", required=True, help="Model ID or checkpoint path")
     p_mri.add_argument("--backend", choices=["auto", "mlx", "hf", "decepticon"], default="auto", help="Backend (default: auto)")
-    p_mri.add_argument("--mode", choices=["template", "naked", "raw"], default="template")
+    p_mri.add_argument("--mode", choices=["template", "naked", "raw", "sequence"], default="template")
     p_mri.add_argument("--n-index", type=int, default=None, help="Number of tokens (default: full vocabulary)")
     p_mri.add_argument("--output", "-o", required=True, help="Output .mri directory")
     p_mri.add_argument("--db", default=None, help="Database path for direction discovery")
     p_mri.add_argument("--result-json", default=None, help="Decepticon: path to result.json for model config")
     p_mri.add_argument("--tokenizer-path", default=None, help="Decepticon: path to tokenizer model file")
+    p_mri.add_argument("--data", default=None, help="Validation data .bin file (uint16 tokens, for causal bank sequence mode)")
+    p_mri.add_argument("--n-seqs", type=int, default=50, help="Number of sequences for sequence mode (default: 50)")
+    p_mri.add_argument("--seq-len", type=int, default=512, help="Sequence length for sequence mode (default: 512)")
 
     p_capture = sub.add_parser("total-capture", help="[legacy] Use 'mri' instead. Capture every token, every layer.")
     p_capture.add_argument("--model", required=True, help="Model ID")
@@ -563,12 +615,12 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_run(args)
     elif args.command == "eval":
         _cmd_eval(args)
-    elif args.command == "viz":
-        from .viz import run_server
-        run_server(port=args.port, db_path=args.db or "data/heinrich.db")
-    elif args.command == "companion":
+    elif args.command in ("companion", "viz"):
         from .companion import run_companion
         run_companion(port=args.port)
+    elif args.command == "viz-legacy":
+        from .viz import run_server
+        run_server(port=args.port, db_path=args.db)
     elif args.command == "frt-profile":
         _cmd_frt(args)
     elif args.command == "shart-profile":
@@ -645,6 +697,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_mri_scan(args)
     elif args.command == "mri-health":
         _cmd_mri_health(args)
+    elif args.command == "mri-decompose":
+        _cmd_mri_decompose(args)
     elif args.command == "profile-logit-lens":
         _cmd_logit_lens(args)
     elif args.command == "profile-layer-deltas":
@@ -659,6 +713,28 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_cb_compare(args)
     elif args.command == "profile-cb-health":
         _cmd_cb_health(args)
+    elif args.command == "profile-cb-loss":
+        _cmd_cb_loss(args)
+    elif args.command == "profile-cb-routing":
+        _cmd_cb_routing(args)
+    elif args.command == "profile-cb-temporal":
+        _cmd_cb_temporal(args)
+    elif args.command == "profile-cb-modes":
+        _cmd_cb_modes(args)
+    elif args.command == "profile-cb-decompose":
+        _cmd_cb_decompose(args)
+    elif args.command == "profile-cb-gate-forensics":
+        _cmd_cb_gate_forensics(args)
+    elif args.command == "profile-cb-substrate-local":
+        _cmd_cb_substrate_local(args)
+    elif args.command == "profile-tokenizer-difficulty":
+        _cmd_tokenizer_difficulty(args)
+    elif args.command == "profile-tokenizer-compare":
+        _cmd_tokenizer_compare(args)
+    elif args.command == "profile-cb-causality":
+        _cmd_cb_causality(args)
+    elif args.command == "profile-cb-reproduce":
+        _cmd_cb_reproduce(args)
     elif args.command == "profile-lookup-fraction":
         _cmd_lookup_fraction(args)
     elif args.command == "profile-distribution-drift":
@@ -1250,8 +1326,16 @@ def _cmd_mri(args: argparse.Namespace) -> None:
     if getattr(args, 'tokenizer_path', None):
         backend_kwargs['tokenizer_path'] = args.tokenizer_path
     backend = load_backend(args.model, backend=backend_name, **backend_kwargs)
+    extra = {}
+    if getattr(args, 'data', None):
+        extra['val_data'] = args.data
+    if getattr(args, 'n_seqs', None):
+        extra['n_seqs'] = args.n_seqs
+    if getattr(args, 'seq_len', None):
+        extra['seq_len'] = args.seq_len
     result = capture_mri(backend, mode=args.mode, n_index=args.n_index,
-                          output=args.output, db_path=getattr(args, 'db', None))
+                          output=args.output, db_path=getattr(args, 'db', None),
+                          **extra)
     meta = result.get('metadata', result)
     capture = meta.get('capture', meta)
     print(f"\n  {capture.get('n_tokens', '?')} tokens")
@@ -1895,7 +1979,15 @@ def _cmd_mri_scan(args: argparse.Namespace) -> None:
     cfg = backend.config
     print(f"Model: {cfg.model_type}, L={cfg.n_layers}, H={cfg.hidden_size}, V={cfg.vocab_size}")
 
-    modes = ["raw", "naked", "template"]
+    is_cb = getattr(cfg, 'model_type', '') == 'causal_bank'
+    if is_cb:
+        modes = ["raw"]
+        if getattr(args, 'data', None):
+            modes.append("sequence")
+        else:
+            print("  (no --data provided, skipping sequence mode)")
+    else:
+        modes = ["raw", "naked", "template"]
     results = {}
     scan_start = _time.time()
 
@@ -1937,7 +2029,13 @@ def _cmd_mri_scan(args: argparse.Namespace) -> None:
         print(f"  {mode}: capturing...")
         t0 = _time.time()
         try:
-            capture_mri(backend, mode=mode, n_index=args.n_index, output=mri_path)
+            extra = {}
+            if mode == "sequence" and getattr(args, 'data', None):
+                extra['val_data'] = args.data
+                extra['n_seqs'] = getattr(args, 'n_seqs', 50)
+                extra['seq_len'] = getattr(args, 'seq_len', 512)
+            capture_mri(backend, mode=mode, n_index=args.n_index, output=mri_path,
+                        **extra)
             elapsed = _time.time() - t0
             results[mode] = {"captured": True, "elapsed_s": round(elapsed), "path": mri_path}
         except Exception as e:
@@ -2156,6 +2254,29 @@ def _cmd_mri_health(args: argparse.Namespace) -> None:
     _json_or(args, result, _fmt)
 
 
+def _cmd_mri_decompose(args: argparse.Namespace) -> None:
+    """PCA decompose MRI for the companion viewer."""
+    from .profile.compare import mri_decompose
+
+    result = mri_decompose(args.mri, n_sample=args.n_sample,
+                           n_components=args.n_components)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    def _fmt(r):
+        print(f"\n=== MRI Decompose: {r['model']} ({r['mode']}) ===\n")
+        print(f"  {r['n_tokens']} tokens × {r['n_components']} PCs × {r['n_layers']} layers")
+        print(f"  Binary: {r['bin_size_mb']} MB → {r['mri_path']}/decomp/all_scores.bin\n")
+        for lr in r['layers']:
+            dim_bar = '#' * min(int(lr['intrinsic_dim']), 40)
+            ln = lr['layer'] if isinstance(lr['layer'], str) else f"L{lr['layer']:02d}"
+            print(f"  {ln:>5s}  PC1={lr['pc1_pct']:>5.1f}%  dim={lr['intrinsic_dim']:>4.0f}  "
+                  f"nbr={lr['neighbor_stability']:.2f}  {dim_bar}")
+        print()
+    _json_or(args, result, _fmt)
+
+
 def _cmd_logit_lens(args: argparse.Namespace) -> None:
     """Logit lens: what would the model predict at each layer?"""
     from .profile.compare import logit_lens
@@ -2337,6 +2458,318 @@ def _cmd_cb_health(args: argparse.Namespace) -> None:
           f"{result['n_experts']} experts, {result['n_tokens']} tokens\n")
     for check in result['checks']:
         print(f"  {check}")
+
+
+def _cmd_cb_loss(args: argparse.Namespace) -> None:
+    """Causal bank loss decomposition."""
+    from .profile.compare import causal_bank_loss
+
+    result = causal_bank_loss(args.mri)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== CB Loss: {result['model']} — "
+          f"{result['n_seqs']} seqs x {result['seq_len']} positions ===\n")
+    print(f"  Overall: {result['overall_bpb']:.4f} bpb\n")
+
+    print(f"  {'Position':>12} {'Mean bpb':>10} {'Std':>8}")
+    for r in result['by_position']:
+        print(f"  {r['range']:>12} {r['mean_bpb']:>10.4f} {r['std_bpb']:>8.4f}")
+
+    if result['by_band']:
+        print(f"\n  Per-band loss:")
+        for b in result['by_band']:
+            print(f"    Band {b['band']}: {b['mean_bpb']:.4f} bpb")
+
+    if result['autocorrelation']:
+        print(f"\n  Loss autocorrelation:")
+        for a in result['autocorrelation']:
+            print(f"    lag {a['lag']:>3}: r={a['r']:.4f}")
+
+
+def _cmd_cb_routing(args: argparse.Namespace) -> None:
+    """Causal bank routing analysis."""
+    from .profile.compare import causal_bank_routing
+
+    result = causal_bank_routing(args.mri)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== CB Routing: {result['model']} — "
+          f"{result['n_experts']} experts, {result['n_seqs']} seqs ===\n")
+    print(f"  Switch rate: {result['switch_rate']:.2f}%")
+    print(f"  Routing margin: {result['routing_margin']:.4f}")
+    print(f"  Routing entropy: {result['routing_entropy']:.4f}\n")
+
+    print(f"  Overall distribution:")
+    for d in result['overall_distribution']:
+        bar = '#' * int(d['pct'] / 2)
+        print(f"    E{d['expert']}: {d['pct']:>5.1f}% {bar}")
+
+    if result['by_position']:
+        print(f"\n  {'Position':>12} {'Switch%':>8}  Distribution")
+        for p in result['by_position']:
+            dist_str = ' '.join(f'{v:.0f}%' for v in p['distribution'])
+            print(f"  {p['range']:>12} {p['switch_rate']:>7.1f}%  {dist_str}")
+
+
+def _cmd_cb_temporal(args: argparse.Namespace) -> None:
+    """Causal bank temporal attention forensics."""
+    from .profile.compare import causal_bank_temporal
+
+    result = causal_bank_temporal(args.mri)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== CB Temporal: {result['model']} — "
+          f"{result['n_seqs']} seqs x {result['seq_len']} positions ===\n")
+
+    print(f"  Output L2 by position:")
+    for r in result['output_l2_by_position']:
+        print(f"    {r['range']:>12}: mean={r['mean_l2']:.4f}  max={r['max_l2']:.4f}")
+
+    cc = result['correlation_chain']
+    print(f"\n  Correlation chain:")
+    for k, v in cc.items():
+        print(f"    {k}: r={v:.4f}")
+
+    sp = result.get('snapshot_profile', {})
+    if sp:
+        print(f"\n  Snapshot profile: {sp['n_snapshots']} snapshots, "
+              f"interval={sp['snapshot_interval']}, peak=#{sp['peak_snapshot']}")
+
+
+def _cmd_cb_modes(args: argparse.Namespace) -> None:
+    """Causal bank mode utilization."""
+    from .profile.compare import causal_bank_modes
+
+    result = causal_bank_modes(args.mri)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== CB Modes: {result['model']} — "
+          f"{result['n_modes']} modes, {result['n_seqs']} seqs ===\n")
+    print(f"  Dead modes: {result['dead_modes']}")
+
+    if result['by_quartile']:
+        print(f"\n  Mode activation by half-life quartile:")
+        for q in result['by_quartile']:
+            parts = ' '.join(f"{p['mean_abs']:.4f}" for p in q['by_position'])
+            print(f"    Q{q['quartile']} ({q['hl_range']}, {q['n_modes']}m): "
+                  f"ramp={q['ramp_ratio']:.1f}x  {parts}")
+
+    if result['growth_curve']:
+        print(f"\n  Substrate L2 growth:")
+        for g in result['growth_curve']:
+            print(f"    {g['range']:>12}: {g['mean_l2']:.4f}")
+
+    if result['most_varying']:
+        print(f"\n  Most position-varying modes:")
+        for m in result['most_varying']:
+            hl = f"hl={m['hl']:.1f}" if m['hl'] is not None else ""
+            print(f"    mode {m['mode']}: std={m['std']:.4f} {hl}")
+
+
+def _cmd_cb_decompose(args: argparse.Namespace) -> None:
+    """Causal bank manifold decomposition."""
+    from .profile.compare import causal_bank_decompose
+
+    result = causal_bank_decompose(args.mri, n_sample=getattr(args, 'n_sample', None))
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== CB Decompose: {result['model']} — "
+          f"{result['n_modes']} modes, {result['n_seqs']} seqs ===\n")
+
+    p = result['pca']
+    print(f"  PCA: eff_dim={p['effective_dim']}, "
+          f"50%={p['pcs_for_50']}PCs, 80%={p['pcs_for_80']}PCs, 95%={p['pcs_for_95']}PCs")
+    print(f"\n  Position R2: {result['position_r2']:.4f}")
+    print(f"  Content R2:  {result['content_r2']:.4f}")
+    print(f"\n  Variance breakdown (top 20 PCs):")
+    print(f"    Position: {result['position_fraction']:.1f}%")
+    print(f"    Content:  {result['content_fraction']:.1f}%")
+    print(f"    Ghost:    {result['ghost_fraction']:.1f}%")
+
+    print(f"\n  {'PC':>4} {'Var%':>6} {'Pos r':>7} {'Loss r':>7}")
+    for i in range(min(10, len(result['top_variance_pct']))):
+        print(f"  {i+1:>4} {result['top_variance_pct'][i]:>5.1f}% "
+              f"{result['pc_position_r'][i]:>7.3f} {result['pc_loss_r'][i]:>7.3f}")
+
+
+def _cmd_cb_gate_forensics(args: argparse.Namespace) -> None:
+    """Causal bank write gate forensics."""
+    from .profile.compare import causal_bank_gate_forensics
+
+    result = causal_bank_gate_forensics(args.mri)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== CB Gate Forensics: {result['model']} ({result['gate_type']}) — "
+          f"{result['n_gate_dims']} dims, {result['n_seqs']} seqs ===\n")
+
+    print(f"  VERDICT: {result['verdict']}\n")
+
+    print(f"  Position correlation (mean gate vs position): {result['position_correlation']:.4f}")
+    if result['difficulty_correlation'] is not None:
+        print(f"  Difficulty correlation (gate vs embed norm): {result['difficulty_correlation']:.4f}")
+    if result['loss_correlation'] is not None:
+        print(f"  Loss correlation (gate vs loss):             {result['loss_correlation']:.4f}")
+
+    print(f"\n  Effective rank: {result['effective_rank']:.1f}")
+    rk = result['effective_rank_pcs']
+    print(f"    PCs for 50%={rk['pcs_for_50']}, 80%={rk['pcs_for_80']}, 95%={rk['pcs_for_95']}")
+    print(f"  Entropy ratio: {result['entropy_ratio']:.4f} "
+          f"(mean={result['mean_mode_entropy']:.4f}, max={result['max_possible_entropy']:.4f})")
+
+    print(f"\n  Gate activation by position:")
+    print(f"  {'Position':>12} {'Mean':>8} {'Std':>8} {'Overwrite%':>11}")
+    for r in result['by_position']:
+        print(f"  {r['range']:>12} {r['mean_gate']:>8.4f} {r['std_gate']:>8.4f} "
+              f"{r['overwrite_fraction'] * 100:>10.1f}%")
+
+    if result['gate_by_half_life']:
+        print(f"\n  Gate by half-life quartile:")
+        for q in result['gate_by_half_life']:
+            print(f"    Q{q['quartile']} ({q['hl_range']}, {q['n_modes']}m): "
+                  f"mean={q['mean_gate']:.4f}, overwrite={q['overwrite_fraction']:.1%}, "
+                  f"|pos_r|={q['mean_pos_r']:.4f}")
+
+    print(f"\n  Most position-dependent modes:")
+    for m in result['position_dependent_modes']:
+        hl = f"hl={m['half_life']:.1f}" if 'half_life' in m else ""
+        print(f"    mode {m['mode']:>3}: r={m['position_r']:+.4f} {hl}")
+
+    if result.get('extra_gates'):
+        print(f"\n  Extra gates:")
+        for gname, ginfo in result['extra_gates'].items():
+            print(f"    {gname}: mean={ginfo['mean']:.4f}, position_r={ginfo['position_correlation']:.4f}")
+
+    print(f"\n  Gate PCA (top 10 variance %): {result['top_gate_variance_pct']}")
+
+
+def _cmd_cb_substrate_local(args: argparse.Namespace) -> None:
+    """Causal bank substrate vs local balance."""
+    from .profile.compare import causal_bank_substrate_local
+
+    result = causal_bank_substrate_local(args.mri)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== CB Substrate vs Local: {result['model']} — "
+          f"{result['n_seqs']} seqs x {result['seq_len']} positions ===\n")
+    print(f"  Has local path: {result['has_local']}")
+    if result['crossover_position'] is not None:
+        print(f"  Crossover position: {result['crossover_position']}")
+
+    header = f"  {'Position':>12} {'Sub L2':>10}"
+    if result['has_local']:
+        header += f" {'Local L2':>10} {'Ratio':>8}"
+    print(header)
+    for r in result['by_position']:
+        line = f"  {r['range']:>12} {r['substrate_l2']:>10.4f}"
+        if 'local_l2' in r:
+            line += f" {r['local_l2']:>10.4f} {r['substrate_local_ratio']:>7.1f}x"
+        print(line)
+
+
+def _cmd_tokenizer_difficulty(args: argparse.Namespace) -> None:
+    """Per-token difficulty from embedding norms."""
+    from .profile.compare import tokenizer_difficulty
+
+    result = tokenizer_difficulty(args.mri)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Tokenizer Difficulty: {result['model']} — "
+          f"{result['n_tokens']} tokens, {result['embed_dim']}d ===\n")
+    print(f"  Effective dim: {result['effective_dim']}")
+    if 'embed_substrate_r' in result:
+        print(f"  Embed-substrate correlation: r={result['embed_substrate_r']:.4f}")
+    print(f"  Embed norm range: [{result['embed_norm_range'][0]:.4f}, {result['embed_norm_range'][1]:.4f}]")
+    if result['near_duplicates'] >= 0:
+        print(f"  Near-duplicate pairs (cos>0.9): {result['near_duplicates']}")
+    print(f"\n  Difficulty quartiles:")
+    for q in result['difficulty_quartiles']:
+        print(f"    {q['label']:>12}: {q['n_tokens']:>5} tokens, mean_norm={q['mean_norm']:.4f}")
+
+
+def _cmd_tokenizer_compare(args: argparse.Namespace) -> None:
+    """Compare sentencepiece tokenizers."""
+    from .profile.compare import tokenizer_compare
+
+    sample_text = None
+    if args.text:
+        from pathlib import Path
+        sample_text = Path(args.text).read_text()
+
+    result = tokenizer_compare(args.tokenizers, sample_text=sample_text)
+
+    print(f"\n=== Tokenizer Comparison ===\n")
+    for t in result['tokenizers']:
+        print(f"  {t['path']}:")
+        print(f"    Vocab: {t['vocab_size']}, byte tokens: {t['byte_tokens']}, "
+              f"byte fallback: {t['byte_fallback_pct']:.2f}%")
+        print(f"    Mean token bytes: {t['mean_token_bytes']}")
+        if t['bytes_per_token'] is not None:
+            print(f"    Compression: {t['bytes_per_token']:.2f} B/tok, "
+                  f"{t['tokens_per_byte']:.4f} tok/B")
+        lens = t['length_distribution']
+        print(f"    Length dist: " +
+              ' '.join(f"{k}={v}" for k, v in lens.items() if v > 0))
+
+    if result['overlap']:
+        print(f"\n  Overlap:")
+        for key, val in result['overlap'].items():
+            print(f"    {key}: {val['common']} common, jaccard={val['jaccard']:.4f}")
+
+
+def _cmd_cb_causality(args: argparse.Namespace) -> None:
+    """Causality verification for causal bank models."""
+    from .backend.protocol import load_backend
+    from .profile.compare import causal_bank_causality
+
+    backend_kwargs = {}
+    if getattr(args, 'result_json', None):
+        backend_kwargs['result_json'] = args.result_json
+    if getattr(args, 'tokenizer_path', None):
+        backend_kwargs['tokenizer_path'] = args.tokenizer_path
+    backend = load_backend(args.model, backend="decepticon", **backend_kwargs)
+    result = causal_bank_causality(backend, seq_len=args.seq_len, n_tests=args.n_tests)
+
+    print(f"\n=== Causality Check ===\n")
+    print(f"  {result['verdict']}")
+    print(f"  Tested {result['n_tests']} positions in seq_len={result['seq_len']}")
+    if result['violations']:
+        print(f"\n  Violations:")
+        for v in result['violations']:
+            print(f"    Position {v['position']}: max_diff={v['max_logit_diff']:.6f}")
+
+
+def _cmd_cb_reproduce(args: argparse.Namespace) -> None:
+    """Determinism check for causal bank models."""
+    from .backend.protocol import load_backend
+    from .profile.compare import causal_bank_reproduce
+
+    backend_kwargs = {}
+    if getattr(args, 'result_json', None):
+        backend_kwargs['result_json'] = args.result_json
+    if getattr(args, 'tokenizer_path', None):
+        backend_kwargs['tokenizer_path'] = args.tokenizer_path
+    backend = load_backend(args.model, backend="decepticon", **backend_kwargs)
+    result = causal_bank_reproduce(backend, seq_len=args.seq_len)
+
+    print(f"\n=== Reproducibility Check ===\n")
+    print(f"  {result['verdict']}")
+    print(f"  max_diff={result['max_diff']}, mean_diff={result['mean_diff']}")
 
 
 def _cmd_lookup_fraction(args: argparse.Namespace) -> None:
@@ -3163,8 +3596,10 @@ def _to_dict(obj):
         return obj.tolist()
     if isinstance(obj, (_np.floating, _np.integer)):
         return obj.item()
-    if isinstance(obj, list):
+    if isinstance(obj, (list, tuple)):
         return [_to_dict(v) for v in obj]
+    if isinstance(obj, (set, frozenset)):
+        return [_to_dict(v) for v in sorted(obj, key=str)]
     if isinstance(obj, dict):
         return {k: _to_dict(v) for k, v in obj.items()}
     return obj
@@ -3178,7 +3613,7 @@ def _cmd_discover_directions(args):
     from .core.db import SignalDB
 
     backend = _load(args)
-    db = SignalDB(getattr(args, 'db_path', None) or 'data/heinrich.db')
+    db = SignalDB(getattr(args, 'db_path', None))
     prompts = db.get_prompts(limit=99999)
     pos = [p['text'] for p in prompts if not p.get('is_benign', True)][:args.n_sample]
     neg = [p['text'] for p in prompts if p.get('is_benign', True)][:args.n_sample]
@@ -3205,7 +3640,7 @@ def _cmd_discover_neurons(args):
     from .core.db import SignalDB
 
     backend = _load(args)
-    db = SignalDB(getattr(args, 'db_path', None) or 'data/heinrich.db')
+    db = SignalDB(getattr(args, 'db_path', None))
     prompts = db.get_prompts(limit=99999)
     pos = [p['text'] for p in prompts if not p.get('is_benign', True)][:100]
     neg = [p['text'] for p in prompts if p.get('is_benign', True)][:100]
@@ -3245,7 +3680,7 @@ def _cmd_discover_dimensionality(args):
     from .core.db import SignalDB
 
     backend = _load(args)
-    db = SignalDB(getattr(args, 'db_path', None) or 'data/heinrich.db')
+    db = SignalDB(getattr(args, 'db_path', None))
     prompts = db.get_prompts(limit=args.n_prompts)
     texts = [p['text'] for p in prompts]
     cfg = backend.config
