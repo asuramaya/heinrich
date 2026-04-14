@@ -611,13 +611,17 @@ function updateAllViewports(){
     const lbl=document.getElementById('lv0lbl');if(lbl)lbl.textContent='\u0394 PC'+vpPairs[1][0]+'\u00d7PC'+vpPairs[1][1];
     // Compute cells FIRST so _ensurePCData loads medium data for the right PCs
     _brComputeCells();
-    // Render immediately from blob data (tier 2), then upgrade when full PCs arrive
-    _rebuildClouds();
-    for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];updateVP(i,a,b,thirdPC(a,b),cL);}
-    for(let i=NC;i<NV;i++)updateTrajMarker(i);
-    if(pinnedToken>=0||pinnedTokenB>=0)_syncAllPins(true);
-    buildBrowser();_markDirty();
-    // Async: fetch full-res PC data, rebuild when ready
+    // Immediate render only if all needed PCs have data (blob or _pcFull)
+    const _allNeeded=new Set();for(const[a,b]of vpPairs){_allNeeded.add(a);_allNeeded.add(b);_allNeeded.add(thirdPC(a,b));}
+    const _canRenderNow=[..._allNeeded].every(pc=>pc<_blobScoreK||_pcFull.has(pc));
+    if(_canRenderNow){
+      _rebuildClouds();
+      for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];updateVP(i,a,b,thirdPC(a,b),cL);}
+      for(let i=NC;i<NV;i++)updateTrajMarker(i);
+      if(pinnedToken>=0||pinnedTokenB>=0)_syncAllPins(true);
+      buildBrowser();_markDirty();
+    }
+    // Async: fetch missing PC data, rebuild when ready
     _ensurePCData().then(()=>{
       _rebuildClouds();_markDirty();
       for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];updateVP(i,a,b,thirdPC(a,b),cL);}
