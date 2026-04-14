@@ -14,28 +14,26 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #br0{/* grid placement is now inline */}
 #rightcol{grid-column:5;grid-row:1/4;display:flex;flex-direction:column;gap:1px;overflow:hidden}
 .rvp{flex:1;position:relative;overflow:hidden;background:transparent}
-.rvp .rlbl{position:absolute;top:2px;left:4px;font-size:7px;color:#444;pointer-events:none;z-index:2}
+.rvp .rlbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
 #tokpanel{position:fixed;right:8px;top:8px;width:280px;max-height:60vh;overflow-y:auto;background:rgba(10,10,10,0.95);border:1px solid #222;border-radius:4px;padding:8px;z-index:20;font-size:9px;backdrop-filter:blur(4px);cursor:default}
 #tokpanel .drag-handle{cursor:move;padding:2px 0;margin-bottom:4px;border-bottom:1px solid #222;color:#444;font-size:7px;user-select:none}
 .lvp{flex:1;position:relative;overflow:hidden;background:transparent}
-.lvp .llbl{position:absolute;top:2px;left:4px;font-size:7px;color:#444;pointer-events:none;z-index:2}
-.lv-btn{position:absolute;right:2px;z-index:10}
-.lv-top{top:2px}
-.lv-bot{bottom:2px}
+.lvp .llbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
+/* lv-btn/lv-top/lv-bot removed — .cbtn handles all positioning (bottom-right) */
 .vp{position:relative;overflow:hidden;background:transparent}
-.vp .axes{position:absolute;top:3px;right:4px;font-size:8px;color:#444;pointer-events:none;z-index:2}
+.vp .axes{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
 .vp .info{position:absolute;top:3px;left:4px;font-size:9px;pointer-events:none;z-index:2}
 .vp .info .t{font-weight:bold}.vp .info .s{font-weight:bold;margin-left:4px}
-.cbtn{display:flex;gap:1px;z-index:5}
-.cbtn button{background:rgba(20,20,20,0.8);border:1px solid #2a2a2a;color:#555;padding:0 2px;font-size:6px;font-family:inherit;cursor:pointer;border-radius:1px;line-height:11px}
-.cbtn button:hover{color:#aaa;border-color:#555}
+.cbtn{display:flex;gap:2px;z-index:5;position:absolute;bottom:3px;right:4px}
+.cbtn button{background:rgba(20,20,20,0.85);border:1px solid #333;color:#666;padding:1px 4px;font-size:7px;font-family:inherit;cursor:pointer;border-radius:2px;line-height:13px}
+.cbtn button:hover{color:#ccc;border-color:#666}
 #cam-hub{position:fixed;top:50%;left:30%;transform:translate(-50%,-50%);z-index:10;display:flex;flex-direction:column;align-items:center;gap:1px}
 #cam-hub .row{display:flex;gap:8px;align-items:center}
 #cam-hub .lbl{color:#333;font-size:6px;width:16px;text-align:right}
+#cam-hub .cbtn{position:static;bottom:auto;right:auto}
 #cam-hub .master button{font-size:8px;padding:1px 5px;line-height:14px;border-color:#444;color:#666}
-.browse .cbtn{position:absolute;bottom:2px;right:2px}
 .browse{position:relative;overflow:hidden;background:transparent}
-.browse .blbl{position:absolute;top:2px;left:4px;font-size:8px;color:#555;pointer-events:none;z-index:2}
+.browse .blbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
 #tokpanel{background:#0a0a0a;overflow-y:auto;padding:6px 8px;border-top:1px solid #1a1a1a;font-size:9px}
 #tokpanel .th{font-size:8px;color:#555;margin-bottom:4px}
 #tokpanel .ta,.tokpanel .tb{margin-bottom:6px}
@@ -52,24 +50,24 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 <body>
 <canvas id="glCanvas"></canvas>
 <div id="main">
-  <div class="vp" id="vp0"><div class="axes" id="ax0"></div><div class="cbtn lv-btn lv-top" data-v="0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
-  <div class="vp" id="vp1"><div class="axes" id="ax1"></div><div class="llbl" id="lv0lbl">Delta A×B</div><div class="cbtn lv-btn lv-top" data-v="1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
-  <div class="vp" id="vp2"><div class="axes" id="ax2"></div><div class="cbtn lv-btn lv-top" data-v="2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+  <div class="vp" id="vp0"><div class="axes" id="ax0"></div><div class="cbtn" data-v="0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+  <div class="vp" id="vp1"><div class="axes" id="ax1"></div><div class="llbl" id="lv0lbl">Delta A×B</div><div class="cbtn" data-v="1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+  <div class="vp" id="vp2"><div class="axes" id="ax2"></div><div class="cbtn" data-v="2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div id="br0" style="grid-column:4;grid-row:1/4;display:flex;flex-direction:column;gap:1px">
     <div class="browse" id="br0topA" style="flex:1;position:relative;overflow:hidden;border-top:1px solid #FF6644"><div class="blbl" id="brLblA">click=vpA  R-click=vpB</div></div>
     <div class="browse" id="br0topB" style="flex:1;position:relative;overflow:hidden;border-top:1px solid #4477AA"><div class="blbl" id="brLblB">click=vpA  R-click=vpB</div></div>
-    <div id="br0bot" style="flex:1;position:relative;overflow:hidden;background:transparent"><div style="position:absolute;top:2px;left:4px;font-size:7px;color:#444;pointer-events:none;z-index:2" id="pcsLabel">PC Spectrum</div><div id="pcsTip" style="display:none;position:absolute;z-index:20;background:rgba(10,10,10,0.9);border:1px solid #333;padding:3px 6px;font-size:8px;color:#ccc;pointer-events:none;border-radius:3px;white-space:nowrap"></div></div>
+    <div id="br0bot" style="flex:1;position:relative;overflow:hidden;background:transparent"><div class="blbl" id="pcsLabel">PC Spectrum</div><div id="pcsTip" style="display:none;position:absolute;z-index:20;background:rgba(10,10,10,0.9);border:1px solid #333;padding:3px 6px;font-size:9px;color:#ccc;pointer-events:none;border-radius:3px;white-space:nowrap"></div><div class="cbtn" data-v="pcs"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   </div>
-  <div class="vp" id="vp3"><div class="axes" id="ax3"></div><div class="cbtn lv-btn lv-bot" data-v="3"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
-  <div class="vp" id="vp4"><div class="axes" id="ax4"></div><div class="cbtn lv-btn lv-bot" data-v="4"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
-  <div class="vp" id="vp5"><div class="axes" id="ax5"></div><div class="cbtn lv-btn lv-bot" data-v="5"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
-  <div class="lvp" id="lv0"><div class="llbl" id="lv0i">Internals A</div><div class="cbtn lv-btn lv-top" data-v="l0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
-  <div class="lvp" id="lv1"><div class="llbl" id="lv1i">Internals Δ</div><div class="cbtn lv-btn lv-top" data-v="l1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
-  <div class="lvp" id="lv2"><div class="llbl" id="lv2i">Internals B</div><div class="cbtn lv-btn lv-top" data-v="l2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+  <div class="vp" id="vp3"><div class="axes" id="ax3"></div><div class="cbtn" data-v="3"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+  <div class="vp" id="vp4"><div class="axes" id="ax4"></div><div class="cbtn" data-v="4"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+  <div class="vp" id="vp5"><div class="axes" id="ax5"></div><div class="cbtn" data-v="5"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+  <div class="lvp" id="lv0"><div class="llbl" id="lv0i">Internals A</div><div class="cbtn" data-v="l0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+  <div class="lvp" id="lv1"><div class="llbl" id="lv1i">Internals Δ</div><div class="cbtn" data-v="l1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+  <div class="lvp" id="lv2"><div class="llbl" id="lv2i">Internals B</div><div class="cbtn" data-v="l2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div id="rightcol">
-    <div class="rvp" id="rv0"><div class="rlbl">Weights</div></div>
-    <div class="rvp" id="rv1"><div class="rlbl">Neurons</div></div>
-    <div class="rvp" id="rv2"><div class="rlbl">Attention</div></div>
+    <div class="rvp" id="rv0"><div class="rlbl">Weights</div><div class="cbtn" data-v="r0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+    <div class="rvp" id="rv1"><div class="rlbl">Neurons</div><div class="cbtn" data-v="r1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+    <div class="rvp" id="rv2"><div class="rlbl">Attention</div><div class="cbtn" data-v="r2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   </div>
 </div>
 <div id="tokpanel">
@@ -470,7 +468,23 @@ function _snapLeft(li,axis){
   else v.cam.position.set(0,1,3);// weight landscape default
   v.ctl.update();_markDirty();
 }
-// XYZR hub: per-viewport, master, left, browser
+function _snapRight(ri,axis){
+  const v=rightViews[ri];if(!v)return;const d=v.cam.position.length()||2.5;v.ctl.target.set(0,0,0);
+  if(axis==='x')v.cam.position.set(d,0,0);
+  else if(axis==='y')v.cam.position.set(0,d,0);
+  else if(axis==='z')v.cam.position.set(0,0,d);
+  else v.cam.position.set(2,1.8,2.5);// default angled
+  v.ctl.update();_markDirty();
+}
+function _snapPCS(axis){
+  if(!_pcsCam||!_pcsCtl)return;const d=_pcsCam.position.length()||3.5;_pcsCtl.target.set(0,0,0);
+  if(axis==='x')_pcsCam.position.set(d,0,0);
+  else if(axis==='y')_pcsCam.position.set(0,d,0);
+  else if(axis==='z')_pcsCam.position.set(0,0,d);
+  else _pcsCam.position.set(0,0.8,3.5);// default
+  _pcsCtl.update();_markDirty();
+}
+// XYZR hub: per-viewport, master, left, right, browser, PCS
 // Stop pointerdown propagation so OrbitControls doesn't steal button clicks
 document.querySelectorAll('.cbtn').forEach(grp=>{
   grp.addEventListener('pointerdown',e=>e.stopPropagation());
@@ -480,8 +494,10 @@ document.querySelectorAll('.cbtn').forEach(grp=>{
     e.stopPropagation();e.preventDefault();const a=e.target.dataset.a;if(!a)return;
     const vStr=grp.dataset.v;
     if(vStr==='br'){_snapBrowser(a);return;}
-    if(vStr==='l0'||vStr==='l1'){_snapLeft(parseInt(vStr[1]),a);return;}
-    if(vStr==='all'){views.forEach((_,i)=>_snapOne(i,a));leftViews.forEach((_,i)=>_snapLeft(i,a));return;}
+    if(vStr==='l0'||vStr==='l1'||vStr==='l2'){_snapLeft(parseInt(vStr[1]),a);return;}
+    if(vStr==='r0'||vStr==='r1'||vStr==='r2'){_snapRight(parseInt(vStr[1]),a);return;}
+    if(vStr==='pcs'){_snapPCS(a);return;}
+    if(vStr==='all'){views.forEach((_,i)=>_snapOne(i,a));leftViews.forEach((_,i)=>_snapLeft(i,a));rightViews.forEach((_,i)=>_snapRight(i,a));return;}
     const vi=parseInt(vStr);
     if(e.shiftKey){_snapOne(vi,a);_snapOne(vi<NC?vi+NC:vi-NC,a);}
     else{_snapOne(vi,a);}
