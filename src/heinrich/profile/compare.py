@@ -4819,6 +4819,194 @@ def tokenizer_difficulty(mri_path: str, *, _mri=None) -> dict:
     }
 
 
+def causal_bank_rotation_probe(mri_path: str, *, n_sample: int | None = None,
+                                hidden_dim: int = 256, _mri=None) -> dict:
+    """Nonlinear and rotational information probes on sequence-mode MRI.
+
+    Linear R² misses nonlinear structure. This tool compares:
+    1. Linear probe vs random-features MLP probe (position + loss prediction)
+    2. Angular decomposition: mode pair phases and phase velocities
+    3. What the angles encode (position, content, difficulty)
+
+    If MLP R² >> linear R², there's information the linear probe misses.
+    If angular analysis shows position-dependent phase, the rotation encodes order.
+    """
+    from .mri import load_mri
+
+    mri = _mri or load_mri(mri_path)
+    meta = mri['metadata']
+    if meta.get('architecture') != 'causal_bank':
+        return {"error": "Not a causal bank MRI"}
+    if meta.get('capture', {}).get('mode') != 'sequence':
+        return {"error": "Requires sequence-mode MRI"}
+
+    substrate = mri['substrate_states'].astype(np.float32)
+    loss = mri['loss']
+    embedding = mri['embedding'].astype(np.float32) if 'embedding' in mri else None
+    n_seqs, seq_len, n_modes = substrate.shape
+
+    flat_sub = substrate.reshape(-1, n_modes)
+    flat_loss = loss.reshape(-1)
+    flat_pos = np.tile(np.arange(seq_len, dtype=np.float32), n_seqs)
+
+    n_total = flat_sub.shape[0]
+    if n_sample and n_sample < n_total:
+        rng = np.random.RandomState(42)
+        idx = rng.choice(n_total, n_sample, replace=False)
+    else:
+        idx = np.arange(n_total)
+    sub_s = flat_sub[idx]
+    pos_s = flat_pos[idx]
+    loss_s = flat_loss[idx]
+    valid_s = ~np.isnan(loss_s)
+
+    rng = np.random.RandomState(42)
+    perm = rng.permutation(len(idx))
+    split = int(len(perm) * 0.8)
+    train_idx, test_idx = perm[:split], perm[split:]
+
+    from numpy.linalg import lstsq
+    ones_train = np.ones((len(train_idx), 1), dtype=np.float32)
+    ones_test = np.ones((len(test_idx), 1), dtype=np.float32)
+
+    def _r2(y_true, y_pred):
+        ss_res = ((y_true - y_pred) ** 2).sum()
+        ss_tot = ((y_true - y_true.mean()) ** 2).sum()
+        return round(float(1.0 - ss_res / (ss_tot + 1e-10)), 6)
+
+    def _linear_probe(X_tr, X_te, y_tr, y_te):
+        Xt = np.hstack([X_tr, np.ones((len(X_tr), 1), dtype=np.float32)])
+        coef, _, _, _ = lstsq(Xt, y_tr, rcond=None)
+        pred = np.hstack([X_te, np.ones((len(X_te), 1), dtype=np.float32)]) @ coef
+        return _r2(y_te, pred)
+
+    def _mlp_probe(X_tr, X_te, y_tr, y_te, hdim=hidden_dim):
+        rng_mlp = np.random.RandomState(123)
+        W1 = rng_mlp.randn(X_tr.shape[1], hdim).astype(np.float32) * 0.1
+        b1 = rng_mlp.randn(hdim).astype(np.float32) * 0.01
+        H_tr = np.maximum(0, X_tr @ W1 + b1)
+        Ht = np.hstack([H_tr, np.ones((len(H_tr), 1), dtype=np.float32)])
+        coef, _, _, _ = lstsq(Ht, y_tr, rcond=None)
+        H_te = np.maximum(0, X_te @ W1 + b1)
+        pred = np.hstack([H_te, np.ones((len(H_te), 1), dtype=np.float32)]) @ coef
+        return _r2(y_te, pred)
+
+    # PCA
+    sub_c = sub_s - sub_s.mean(axis=0)
+    n_pcs = min(50, n_modes)
+    _, S, Vt = np.linalg.svd(sub_c, full_matrices=False)
+    scores = sub_c @ Vt[:n_pcs].T
+
+    X_tr_pca = scores[train_idx]
+    X_te_pca = scores[test_idx]
+
+    # Position probes
+    y_tr_pos = pos_s[train_idx]
+    y_te_pos = pos_s[test_idx]
+    pos_linear_pca = _linear_probe(X_tr_pca, X_te_pca, y_tr_pos, y_te_pos)
+    pos_mlp_pca = _mlp_probe(X_tr_pca, X_te_pca, y_tr_pos, y_te_pos)
+    # Also probe on raw substrate (first 256 modes for speed)
+    raw_dim = min(256, n_modes)
+    pos_mlp_raw = _mlp_probe(sub_s[train_idx, :raw_dim], sub_s[test_idx, :raw_dim],
+                              y_tr_pos, y_te_pos)
+
+    # Loss probes
+    v_tr = valid_s[train_idx]
+    v_te = valid_s[test_idx]
+    if v_tr.sum() > 50 and v_te.sum() > 10:
+        loss_linear_pca = _linear_probe(X_tr_pca[v_tr], X_te_pca[v_te],
+                                        loss_s[train_idx][v_tr], loss_s[test_idx][v_te])
+        loss_mlp_pca = _mlp_probe(X_tr_pca[v_tr], X_te_pca[v_te],
+                                   loss_s[train_idx][v_tr], loss_s[test_idx][v_te])
+    else:
+        loss_linear_pca = loss_mlp_pca = 0.0
+
+    # --- Angular decomposition ---
+    n_pairs = n_modes // 2
+    angles_per_pair = min(n_pairs, 128)
+    even = substrate[:, :, :angles_per_pair * 2:2]
+    odd = substrate[:, :, 1:angles_per_pair * 2:2]
+    angles = np.arctan2(odd, even)  # [n_seqs, seq_len, n_pairs]
+
+    # Phase velocity
+    d_angle = np.diff(angles, axis=1)
+    d_angle = (d_angle + np.pi) % (2 * np.pi) - np.pi
+
+    # Per-pair position correlation
+    positions = np.arange(seq_len, dtype=np.float32)
+    n_check = min(angles_per_pair, 50)
+    angle_pos_corr = np.zeros(n_check)
+    for p in range(n_check):
+        pair_angles = angles[:, :, p].mean(axis=0)
+        angle_pos_corr[p] = float(np.corrcoef(pair_angles, positions)[0, 1])
+
+    # Velocity by position range
+    ranges = [(0, 4), (4, 64), (64, 256), (256, seq_len)]
+    velocity_by_pos = []
+    for lo, hi in ranges:
+        hi = min(hi, seq_len - 1)
+        if lo >= seq_len - 1:
+            break
+        chunk = d_angle[:, lo:hi, :]
+        velocity_by_pos.append({
+            "range": f"{lo}-{hi}",
+            "mean_abs_velocity": round(float(np.abs(chunk).mean()), 4),
+            "velocity_std": round(float(chunk.std()), 4),
+        })
+
+    # Velocity-difficulty correlation
+    velocity_difficulty_corr = None
+    if embedding is not None:
+        embed_norm = np.linalg.norm(embedding, axis=-1)
+        mean_vel = np.abs(d_angle).mean(axis=-1)
+        velocity_difficulty_corr = round(float(np.corrcoef(
+            embed_norm[:, 1:].flatten(), mean_vel.flatten()
+        )[0, 1]), 4)
+
+    # Top position-correlated pairs
+    top_idx = np.argsort(np.abs(angle_pos_corr))[-5:][::-1]
+    top_pairs = [{"pair": int(p), "modes": (int(p*2), int(p*2+1)),
+                  "position_r": round(float(angle_pos_corr[p]), 4)}
+                 for p in top_idx]
+
+    # Angle-based position probes
+    flat_angles = angles.reshape(-1, angles.shape[-1])
+    ang_s = flat_angles[idx]
+    ang_tr = ang_s[train_idx, :n_check]
+    ang_te = ang_s[test_idx, :n_check]
+    angle_pos_linear = _linear_probe(ang_tr, ang_te, y_tr_pos, y_te_pos)
+    angle_pos_mlp = _mlp_probe(ang_tr, ang_te, y_tr_pos, y_te_pos)
+
+    return {
+        "model": meta['model'].get('name', '?'),
+        "n_seqs": n_seqs,
+        "seq_len": seq_len,
+        "n_modes": n_modes,
+        "n_sample": len(idx),
+        "probes": {
+            "position": {
+                "linear_pca50": pos_linear_pca,
+                "mlp_pca50": pos_mlp_pca,
+                "mlp_raw256": pos_mlp_raw,
+                "angle_linear": angle_pos_linear,
+                "angle_mlp": angle_pos_mlp,
+            },
+            "loss": {
+                "linear_pca50": loss_linear_pca,
+                "mlp_pca50": loss_mlp_pca,
+            },
+        },
+        "angular": {
+            "n_pairs_analyzed": n_check,
+            "max_pair_position_r": round(float(np.abs(angle_pos_corr).max()), 4),
+            "mean_pair_position_r": round(float(np.abs(angle_pos_corr).mean()), 4),
+            "top_position_pairs": top_pairs,
+            "velocity_by_position": velocity_by_pos,
+            "velocity_difficulty_corr": velocity_difficulty_corr,
+        },
+    }
+
+
 def causal_bank_gate_forensics(mri_path: str, *, _mri=None) -> dict:
     """Write gate forensics from sequence-mode causal bank MRI.
 
@@ -5271,7 +5459,13 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
         print(f"  Gate heatmap: {gate_heat.shape}", file=sys.stderr)
 
     # BIN_K: cap for binary blob and delta PCA (viewer initial load)
-    BIN_K = min(K, 50)
+    # Cap blob to ~100MB (JS doubles to float32 on parse)
+    total_layers = len(all_scores)
+    max_blob_bytes = 100 * 1024 * 1024
+    max_k = max(3, max_blob_bytes // (total_layers * n_sample * 2))
+    BIN_K = min(K, 50, max_k)
+    print(f"  Blob: {total_layers} layers × {n_sample} tokens × {BIN_K} PCs = "
+          f"{total_layers * n_sample * BIN_K * 2 / (1024*1024):.0f}MB", file=sys.stderr)
 
     # === Precompute delta PCA (exit - entry) ===
     delta_scores_all = []

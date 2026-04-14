@@ -2042,9 +2042,18 @@ async function loadAll(){
   const dv=new DataView(buf);
   const bnL=dv.getUint32(4,true),bnN=dv.getUint32(8,true),bnK=dv.getUint32(12,true);const varOff=16;_layerVar=[];
   for(let l=0;l<bnL;l++){const v=new Float32Array(bnK);for(let k=0;k<bnK;k++)v[k]=dv.getFloat32(varOff+(l*bnK+k)*4,true);_layerVar.push(v);}
-  const scoreOff=varOff+bnL*bnK*4;const sU16=new Uint16Array(buf,scoreOff,bnL*bnN*bnK);
-  const aF=new Float32Array(bnL*bnN*bnK);for(let i=0;i<sU16.length;i++)aF[i]=f16(sU16[i]);
-  allL=[];for(let l=0;l<bnL;l++){const ls=[];const off=l*bnN*bnK;for(let t=0;t<bnN;t++)ls.push(aF.subarray(off+t*bnK,off+t*bnK+bnK));allL.push(ls);}
+  // Parse scores: decode float16 one layer at a time to control peak memory
+  const scoreOff=varOff+bnL*bnK*4;
+  const totalScores=bnL*bnN*bnK;
+  allL=[];
+  for(let l=0;l<bnL;l++){
+    const layerU16=new Uint16Array(buf,scoreOff+l*bnN*bnK*2,bnN*bnK);
+    const f=new Float32Array(bnN*bnK);
+    for(let i=0;i<bnN*bnK;i++)f[i]=f16(layerU16[i]);
+    const ls=new Array(bnN);
+    for(let t=0;t<bnN;t++)ls[t]=f.subarray(t*bnK,t*bnK+bnK);
+    allL.push(ls);
+  }
   nK=bnK;// nK = blob's actual PC count, not decomp's full count
 
   // Legend
