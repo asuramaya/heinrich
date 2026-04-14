@@ -1069,6 +1069,7 @@ function _rebuildWeightLines(){
 }
 
 let _corrCache=null,_corrCacheKey='';
+function _clearCorrCache(){_corrCache=null;_corrCacheKey='';}
 function _updateInternalsValues(lv,pcA,pcB){
   if(!lv._legBtns||!_wlData)return;
   const nMat=_wlData[0]?.matrices?.length||0;
@@ -2029,6 +2030,16 @@ async function _pcsLoadFull(tokIdx, slot){
 function _buildPCSSpectrum(){
   if(!_pcsSc)_initPCSScene();
   if(!_pcsSc||!_nRealLayers)return;
+  // No tokens pinned → dormant state: hide dots, keep variance envelope
+  if(pinnedToken<0&&pinnedTokenB<0){
+    if(_pcsMeshA)_pcsMeshA.geometry.setDrawRange(0,0);
+    if(_pcsMeshB)_pcsMeshB.geometry.setDrawRange(0,0);
+    if(_pcsDotsA)_pcsDotsA.geometry.setDrawRange(0,0);
+    if(_pcsDotsB)_pcsDotsB.geometry.setDrawRange(0,0);
+    const lbl=document.getElementById('pcsLabel');
+    if(lbl)lbl.textContent=`PC Spectrum \u00b7 ${nK} PCs \u00b7 click a token to pin`;
+    _markDirty();return;
+  }
   // Use full PCA data if available, fall back to allL
   const hasFullData=_pcsFullA||_pcsFullB;
   _pcsNK=hasFullData?_pcsFullK:nK;
@@ -2718,7 +2729,7 @@ _addSnapButtons();
 document.getElementById('lrec').addEventListener('click',()=>{
   const t=_capTarget;if(t)recordViewport(t.sc,t.cam,t.el,t.vi);
 });
-document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;if(e.key==='ArrowRight')setLayer(_seqNext(cL));if(e.key==='ArrowLeft')setLayer(_seqPrev(cL));if(e.key===' '){e.preventDefault();_togglePlay();}if(e.key==='Escape'&&(pinnedToken>=0||pinnedTokenB>=0)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();}
+document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;if(e.key==='ArrowRight')setLayer(_seqNext(cL));if(e.key==='ArrowLeft')setLayer(_seqPrev(cL));if(e.key===' '){e.preventDefault();_togglePlay();}if(e.key==='Escape'&&(pinnedToken>=0||pinnedTokenB>=0)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();}
 if(e.key==='p'||e.key==='P'){const t=_capTarget;if(t)captureViewport(t.sc,t.cam,t.el,t.vi);}
 if(e.key==='g'||e.key==='G'){const t=_capTarget;if(t)recordViewport(t.sc,t.cam,t.el,t.vi);}
 });
