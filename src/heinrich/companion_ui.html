@@ -111,7 +111,7 @@ const CL={latin:0x4477AA,CJK:0xEE6677,Cyrillic:0x228833,code:0xCCBB44,Arabic:0x6
 const CLh=Object.fromEntries(Object.entries(CL).map(([k,v])=>[k,'#'+v.toString(16).padStart(6,'0')]));
 let allL=[],dm=null,cL=0,play=false;
 const vpPairs=[[0,1],[0,2],[2,3]];// [pairA, delta(pcA0×pcB0), pairB]
-let model='',mode='',scripts=[],texts=[],nN=0,nK=0,nL=0,_layerVar=[];
+let model='',mode='',scripts=[],texts=[],nN=0,nK=0,nL=0,_layerVar=[],_blobScoreK=0;
 const _hiddenScripts=new Set();// scripts toggled off by legend clicks
 const api=p=>fetch('/api/'+p).then(r=>r.json());
 function f16(h){const s=(h>>15)&1,e=(h>>10)&0x1f,m=h&0x3ff;if(e===0)return m===0?0:(s?-1:1)*2**-14*(m/1024);if(e===31)return m?NaN:(s?-Infinity:Infinity);return(s?-1:1)*2**(e-15)*(1+m/1024);}
@@ -181,8 +181,8 @@ function _getScore(l,i,pc){
   // Tier 1: full resolution cache (primary path for ALL PCs)
   const full=_pcFull.get(pc);
   if(full)return full[l*_pcFullNT+i]||0;
-  // Tier 2: blob fallback (first nK PCs, initial load only)
-  if(pc<nK&&allL[l]?.[i])return allL[l][i][pc]||0;
+  // Tier 2: blob fallback (first _blobScoreK PCs only)
+  if(pc<_blobScoreK&&allL[l]?.[i])return allL[l][i][pc]||0;
   // Tier 3: medium resolution (sampled, for radial neighbors)
   const med=_pcMedium.get(pc);
   if(med){const si=Math.floor(i/med.step);if(si<med.nS)return med.data[l*med.nS+si]||0;}
@@ -2091,7 +2091,8 @@ async function loadAll(){
     for(let t=0;t<bnN;t++)ls[t]=f.subarray(t*bnK,t*bnK+bnK);
     allL.push(ls);
   }
-  nK=bnVK;// nK = full variance PC count (spectrum uses this), not the capped score count
+  nK=bnVK;// nK = full variance PC count (spectrum uses this)
+  _blobScoreK=bnK;// blob only has this many score PCs per token in allL
 
   // Legend
   _hiddenScripts.clear();
