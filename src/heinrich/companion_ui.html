@@ -2140,7 +2140,15 @@ async function loadAll(){
     vpPairs[2]=prevPairs[1].map(p=>Math.min(p,nK-1));
     vpPairs[1]=prevPairs[1].map(p=>Math.min(p,nK-1));
     _rstL=Math.min(prevLayer,nL-1);
-  }else{vpPairs[0]=[0,1];vpPairs[2]=[2,3];}// delta (vpPairs[1]) auto-derived
+  }else{
+    // Fresh load: random PCs and tokens to stress-test the data pipeline
+    const _rpc=()=>Math.floor(Math.random()*Math.min(nK,300));
+    const _a=_rpc(),_b=_rpc(),_c=_rpc(),_d=_rpc();
+    vpPairs[0]=[_a,_b===_a?(_a+1)%nK:_b];
+    vpPairs[2]=[_c,_d===_c?(_c+1)%nK:_d];
+    pinnedToken=Math.floor(Math.random()*nN);
+    pinnedTokenB=Math.floor(Math.random()*nN);
+  }// delta (vpPairs[1]) auto-derived
 
   // Cross-model token matching: find same token text in new model
   if(pinnedToken<0&&prevPinTextA){const idx=texts.indexOf(prevPinTextA);if(idx>=0)pinnedToken=idx;}
