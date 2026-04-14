@@ -1995,6 +1995,17 @@ async function _onPinChange(){
 }
 
 let _nRealLayers=0;
+// Model-order layer sequence: emb → L00 → ... → L(N-1) → lmh
+// Indices into allL/score arrays: [_nRealLayers, 0, 1, ..., _nRealLayers-1, _nRealLayers+1]
+let _layerSeq=[];// built after model load
+function _buildLayerSeq(){
+  _layerSeq=[];
+  if(nL>_nRealLayers)_layerSeq.push(_nRealLayers);// emb
+  for(let i=0;i<_nRealLayers;i++)_layerSeq.push(i);
+  if(nL>_nRealLayers+1)_layerSeq.push(_nRealLayers+1);// lmh
+}
+function _seqNext(cur){const i=_layerSeq.indexOf(cur);return _layerSeq[(i+1)%_layerSeq.length];}
+function _seqPrev(cur){const i=_layerSeq.indexOf(cur);return _layerSeq[(i-1+_layerSeq.length)%_layerSeq.length];}
 function _layerName(l){if(l<_nRealLayers)return'L'+String(l).padStart(2,'0');const vl=dm?.virtual_layers||[];return vl[l-_nRealLayers]||'L'+l;}
 function _safeLayerVar(l){return l<_layerVar.length?_layerVar[l]:null;}
 function updateHUD(){
@@ -2044,7 +2055,7 @@ async function loadAll(){
   ]);
   if(dmResult.error){document.getElementById('st').textContent=dmResult.error;if(_ld)_ld.style.display='none';return;}
   dm=dmResult;model=newModel;mode=newMode;
-  nL=dm.n_layers;_nRealLayers=dm.n_real_layers||nL;
+  nL=dm.n_layers;_nRealLayers=dm.n_real_layers||nL;_buildLayerSeq();
   // Clear all PCA caches on model switch
   _pcsHoverCache.clear();_hoverCache.clear();_pcFull.clear();_pcMedium.clear();_nfCache.clear();
   _pcsFullA=null;_pcsFullB=null;_pcsFullK=0;_pcsFullNL=0;_pcsScale=0;_pcsNK=0;
@@ -2116,14 +2127,14 @@ async function loadAll(){
   const _rst=_loadState();let _rstL=prevLayer;
   if(_rst&&_rst.m===model&&_rst.d===mode){
     if(_rst.p){const pp=_rst.p.split(',').map(s=>s.split('-').map(Number));if(pp[0]&&pp[0].length===2)vpPairs[0]=pp[0];if(pp[1]&&pp[1].length===2)vpPairs[2]=pp[1];}
-    if(_rst.l!==undefined)_rstL=Math.min(parseInt(_rst.l)||0,_nRealLayers-1);
+    if(_rst.l!==undefined)_rstL=Math.min(parseInt(_rst.l)||0,nL-1);
     if(_rst.a!==undefined){const a=parseInt(_rst.a);if(a>=0&&a<nN)pinnedToken=a;}
     if(_rst.b!==undefined){const b=parseInt(_rst.b);if(b>=0&&b<nN)pinnedTokenB=b;}
   }else if(prevPairs){
     vpPairs[0]=prevPairs[0].map(p=>Math.min(p,nK-1));
     vpPairs[2]=prevPairs[1].map(p=>Math.min(p,nK-1));
     vpPairs[1]=prevPairs[1].map(p=>Math.min(p,nK-1));
-    _rstL=Math.min(prevLayer,_nRealLayers-1);
+    _rstL=Math.min(prevLayer,nL-1);
   }else{vpPairs[0]=[0,1];vpPairs[2]=[2,3];}// delta (vpPairs[1]) auto-derived
 
   // Cross-model token matching: find same token text in new model
@@ -2156,8 +2167,8 @@ async function init(){const models=await api('models');const sel=document.getEle
   document.getElementById('bl').addEventListener('click',loadAll);
   document.getElementById('lemb').addEventListener('click',()=>{if(nL>_nRealLayers)setLayer(_nRealLayers);else setLayer(0);});
   document.getElementById('llmh').addEventListener('click',()=>{if(nL>_nRealLayers+1)setLayer(_nRealLayers+1);else setLayer(_nRealLayers-1);});
-  document.getElementById('lprev').addEventListener('click',()=>{if(_nRealLayers)setLayer((cL-1+_nRealLayers)%_nRealLayers);});
-  document.getElementById('lnext').addEventListener('click',()=>{if(_nRealLayers)setLayer((cL+1)%_nRealLayers);});
+  document.getElementById('lprev').addEventListener('click',()=>{if(_layerSeq.length)setLayer(_seqPrev(cL));});
+  document.getElementById('lnext').addEventListener('click',()=>{if(_layerSeq.length)setLayer(_seqNext(cL));});
   document.getElementById('lplay').addEventListener('click',_togglePlay);
   // Token search (debounced, event delegation)
   let _searchTimer=null;
@@ -2188,7 +2199,7 @@ let _playRAF=null,_playLastT=0;
 const _playMS=100; // ms per layer — 10 layers/sec, full sweep in 3s at 30 layers
 function _playFrame(t){
   if(!play)return;
-  if(t-_playLastT>=_playMS){_playLastT=t;setLayer((cL+1)%_nRealLayers,true);}
+  if(t-_playLastT>=_playMS){_playLastT=t;setLayer(_seqNext(cL),true);}
   _playRAF=requestAnimationFrame(_playFrame);
 }
 function _togglePlay(){
@@ -2341,8 +2352,9 @@ async function recordViewport(sc,cam,el,vi,fps){
   el.classList.add('vp-recording');
   const startL=cL;
   const delay=Math.round(100/fps);// GIF delay in 1/100th seconds
-  for(let l=0;l<_nRealLayers;l++){
-    setLayer(l,true);
+  const seq=_layerSeq.length?_layerSeq:[...Array(_nRealLayers).keys()];
+  for(let si=0;si<seq.length;si++){
+    setLayer(seq[si],true);const l=seq[si];
     cam.aspect=w/h;cam.updateProjectionMatrix();
     tmp.render(sc,cam);
     // Composite: 3D render + text overlay
@@ -2393,7 +2405,7 @@ _addSnapButtons();
 document.getElementById('lrec').addEventListener('click',()=>{
   const t=_capTarget;if(t)recordViewport(t.sc,t.cam,t.el,t.vi);
 });
-document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;if(e.key==='ArrowRight')setLayer((cL+1)%_nRealLayers);if(e.key==='ArrowLeft')setLayer((cL-1+_nRealLayers)%_nRealLayers);if(e.key===' '){e.preventDefault();_togglePlay();}if(e.key==='Escape'&&(pinnedToken>=0||pinnedTokenB>=0)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();}
+document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;if(e.key==='ArrowRight')setLayer(_seqNext(cL));if(e.key==='ArrowLeft')setLayer(_seqPrev(cL));if(e.key===' '){e.preventDefault();_togglePlay();}if(e.key==='Escape'&&(pinnedToken>=0||pinnedTokenB>=0)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();}
 if(e.key==='p'||e.key==='P'){const t=_capTarget;if(t)captureViewport(t.sc,t.cam,t.el,t.vi);}
 if(e.key==='g'||e.key==='G'){const t=_capTarget;if(t)recordViewport(t.sc,t.cam,t.el,t.vi);}
 });
