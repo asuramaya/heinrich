@@ -4206,8 +4206,862 @@ def causal_bank_health(mri_path: str, *, _mri=None) -> dict:
     }
 
 
+def causal_bank_loss(mri_path: str, *, _mri=None) -> dict:
+    """Per-position loss decomposition from sequence-mode causal bank MRI.
+
+    Breaks down loss by position range, band, and autocorrelation.
+    """
+    from .mri import load_mri
+
+    mri = _mri or load_mri(mri_path)
+    meta = mri['metadata']
+    if meta.get('architecture') != 'causal_bank':
+        return {"error": "Not a causal bank MRI"}
+    if meta.get('capture', {}).get('mode') != 'sequence':
+        return {"error": "Requires sequence-mode MRI (not impulse)"}
+
+    loss = mri['loss']  # [n_seqs, seq_len]
+    n_seqs, seq_len = loss.shape
+
+    valid = ~np.isnan(loss)
+    flat_loss = loss[valid]
+    overall_bpb = float(np.mean(flat_loss))
+
+    ranges = [(0, 4), (4, 64), (64, 256), (256, seq_len)]
+    by_pos = []
+    for lo, hi in ranges:
+        hi = min(hi, seq_len)
+        if lo >= seq_len:
+            break
+        chunk = loss[:, lo:hi]
+        chunk_valid = chunk[~np.isnan(chunk)]
+        if len(chunk_valid) == 0:
+            continue
+        by_pos.append({
+            "range": f"{lo}-{hi}",
+            "mean_bpb": round(float(np.mean(chunk_valid)), 4),
+            "std_bpb": round(float(np.std(chunk_valid)), 4),
+            "n_positions": hi - lo,
+        })
+
+    by_band = []
+    if 'band_loss' in mri:
+        band_loss = mri['band_loss']  # [n_seqs, seq_len, n_bands]
+        n_bands = band_loss.shape[2]
+        for b in range(n_bands):
+            bl = band_loss[:, 1:, b]
+            bl_valid = bl[~np.isnan(bl)]
+            if len(bl_valid) > 0:
+                by_band.append({
+                    "band": b,
+                    "mean_bpb": round(float(np.mean(bl_valid)), 4),
+                })
+
+    autocorr = []
+    mean_loss = loss[:, 1:]
+    for lag in [1, 2, 4, 8, 16, 32, 64, 128]:
+        if lag >= seq_len - 1:
+            break
+        a = mean_loss[:, :-lag].flatten()
+        b_arr = mean_loss[:, lag:].flatten()
+        mask = ~(np.isnan(a) | np.isnan(b_arr))
+        if mask.sum() < 10:
+            continue
+        r = float(np.corrcoef(a[mask], b_arr[mask])[0, 1])
+        autocorr.append({"lag": lag, "r": round(r, 4)})
+
+    return {
+        "model": meta['model'].get('name', '?'),
+        "n_seqs": n_seqs,
+        "seq_len": seq_len,
+        "overall_bpb": round(overall_bpb, 4),
+        "by_position": by_pos,
+        "by_band": by_band,
+        "autocorrelation": autocorr,
+    }
+
+
+def causal_bank_routing(mri_path: str, *, _mri=None) -> dict:
+    """Sequence-level expert routing from sequence-mode causal bank MRI."""
+    from .mri import load_mri
+
+    mri = _mri or load_mri(mri_path)
+    meta = mri['metadata']
+    if meta.get('architecture') != 'causal_bank':
+        return {"error": "Not a causal bank MRI"}
+    if meta.get('capture', {}).get('mode') != 'sequence':
+        return {"error": "Requires sequence-mode MRI"}
+    if 'routing' not in mri or mri.get('routing') is None:
+        return {"error": "MRI has no routing data (single-expert model?)"}
+
+    routing = mri['routing'].astype(np.float32)  # [n_seqs, seq_len, n_experts]
+    n_seqs, seq_len, n_experts = routing.shape
+
+    winners = np.argmax(routing, axis=-1)
+    overall_dist = []
+    for e in range(n_experts):
+        pct = float((winners == e).mean()) * 100
+        overall_dist.append({"expert": e, "pct": round(pct, 2)})
+
+    switches = (winners[:, 1:] != winners[:, :-1])
+    switch_rate = float(switches.mean()) * 100
+
+    ranges = [(0, 4), (4, 64), (64, 256), (256, seq_len)]
+    by_pos = []
+    for lo, hi in ranges:
+        hi = min(hi, seq_len)
+        if lo >= seq_len:
+            break
+        chunk_winners = winners[:, lo:hi]
+        dist = [round(float((chunk_winners == e).mean()) * 100, 1) for e in range(n_experts)]
+        sr = 0.0
+        if hi - lo > 1:
+            chunk_switches = (chunk_winners[:, 1:] != chunk_winners[:, :-1])
+            sr = float(chunk_switches.mean()) * 100
+        by_pos.append({
+            "range": f"{lo}-{hi}",
+            "distribution": dist,
+            "switch_rate": round(sr, 2),
+        })
+
+    sorted_r = np.sort(routing, axis=-1)
+    margin = float((sorted_r[:, :, -1] - sorted_r[:, :, -2]).mean())
+
+    flat_routing = routing.reshape(-1, n_experts)
+    flat_safe = flat_routing / (flat_routing.sum(axis=-1, keepdims=True) + 1e-10)
+    entropy = float(-(flat_safe * np.log(flat_safe + 1e-10)).sum(axis=-1).mean())
+
+    return {
+        "model": meta['model'].get('name', '?'),
+        "n_seqs": n_seqs,
+        "seq_len": seq_len,
+        "n_experts": n_experts,
+        "overall_distribution": overall_dist,
+        "switch_rate": round(switch_rate, 2),
+        "routing_margin": round(margin, 4),
+        "routing_entropy": round(entropy, 4),
+        "by_position": by_pos,
+    }
+
+
+def causal_bank_temporal(mri_path: str, *, _mri=None) -> dict:
+    """Temporal attention forensics from sequence-mode causal bank MRI."""
+    from .mri import load_mri
+
+    mri = _mri or load_mri(mri_path)
+    meta = mri['metadata']
+    if meta.get('architecture') != 'causal_bank':
+        return {"error": "Not a causal bank MRI"}
+    if meta.get('capture', {}).get('mode') != 'sequence':
+        return {"error": "Requires sequence-mode MRI"}
+    if 'temporal_output' not in mri or mri.get('temporal_output') is None:
+        return {"error": "MRI has no temporal attention data"}
+
+    temporal_output = mri['temporal_output'].astype(np.float32)
+    temporal_weights = mri.get('temporal_weights')
+    substrate = mri['substrate_states'].astype(np.float32)
+    embedding = mri['embedding'].astype(np.float32) if 'embedding' in mri else None
+
+    n_seqs, seq_len, n_modes = temporal_output.shape
+    snapshot_interval = meta['capture'].get('snapshot_interval', 64)
+
+    ta_l2 = np.linalg.norm(temporal_output, axis=-1)
+    ranges = [(0, 4), (4, 64), (64, 256), (256, seq_len)]
+    l2_by_pos = []
+    for lo, hi in ranges:
+        hi = min(hi, seq_len)
+        if lo >= seq_len:
+            break
+        chunk = ta_l2[:, lo:hi]
+        l2_by_pos.append({
+            "range": f"{lo}-{hi}",
+            "mean_l2": round(float(chunk.mean()), 4),
+            "max_l2": round(float(chunk.max()), 4),
+        })
+
+    sub_disp = np.linalg.norm(substrate, axis=-1).flatten()
+    ta_disp = ta_l2.flatten()
+    corr_chain = {}
+    if embedding is not None:
+        embed_norm = np.linalg.norm(embedding, axis=-1).flatten()
+        corr_chain["embed_substrate"] = round(float(np.corrcoef(embed_norm, sub_disp)[0, 1]), 4)
+        corr_chain["embed_temporal"] = round(float(np.corrcoef(embed_norm, ta_disp)[0, 1]), 4)
+    corr_chain["substrate_temporal"] = round(float(np.corrcoef(sub_disp, ta_disp)[0, 1]), 4)
+
+    snapshot_profile = {}
+    if temporal_weights is not None:
+        tw = temporal_weights.astype(np.float32)
+        n_snapshots = tw.shape[2]
+        mean_per_snap = tw.mean(axis=(0, 1))
+        snapshot_profile = {
+            "n_snapshots": int(n_snapshots),
+            "snapshot_interval": snapshot_interval,
+            "mean_weight_per_snapshot": [round(float(w), 4) for w in mean_per_snap],
+            "peak_snapshot": int(np.argmax(mean_per_snap)),
+        }
+
+    return {
+        "model": meta['model'].get('name', '?'),
+        "n_seqs": n_seqs,
+        "seq_len": seq_len,
+        "output_l2_by_position": l2_by_pos,
+        "correlation_chain": corr_chain,
+        "snapshot_profile": snapshot_profile,
+    }
+
+
+def causal_bank_modes(mri_path: str, *, _mri=None) -> dict:
+    """Mode utilization from sequence-mode causal bank MRI."""
+    from .mri import load_mri
+
+    mri = _mri or load_mri(mri_path)
+    meta = mri['metadata']
+    if meta.get('architecture') != 'causal_bank':
+        return {"error": "Not a causal bank MRI"}
+    if meta.get('capture', {}).get('mode') != 'sequence':
+        return {"error": "Requires sequence-mode MRI"}
+
+    substrate = mri['substrate_states'].astype(np.float32)
+    half_lives = mri.get('half_lives')
+    n_seqs, seq_len, n_modes = substrate.shape
+
+    if half_lives is not None:
+        half_lives = np.asarray(half_lives, dtype=np.float32)
+        quartile_edges = np.percentile(half_lives, [0, 25, 50, 75, 100])
+    else:
+        quartile_edges = None
+
+    ranges = [(0, 4), (4, 64), (64, 256), (256, seq_len)]
+    by_quartile = []
+    if quartile_edges is not None:
+        for q in range(4):
+            lo_hl, hi_hl = quartile_edges[q], quartile_edges[q + 1]
+            mask = (half_lives >= lo_hl) & (half_lives <= hi_hl) if q == 3 else \
+                   (half_lives >= lo_hl) & (half_lives < hi_hl)
+            if not mask.any():
+                continue
+            sub_q = substrate[:, :, mask]
+            row = {
+                "quartile": q,
+                "hl_range": f"{lo_hl:.1f}-{hi_hl:.1f}",
+                "n_modes": int(mask.sum()),
+                "by_position": [],
+            }
+            for lo, hi in ranges:
+                hi = min(hi, seq_len)
+                if lo >= seq_len:
+                    break
+                chunk = np.abs(sub_q[:, lo:hi, :])
+                row["by_position"].append({
+                    "range": f"{lo}-{hi}",
+                    "mean_abs": round(float(chunk.mean()), 4),
+                })
+            early = np.abs(sub_q[:, :min(4, seq_len), :]).mean()
+            late = np.abs(sub_q[:, max(0, seq_len - 64):, :]).mean()
+            row["ramp_ratio"] = round(float(late / (early + 1e-10)), 2)
+            by_quartile.append(row)
+
+    max_activation = np.abs(substrate).max(axis=(0, 1))
+    mean_act = max_activation.mean()
+    dead_modes = int((max_activation < mean_act * 0.01).sum())
+
+    pos_std = np.abs(substrate).mean(axis=0).std(axis=0)
+    top_varying = np.argsort(pos_std)[-5:][::-1]
+    most_varying = [{"mode": int(m), "std": round(float(pos_std[m]), 4),
+                     "hl": round(float(half_lives[m]), 1) if half_lives is not None else None}
+                    for m in top_varying]
+
+    l2_by_pos = np.linalg.norm(substrate, axis=-1).mean(axis=0)
+    growth_curve = []
+    for lo, hi in ranges:
+        hi = min(hi, seq_len)
+        if lo >= seq_len:
+            break
+        growth_curve.append({
+            "range": f"{lo}-{hi}",
+            "mean_l2": round(float(l2_by_pos[lo:hi].mean()), 4),
+        })
+
+    return {
+        "model": meta['model'].get('name', '?'),
+        "n_seqs": n_seqs,
+        "seq_len": seq_len,
+        "n_modes": n_modes,
+        "by_quartile": by_quartile,
+        "dead_modes": dead_modes,
+        "most_varying": most_varying,
+        "growth_curve": growth_curve,
+    }
+
+
+def causal_bank_decompose(mri_path: str, *, n_sample: int | None = None,
+                          _mri=None) -> dict:
+    """Manifold decomposition from sequence-mode causal bank MRI.
+
+    PCA on sequence substrate. Identifies which PCs encode position (clock),
+    which predict loss (content), and which are ghosts (neither).
+    """
+    from .mri import load_mri
+
+    mri = _mri or load_mri(mri_path)
+    meta = mri['metadata']
+    if meta.get('architecture') != 'causal_bank':
+        return {"error": "Not a causal bank MRI"}
+    if meta.get('capture', {}).get('mode') != 'sequence':
+        return {"error": "Requires sequence-mode MRI"}
+
+    substrate = mri['substrate_states'].astype(np.float32)
+    loss = mri['loss']
+    n_seqs, seq_len, n_modes = substrate.shape
+
+    flat_sub = substrate.reshape(-1, n_modes)
+    n_total = flat_sub.shape[0]
+    flat_loss = loss.reshape(-1)
+    flat_pos = np.tile(np.arange(seq_len), n_seqs)
+
+    if n_sample and n_sample < n_total:
+        rng = np.random.RandomState(42)
+        idx = rng.choice(n_total, n_sample, replace=False)
+        flat_sub = flat_sub[idx]
+        flat_loss = flat_loss[idx]
+        flat_pos = flat_pos[idx]
+
+    sub_c = flat_sub - flat_sub.mean(axis=0)
+    _, S, Vt = np.linalg.svd(sub_c, full_matrices=False)
+    var_exp = (S ** 2) / (S ** 2).sum()
+    cum = np.cumsum(var_exp)
+    scores = sub_c @ Vt.T
+
+    pca = {
+        "effective_dim": round(float(np.exp(-(var_exp * np.log(var_exp + 1e-10)).sum())), 1),
+        "pcs_for_50": int(np.searchsorted(cum, 0.5)) + 1,
+        "pcs_for_80": int(np.searchsorted(cum, 0.8)) + 1,
+        "pcs_for_95": int(np.searchsorted(cum, 0.95)) + 1,
+    }
+
+    valid = ~np.isnan(flat_loss)
+    n_pcs = min(20, scores.shape[1])
+    pc_position_r = []
+    pc_loss_r = []
+    for i in range(n_pcs):
+        r_pos = float(np.corrcoef(scores[:, i], flat_pos.astype(np.float32))[0, 1])
+        if valid.sum() > 10:
+            r_loss = float(np.corrcoef(scores[valid, i], flat_loss[valid])[0, 1])
+        else:
+            r_loss = 0.0
+        pc_position_r.append(round(r_pos, 4))
+        pc_loss_r.append(round(r_loss, 4))
+
+    from numpy.linalg import lstsq
+    # Add intercept column for proper R² (PCA scores are zero-mean,
+    # but position and loss targets are not)
+    ones = np.ones((scores.shape[0], 1), dtype=np.float32)
+
+    X_pos = np.hstack([scores[:, :n_pcs], ones])
+    y_pos = flat_pos.astype(np.float32)
+    coef, _, _, _ = lstsq(X_pos, y_pos, rcond=None)
+    pred_pos = X_pos @ coef
+    ss_res = float(((y_pos - pred_pos) ** 2).sum())
+    ss_tot = float(((y_pos - y_pos.mean()) ** 2).sum())
+    position_r2 = round(1.0 - ss_res / (ss_tot + 1e-10), 4)
+
+    if valid.sum() > n_pcs:
+        X_loss = np.hstack([scores[valid, :n_pcs], ones[valid]])
+        y_loss = flat_loss[valid]
+        coef_l, _, _, _ = lstsq(X_loss, y_loss, rcond=None)
+        pred_loss = X_loss @ coef_l
+        ss_res_l = float(((y_loss - pred_loss) ** 2).sum())
+        ss_tot_l = float(((y_loss - y_loss.mean()) ** 2).sum())
+        content_r2 = round(1.0 - ss_res_l / (ss_tot_l + 1e-10), 4)
+    else:
+        content_r2 = 0.0
+
+    threshold = 0.1
+    ghost_var = position_var = content_var = 0.0
+    for i in range(n_pcs):
+        v = float(var_exp[i])
+        is_pos = abs(pc_position_r[i]) > threshold
+        is_content = abs(pc_loss_r[i]) > threshold
+        if is_pos:
+            position_var += v
+        elif is_content:
+            content_var += v
+        else:
+            ghost_var += v
+    total_top = sum(float(var_exp[i]) for i in range(n_pcs))
+
+    return {
+        "model": meta['model'].get('name', '?'),
+        "n_seqs": n_seqs,
+        "seq_len": seq_len,
+        "n_modes": n_modes,
+        "pca": pca,
+        "position_r2": position_r2,
+        "content_r2": content_r2,
+        "ghost_fraction": round(ghost_var / (total_top + 1e-10) * 100, 1),
+        "position_fraction": round(position_var / (total_top + 1e-10) * 100, 1),
+        "content_fraction": round(content_var / (total_top + 1e-10) * 100, 1),
+        "pc_position_r": pc_position_r,
+        "pc_loss_r": pc_loss_r,
+        "top_variance_pct": [round(float(v) * 100, 2) for v in var_exp[:n_pcs]],
+    }
+
+
+def causal_bank_causality(backend, *, seq_len: int = 256, n_tests: int = 8,
+                          seed: int = 42) -> dict:
+    """Finite-difference causality test for causal bank models.
+
+    Runs full sequence vs truncated sequence. If logits[t] differ between
+    full and truncated-at-t, information leaked from future positions.
+    """
+    rng = np.random.RandomState(seed)
+    vocab_size = backend.config.vocab_size
+    seq = rng.randint(0, vocab_size, (1, seq_len)).astype(np.int64)
+
+    full_logits = backend.forward(seq)  # [1, seq_len, vocab]
+
+    test_positions = sorted(rng.choice(range(4, seq_len - 1), n_tests, replace=False))
+    violations = []
+
+    for t in test_positions:
+        truncated = seq[:, :t + 1]
+        trunc_logits = backend.forward(truncated)
+
+        full_t = full_logits[0, t]
+        trunc_t = trunc_logits[0, t]
+        max_diff = float(np.abs(full_t - trunc_t).max())
+
+        if max_diff > 1e-4:
+            violations.append({
+                "position": int(t),
+                "max_logit_diff": round(max_diff, 6),
+                "mean_logit_diff": round(float(np.abs(full_t - trunc_t).mean()), 6),
+            })
+
+    causal = len(violations) == 0
+    return {
+        "causal": causal,
+        "seq_len": seq_len,
+        "n_tests": n_tests,
+        "positions_tested": [int(t) for t in test_positions],
+        "violations": violations,
+        "verdict": "PASS: no future information leakage" if causal
+                   else f"FAIL: {len(violations)} positions leaked future info",
+    }
+
+
+def causal_bank_reproduce(backend, *, seq_len: int = 256, seed: int = 42) -> dict:
+    """Reproducibility test: two identical forward passes should give identical logits."""
+    rng = np.random.RandomState(seed)
+    vocab_size = backend.config.vocab_size
+    seq = rng.randint(0, vocab_size, (1, seq_len)).astype(np.int64)
+
+    logits_a = backend.forward(seq)
+    logits_b = backend.forward(seq)
+
+    max_diff = float(np.abs(logits_a - logits_b).max())
+    mean_diff = float(np.abs(logits_a - logits_b).mean())
+    identical = max_diff == 0.0
+
+    return {
+        "identical": identical,
+        "max_diff": round(max_diff, 10),
+        "mean_diff": round(mean_diff, 10),
+        "seq_len": seq_len,
+        "verdict": "PASS: bitwise identical" if identical
+                   else f"FAIL: max diff {max_diff:.2e}",
+    }
+
+
+def tokenizer_compare(tokenizer_paths: list[str], *,
+                      sample_text: str | None = None) -> dict:
+    """Compare multiple sentencepiece tokenizers.
+
+    Vocab size, compression ratio, byte fallback, token length distribution,
+    overlap between tokenizers, and parameter budget impact.
+    """
+    import sentencepiece as spm
+
+    results = []
+    all_vocabs = []
+
+    for path in tokenizer_paths:
+        sp = spm.SentencePieceProcessor()
+        sp.Load(path)
+        vocab_size = sp.GetPieceSize()
+
+        lengths = []
+        byte_tokens = 0
+        for i in range(vocab_size):
+            piece = sp.IdToPiece(i)
+            if piece.startswith("<0x") and piece.endswith(">"):
+                byte_tokens += 1
+                lengths.append(1)
+            else:
+                raw = piece.replace("\u2581", " ")
+                lengths.append(len(raw.encode("utf-8")))
+
+        lengths_arr = np.array(lengths)
+        vocab_set = set(sp.IdToPiece(i) for i in range(vocab_size))
+        all_vocabs.append(vocab_set)
+
+        bpt = None
+        tpb = None
+        byte_fallback_pct = round(byte_tokens / vocab_size * 100, 2)
+        if sample_text:
+            tokens = sp.Encode(sample_text)
+            text_bytes = len(sample_text.encode("utf-8"))
+            bpt = round(text_bytes / len(tokens), 4) if tokens else None
+            tpb = round(len(tokens) / text_bytes, 4) if text_bytes else None
+            n_byte_tok = sum(1 for t in tokens if sp.IdToPiece(t).startswith("<0x"))
+            byte_fallback_pct = round(n_byte_tok / max(len(tokens), 1) * 100, 2)
+
+        length_dist = {}
+        for lb in [1, 2, 3, 4, 5, 8, 12, 16]:
+            count = int((lengths_arr == lb).sum()) if lb < 16 else int((lengths_arr >= lb).sum())
+            length_dist[f"{lb}B"] = count
+
+        results.append({
+            "path": path,
+            "vocab_size": vocab_size,
+            "bytes_per_token": bpt,
+            "tokens_per_byte": tpb,
+            "byte_fallback_pct": byte_fallback_pct,
+            "byte_tokens": byte_tokens,
+            "length_distribution": length_dist,
+            "mean_token_bytes": round(float(lengths_arr.mean()), 2),
+        })
+
+    overlap = {}
+    for i in range(len(all_vocabs)):
+        for j in range(i + 1, len(all_vocabs)):
+            common = len(all_vocabs[i] & all_vocabs[j])
+            total = len(all_vocabs[i] | all_vocabs[j])
+            overlap[f"{i}_vs_{j}"] = {
+                "common": common,
+                "jaccard": round(common / (total + 1e-10), 4),
+            }
+
+    return {
+        "tokenizers": results,
+        "overlap": overlap,
+    }
+
+
+def tokenizer_difficulty(mri_path: str, *, _mri=None) -> dict:
+    """Per-token difficulty from embeddings. No model needed, reads MRI arrays.
+
+    Embedding norm correlates with prediction difficulty. Identifies
+    easy vs hard tokens and measures embedding space structure.
+    """
+    from .mri import load_mri
+
+    mri = _mri or load_mri(mri_path)
+    meta = mri['metadata']
+    if meta.get('architecture') != 'causal_bank':
+        return {"error": "Not a causal bank MRI"}
+    if 'embedding' not in mri:
+        return {"error": "MRI has no embedding data"}
+
+    embedding = mri['embedding'].astype(np.float32)
+    if embedding.ndim == 3:
+        embedding = embedding.reshape(-1, embedding.shape[-1])
+
+    substrate = mri.get('substrate_states')
+    if substrate is not None:
+        substrate = substrate.astype(np.float32)
+        if substrate.ndim == 3:
+            substrate = substrate.reshape(-1, substrate.shape[-1])
+
+    n_tokens, embed_dim = embedding.shape
+    embed_norm = np.linalg.norm(embedding, axis=1)
+
+    corr = {}
+    if substrate is not None:
+        sub_disp = np.linalg.norm(substrate, axis=1)
+        corr["embed_substrate_r"] = round(float(np.corrcoef(embed_norm, sub_disp)[0, 1]), 4)
+
+    emb_c = embedding - embedding.mean(axis=0)
+    _, S, _ = np.linalg.svd(emb_c, full_matrices=False)
+    var_exp = (S ** 2) / (S ** 2).sum()
+    eff_dim = float(np.exp(-(var_exp * np.log(var_exp + 1e-10)).sum()))
+
+    quartiles = np.percentile(embed_norm, [25, 50, 75])
+    edges = [0, quartiles[0], quartiles[1], quartiles[2], embed_norm.max() + 1]
+    labels = ["easy", "medium-easy", "medium-hard", "hard"]
+    quartile_info = []
+    for i in range(4):
+        mask = (embed_norm >= edges[i]) & (embed_norm < edges[i + 1])
+        quartile_info.append({
+            "label": labels[i],
+            "n_tokens": int(mask.sum()),
+            "mean_norm": round(float(embed_norm[mask].mean()), 4) if mask.any() else 0,
+        })
+
+    n_near_dup = -1
+    if n_tokens <= 5000:
+        norms = np.linalg.norm(embedding, axis=1, keepdims=True)
+        emb_normed = embedding / (norms + 1e-10)
+        cos = emb_normed @ emb_normed.T
+        np.fill_diagonal(cos, 0)
+        n_near_dup = int((cos > 0.9).sum()) // 2
+
+    return {
+        "model": meta['model'].get('name', '?'),
+        "n_tokens": n_tokens,
+        "embed_dim": embed_dim,
+        "effective_dim": round(eff_dim, 1),
+        **corr,
+        "difficulty_quartiles": quartile_info,
+        "near_duplicates": n_near_dup,
+        "embed_norm_range": [round(float(embed_norm.min()), 4),
+                             round(float(embed_norm.max()), 4)],
+    }
+
+
+def causal_bank_gate_forensics(mri_path: str, *, _mri=None) -> dict:
+    """Write gate forensics from sequence-mode causal bank MRI.
+
+    Answers: does the overwrite gate encode order (position), or is it
+    just a smoother EMA? Reports gate activation by position, correlation
+    with embed norm (difficulty), per-mode entropy, effective rank, and
+    a direct position-dependence test.
+    """
+    from .mri import load_mri
+
+    mri = _mri or load_mri(mri_path)
+    meta = mri['metadata']
+    if meta.get('architecture') != 'causal_bank':
+        return {"error": "Not a causal bank MRI"}
+    if meta.get('capture', {}).get('mode') != 'sequence':
+        return {"error": "Requires sequence-mode MRI"}
+
+    # Support both gated_delta write gate and overwrite gate
+    gate_type = None
+    gate = None
+    extra_gates = {}
+    if 'gated_delta_write' in mri and mri.get('gated_delta_write') is not None:
+        gate = mri['gated_delta_write'].astype(np.float32)
+        gate_type = "gated_delta"
+        if 'gated_delta_retain' in mri and mri.get('gated_delta_retain') is not None:
+            extra_gates["retain"] = mri['gated_delta_retain'].astype(np.float32)
+        if 'gated_delta_erase' in mri and mri.get('gated_delta_erase') is not None:
+            extra_gates["erase"] = mri['gated_delta_erase'].astype(np.float32)
+    elif 'overwrite_gate' in mri and mri.get('overwrite_gate') is not None:
+        gate = mri['overwrite_gate'].astype(np.float32)
+        gate_type = "overwrite"
+    else:
+        return {"error": "MRI has no gate data (no gated_delta or overwrite_gate)"}
+
+    n_seqs, seq_len, n_gate_dims = gate.shape
+
+    embedding = mri['embedding'].astype(np.float32) if 'embedding' in mri else None
+    loss = mri.get('loss')
+    half_lives = mri.get('half_lives')
+    if half_lives is not None:
+        half_lives = np.asarray(half_lives, dtype=np.float32)
+
+    # --- Gate activation by position range ---
+    ranges = [(0, 4), (4, 16), (16, 64), (64, 256), (256, seq_len)]
+    by_position = []
+    for lo, hi in ranges:
+        hi = min(hi, seq_len)
+        if lo >= seq_len:
+            break
+        chunk = gate[:, lo:hi, :]  # [n_seqs, range, n_modes]
+        mean_gate = float(chunk.mean())
+        std_gate = float(chunk.std())
+        # What fraction of modes have gate > 0.5 (overwrite dominant)?
+        overwrite_frac = float((chunk > 0.5).mean())
+        by_position.append({
+            "range": f"{lo}-{hi}",
+            "mean_gate": round(mean_gate, 4),
+            "std_gate": round(std_gate, 4),
+            "overwrite_fraction": round(overwrite_frac, 4),
+        })
+
+    # --- Position dependence test ---
+    # Correlation of mean gate activation with position index
+    mean_gate_by_pos = gate.mean(axis=(0, 2))  # [seq_len]
+    positions = np.arange(seq_len, dtype=np.float32)
+    pos_corr = float(np.corrcoef(mean_gate_by_pos, positions)[0, 1])
+
+    # Per-mode position correlation (which modes' gates track position?)
+    mode_pos_corr = []
+    for m in range(n_gate_dims):
+        gate_m = gate[:, :, m].mean(axis=0)  # [seq_len]
+        r = float(np.corrcoef(gate_m, positions)[0, 1])
+        mode_pos_corr.append(r)
+    mode_pos_corr = np.array(mode_pos_corr)
+
+    # Top 5 most position-dependent modes
+    top_pos_modes = np.argsort(np.abs(mode_pos_corr))[-5:][::-1]
+    position_dependent_modes = []
+    for m in top_pos_modes:
+        row = {"mode": int(m), "position_r": round(float(mode_pos_corr[m]), 4)}
+        if half_lives is not None and m < len(half_lives):
+            row["half_life"] = round(float(half_lives[m]), 1)
+        position_dependent_modes.append(row)
+
+    # --- Correlation with embedding norm (difficulty) ---
+    difficulty_corr = None
+    if embedding is not None:
+        embed_norm = np.linalg.norm(embedding, axis=-1)  # [n_seqs, seq_len]
+        gate_mean = gate.mean(axis=-1)  # [n_seqs, seq_len]
+        difficulty_corr = round(
+            float(np.corrcoef(embed_norm.flatten(), gate_mean.flatten())[0, 1]), 4)
+
+    # --- Correlation with loss ---
+    loss_corr = None
+    if loss is not None:
+        gate_mean = gate.mean(axis=-1).flatten()
+        loss_flat = loss.flatten()
+        valid = ~np.isnan(loss_flat)
+        if valid.sum() > 10:
+            loss_corr = round(
+                float(np.corrcoef(gate_mean[valid], loss_flat[valid])[0, 1]), 4)
+
+    # --- Per-mode gate entropy (how selective is each mode?) ---
+    # High entropy = gate fires similarly everywhere. Low entropy = selective.
+    # Discretize gate into 10 bins and compute entropy per mode.
+    n_bins = 10
+    mode_entropy = []
+    for m in range(n_gate_dims):
+        vals = gate[:, :, m].flatten()
+        hist, _ = np.histogram(vals, bins=n_bins, range=(0, 1))
+        p = hist / (hist.sum() + 1e-10)
+        ent = float(-(p * np.log(p + 1e-10)).sum())
+        mode_entropy.append(ent)
+    mode_entropy = np.array(mode_entropy)
+    max_entropy = float(np.log(n_bins))
+
+    # --- Effective rank of gate (how many independent gate patterns?) ---
+    # Flatten gate to [n_seqs * seq_len, n_modes], PCA
+    flat_gate = gate.reshape(-1, n_gate_dims)
+    flat_gate_c = flat_gate - flat_gate.mean(axis=0)
+    _, S, _ = np.linalg.svd(flat_gate_c, full_matrices=False)
+    var_exp = (S ** 2) / (S ** 2).sum()
+    cum = np.cumsum(var_exp)
+    eff_rank = float(np.exp(-(var_exp * np.log(var_exp + 1e-10)).sum()))
+
+    # --- Gate by half-life quartile (only when gate dims == substrate modes) ---
+    gate_by_hl = []
+    if half_lives is not None and len(half_lives) == n_gate_dims:
+        quartile_edges = np.percentile(half_lives, [0, 25, 50, 75, 100])
+        for q in range(4):
+            lo_hl, hi_hl = quartile_edges[q], quartile_edges[q + 1]
+            mask = (half_lives >= lo_hl) & (half_lives <= hi_hl) if q == 3 else \
+                   (half_lives >= lo_hl) & (half_lives < hi_hl)
+            if not mask.any():
+                continue
+            gate_q = gate[:, :, mask]
+            gate_by_hl.append({
+                "quartile": q,
+                "hl_range": f"{lo_hl:.1f}-{hi_hl:.1f}",
+                "n_modes": int(mask.sum()),
+                "mean_gate": round(float(gate_q.mean()), 4),
+                "overwrite_fraction": round(float((gate_q > 0.5).mean()), 4),
+                "mean_pos_r": round(float(np.abs(mode_pos_corr[mask]).mean()), 4),
+            })
+
+    # --- Verdict ---
+    encodes_order = abs(pos_corr) > 0.3 or float(np.abs(mode_pos_corr).max()) > 0.5
+    verdict = ("ENCODES ORDER: gate activation is position-dependent"
+               if encodes_order else
+               "SMOOTHER EMA: gate is NOT position-dependent")
+
+    # --- Extra gates summary (for gated_delta: retain and erase) ---
+    extra_gate_summary = {}
+    for gate_name, gate_arr in extra_gates.items():
+        mean_by_pos = gate_arr.mean(axis=(0, 2))
+        pos_r = float(np.corrcoef(mean_by_pos, positions)[0, 1])
+        extra_gate_summary[gate_name] = {
+            "mean": round(float(gate_arr.mean()), 4),
+            "position_correlation": round(pos_r, 4),
+        }
+
+    return {
+        "model": meta['model'].get('name', '?'),
+        "gate_type": gate_type,
+        "n_seqs": n_seqs,
+        "seq_len": seq_len,
+        "n_gate_dims": n_gate_dims,
+        "by_position": by_position,
+        "position_correlation": round(pos_corr, 4),
+        "difficulty_correlation": difficulty_corr,
+        "loss_correlation": loss_corr,
+        "effective_rank": round(eff_rank, 1),
+        "effective_rank_pcs": {
+            "pcs_for_50": int(np.searchsorted(cum, 0.5)) + 1,
+            "pcs_for_80": int(np.searchsorted(cum, 0.8)) + 1,
+            "pcs_for_95": int(np.searchsorted(cum, 0.95)) + 1,
+        },
+        "mean_mode_entropy": round(float(mode_entropy.mean()), 4),
+        "max_possible_entropy": round(max_entropy, 4),
+        "entropy_ratio": round(float(mode_entropy.mean()) / (max_entropy + 1e-10), 4),
+        "position_dependent_modes": position_dependent_modes,
+        "gate_by_half_life": gate_by_hl,
+        "top_gate_variance_pct": [round(float(v) * 100, 2) for v in var_exp[:10]],
+        "extra_gates": extra_gate_summary,
+        "verdict": verdict,
+    }
+
+
+def causal_bank_substrate_local(mri_path: str, *, _mri=None) -> dict:
+    """Substrate vs local path balance from sequence-mode causal bank MRI."""
+    from .mri import load_mri
+
+    mri = _mri or load_mri(mri_path)
+    meta = mri['metadata']
+    if meta.get('architecture') != 'causal_bank':
+        return {"error": "Not a causal bank MRI"}
+    if meta.get('capture', {}).get('mode') != 'sequence':
+        return {"error": "Requires sequence-mode MRI"}
+
+    substrate = mri['substrate_states'].astype(np.float32)
+    n_seqs, seq_len, n_modes = substrate.shape
+    sub_l2 = np.linalg.norm(substrate, axis=-1)
+
+    has_local = 'local_norm' in mri and mri.get('local_norm') is not None
+    local_l2 = mri['local_norm'].astype(np.float32) if has_local else None
+
+    ranges = [(0, 4), (4, 64), (64, 256), (256, seq_len)]
+    by_pos = []
+    for lo, hi in ranges:
+        hi = min(hi, seq_len)
+        if lo >= seq_len:
+            break
+        row = {
+            "range": f"{lo}-{hi}",
+            "substrate_l2": round(float(sub_l2[:, lo:hi].mean()), 4),
+        }
+        if local_l2 is not None:
+            loc = float(local_l2[:, lo:hi].mean())
+            row["local_l2"] = round(loc, 4)
+            row["substrate_local_ratio"] = round(
+                float(sub_l2[:, lo:hi].mean()) / (loc + 1e-10), 2)
+        by_pos.append(row)
+
+    crossover = None
+    if local_l2 is not None:
+        mean_sub = sub_l2.mean(axis=0)
+        mean_loc = local_l2.mean(axis=0)
+        crosses = np.where(mean_sub > mean_loc)[0]
+        if len(crosses) > 0:
+            crossover = int(crosses[0])
+
+    return {
+        "model": meta['model'].get('name', '?'),
+        "n_seqs": n_seqs,
+        "seq_len": seq_len,
+        "has_local": has_local,
+        "by_position": by_pos,
+        "crossover_position": crossover,
+    }
+
+
 def mri_decompose(mri_path: str, *, n_sample: int = 0,
-                  n_components: int = 50) -> dict:
+                  n_components: int = 0) -> dict:
     """PCA decomposition at every layer, saved to decomp/ for the companion viewer.
 
     Produces:
@@ -4220,7 +5074,7 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
     Args:
         mri_path: Path to .mri directory
         n_sample: Number of tokens to sample. 0 = full vocabulary.
-        n_components: Number of PCA components to keep (default 50).
+        n_components: Number of PCA components. 0 = all (hidden_size).
     """
     import struct
     import sys
@@ -4245,16 +5099,26 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
     decomp_dir = mri_dir / 'decomp'
     decomp_dir.mkdir(exist_ok=True)
 
-    K = n_components
+    hidden_size = meta['model'].get('hidden_size', 0)
+    K = n_components if n_components > 0 else hidden_size
+    if K <= 0:
+        return {"error": "Cannot determine hidden_size from metadata"}
+    print(f"  {K} components (hidden_size={hidden_size})", file=sys.stderr)
     layer_meta = []
 
     # Collect all scores for the binary blob
     all_variances = []  # [n_layers, K]
     all_scores = []     # [n_layers, N, K]
 
+    def _find_exit(li):
+        """Find exit file in nested or flat layout."""
+        nested = mri_dir / 'layers' / f'L{li:02d}' / 'exit.npy'
+        flat = mri_dir / f'L{li:02d}_exit.npy'
+        return nested if nested.exists() else flat if flat.exists() else None
+
     for li in range(n_layers):
-        exit_path = mri_dir / f'L{li:02d}_exit.npy'
-        if not exit_path.exists():
+        exit_path = _find_exit(li)
+        if not exit_path:
             print(f"  L{li:02d}: no exit vectors, skipping", file=sys.stderr)
             layer_meta.append({"layer": li, "pc1_pct": 0, "intrinsic_dim": 0,
                                "neighbor_stability": 0})
@@ -4358,7 +5222,7 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
         wdir = weights_root / f'L{li:02d}'
         la = {"layer": li, "matrices": []}
         if comp_path.exists() and wdir.exists():
-            Vt = np.load(str(comp_path)).astype(np.float32)[:10]  # top 10 PCs
+            Vt = np.load(str(comp_path)).astype(np.float32)  # all PCs
             for wname in ["q_proj","k_proj","v_proj","o_proj","gate_proj","up_proj","down_proj"]:
                 wp = wdir / f"{wname}.npy"
                 if not wp.exists(): continue
@@ -4406,35 +5270,44 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
         np.save(decomp_dir / 'gate_heatmap.npy', gate_heat)
         print(f"  Gate heatmap: {gate_heat.shape}", file=sys.stderr)
 
+    # BIN_K: cap for binary blob and delta PCA (viewer initial load)
+    BIN_K = min(K, 50)
+
     # === Precompute delta PCA (exit - entry) ===
     delta_scores_all = []
     delta_var_all = []
     for li in range(n_layers):
-        entry_path = mri_dir / f'L{li:02d}_entry.npy'
-        exit_path = mri_dir / f'L{li:02d}_exit.npy'
-        if entry_path.exists() and exit_path.exists():
+        entry_path = _find_exit(li)  # reuse resolver (entry has same path pattern)
+        exit_path = _find_exit(li)
+        # entry uses same resolver logic
+        entry_nested = mri_dir / 'layers' / f'L{li:02d}' / 'entry.npy'
+        entry_flat = mri_dir / f'L{li:02d}_entry.npy'
+        entry_path = entry_nested if entry_nested.exists() else entry_flat if entry_flat.exists() else None
+        if entry_path and exit_path:
             print(f"  delta L{li:02d}...", end="\r", file=sys.stderr)
             entry = np.load(str(entry_path), mmap_mode='r')[idx].astype(np.float32)
             exits = np.load(str(exit_path), mmap_mode='r')[idx].astype(np.float32)
             delta = exits - entry
             centered = delta - delta.mean(axis=0)
             from sklearn.utils.extmath import randomized_svd
-            U, S, Vt = randomized_svd(centered, n_components=K, random_state=42)
-            k = min(K, len(S))
+            dK = min(K, BIN_K)  # delta uses viewer cap
+            U, S, Vt = randomized_svd(centered, n_components=dK, random_state=42)
+            k = min(dK, len(S))
             ds = (U[:, :k] * S[:k]).astype(np.float16)
             dv = ((S[:k] ** 2) / (S ** 2).sum()).astype(np.float32)
-            if k < K: ds = np.pad(ds, ((0, 0), (0, K - k))); dv = np.pad(dv, (0, K - k))
+            if k < dK: ds = np.pad(ds, ((0, 0), (0, dK - k))); dv = np.pad(dv, (0, dK - k))
             delta_scores_all.append(ds); delta_var_all.append(dv)
         else:
-            delta_scores_all.append(np.zeros((n_sample, K), dtype=np.float16))
-            delta_var_all.append(np.zeros(K, dtype=np.float32))
+            delta_scores_all.append(np.zeros((n_sample, min(K, BIN_K)), dtype=np.float16))
+            delta_var_all.append(np.zeros(min(K, BIN_K), dtype=np.float32))
     if any(v.any() for v in delta_var_all):
-        d_header = struct.pack('<III', n_layers, n_sample, K)
+        dK = min(K, BIN_K)
+        d_header = struct.pack('<III', n_layers, n_sample, dK)
         d_var = np.concatenate(delta_var_all).tobytes()
         d_sc = np.concatenate([s.view(np.uint16).ravel() for s in delta_scores_all]).tobytes()
         with open(decomp_dir / 'delta_scores.bin', 'wb') as f:
             f.write(d_header); f.write(d_var); f.write(d_sc)
-        print(f"  Delta PCA: {len(delta_scores_all)} layers", file=sys.stderr)
+        print(f"  Delta PCA: {len(delta_scores_all)} layers, {dK} PCs", file=sys.stderr)
 
     # === Precompute per-token neuron profiles (top neurons by contribution) ===
     mlp_dir = mri_dir / 'mlp'
@@ -4478,12 +5351,13 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
     total_layers = len(all_scores)  # n_layers + 2 virtual layers
 
     # Build all_scores.bin (includes virtual layers)
+    # BIN_K already set above (cap to first 50 PCs for viewer binary)
     # Format: [4B magic 'HEIN'][4B n_layers][4B n_tokens][4B n_components]
-    #         [float32 variance: n_layers * K]
-    #         [uint16 scores: n_layers * N * K]  (float16 as raw uint16)
-    header = struct.pack('<4sIII', b'HEIN', total_layers, n_sample, K)
-    var_block = np.concatenate(all_variances).tobytes()  # float32
-    score_block = np.concatenate([s.view(np.uint16).ravel()
+    #         [float32 variance: n_layers * BIN_K]
+    #         [uint16 scores: n_layers * N * BIN_K]  (float16 as raw uint16)
+    header = struct.pack('<4sIII', b'HEIN', total_layers, n_sample, BIN_K)
+    var_block = np.concatenate([v[:BIN_K] for v in all_variances]).tobytes()
+    score_block = np.concatenate([s[:, :BIN_K].view(np.uint16).ravel()
                                   for s in all_scores]).tobytes()
     bin_path = decomp_dir / 'all_scores.bin'
     with open(bin_path, 'wb') as f:
