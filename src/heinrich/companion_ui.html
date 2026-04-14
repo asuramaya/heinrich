@@ -619,8 +619,13 @@ function _brComputeCells(){
 }
 
 function buildBrowser(){
-  _disposeScene(brSc);
-  _brOverlay=[];_brMxCache={};_brLayers=[];
+  _brBuilt=false;// prevent rendering stale state during rebuild
+  // Clear scene but preserve persistent objects (hover box)
+  const keep=new Set();if(_brHoverBox)keep.add(_brHoverBox);
+  while(brSc.children.length){const c=brSc.children[0];brSc.remove(c);if(keep.has(c))continue;if(c.geometry)c.geometry.dispose();if(c.material){if(Array.isArray(c.material))c.material.forEach(m=>m.dispose());else c.material.dispose();}}
+  // Re-add preserved objects
+  keep.forEach(o=>brSc.add(o));
+  _brOverlay=[];_brMxCache={};_brLayers=[];_brSelBoxes=[];
   _brComputeCells();
   _brN=_brCells.length;
   _brWinStart=0;// not used in radial mode
