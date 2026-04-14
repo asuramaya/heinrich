@@ -1834,7 +1834,16 @@ function _renderPCSHover(tokIdx,entry){
   const xSpan=2.4,zSpan=3.0;
   const nL_pcs=hNL||_pcsFullNL||_nRealLayers||nL;
   const z=(cL/((nL_pcs-1)||1))*zSpan-zSpan/2;
-  const scale=_pcsScale>0.01?_pcsScale:1;
+  // Compute scale EXACTLY as _buildPCSSpectrum would for this token
+  // This ensures hover dots land where pinning would place them
+  let maxAbs=0.001;
+  for(let i=0;i<data.length;i++)if(Math.abs(data[i])>maxAbs)maxAbs=Math.abs(data[i]);
+  // If another token is already pinned, use the combined max (same as _buildPCSSpectrum)
+  [_pcsFullA,_pcsFullB].forEach(fd=>{
+    if(!fd||fd===data)return;// skip if this IS the pinned token's data
+    for(let i=0;i<fd.length;i++)if(Math.abs(fd[i])>maxAbs)maxAbs=Math.abs(fd[i]);
+  });
+  const scale=1.2/maxAbs;
   let pos=_pcsHoverMesh.geometry.attributes.position.array;
   if(pos.length<fK*3){
     _pcsHoverMesh.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(fK*3),3));
