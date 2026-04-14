@@ -5475,7 +5475,8 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
             U, S, Vt = randomized_svd(centered, n_components=dK, random_state=42)
             k = min(dK, len(S))
             ds = (U[:, :k] * S[:k]).astype(np.float16)
-            dv = ((S[:k] ** 2) / (S ** 2).sum()).astype(np.float32)
+            _ss = (S ** 2).sum()
+            dv = ((S[:k] ** 2) / _ss).astype(np.float32) if _ss > 0 else np.zeros(k, dtype=np.float32)
             if k < dK: ds = np.pad(ds, ((0, 0), (0, dK - k))); dv = np.pad(dv, (0, dK - k))
             delta_scores_all.append(ds); delta_var_all.append(dv)
         else:
