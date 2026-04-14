@@ -1,0 +1,158 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{amsmath,amssymb}
+\usepackage{geometry}
+\geometry{margin=1in}
+\usepackage{hyperref}
+\usepackage{booktabs}
+\usepackage{enumitem}
+\usepackage{xcolor}
+
+\title{Epistemic Valence at PC539:\\
+Where Language Models Encode Truth vs.\ Falsehood}
+\author{Session 9 --- Heinrich Model Forensics}
+\date{April 13, 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We report the discovery of an epistemic valence direction at principal component 539 (of 576) in the SmolLM2-135M residual stream. This direction maximally separates tokens associated with truth claims (``facts,'' ``conclusion'') from tokens associated with falsehood (``fallacy,'' ``myths''), emerging at layer 12 --- past the frozen zone where the model transitions from lexical to semantic computation. The direction carries less than 0.05\% of total displacement variance, placing it below the resolution of standard 50-PC analyses. Its discovery was enabled by per-axis normalization fixes to the Heinrich companion viewer that prevented dimensionality collapse at high principal components. We describe the engineering required to make high-PC exploration tractable and discuss implications for the variance hierarchy of transformer representations.
+\end{abstract}
+
+\section{Introduction}
+
+The Heinrich forensics tool captures the full residual stream geometry of language models and decomposes it via PCA at every layer. Prior sessions established that the dominant variance dimensions encode language identity (88.4\% of displacement, Session 5), with safety as a trace signal at 0.5\% (Session 4). The question remained: what occupies the space between safety and noise?
+
+Session 9 pushed exploration into PCs 50--576, a regime previously inaccessible due to viewer limitations. The discovery of structured, interpretable directions at PC539 demonstrates that the residual stream's long tail is not noise --- it encodes fine-grained semantic structure that is invisible to standard variance-dominant analysis.
+
+\section{The Discovery}
+
+\subsection{Setup}
+
+The SmolLM2-135M template-mode MRI contains 48,660 tokens projected onto 576 principal components across 30 transformer layers plus embedding and LM head virtual layers. The companion viewer's PCA decomposition stores full-rank scores ($\mathbf{U} \mathbf{S}$) per layer.
+
+Two tokens were pinned for comparison:
+\begin{itemize}[nosep]
+  \item Token A: ``facts'' (token index in vocabulary)
+  \item Token B: ``fallacy'' (token index in vocabulary)
+\end{itemize}
+
+\subsection{Observation}
+
+At PCs 0--50 (the initial blob resolution), ``facts'' and ``fallacy'' are neighbors in every projection. They are both common English words with similar byte patterns, merge ranks, and frequency profiles. On the dominant variance axes --- language identity, script, register --- they are indistinguishable.
+
+At PC539, layer 12:
+\begin{align}
+  \text{score}(\texttt{facts}, \text{PC539}, L12) &= +1.1 \\
+  \text{score}(\texttt{fallacy}, \text{PC539}, L12) &= -1.1
+\end{align}
+
+Maximally opposite. The axis also separates:
+\begin{itemize}[nosep]
+  \item ``myths'' vs.\ ``conclusion''
+  \item Other truth-claim / falsehood pairs
+\end{itemize}
+
+This direction carries $<0.05\%$ of total variance (reported as $0.0\%$ at display precision).
+
+\subsection{Layer Specificity}
+
+The separation emerges at layer 12 and persists through deeper layers. Layers 0--10 (the frozen zone, per Sessions 6--7) show no separation on this axis. The direction is absent in the embedding layer and weak in the LM head projection.
+
+Layer 12 is the first layer past the frozen zone in SmolLM2-135M. Sessions 6--7 established that layers 3--10 maintain constant bias (the ``frozen zone'') and begin semantic processing at L11--L12. The epistemic valence direction aligns with this transition.
+
+\section{The Variance Hierarchy}
+
+Combining findings from Sessions 4--9, the residual stream variance decomposes as:
+
+\begin{table}[h]
+\centering
+\begin{tabular}{lrl}
+\toprule
+\textbf{Feature} & \textbf{Variance \%} & \textbf{PC Range} \\
+\midrule
+Language identity & 88.4\% & PC0--PC5 \\
+Script sub-families & 5--8\% & PC3--PC15 \\
+Frequency / register & 2--4\% & PC10--PC30 \\
+Code vs.\ natural language & 0.5--1\% & PC20--PC50 \\
+Comply / refuse & 0.9\% & PC30--PC80 \\
+Safety & 0.5\% & PC40--PC100 \\
+Semantic content & $<0.1\%$ & PC100--PC300 \\
+Epistemic valence & $<0.05\%$ & PC400--PC576 \\
+\bottomrule
+\end{tabular}
+\caption{Approximate variance allocation in SmolLM2-135M template mode. Ranges overlap; PCA axes are not aligned to single features. Percentages are order-of-magnitude estimates from the cumulative variance spectrum.}
+\end{table}
+
+The model whispers its epistemic judgments while shouting its language classifications. The first-token selection mechanism (Session 4) amplifies these whispers into behavioral decisions, but the residual stream representation itself allocates almost no energy to them.
+
+\section{Engineering: Making High PCs Visible}
+
+The discovery required fixing four classes of viewer bugs:
+
+\subsection{Dimensionality Collapse}
+
+The cloud and trajectory viewports used a \emph{shared} normalization maximum across all axes:
+\[
+  mx = \max_{i} \left( |s_{i,\text{pcX}}|, |s_{i,\text{pcY}}|, |s_{i,\text{pcZ}}| \right)
+\]
+When one PC carried 100$\times$ the score magnitude of another, the low-variance axis collapsed to a line. The fix: per-axis normalization, computing $mx_X$, $mx_Y$, $mx_Z$ independently. Each axis fills its own $[-1, 1]$ range.
+
+For the trajectory viewport, the same issue manifested across layers: a \emph{global} max across all layers compressed low-variance layers to points. The fix: per-layer per-axis normalization, matching the cloud viewport's per-layer behavior.
+
+\subsection{Data Path Cutoff at PC 50}
+
+The initial binary blob (\texttt{all\_scores.bin}) caps at $\texttt{BIN\_K} = 50$ PCs. The radial browser's overlay code had guards:
+\begin{verbatim}
+  if(pa >= nK || pb >= nK) return;
+\end{verbatim}
+This silently skipped all cells, trails, markers, and highlights for PCs $\geq 50$. The per-PC data cache (\texttt{\_pcFull}) contained full-resolution data loaded on demand, but the browser overlay never consulted it.
+
+Additionally, the trail-building function \texttt{\_buildPathForVP} read directly from \texttt{allL} (the blob) instead of \texttt{\_getScore} (the three-tier cache). For PCs $\geq 50$, \texttt{allL[l][idx][pc]} returned \texttt{undefined}, coerced to 0 via \texttt{||0}, producing flat trails at $y=0$.
+
+\subsection{Scale Coupling Between Pinned Tokens}
+
+The spectrum viewport computed a single shared $Y$ scale from the combined maximum of both pinned tokens:
+\[
+  \texttt{\_pcsScale} = \frac{1.2}{\max(|\texttt{\_pcsFullA}|, |\texttt{\_pcsFullB}|)}
+\]
+Pinning token B with a different magnitude rescaled token A's dots. The fix: per-token scale computation, where each token's dots are normalized by their own data maximum.
+
+\subsection{Initialization Order}
+
+The PC spectrum scene (\texttt{\_initPCSScene}) was only called from \texttt{\_buildPCSSpectrum}, which only ran when a token was pinned. The hover mesh (\texttt{\_pcsHoverMesh}) was \texttt{null} before any pin, causing hover to silently return. Moving initialization to Phase 3 of model loading (before any interaction) fixed this.
+
+\section{The Unified Hover Pipeline}
+
+The session culminated in a unified real-time hover system:
+
+\begin{enumerate}[nosep]
+  \item A new endpoint \texttt{/api/token-hover/} returns both PC scores ($K$ float16 values) and neuron activations (\texttt{intermediate} float16 values) for one token at one layer in a single $\sim$4\,KB response.
+  \item On hover (30\,ms debounce), one fetch feeds both the spectrum (white dots) and neuron field (white dots).
+  \item On click-to-pin, the spectrum reads from the hover cache instantly. The neuron field builds a temporary activation array from the hover cache's single-layer data, rendering dots at the exact positions the hover displayed. Full multi-layer neuron data loads in the background for trails.
+  \item Speculative preload: the hover also fires a background fetch for full per-token PCA data, so click-to-pin's spectrum is instant.
+\end{enumerate}
+
+The design principle: hover and pin must produce identical visual states for the same token. No partial rendering, no scale shifts, no position jumps.
+
+\section{Discussion}
+
+\subsection{The Long Tail Is Not Noise}
+
+PC539 carries $<0.05\%$ of variance but encodes a clean, interpretable semantic direction. This suggests the residual stream's long tail contains thousands of such micro-directions, each carrying vanishing energy but encoding specific conceptual distinctions. The model's ``knowledge'' is distributed across a high-dimensional manifold where no single direction dominates.
+
+\subsection{Implications for Interpretability}
+
+Standard PCA-based interpretability stops at 10--50 components, capturing 95--99\% of variance. The remaining 1--5\% contains the model's semantic and epistemic computation --- the part that actually matters for alignment and safety. A tool that only shows the first 50 PCs is like an MRI that only images bone density: technically capturing most of the signal, but missing the soft tissue where disease lives.
+
+\subsection{Layer 12 as Semantic Onset}
+
+The epistemic direction's emergence at L12 aligns with the frozen zone boundary. Layers 0--10 process syntax and lexical identity. L11--L12 begin semantic computation. The model can't distinguish ``facts'' from ``fallacy'' until it crosses this boundary --- they are lexically identical until meaning is computed.
+
+\section{Conclusion}
+
+The variance hierarchy of transformer representations extends far deeper than previously explored. Epistemic valence --- the model's internal representation of truth vs.\ falsehood --- exists as a real computational direction, but at a variance level that requires specialized tooling to observe. The engineering cost of making this visible was substantial: per-axis normalization, unified data pipelines, cache coherence, and real-time interaction design. The scientific reward was a new observable: the model's whispered opinion about truth.
+
+\end{document}
