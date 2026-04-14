@@ -1204,7 +1204,7 @@ function _rebuildInternals(vi,pair,needsRebuild){
   // Label
   const lbl=document.getElementById('lv'+vi+'i');
   if(lbl)lbl.textContent=vi===0?`A: PC${pcA}\u00d7PC${pcB}`:vi===1?`\u0394: PC${pcA}\u00d7PC${pcB}`:`B: PC${pcA}\u00d7PC${pcB}`;
-  if(!lv._camSet){lv.cam.position.set(0.3,0.3,zSpan*0.9);lv.ctl.target.set(0,0,0);lv.ctl.update();lv._camSet=true;}
+  if(!lv._camSet){lv.cam.position.set(0,0,zSpan*0.8);lv.ctl.target.set(0,0,0);lv.ctl.update();lv._camSet=true;}
   lv._wlLines=true;
 
   lv._pcA=pcA;lv._pcB=pcB;
@@ -1236,24 +1236,45 @@ function _rebuildInternals(vi,pair,needsRebuild){
       else{const r=_petalLen(cL,mi);const a=angles[mi];dPos[mi*3]=Math.cos(a)*r;dPos[mi*3+1]=Math.sin(a)*r;dPos[mi*3+2]=cZ;}
     }
     lv._layerDots.geometry.attributes.position.needsUpdate=true;
-    // Camera: target = midpoint of selected tube, not origin
+    // Camera: focus = side view centered on tube, unfocus = face-on Z
     if(lv._wlIsolated>=0){
       const si=lv._wlIsolated;const fa=angles[si];
-      // Compute tube midpoint (average position across layers)
-      let cx=0,cy=0;
-      for(let l=0;l<_nRealLayers;l++){const r=_petalLen(l,si);cx+=Math.cos(fa)*r;cy+=Math.sin(fa)*r;}
-      cx/=_nRealLayers;cy/=_nRealLayers;
-      // Camera perpendicular to petal, targeting its midpoint
-      const dist=1.5;
+      // Compute bounding box of tube for auto-zoom
+      let minR=Infinity,maxR=-Infinity;
+      for(let l=0;l<_nRealLayers;l++){const r=_petalLen(l,si);minR=Math.min(minR,r);maxR=Math.max(maxR,r);}
+      const midR=(minR+maxR)/2;
+      const cx=Math.cos(fa)*midR,cy=Math.sin(fa)*midR;
+      // Distance: fit the tube's range in view (larger range = farther camera)
+      const range=Math.max(0.3,(maxR-minR)*1.2+0.5);
+      const dist=range*1.5;
       lv.cam.position.set(cx+Math.cos(fa+Math.PI/2)*dist,cy+Math.sin(fa+Math.PI/2)*dist,0);
       lv.ctl.target.set(cx,cy,0);lv.ctl.update();
     }else{
-      lv.cam.position.set(0.3,0.3,zSpan*0.9);
+      // Face-on Z view — look down the depth axis at the flower
+      lv.cam.position.set(0,0,zSpan*0.8);
       lv.ctl.target.set(0,0,0);lv.ctl.update();
     }
     _updateInternalsValues(lv,pcA,pcB);
     lv._legBtns.forEach((s,i)=>{if(s)s.style.opacity=lv._wlIsolated<0||i===lv._wlIsolated?'0.9':'0.3';});
+    // Focus data label: show value at current layer dot
+    _updateFocusLabel(lv);
     _markDirty();
+  }
+  function _updateFocusLabel(lv){
+    let fl=lv.el.querySelector('.wl-focus-label');
+    if(!fl){
+      fl=document.createElement('div');fl.className='wl-focus-label';
+      fl.style.cssText='position:absolute;top:3px;right:4px;z-index:3;font-size:9px;color:#ccc;font-family:monospace;pointer-events:none;text-align:right;line-height:1.5';
+      lv.el.appendChild(fl);
+    }
+    if(lv._wlIsolated<0){fl.textContent='';return;}
+    const mi=lv._wlIsolated;
+    const al=_wlData[cL]?.matrices?.[mi]?.alignment||[];
+    const vA=(al[pcA]||0),vB=(al[pcB]||0);
+    const mag=Math.sqrt(vA*vA+vB*vB);
+    const name=_WL_NAMES[mi];
+    fl.textContent=`${name} L${String(cL).padStart(2,'0')}\nal(PC${pcA}): ${vA.toFixed(3)}\nal(PC${pcB}): ${vB.toFixed(3)}\nmag: ${mag.toFixed(3)}`;
+    fl.style.whiteSpace='pre';
   }
   // Hover highlight on tubes — brighten on mousemove, dim on leave
   function _highlight(lv,idx){
@@ -2122,8 +2143,19 @@ function _updateRVLayer(){
 function updateLeftViewports(){
   _updateDeltaPins();
   _rebuildWeightLines();
-  // Update legend values on layer change
-  for(let vi=0;vi<3;vi++){const lv=leftViews[vi];if(lv&&lv._legBtns)_updateInternalsValues(lv,vpPairs[vi][0],vpPairs[vi][1]);}
+  // Update legend values + focus label on layer change
+  for(let vi=0;vi<3;vi++){
+    const lv=leftViews[vi];if(!lv)continue;
+    if(lv._legBtns)_updateInternalsValues(lv,vpPairs[vi][0],vpPairs[vi][1]);
+    const fl=lv.el?.querySelector('.wl-focus-label');
+    if(fl&&lv._wlIsolated>=0){
+      const mi=lv._wlIsolated;const al=_wlData?.[cL]?.matrices?.[mi]?.alignment||[];
+      const pcA=vpPairs[vi][0],pcB=vpPairs[vi][1];
+      const vA=al[pcA]||0,vB=al[pcB]||0,mag=Math.sqrt(vA*vA+vB*vB);
+      fl.textContent=`${_WL_NAMES[mi]} L${String(cL).padStart(2,'0')}\nal(PC${pcA}): ${vA.toFixed(3)}\nal(PC${pcB}): ${vB.toFixed(3)}\nmag: ${mag.toFixed(3)}`;
+      fl.style.whiteSpace='pre';
+    }
+  }
   _updateRVLayer();// always runs — just toggles opacity, instant
   if(!play){
     renderNeuronChart(pinnedToken,'neuronA','200,80,50');renderNeuronChart(pinnedTokenB,'neuronB','60,100,180');
