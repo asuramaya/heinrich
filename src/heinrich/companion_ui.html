@@ -20,9 +20,9 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .lvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .lvp .llbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
 /* lv-btn/lv-top/lv-bot removed — .cbtn handles all positioning (bottom-right) */
-.vp{position:relative;overflow:hidden;background:transparent;border:1px solid transparent;transition:border-color 0.15s}
-.vp.vp-active{border-color:#444}
-.vp.vp-recording{border-color:#ff4444;animation:rec-pulse 0.5s ease-in-out infinite alternate}
+.vp,.lvp,.rvp,.browse{position:relative;overflow:hidden;background:transparent;border:1px solid transparent;transition:border-color 0.15s}
+.cap-active{border-color:#444}
+.cap-recording{border-color:#ff4444;animation:rec-pulse 0.5s ease-in-out infinite alternate}
 @keyframes rec-pulse{from{border-color:#ff4444}to{border-color:#661111}}
 .vp .axes{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
 .vp .info{position:absolute;top:3px;left:4px;font-size:9px;pointer-events:none;z-index:2}
@@ -1615,6 +1615,7 @@ function _initPCSScene(){
   _pcsCtl=new OrbitControls(_pcsCam,_pcsEl);_pcsCtl.enableDamping=true;_pcsCtl.dampingFactor=0.08;
   _pcsCtl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};
   _pcsCtl.addEventListener('change',_markDirty);
+  _pcsEl.addEventListener('pointerenter',()=>{_setCapTarget(_pcsSc,_pcsCam,_pcsEl,'pcs');});
   const ro2=new ResizeObserver(()=>{_resizeCanvas();_markDirty();});
   ro2.observe(_pcsEl);
   // Layer indicator line (always present)
@@ -2205,12 +2206,18 @@ function _captureLabel(vi){
 function _captureFilename(vi,suffix){
   return`${model}_${mode}_L${String(cL).padStart(2,'0')}_${_captureLabel(vi)}.${suffix}`;
 }
-// VP selection highlight
-function _setActiveVP(vi){
-  document.querySelectorAll('.vp').forEach(el=>el.classList.remove('vp-active'));
-  const idx=parseInt(vi);if(!isNaN(idx)&&views[idx])views[idx].el.classList.add('vp-active');
+// Unified capture target — any viewport sets this on pointerenter
+let _capTarget=null;// {sc, cam, el, vi, label}
+function _setCapTarget(sc,cam,el,vi,label){
+  document.querySelectorAll('.cap-active').forEach(e=>e.classList.remove('cap-active'));
+  el.classList.add('cap-active');
+  _capTarget={sc,cam,el,vi,label:label||_captureLabel(vi)};
 }
-views.forEach((v,i)=>{v.el.addEventListener('pointerenter',()=>{_lastVP=i;_setActiveVP(i);});});
+// Wire pointerenter on all viewport types
+views.forEach((v,i)=>{v.el.addEventListener('pointerenter',()=>{_lastVP=i;_setCapTarget(v.sc,v.cam,v.el,i);});});
+leftViews.forEach((v,i)=>{v.el.addEventListener('pointerenter',()=>{_setCapTarget(v.sc,v.cam,v.el,'l'+i);});});
+rightViews.forEach((v,i)=>{v.el.addEventListener('pointerenter',()=>{_setCapTarget(v.sc,v.cam,v.el,'r'+i);});});
+_brPanels.forEach((p,i)=>{p.el.addEventListener('pointerenter',()=>{_setCapTarget(brSc,p.cam,p.el,'br'+i);});});
 
 // Text overlay for captures
 function _drawOverlay(ctx,w,h,vi,layer){
@@ -2233,7 +2240,9 @@ function captureViewport(sc,cam,el,vi,scale){
   scale=scale||3;
   const w=el.clientWidth*scale,h=el.clientHeight*scale;
   const tmp=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true,alpha:false});
-  tmp.setSize(w,h);tmp.setClearColor(sc.background||0x0a0a0a);tmp.clear();
+  tmp.setSize(w,h);
+  const bg=sc.background instanceof THREE.Color?sc.background:new THREE.Color(0x0a0a0a);
+  tmp.setClearColor(bg);tmp.clear();
   cam.aspect=w/h;cam.updateProjectionMatrix();
   tmp.render(sc,cam);
   // Composite: WebGL render + text overlay
@@ -2367,21 +2376,26 @@ function _addSnapButtons(){
       // left/right viewports
       const li=vk.match(/^l(\d)/);if(li&&leftViews[+li[1]]){const v=leftViews[+li[1]];captureViewport(v.sc,v.cam,v.el,'l'+li[1]);return;}
       const ri=vk.match(/^r(\d)/);if(ri&&rightViews[+ri[1]]){const v=rightViews[+ri[1]];captureViewport(v.sc,v.cam,v.el,'r'+ri[1]);return;}
+      // Browser panels
+      if(vk==='br0'||vk==='br1'){const pi=vk==='br0'?0:1;if(_brPanels[pi])captureViewport(brSc,_brPanels[pi].cam,_brPanels[pi].el,'br'+pi);return;}
       if(vk==='all'){/* master snap: capture all viewports */
-        views.forEach((v,i)=>captureViewport(v.sc,v.cam,v.el,i));return;}
+        views.forEach((v,i)=>captureViewport(v.sc,v.cam,v.el,i));
+        leftViews.forEach((v,i)=>{if(v.built)captureViewport(v.sc,v.cam,v.el,'l'+i);});
+        rightViews.forEach((v,i)=>captureViewport(v.sc,v.cam,v.el,'r'+i));
+        if(_pcsSc&&_pcsCam&&_pcsEl)captureViewport(_pcsSc,_pcsCam,_pcsEl,'pcs');
+        return;}
     });
     bar.appendChild(btn);
   });
 }
 _addSnapButtons();
-// REC button: record last-hovered viewport (or vp0)
+// REC button + keyboard: use unified _capTarget
 document.getElementById('lrec').addEventListener('click',()=>{
-  const vi=_lastVP;const v=views[vi];
-  if(v)recordViewport(v.sc,v.cam,v.el,vi);
+  const t=_capTarget;if(t)recordViewport(t.sc,t.cam,t.el,t.vi);
 });
 document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;if(e.key==='ArrowRight')setLayer((cL+1)%_nRealLayers);if(e.key==='ArrowLeft')setLayer((cL-1+_nRealLayers)%_nRealLayers);if(e.key===' '){e.preventDefault();_togglePlay();}if(e.key==='Escape'&&(pinnedToken>=0||pinnedTokenB>=0)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();}
-if(e.key==='p'||e.key==='P'){/* snapshot last-hovered viewport */const vi=_lastVP;const v=views[vi];if(v)captureViewport(v.sc,v.cam,v.el,vi);}
-if(e.key==='g'||e.key==='G'){/* record last-hovered viewport */const vi=_lastVP;const v=views[vi];if(v)recordViewport(v.sc,v.cam,v.el,vi);}
+if(e.key==='p'||e.key==='P'){const t=_capTarget;if(t)captureViewport(t.sc,t.cam,t.el,t.vi);}
+if(e.key==='g'||e.key==='G'){const t=_capTarget;if(t)recordViewport(t.sc,t.cam,t.el,t.vi);}
 });
 let _needsRender=true,_frameCount=0,_fpsTime=performance.now();
 function _markDirty(){_needsRender=true;}
