@@ -262,7 +262,9 @@ def _load_decomp_meta(mri_path: str) -> dict:
         return {"error": "No decomposition. Run mri-decompose."}
     meta = json.loads(p.read_text())
     meta["model_dir"] = Path(mri_path).parent.name
-    meta["mode"] = json.loads((Path(mri_path) / "metadata.json").read_text()).get("capture", {}).get("mode", "?")
+    mri_meta = json.loads((Path(mri_path) / "metadata.json").read_text())
+    meta["mode"] = mri_meta.get("capture", {}).get("mode", "?")
+    meta["intermediate_size"] = mri_meta.get("capture", {}).get("intermediate_size", 0)
     _decomp_meta_cache[mri_path] = meta
     return meta
 
@@ -299,6 +301,212 @@ def _weight_alignment_all(mri_path: str) -> list | dict:
     data = json.loads(p.read_text())
     _weight_align_cache[mri_path] = data
     return data
+
+
+# Cache mmap'd gate/up arrays per MRI path — avoids 60 file opens per request
+_mlp_mmap_cache: dict[str, tuple] = {}  # mri_path → (n_layers, intermediate, gates[], ups[])
+_neuron_result_cache: dict[str, bytes] = {}  # "mri_path:token_idx" → result bytes
+
+def _get_mlp_mmaps(mri_path: str):
+    if mri_path in _mlp_mmap_cache:
+        return _mlp_mmap_cache[mri_path]
+    mri_dir = Path(mri_path)
+    meta_path = mri_dir / "metadata.json"
+    if not meta_path.exists():
+        return None
+    meta = json.loads(meta_path.read_text())
+    n_layers = meta['model']['n_layers']
+    intermediate = meta['capture'].get('intermediate_size', 0)
+    if not intermediate:
+        return None
+    mlp_dir = mri_dir / "mlp"
+    if not mlp_dir.exists():
+        return None
+    gates, ups = [], []
+    for li in range(n_layers):
+        gp = mlp_dir / f"L{li:02d}_gate.npy"
+        up = mlp_dir / f"L{li:02d}_up.npy"
+        gates.append(np.load(str(gp), mmap_mode='r') if gp.exists() else None)
+        ups.append(np.load(str(up), mmap_mode='r') if up.exists() else None)
+    entry = (n_layers, intermediate, gates, ups)
+    _mlp_mmap_cache[mri_path] = entry
+    return entry
+
+
+def _neuron_field(mri_path: str, token_idx: int) -> bytes | dict:
+    """Full gate×up activation for one token across all layers.
+
+    Returns raw bytes: float16 array [n_layers × intermediate_size], row-major.
+    ~92KB for 30 layers × 1536 neurons. Mmap'd arrays cached for speed.
+    """
+    cache_key = f"{mri_path}:{token_idx}"
+    if cache_key in _neuron_result_cache:
+        return _neuron_result_cache[cache_key]
+    entry = _get_mlp_mmaps(mri_path)
+    if not entry:
+        return {"error": "No MLP data"}
+    n_layers, intermediate, gates, ups = entry
+    result = np.zeros((n_layers, intermediate), dtype=np.float16)
+    for li in range(n_layers):
+        g = gates[li]
+        if g is None:
+            continue
+        if token_idx >= g.shape[0]:
+            return {"error": f"Token {token_idx} out of range (max {g.shape[0]-1})"}
+        gt = g[token_idx].astype(np.float32)
+        u = ups[li]
+        if u is not None:
+            result[li] = (gt * u[token_idx].astype(np.float32)).astype(np.float16)
+        else:
+            result[li] = gt.astype(np.float16)
+    data = result.tobytes()
+    _neuron_result_cache[cache_key] = data  # ~90KB per token, cached in memory
+    return data
+
+
+# Cache decomp score mmaps: mri_path → {layer_idx: np.memmap}
+_decomp_score_cache: dict[str, dict] = {}
+
+def _get_score_mmap(mri_path: str, layer: int):
+    """Get mmap'd score array for a layer, cached."""
+    if mri_path not in _decomp_score_cache:
+        _decomp_score_cache[mri_path] = {}
+    cache = _decomp_score_cache[mri_path]
+    if layer in cache:
+        return cache[layer]
+    decomp = Path(mri_path) / "decomp"
+    meta_path = decomp / "meta.json"
+    if not meta_path.exists():
+        return None
+    meta = json.loads(meta_path.read_text())
+    n_real = meta.get("n_real_layers", meta["n_layers"])
+    if layer < n_real:
+        sp = decomp / f"L{layer:02d}_scores.npy"
+    elif layer == n_real:
+        sp = decomp / "emb_scores.npy"
+    elif layer == n_real + 1:
+        sp = decomp / "lmh_scores.npy"
+    else:
+        return None
+    if not sp.exists():
+        return None
+    arr = np.load(str(sp), mmap_mode='r')
+    cache[layer] = arr
+    return arr
+
+
+def _pc_column_cached(mri_path: str, pc: int, layer: int) -> bytes | dict:
+    """One PC's scores for all tokens at one layer. Cached mmaps = instant after first hit."""
+    arr = _get_score_mmap(mri_path, layer)
+    if arr is None:
+        return {"error": f"No scores for layer {layer}"}
+    if pc >= arr.shape[1]:
+        return {"error": f"PC {pc} out of range (max {arr.shape[1]-1})"}
+    return arr[:, pc].astype(np.float16).tobytes()
+
+
+def _token_layer_scores(mri_path: str, token: int, layer: int) -> bytes | dict:
+    """All PCs for one token at one layer. ~1KB, instant via mmap."""
+    arr = _get_score_mmap(mri_path, layer)
+    if arr is None:
+        return {"error": f"No scores for layer {layer}"}
+    if token >= arr.shape[0]:
+        return {"error": f"Token {token} out of range (max {arr.shape[0]-1})"}
+    import struct
+    row = arr[token].astype(np.float16)
+    header = struct.pack('<II', arr.shape[1], layer)  # K, layer
+    return header + row.tobytes()
+
+
+def _pc_full(mri_path: str, pc: int) -> bytes | dict:
+    """One PC, all tokens, all layers. Returns float16 [nLayers × nTokens].
+    ~3.1MB for SmolLM2-135M (32 layers × 48660 tokens × 2 bytes).
+    """
+    decomp = Path(mri_path) / "decomp"
+    meta_path = decomp / "meta.json"
+    if not meta_path.exists():
+        return {"error": "No decomposition"}
+    meta = json.loads(meta_path.read_text())
+    n_real = meta.get("n_real_layers", meta["n_layers"])
+    n_total = n_real + 2  # + emb + lmh
+    # Get token count and validate PC from first available layer
+    first = _get_score_mmap(mri_path, 0)
+    if first is None:
+        return {"error": "No score data"}
+    n_tok = first.shape[0]
+    max_pc = first.shape[1]
+    if pc >= max_pc:
+        return {"error": f"PC {pc} out of range (max {max_pc-1})"}
+    result = np.zeros((n_total, n_tok), dtype=np.float16)
+    for li in range(n_total):
+        arr = _get_score_mmap(mri_path, li)
+        if arr is not None and pc < arr.shape[1]:
+            result[li] = arr[:, pc].astype(np.float16)
+    import struct
+    header = struct.pack('<III', n_total, n_tok, pc)
+    return header + result.tobytes()
+
+
+def _pc_medium(mri_path: str, pcs: list[int], step: int = 10) -> bytes | dict:
+    """Multiple PCs, sampled tokens, all layers.
+    ~312KB per PC for SmolLM2-135M at step=10 (32 layers × 4866 tokens × 2 bytes).
+    """
+    decomp = Path(mri_path) / "decomp"
+    meta_path = decomp / "meta.json"
+    if not meta_path.exists():
+        return {"error": "No decomposition"}
+    meta = json.loads(meta_path.read_text())
+    n_real = meta.get("n_real_layers", meta["n_layers"])
+    n_total = n_real + 2
+    first = _get_score_mmap(mri_path, 0)
+    if first is None:
+        return {"error": "No score data"}
+    n_tok = first.shape[0]
+    max_pc = first.shape[1]
+    n_sample = (n_tok + step - 1) // step
+    n_pcs = len(pcs)
+    result = np.zeros((n_pcs, n_total, n_sample), dtype=np.float16)
+    for pi, pc in enumerate(pcs):
+        if pc >= max_pc:
+            continue
+        for li in range(n_total):
+            arr = _get_score_mmap(mri_path, li)
+            if arr is not None and pc < arr.shape[1]:
+                result[pi, li] = arr[::step, pc].astype(np.float16)[:n_sample]
+    import struct
+    header = struct.pack('<IIIII', n_pcs, n_total, n_sample, step, n_tok)
+    # Append PC indices
+    pc_bytes = struct.pack(f'<{n_pcs}I', *pcs)
+    return header + pc_bytes + result.tobytes()
+
+
+def _token_pca_full(mri_path: str, token_idx: int) -> bytes | dict:
+    """All PC scores for one token across all layers. Uses cached mmaps."""
+    decomp = Path(mri_path) / "decomp"
+    meta_path = decomp / "meta.json"
+    if not meta_path.exists():
+        return {"error": "No decomposition"}
+    meta = json.loads(meta_path.read_text())
+    n_real = meta.get("n_real_layers", meta["n_layers"])
+    n_total = n_real + 2  # + emb + lmh
+    full_k = 0
+    for li in range(n_total):
+        s = _get_score_mmap(mri_path, li)
+        if s is not None:
+            if token_idx >= s.shape[0]:
+                return {"error": f"Token {token_idx} out of range"}
+            full_k = max(full_k, s.shape[1])
+    if not full_k:
+        return {"error": "No score files found"}
+    result = np.zeros((n_total, full_k), dtype=np.float32)
+    for li in range(n_total):
+        s = _get_score_mmap(mri_path, li)
+        if s is not None:
+            row = s[token_idx].astype(np.float32)
+            result[li, :len(row)] = row
+    import struct
+    header = struct.pack('<II', n_total, full_k)
+    return header + result.tobytes()
 
 
 def _token_neurons(mri_path: str, token_idx: int) -> dict:
@@ -586,6 +794,80 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                     self._send_file(hp)
                 else:
                     self._send_json({"error": "No gate heatmap"})
+        elif path.startswith('/api/pc-full/'):
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                pc = int(qs.get('pc', ['0'])[0])
+                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                result = _pc_full(mri_path, pc)
+                if isinstance(result, dict):
+                    self._send_json(result)
+                else:
+                    self._send_bytes(result)
+        elif path.startswith('/api/pc-medium/'):
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                pcs_str = qs.get('pcs', [''])[0]
+                pcs = [int(p) for p in pcs_str.split(',') if p]
+                step = int(qs.get('step', ['10'])[0])
+                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                result = _pc_medium(mri_path, pcs, step)
+                if isinstance(result, dict):
+                    self._send_json(result)
+                else:
+                    self._send_bytes(result)
+        elif path.startswith('/api/pc-column/'):
+            # Serve one PC's scores for all tokens at one layer: float16 [nTokens]
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                pc = int(qs.get('pc', ['0'])[0])
+                layer = int(qs.get('layer', ['0'])[0])
+                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                result = _pc_column_cached(mri_path, pc, layer)
+                if isinstance(result, dict):
+                    self._send_json(result)
+                else:
+                    self._send_bytes(result)
+        elif path.startswith('/api/token-layer/'):
+            # All PCs for one token at one layer: [4B K][4B layer][float16 × K] ~1KB
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                token = int(qs.get('token', ['0'])[0])
+                layer = int(qs.get('layer', ['0'])[0])
+                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                result = _token_layer_scores(mri_path, token, layer)
+                if isinstance(result, dict):
+                    self._send_json(result)
+                else:
+                    self._send_bytes(result)
+        elif path.startswith('/api/token-pca/'):
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                token = int(qs.get('token', ['0'])[0])
+                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                result = _token_pca_full(mri_path, token)
+                if isinstance(result, dict):
+                    self._send_json(result)
+                else:
+                    self._send_bytes(result)
+        elif path.startswith('/api/neuron-field/'):
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                token = int(qs.get('token', ['0'])[0])
+                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                result = _neuron_field(mri_path, token)
+                if isinstance(result, dict):
+                    self._send_json(result)
+                else:
+                    self._send_bytes(result)
+            else:
+                self._send_json({"error": "Usage: /api/neuron-field/<model>/<mode>?token=N"})
         elif path.startswith('/api/token-neurons/'):
             parts = path.split('/')
             if len(parts) >= 5:
@@ -680,6 +962,20 @@ class CompanionHandler(SimpleHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _send_bytes(self, data: bytes):
+        self.send_response(200)
+        self.send_header('Content-Type', 'application/octet-stream')
+        self.send_header('Content-Length', len(data))
+        self.send_header('Access-Control-Allow-Origin', '*')
+        self.send_header('Cache-Control', 'no-cache')
+        self.end_headers()
+        # Chunk writes to avoid broken pipe on large responses
+        offset = 0
+        while offset < len(data):
+            chunk = data[offset:offset + 65536]
+            self.wfile.write(chunk)
+            offset += 65536
+
     def _send_file(self, path: Path):
         """Stream a binary file without loading it all into memory."""
         size = path.stat().st_size
@@ -726,6 +1022,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'text/html')
         self.send_header('Content-Length', len(body))
+        self.send_header('Cache-Control', 'no-cache, no-store, must-revalidate')
         self.end_headers()
         self.wfile.write(body)
 

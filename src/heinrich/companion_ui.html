@@ -1483,8 +1483,10 @@ let _pcsHoverPC=-1;
 let _pcsLayerLine=null;// current-layer indicator line
 let _pcsVarLine=null;// variance envelope line
 let _pcsTicks=null;// PC index tick marks
-let _pcsHoverMesh=null;// hover token spectrum (current layer, from _getScore)
-let _pcsHoverTok=-1;
+let _pcsHoverMesh=null;// hover token spectrum (current layer only)
+let _pcsHoverTok=-1;// which token the hover mesh shows
+const _pcsHoverCache=new Map();// tokIdx → {nL, fK, data: Float32Array}
+let _pcsHoverLoading=-1;
 // Full PCA data per token: Float32Array [n_layers × full_K]
 let _pcsFullA=null,_pcsFullB=null;
 let _pcsFullK=0,_pcsFullNL=0;
@@ -1592,6 +1594,21 @@ function _pcsHitTest(e){
   return best;
 }
 
+// Unified per-token PCA fetch — shared by pin and hover
+async function _pcsFetchToken(tokIdx){
+  if(tokIdx<0||!model)return null;
+  const cached=_pcsHoverCache.get(tokIdx);
+  if(cached)return cached;
+  const resp=await fetch(`/api/token-pca/${model}/${mode}?token=${tokIdx}`);
+  if(!resp.ok)return null;
+  const ct=resp.headers.get('content-type')||'';if(ct.includes('json'))return null;
+  const buf=await resp.arrayBuffer();
+  const dv=new DataView(buf);
+  const entry={nL:dv.getUint32(0,true),fK:dv.getUint32(4,true),data:new Float32Array(buf,8)};
+  if(_pcsHoverCache.size>64){const first=_pcsHoverCache.keys().next().value;_pcsHoverCache.delete(first);}
+  _pcsHoverCache.set(tokIdx,entry);
+  return entry;
+}
 async function _pcsLoadFull(tokIdx, slot){
   if(tokIdx<0){
     if(slot==='A'){_pcsFullA=null;_pcsLoadingA=-1;}else{_pcsFullB=null;_pcsLoadingB=-1;}
@@ -1601,15 +1618,10 @@ async function _pcsLoadFull(tokIdx, slot){
   if(slot==='B'&&_pcsLoadingB===tokIdx)return;
   if(slot==='A')_pcsLoadingA=tokIdx;else _pcsLoadingB=tokIdx;
   try{
-    const resp=await fetch(`/api/token-pca/${model}/${mode}?token=${tokIdx}`);
-    if(!resp.ok)return;
-    const ct=resp.headers.get('content-type')||'';if(ct.includes('json'))return;
-    const buf=await resp.arrayBuffer();
-    const dv=new DataView(buf);
-    const nL=dv.getUint32(0,true),fK=dv.getUint32(4,true);
-    const data=new Float32Array(buf,8);
-    _pcsFullNL=nL;_pcsFullK=fK;
-    if(slot==='A')_pcsFullA=data;else _pcsFullB=data;
+    const entry=await _pcsFetchToken(tokIdx);
+    if(!entry)return;
+    _pcsFullNL=entry.nL;_pcsFullK=entry.fK;
+    if(slot==='A')_pcsFullA=entry.data;else _pcsFullB=entry.data;
     _buildPCSSpectrum();
   }catch(e){console.error('token-pca:',e);}
 }
@@ -1795,32 +1807,63 @@ function _updatePCSDots(){
 
 function _updateTrajDots(){_updatePCSDots();}
 
-// Hover spectrum: instant from _getScore (no fetch). Shows what's loaded.
-// PCs 0-49 always available from blob. Selected PCs available from _pcFull.
-// Unloaded PCs sit at Y=0 — honest partial data.
+// Hover spectrum: lightweight per-layer fetch (~1KB, <1ms on localhost)
+// Fetches all K PCs for one token at current layer only.
+const _pcsLayerCache=new Map();// `${tok},${layer}` → Float32Array[K]
+let _pcsHoverK=0;
 function _updatePCSHover(tokIdx){
   if(!_pcsHoverMesh)return;
   if(tokIdx<0){_pcsHoverMesh.geometry.setDrawRange(0,0);_pcsHoverTok=-1;_markDirty();return;}
   _pcsHoverTok=tokIdx;
-  const k=_pcsNK||nK;if(!k)return;
+  const cacheKey=`${tokIdx},${cL}`;
+  const cached=_pcsLayerCache.get(cacheKey);
+  if(cached){_renderPCSHoverLayer(tokIdx,cached);return;}
+  // Fire lightweight fetch — ~1KB, essentially instant
+  if(_pcsHoverLoading!==tokIdx){
+    _pcsHoverLoading=tokIdx;
+    fetch(`/api/token-layer/${model}/${mode}?token=${tokIdx}&layer=${cL}`).then(r=>{
+      if(!r.ok)return null;const ct=r.headers.get('content-type')||'';if(ct.includes('json'))return null;
+      return r.arrayBuffer();
+    }).then(buf=>{
+      _pcsHoverLoading=-1;
+      if(!buf)return;
+      const dv=new DataView(buf);const K=dv.getUint32(0,true);
+      const u16=new Uint16Array(buf,8);
+      const f32=new Float32Array(K);for(let j=0;j<K;j++)f32[j]=f16(u16[j]);
+      _pcsHoverK=K;
+      // LRU: keep last 256 entries (token×layer pairs)
+      if(_pcsLayerCache.size>256){const first=_pcsLayerCache.keys().next().value;_pcsLayerCache.delete(first);}
+      _pcsLayerCache.set(cacheKey,f32);
+      if(_pcsHoverTok===tokIdx)_renderPCSHoverLayer(tokIdx,f32);
+    }).catch(()=>{_pcsHoverLoading=-1;});
+  }
+}
+function _renderPCSHoverLayer(tokIdx,scores){
+  if(!_pcsHoverMesh||_pcsHoverTok!==tokIdx)return;
+  const K=scores.length;
   const xSpan=2.4,zSpan=3.0;
   const nL_pcs=_pcsFullNL||_nRealLayers||nL;
   const z=(cL/((nL_pcs-1)||1))*zSpan-zSpan/2;
-  const scale=_pcsScale>0.01?_pcsScale:1;
+  // Scale: match what pinning would produce
+  let mx=0.001;for(let i=0;i<K;i++)mx=Math.max(mx,Math.abs(scores[i]));
+  // Combine with pinned token max for consistent scale
+  [_pcsFullA,_pcsFullB].forEach(fd=>{if(!fd)return;for(let i=0;i<fd.length;i++)mx=Math.max(mx,Math.abs(fd[i]));});
+  const scale=1.2/mx;
   let pos=_pcsHoverMesh.geometry.attributes.position.array;
-  if(pos.length<k*3){
-    _pcsHoverMesh.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(k*3),3));
+  if(pos.length<K*3){
+    _pcsHoverMesh.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(K*3),3));
     pos=_pcsHoverMesh.geometry.attributes.position.array;
   }
-  for(let pc=0;pc<k;pc++){
-    pos[pc*3]=(pc/((k-1)||1))*xSpan-xSpan/2;
-    pos[pc*3+1]=_getScore(cL,tokIdx,pc)*scale;
+  for(let pc=0;pc<K;pc++){
+    pos[pc*3]=(pc/((K-1)||1))*xSpan-xSpan/2;
+    pos[pc*3+1]=scores[pc]*scale;
     pos[pc*3+2]=z;
   }
-  _pcsHoverMesh.geometry.setDrawRange(0,k);
+  _pcsHoverMesh.geometry.setDrawRange(0,K);
   _pcsHoverMesh.geometry.attributes.position.needsUpdate=true;
   _markDirty();
 }
+// _renderPCSHover removed — hover now uses per-layer _renderPCSHoverLayer
 
 function _clearRV(rv){
   if(!rv)return;rv._rvSlices=[];
