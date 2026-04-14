@@ -260,7 +260,7 @@ function _precomputeTraj(vi){
   const v=views[vi];const{pcX,pcY}=v;const tlMx=v._trajLayerMx;
   if(!v._trajBufs||v._trajBufs.length!==nL)v._trajBufs=new Array(nL);
   for(let l=0;l<nL;l++){
-    const z=(l/(nL-1))*2-1;const lm=tlMx?tlMx[l]:[1,1];
+    const z=_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1;const lm=tlMx?tlMx[l]:[1,1];
     if(!v._trajBufs[l]||v._trajBufs[l].length!==nN*3)v._trajBufs[l]=new Float32Array(nN*3);
     const buf=v._trajBufs[l];
     for(let i=0;i<nN;i++){buf[i*3]=_getScore(l,i,pcX)/lm[0];buf[i*3+1]=_getScore(l,i,pcY)/lm[1];buf[i*3+2]=z;}
@@ -271,7 +271,7 @@ function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
   // Reuse geometry buffer if same size, else allocate
   const n=nL;let buf=line.geometry.attributes.position?.array;
   if(!buf||buf.length!==n*3){line.geometry.dispose();const a=new Float32Array(n*3);line.geometry=new THREE.BufferGeometry();line.geometry.setAttribute('position',new THREE.BufferAttribute(a,3));buf=a;}
-  if(vi<NC){for(let l=0;l<n;l++){const lm=v._layerMx?v._layerMx[l]:null;const mxX=lm?lm[0]:1,mxY=lm?lm[1]:1,mxZ=lm?lm[2]:1;buf[l*3]=_getScore(l,idx,v.pcX)/mxX;buf[l*3+1]=_getScore(l,idx,v.pcY)/mxY;buf[l*3+2]=_getScore(l,idx,v.pcZ)/mxZ;}}else{const tlMx=v._trajLayerMx;for(let l=0;l<n;l++){const lm=tlMx?tlMx[l]:[1,1];buf[l*3]=_getScore(l,idx,v.pcX)/lm[0];buf[l*3+1]=_getScore(l,idx,v.pcY)/lm[1];buf[l*3+2]=(l/(n-1))*2-1;}}
+  if(vi<NC){for(let l=0;l<n;l++){const lm=v._layerMx?v._layerMx[l]:null;const mxX=lm?lm[0]:1,mxY=lm?lm[1]:1,mxZ=lm?lm[2]:1;buf[l*3]=_getScore(l,idx,v.pcX)/mxX;buf[l*3+1]=_getScore(l,idx,v.pcY)/mxY;buf[l*3+2]=_getScore(l,idx,v.pcZ)/mxZ;}}else{const tlMx=v._trajLayerMx;for(let l=0;l<n;l++){const lm=tlMx?tlMx[l]:[1,1];buf[l*3]=_getScore(l,idx,v.pcX)/lm[0];buf[l*3+1]=_getScore(l,idx,v.pcY)/lm[1];buf[l*3+2]=_layerZ[l]!==undefined?_layerZ[l]:(l/(n-1))*2-1;}}
   line.geometry.attributes.position.needsUpdate=true;line.visible=true;}
 let _lastDimState=-1;
 function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC)v.mtl.opacity=dim?0.35:0.85;if(vi>=NC&&v.trajGroup){const baseOp=dim?0.08:0.15;v.trajGroup.children.forEach(c=>{if(c.material)c.material.opacity=baseOp;});if(v.trajMarker)v.trajMarker.material.opacity=dim?0.35:0.9;}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible){m.material.opacity=0.95;m.material.size=dim?0.08:0.06;}});}
@@ -581,7 +581,7 @@ function updateVP(vi,pcX,pcY,pcZ,layer){const v=views[vi];v.pcX=pcX;v.pcY=pcY;v.
   v.geo.attributes.position.needsUpdate=true;if(!play)v.geo.computeBoundingSphere();
   document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}/${pcZ}`;
   if(!v._fitted){v.cam.position.set(0,0,2.5);v.ctl.target.set(0,0,0);v.ctl.update();v._fitted=true;}}
-function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;if(v.trajGroup){v.trajGroup.children.forEach(c=>{if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();});v.sc.remove(v.trajGroup);}if(v.trajMarker){v.trajMarker.geometry.dispose();v.trajMarker.material.dispose();v.sc.remove(v.trajMarker);}v.trajGroup=new THREE.Group();const _tlMx=new Array(nL);for(let l=0;l<nL;l++){let mxX=0,mxY=0;for(let i=0;i<nN;i++){mxX=Math.max(mxX,Math.abs(_getScore(l,i,pcX)));mxY=Math.max(mxY,Math.abs(_getScore(l,i,pcY)));}mxX=mxX||1;mxY=mxY||1;_tlMx[l]=[mxX,mxY];}v._trajLayerMx=_tlMx;v._trajScaleXY=[1,1];v._trajScale=1;const maxLines=Math.min(nN,800);const step=Math.max(1,Math.floor(nN/maxLines));for(let i=0;i<nN;i+=step){const pts=[];for(let l=0;l<nL;l++){pts.push(new THREE.Vector3(_getScore(l,i,pcX)/_tlMx[l][0],_getScore(l,i,pcY)/_tlMx[l][1],(l/(nL-1))*2-1));}const g=new THREE.BufferGeometry().setFromPoints(pts);const line=new THREE.Line(g,new THREE.LineBasicMaterial({color:CL[scripts[i]]||0xAAAAAA,transparent:true,opacity:0.15,depthWrite:false}));line.userData={ti:i};v.trajGroup.add(line);}v.sc.add(v.trajGroup);const pg=new THREE.BufferGeometry();const _tp=new Float32Array(nN*3),_tc=new Float32Array(nN*3);for(let i=0;i<nN;i++){const hex=CL[scripts[i]]||0xAAAAAA;_tc[i*3]=((hex>>16)&0xFF)/255;_tc[i*3+1]=((hex>>8)&0xFF)/255;_tc[i*3+2]=(hex&0xFF)/255;}pg.setAttribute('position',new THREE.BufferAttribute(_tp,3));pg.setAttribute('color',new THREE.BufferAttribute(_tc,3));v.trajMarker=new THREE.Points(pg,new THREE.PointsMaterial({size:0.018,vertexColors:true,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false}));v.sc.add(v.trajMarker);updateTrajMarker(vi);document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}+d`;}
+function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;if(v.trajGroup){v.trajGroup.children.forEach(c=>{if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();});v.sc.remove(v.trajGroup);}if(v.trajMarker){v.trajMarker.geometry.dispose();v.trajMarker.material.dispose();v.sc.remove(v.trajMarker);}v.trajGroup=new THREE.Group();const _tlMx=new Array(nL);for(let l=0;l<nL;l++){let mxX=0,mxY=0;for(let i=0;i<nN;i++){mxX=Math.max(mxX,Math.abs(_getScore(l,i,pcX)));mxY=Math.max(mxY,Math.abs(_getScore(l,i,pcY)));}mxX=mxX||1;mxY=mxY||1;_tlMx[l]=[mxX,mxY];}v._trajLayerMx=_tlMx;v._trajScaleXY=[1,1];v._trajScale=1;const maxLines=Math.min(nN,800);const step=Math.max(1,Math.floor(nN/maxLines));for(let i=0;i<nN;i+=step){const pts=[];for(let l=0;l<nL;l++){pts.push(new THREE.Vector3(_getScore(l,i,pcX)/_tlMx[l][0],_getScore(l,i,pcY)/_tlMx[l][1],_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1));}const g=new THREE.BufferGeometry().setFromPoints(pts);const line=new THREE.Line(g,new THREE.LineBasicMaterial({color:CL[scripts[i]]||0xAAAAAA,transparent:true,opacity:0.15,depthWrite:false}));line.userData={ti:i};v.trajGroup.add(line);}v.sc.add(v.trajGroup);const pg=new THREE.BufferGeometry();const _tp=new Float32Array(nN*3),_tc=new Float32Array(nN*3);for(let i=0;i<nN;i++){const hex=CL[scripts[i]]||0xAAAAAA;_tc[i*3]=((hex>>16)&0xFF)/255;_tc[i*3+1]=((hex>>8)&0xFF)/255;_tc[i*3+2]=(hex&0xFF)/255;}pg.setAttribute('position',new THREE.BufferAttribute(_tp,3));pg.setAttribute('color',new THREE.BufferAttribute(_tc,3));v.trajMarker=new THREE.Points(pg,new THREE.PointsMaterial({size:0.018,vertexColors:true,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false}));v.sc.add(v.trajMarker);updateTrajMarker(vi);document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}+d`;}
 function updateTrajMarker(vi){const v=views[vi];
   const buf=v._trajBufs&&v._trajBufs[cL];if(!buf)return;
   if(v.trajMarker){const tp=v.trajMarker.geometry.attributes.position.array;tp.set(buf);
@@ -2296,11 +2296,18 @@ let _nRealLayers=0;
 // Indices into allL/score arrays: [_nRealLayers, 0, 1, ..., _nRealLayers-1, _nRealLayers+1]
 let _layerSeq=[];// built after model load
 function _buildLayerSeq(){
+  // Model order: emb → L0 → ... → L(N-1) → lmh
   _layerSeq=[];
   if(nL>_nRealLayers)_layerSeq.push(_nRealLayers);// emb
   for(let i=0;i<_nRealLayers;i++)_layerSeq.push(i);
   if(nL>_nRealLayers+1)_layerSeq.push(_nRealLayers+1);// lmh
+  // Model-order Z position: maps layer INDEX to position in the sequence
+  // emb=0, L0=1, L1=2, ..., L(N-1)=N, lmh=N+1
+  _layerZ={};// layer index → normalized Z (-1 to +1)
+  const total=_layerSeq.length-1||1;
+  _layerSeq.forEach((li,si)=>{_layerZ[li]=(si/total)*2-1;});
 }
+let _layerZ={};
 function _seqNext(cur){const i=_layerSeq.indexOf(cur);return _layerSeq[(i+1)%_layerSeq.length];}
 function _seqPrev(cur){const i=_layerSeq.indexOf(cur);return _layerSeq[(i-1+_layerSeq.length)%_layerSeq.length];}
 function _layerName(l){if(l<_nRealLayers)return'L'+String(l).padStart(2,'0');const vl=dm?.virtual_layers||[];return vl[l-_nRealLayers]||'L'+l;}
