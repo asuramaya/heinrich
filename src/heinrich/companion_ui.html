@@ -1068,11 +1068,14 @@ function _rebuildWeightLines(){
   if(needsRebuild)_wlBuiltKey=key;
 }
 
+let _corrCache=null,_corrCacheKey='';
 function _updateInternalsValues(lv,pcA,pcB){
   if(!lv._legBtns||!_wlData)return;
   const nMat=_wlData[0]?.matrices?.length||0;
-  // Compute correlation between each matrix's alignment curve and token A's trajectory
-  const _corrWith=pinnedToken>=0?_computeCorrelations(pcA,pcB,nMat):null;
+  // Correlation is layer-independent — cache by token+PCs
+  const ck=`${pinnedToken}:${pcA}:${pcB}`;
+  if(ck!==_corrCacheKey){_corrCache=pinnedToken>=0?_computeCorrelations(pcA,pcB,nMat):null;_corrCacheKey=ck;}
+  const _corrWith=_corrCache;
   for(let mi=0;mi<nMat;mi++){
     const btn=lv._legBtns[mi];if(!btn)continue;
     const al=_wlData[cL]?.matrices?.[mi]?.alignment||[];
@@ -2256,10 +2259,10 @@ function _updateRVLayer(){
 function updateLeftViewports(){
   _updateDeltaPins();
   _rebuildWeightLines();
-  // Update legend values + focus label on layer change
+  // Update legend values + focus label — skip correlation during playback (cached anyway)
   for(let vi=0;vi<3;vi++){
     const lv=leftViews[vi];if(!lv)continue;
-    if(lv._legBtns)_updateInternalsValues(lv,vpPairs[vi][0],vpPairs[vi][1]);
+    if(lv._legBtns&&!play)_updateInternalsValues(lv,vpPairs[vi][0],vpPairs[vi][1]);
     const fl=lv.el?.querySelector('.wl-focus-label');
     if(fl&&lv._wlIsolated>=0){
       const mi=lv._wlIsolated;const al=_wlData?.[cL]?.matrices?.[mi]?.alignment||[];
