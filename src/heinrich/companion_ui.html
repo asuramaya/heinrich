@@ -11,7 +11,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #vp0{grid-column:1;grid-row:1}#vp1{grid-column:2;grid-row:1}#vp2{grid-column:3;grid-row:1}
 #vp3{grid-column:1;grid-row:2}#vp4{grid-column:2;grid-row:2}#vp5{grid-column:3;grid-row:2}
 #lv0{grid-column:1;grid-row:3}#lv1{grid-column:2;grid-row:3}#lv2{grid-column:3;grid-row:3}
-#br0{grid-column:4;grid-row:1/4}
+#br0{/* grid placement is now inline */}
 #rightcol{grid-column:5;grid-row:1/4;display:flex;flex-direction:column;gap:1px;overflow:hidden}
 .rvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .rvp .rlbl{position:absolute;top:2px;left:4px;font-size:7px;color:#444;pointer-events:none;z-index:2}
@@ -55,8 +55,11 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   <div class="vp" id="vp0"><div class="axes" id="ax0"></div><div class="cbtn lv-btn lv-top" data-v="0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="vp" id="vp1"><div class="axes" id="ax1"></div><div class="llbl" id="lv0lbl">Delta A×B</div><div class="cbtn lv-btn lv-top" data-v="1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="vp" id="vp2"><div class="axes" id="ax2"></div><div class="cbtn lv-btn lv-top" data-v="2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
-  <div class="browse" id="br0"><div class="blbl">R-click=Token B</div>
-    <div class="cbtn" data-v="br" style="position:absolute;bottom:2px;right:2px"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button><button data-a="f1">F1</button><button data-a="f2">F2</button></div></div>
+  <div id="br0" style="grid-column:4;grid-row:1/4;display:flex;flex-direction:column;gap:1px">
+    <div class="browse" id="br0top" style="flex:2;position:relative;overflow:hidden"><div class="blbl">R-click=Token B</div>
+      <div class="cbtn" data-v="br" style="position:absolute;bottom:2px;right:2px"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button><button data-a="f1">F1</button><button data-a="f2">F2</button></div></div>
+    <div id="br0bot" style="flex:1;position:relative;overflow:hidden;background:transparent"><div style="position:absolute;top:2px;left:4px;font-size:7px;color:#444;pointer-events:none;z-index:2" id="pcsLabel">PC Spectrum</div><div id="pcsTip" style="display:none;position:absolute;z-index:20;background:rgba(10,10,10,0.9);border:1px solid #333;padding:3px 6px;font-size:8px;color:#ccc;pointer-events:none;border-radius:3px;white-space:nowrap"></div></div>
+  </div>
   <div class="vp" id="vp3"><div class="axes" id="ax3"></div><div class="cbtn lv-btn lv-bot" data-v="3"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="vp" id="vp4"><div class="axes" id="ax4"></div><div class="cbtn lv-btn lv-bot" data-v="4"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="vp" id="vp5"><div class="axes" id="ax5"></div><div class="cbtn lv-btn lv-bot" data-v="5"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
@@ -64,9 +67,9 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   <div class="lvp" id="lv1"><div class="llbl" id="lv1i">Internals Δ</div><div class="cbtn lv-btn lv-top" data-v="l1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="lvp" id="lv2"><div class="llbl" id="lv2i">Internals B</div><div class="cbtn lv-btn lv-top" data-v="l2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div id="rightcol">
-    <div class="rvp" id="rv0"><div class="rlbl">Variance + Displacement</div></div>
-    <div class="rvp" id="rv1"><div class="rlbl">MLP Gating</div></div>
-    <div class="rvp" id="rv2"><div class="rlbl">Residual + Dominance</div></div>
+    <div class="rvp" id="rv0"><div class="rlbl">Weights</div></div>
+    <div class="rvp" id="rv1"><div class="rlbl">Neurons</div></div>
+    <div class="rvp" id="rv2"><div class="rlbl">Attention</div></div>
   </div>
 </div>
 <div id="tokpanel">
@@ -131,7 +134,7 @@ for(let v=0;v<NV;v++){const el=document.getElementById('vp'+v);const sc=new THRE
 function _resizeCanvas(){rdr.setSize(window.innerWidth,window.innerHeight);}
 
 // Combined browser
-const brEl=document.getElementById('br0'),brCv=brEl;
+const brEl=document.getElementById('br0top'),brCv=brEl;
 const brSc=new THREE.Scene();brSc.background=new THREE.Color(0x050505);
 const brCam=new THREE.PerspectiveCamera(50,1,0.1,500);brCam.position.set(6,-2,10);
 const brCtl=new OrbitControls(brCam,brEl);brCtl.enableDamping=true;brCtl.dampingFactor=0.08;brCtl.target.set(6,-2,0);brCtl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};
@@ -158,30 +161,102 @@ function _positionMarker(mk,v,vi,idx){const pos=mk.geometry.attributes.position.
     if(cpos&&cpos.length>0&&idx*3+2<cpos.length){pos[0]=cpos[idx*3];pos[1]=cpos[idx*3+1];pos[2]=cpos[idx*3+2];}
     else{pos[0]=0;pos[1]=0;pos[2]=0;}}
   mk.geometry.attributes.position.needsUpdate=true;}
+// === Three-tier PC data cache ===
+// Full: [nLayers * nTokens] per PC — for selected PCs. Clouds + trajectories.
+// Medium: [nLayers * nSample] per PC — for radial neighbors.
+// Light: per-token all-PCs — for spectrum. (existing _pcsFullA/B)
+const _pcFull=new Map();// pc -> Float32Array[nLayers*nTokens]
+const _pcMedium=new Map();// pc -> {step, nS, data: Float32Array[nLayers*nSample]}
+let _pcFullNL=0,_pcFullNT=0;
+let _pcMedStep=10,_pcMedNS=0;
+
+function _getScore(l,i,pc){
+  // Tier 1: full resolution cache (primary path for ALL PCs)
+  const full=_pcFull.get(pc);
+  if(full)return full[l*_pcFullNT+i]||0;
+  // Tier 2: blob fallback (first nK PCs, initial load only)
+  if(pc<nK&&allL[l]?.[i])return allL[l][i][pc]||0;
+  // Tier 3: medium resolution (sampled, for radial neighbors)
+  const med=_pcMedium.get(pc);
+  if(med){const si=Math.floor(i/med.step);if(si<med.nS)return med.data[l*med.nS+si]||0;}
+  return 0;
+}
+
+async function _loadPCFull(pc){
+  if(_pcFull.has(pc))return;// already cached — no nK limit
+  const resp=await fetch(`/api/pc-full/${model}/${mode}?pc=${pc}`);
+  if(!resp.ok)return;
+  const buf=await resp.arrayBuffer();
+  const dv=new DataView(buf);
+  _pcFullNL=dv.getUint32(0,true);_pcFullNT=dv.getUint32(4,true);
+  const u16=new Uint16Array(buf,12);
+  const f32=new Float32Array(u16.length);
+  for(let j=0;j<u16.length;j++)f32[j]=f16(u16[j]);
+  _pcFull.set(pc,f32);
+  console.log('_loadPCFull: PC'+pc+' loaded, '+f32.length+' values, sample:',f32[0],f32[1],f32[2]);
+}
+
+async function _loadPCMedium(pcs,step){
+  const need=pcs.filter(pc=>!_pcMedium.has(pc)&&!_pcFull.has(pc));
+  if(!need.length)return;
+  const resp=await fetch(`/api/pc-medium/${model}/${mode}?pcs=${need.join(',')}&step=${step}`);
+  if(!resp.ok)return;
+  const buf=await resp.arrayBuffer();
+  const dv=new DataView(buf);
+  const nPCs=dv.getUint32(0,true),nL_=dv.getUint32(4,true);
+  const nS=dv.getUint32(8,true);const st=dv.getUint32(12,true);
+  _pcMedNS=nS;_pcMedStep=st;
+  const pcIdx=[];for(let j=0;j<nPCs;j++)pcIdx.push(dv.getUint32(20+j*4,true));
+  const u16=new Uint16Array(buf,20+nPCs*4);
+  const perPC=nL_*nS;
+  for(let pi=0;pi<nPCs;pi++){
+    const f32=new Float32Array(perPC);
+    for(let j=0;j<perPC;j++)f32[j]=f16(u16[pi*perPC+j]);
+    _pcMedium.set(pcIdx[pi],{step:st,nS,data:f32});
+  }
+}
+
+async function _ensurePCData(){
+  console.log('_ensurePCData: vpPairs=',JSON.stringify(vpPairs),'nK=',nK);
+  const selected=new Set();
+  for(const[a,b]of vpPairs){selected.add(a);selected.add(b);selected.add(thirdPC(a,b));}
+  await Promise.all([...selected].map(pc=>_loadPCFull(pc)));
+  if(_brCells){
+    const nbr=new Set();
+    _brCells.forEach(c=>{if(!selected.has(c.pa))nbr.add(c.pa);if(!selected.has(c.pb))nbr.add(c.pb);});
+    if(nbr.size)await _loadPCMedium([...nbr],10);
+  }
+}
+
+// Legacy compat
+async function _ensurePCs(pcs){
+  await Promise.all([...new Set(pcs)].map(pc=>_loadPCFull(pc)));
+}
+
 // --- Precomputed position buffers for real-time playback ---
 // At pair-change time, compute Float32Array(nN*3) for every layer × viewport.
 // Layer change becomes a .set() memcpy instead of O(N) math.
 function _precomputeCloud(vi){
   const v=views[vi];const{pcX,pcY,pcZ}=v;
   if(!v._cloudBufs||v._cloudBufs.length!==nL)v._cloudBufs=new Array(nL);
-  v._layerMx=new Array(nL);
+  v._layerMx=new Array(nL);// kept for compat — stores [mxX, mxY, mxZ]
   for(let l=0;l<nL;l++){
-    const S=allL[l];let mx=0;
-    for(let i=0;i<nN;i++){mx=Math.max(mx,Math.abs(S[i][pcX]||0),Math.abs(S[i][pcY]||0),Math.abs(S[i][pcZ]||0));}
-    mx=mx||1;v._layerMx[l]=mx;
+    let mxX=0,mxY=0,mxZ=0;
+    for(let i=0;i<nN;i++){mxX=Math.max(mxX,Math.abs(_getScore(l,i,pcX)));mxY=Math.max(mxY,Math.abs(_getScore(l,i,pcY)));mxZ=Math.max(mxZ,Math.abs(_getScore(l,i,pcZ)));}
+    mxX=mxX||1;mxY=mxY||1;mxZ=mxZ||1;v._layerMx[l]=[mxX,mxY,mxZ];
     if(!v._cloudBufs[l]||v._cloudBufs[l].length!==nN*3)v._cloudBufs[l]=new Float32Array(nN*3);
     const buf=v._cloudBufs[l];
-    for(let i=0;i<nN;i++){buf[i*3]=(S[i][pcX]||0)/mx;buf[i*3+1]=(S[i][pcY]||0)/mx;buf[i*3+2]=(S[i][pcZ]||0)/mx;}
+    for(let i=0;i<nN;i++){buf[i*3]=_getScore(l,i,pcX)/mxX;buf[i*3+1]=_getScore(l,i,pcY)/mxY;buf[i*3+2]=_getScore(l,i,pcZ)/mxZ;}
   }
 }
 function _precomputeTraj(vi){
-  const v=views[vi];const{pcX,pcY}=v;const mx=v._trajScale||1;
+  const v=views[vi];const{pcX,pcY}=v;const tlMx=v._trajLayerMx;
   if(!v._trajBufs||v._trajBufs.length!==nL)v._trajBufs=new Array(nL);
   for(let l=0;l<nL;l++){
-    const S=allL[l];const z=(l/(nL-1))*2-1;
+    const z=(l/(nL-1))*2-1;const lm=tlMx?tlMx[l]:[1,1];
     if(!v._trajBufs[l]||v._trajBufs[l].length!==nN*3)v._trajBufs[l]=new Float32Array(nN*3);
     const buf=v._trajBufs[l];
-    for(let i=0;i<nN;i++){buf[i*3]=(S[i][pcX]||0)/mx;buf[i*3+1]=(S[i][pcY]||0)/mx;buf[i*3+2]=z;}
+    for(let i=0;i<nN;i++){buf[i*3]=_getScore(l,i,pcX)/lm[0];buf[i*3+1]=_getScore(l,i,pcY)/lm[1];buf[i*3+2]=z;}
   }
 }
 // Delta is now handled by viewports 1 (cloud) and 4 (trajectory) in the main pipeline
@@ -189,7 +264,7 @@ function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
   // Reuse geometry buffer if same size, else allocate
   const n=nL;let buf=line.geometry.attributes.position?.array;
   if(!buf||buf.length!==n*3){line.geometry.dispose();const a=new Float32Array(n*3);line.geometry=new THREE.BufferGeometry();line.geometry.setAttribute('position',new THREE.BufferAttribute(a,3));buf=a;}
-  if(vi<NC){for(let l=0;l<n;l++){const S=allL[l];const mx=v._layerMx?v._layerMx[l]:1;buf[l*3]=(S[idx][v.pcX]||0)/mx;buf[l*3+1]=(S[idx][v.pcY]||0)/mx;buf[l*3+2]=(S[idx][v.pcZ]||0)/mx;}}else{const mx=v._trajScale||1;for(let l=0;l<n;l++){const S=allL[l];buf[l*3]=(S[idx][v.pcX]||0)/mx;buf[l*3+1]=(S[idx][v.pcY]||0)/mx;buf[l*3+2]=(l/(n-1))*2-1;}}
+  if(vi<NC){for(let l=0;l<n;l++){const lm=v._layerMx?v._layerMx[l]:null;const mxX=lm?lm[0]:1,mxY=lm?lm[1]:1,mxZ=lm?lm[2]:1;buf[l*3]=_getScore(l,idx,v.pcX)/mxX;buf[l*3+1]=_getScore(l,idx,v.pcY)/mxY;buf[l*3+2]=_getScore(l,idx,v.pcZ)/mxZ;}}else{const tlMx=v._trajLayerMx;for(let l=0;l<n;l++){const lm=tlMx?tlMx[l]:[1,1];buf[l*3]=_getScore(l,idx,v.pcX)/lm[0];buf[l*3+1]=_getScore(l,idx,v.pcY)/lm[1];buf[l*3+2]=(l/(n-1))*2-1;}}
   line.geometry.attributes.position.needsUpdate=true;line.visible=true;}
 let _lastDimState=-1;
 function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC)v.mtl.opacity=dim?0.35:0.85;if(vi>=NC&&v.trajGroup){const baseOp=dim?0.08:0.15;v.trajGroup.children.forEach(c=>{if(c.material)c.material.opacity=baseOp;});if(v.trajMarker)v.trajMarker.material.opacity=dim?0.35:0.9;}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible){m.material.opacity=0.95;m.material.size=dim?0.08:0.06;}});}
@@ -432,7 +507,7 @@ function updateVP(vi,pcX,pcY,pcZ,layer){const v=views[vi];v.pcX=pcX;v.pcY=pcY;v.
   v.geo.attributes.position.needsUpdate=true;if(!play)v.geo.computeBoundingSphere();
   document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}/${pcZ}`;
   if(!v._fitted){v.cam.position.set(0,0,2.5);v.ctl.target.set(0,0,0);v.ctl.update();v._fitted=true;}}
-function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;if(v.trajGroup){v.trajGroup.children.forEach(c=>{if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();});v.sc.remove(v.trajGroup);}if(v.trajMarker){v.trajMarker.geometry.dispose();v.trajMarker.material.dispose();v.sc.remove(v.trajMarker);}v.trajGroup=new THREE.Group();let mx=0;for(const S of allL)for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(S[i][pcX]||0),Math.abs(S[i][pcY]||0));v._trajScale=mx||1;const maxLines=Math.min(nN,800);const step=Math.max(1,Math.floor(nN/maxLines));for(let i=0;i<nN;i+=step){const pts=[];for(let l=0;l<nL;l++){const S=allL[l];pts.push(new THREE.Vector3((S[i][pcX]||0)/mx,(S[i][pcY]||0)/mx,(l/(nL-1))*2-1));}const g=new THREE.BufferGeometry().setFromPoints(pts);const line=new THREE.Line(g,new THREE.LineBasicMaterial({color:CL[scripts[i]]||0xAAAAAA,transparent:true,opacity:0.15,depthWrite:false}));line.userData={ti:i};v.trajGroup.add(line);}v.sc.add(v.trajGroup);const pg=new THREE.BufferGeometry();const _tp=new Float32Array(nN*3),_tc=new Float32Array(nN*3);for(let i=0;i<nN;i++){const hex=CL[scripts[i]]||0xAAAAAA;_tc[i*3]=((hex>>16)&0xFF)/255;_tc[i*3+1]=((hex>>8)&0xFF)/255;_tc[i*3+2]=(hex&0xFF)/255;}pg.setAttribute('position',new THREE.BufferAttribute(_tp,3));pg.setAttribute('color',new THREE.BufferAttribute(_tc,3));v.trajMarker=new THREE.Points(pg,new THREE.PointsMaterial({size:0.018,vertexColors:true,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false}));v.sc.add(v.trajMarker);updateTrajMarker(vi);document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}+d`;}
+function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;if(v.trajGroup){v.trajGroup.children.forEach(c=>{if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();});v.sc.remove(v.trajGroup);}if(v.trajMarker){v.trajMarker.geometry.dispose();v.trajMarker.material.dispose();v.sc.remove(v.trajMarker);}v.trajGroup=new THREE.Group();const _tlMx=new Array(nL);for(let l=0;l<nL;l++){let mxX=0,mxY=0;for(let i=0;i<nN;i++){mxX=Math.max(mxX,Math.abs(_getScore(l,i,pcX)));mxY=Math.max(mxY,Math.abs(_getScore(l,i,pcY)));}mxX=mxX||1;mxY=mxY||1;_tlMx[l]=[mxX,mxY];}v._trajLayerMx=_tlMx;v._trajScaleXY=[1,1];v._trajScale=1;const maxLines=Math.min(nN,800);const step=Math.max(1,Math.floor(nN/maxLines));for(let i=0;i<nN;i+=step){const pts=[];for(let l=0;l<nL;l++){pts.push(new THREE.Vector3(_getScore(l,i,pcX)/_tlMx[l][0],_getScore(l,i,pcY)/_tlMx[l][1],(l/(nL-1))*2-1));}const g=new THREE.BufferGeometry().setFromPoints(pts);const line=new THREE.Line(g,new THREE.LineBasicMaterial({color:CL[scripts[i]]||0xAAAAAA,transparent:true,opacity:0.15,depthWrite:false}));line.userData={ti:i};v.trajGroup.add(line);}v.sc.add(v.trajGroup);const pg=new THREE.BufferGeometry();const _tp=new Float32Array(nN*3),_tc=new Float32Array(nN*3);for(let i=0;i<nN;i++){const hex=CL[scripts[i]]||0xAAAAAA;_tc[i*3]=((hex>>16)&0xFF)/255;_tc[i*3+1]=((hex>>8)&0xFF)/255;_tc[i*3+2]=(hex&0xFF)/255;}pg.setAttribute('position',new THREE.BufferAttribute(_tp,3));pg.setAttribute('color',new THREE.BufferAttribute(_tc,3));v.trajMarker=new THREE.Points(pg,new THREE.PointsMaterial({size:0.018,vertexColors:true,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false}));v.sc.add(v.trajMarker);updateTrajMarker(vi);document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}+d`;}
 function updateTrajMarker(vi){const v=views[vi];
   const buf=v._trajBufs&&v._trajBufs[cL];if(!buf)return;
   if(v.trajMarker){const tp=v.trajMarker.geometry.attributes.position.array;tp.set(buf);
@@ -443,72 +518,122 @@ function updateTrajMarker(vi){const v=views[vi];
   if(_hiddenScripts.size){for(let i=0;i<nN;i++){if(_hiddenScripts.has(scripts[i])){pos[i*3]=9999;pos[i*3+1]=9999;pos[i*3+2]=9999;}}}
   v.geo.attributes.position.needsUpdate=true;v.pts.visible=false;
 }
-function thirdPC(a,b){for(let i=0;i<nK;i++){if(i!==a&&i!==b)return i;}return 0;}
+function thirdPC(a,b){const mx=Math.max(nK,_pcsFullK||0,3);for(let i=0;i<mx;i++){if(i!==a&&i!==b)return i;}return 0;}
 let _lastPK='';
+function _rebuildClouds(){
+  console.log('_rebuildClouds: pcFull size=',_pcFull.size,'keys=',[..._pcFull.keys()]);
+  for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];views[i].pcX=a;views[i].pcY=b;views[i].pcZ=thirdPC(a,b);_precomputeCloud(i);}
+  for(let i=0;i<NC;i++){buildTraj(NC+i,vpPairs[i][0],vpPairs[i][1]);_precomputeTraj(NC+i);}
+  if(_hiddenScripts.size){views.forEach((v,vi)=>{if(vi>=NC&&v.trajGroup)v.trajGroup.children.forEach(c=>{const ti=c.userData?.ti;if(ti!==undefined)c.visible=!_hiddenScripts.has(scripts[ti]);});});}
+  _rebuildWeightLines();
+}
 function updateAllViewports(){
   // Delta pair: X=second PC of pair A, Y=first PC of pair B (cross-axes, no overlap with A or B)
   vpPairs[1]=[vpPairs[0][1],vpPairs[2][0]];
   const pk=vpPairs.map(p=>p.join(',')).join('|');
   if(pk!==_lastPK){
-    // PC pairs changed — precompute ALL layer buffers
-    for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];views[i].pcX=a;views[i].pcY=b;views[i].pcZ=thirdPC(a,b);_precomputeCloud(i);}
-    for(let i=0;i<NC;i++){buildTraj(NC+i,vpPairs[i][0],vpPairs[i][1]);_precomputeTraj(NC+i);}
-    if(_hiddenScripts.size){views.forEach((v,vi)=>{if(vi>=NC&&v.trajGroup)v.trajGroup.children.forEach(c=>{const ti=c.userData?.ti;if(ti!==undefined)c.visible=!_hiddenScripts.has(scripts[ti]);});});}
-    const lbl=document.getElementById('lv0lbl');if(lbl)lbl.textContent=`Δ PC${vpPairs[1][0]}×PC${vpPairs[1][1]}`;
-    _rebuildWeightLines();// instant — just toggles visibility
+    const _allPCs=new Set();
+    for(const[a,b]of vpPairs){_allPCs.add(a);_allPCs.add(b);_allPCs.add(thirdPC(a,b));}
+    const lbl=document.getElementById('lv0lbl');if(lbl)lbl.textContent='\u0394 PC'+vpPairs[1][0]+'\u00d7PC'+vpPairs[1][1];
+    // Load all tiers then rebuild
+    _ensurePCData().then(()=>{
+      _rebuildClouds();_markDirty();
+      for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];updateVP(i,a,b,thirdPC(a,b),cL);}
+      for(let i=NC;i<NV;i++)updateTrajMarker(i);
+      if(pinnedToken>=0||pinnedTokenB>=0)_syncAllPins(true);
+      buildBrowser();
+    });
     _lastPK=pk;
+    return;// all updates happen in the .then() callback
   }
+  // PCs unchanged — just update positions for current layer (layer scrub)
   for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];updateVP(i,a,b,thirdPC(a,b),cL);}
   for(let i=NC;i<NV;i++)updateTrajMarker(i);
-  // Refresh pins after any viewport update (PC change or layer change)
   if(pinnedToken>=0||pinnedTokenB>=0)_syncAllPins(true);
 }
 
 // 3D prism — all PC pairs as mini point clouds. One merged geometry per layer.
 // Shows nearby layers with opacity falloff. Scales to full nK.
-const _SP=1.6,_ZSP=0.3,_BR_RAD=0.55,_BR_PTS=50;
+const _SP=1.6,_ZSP=0.3,_BR_RAD=0.55,_BR_PTS=30;
 const _BR_VISIBLE_LAYERS=3;// layers shown around cL
 let _brOverlay=[];
 let _brBuilt=false;
 let _brFollow=-1;
 let _brMxCache={};
 let _brLayers=[];// [{pts, layer, origPos, tokMap}]
-let _brN=0;// PCs shown in prism (may be capped for huge models)
+let _brN=0;// PCs shown in prism window
+let _brWinStart=0;// first PC index in the window
 
 function _disposeScene(sc){
   while(sc.children.length){const c=sc.children[0];sc.remove(c);if(c.geometry)c.geometry.dispose();if(c.material){if(Array.isArray(c.material))c.material.forEach(m=>m.dispose());else c.material.dispose();}}}
 
+// Radial neighbor layout: selected pair at center, neighbors in rings
+let _brCenterPair=[0,1];// the focused PC pair
+let _brCells=[];// [{pa,pb,cx,cy,radius}] — cell positions in the scene
+
+function _brComputeCells(){
+  // Center = selected pair, rings = neighbors that share one PC
+  const [ca,cb]=_brCenterPair;
+  _brCells=[];
+  const R=5;// neighborhood radius in PC-index space
+  const added=new Set();
+  const addCell=(pa,pb,ring)=>{
+    const a=Math.min(pa,pb),b=Math.max(pa,pb);
+    const maxPC=Math.max(nK,_pcsFullK||0,576);
+    if(a<0||b<0||a>=maxPC||b>=maxPC||a===b)return;
+    const key=`${a},${b}`;if(added.has(key))return;added.add(key);
+    _brCells.push({pa:a,pb:b,ring});
+  };
+  addCell(ca,cb,0);// center
+  for(let r=1;r<=R;r++){
+    for(let d=-r;d<=r;d++)for(let e=-r;e<=r;e++){
+      if(Math.max(Math.abs(d),Math.abs(e))!==r)continue;// only the shell
+      addCell(ca+d,cb+e,r);
+    }
+  }
+  // Position cells: center at (0,0), rings in concentric arrangement
+  _brCells.forEach(c=>{
+    if(c.ring===0){c.cx=0;c.cy=0;c.rad=_BR_RAD*1.8;return;}
+    // Offset from center pair
+    const dx=c.pa-Math.min(ca,cb), dy=c.pb-Math.max(ca,cb);
+    c.cx=(dy-dx)*_SP*0.8;
+    c.cy=-(dy+dx)*_SP*0.8;
+    c.rad=c.ring===1?_BR_RAD*1.2:_BR_RAD*0.8;
+  });
+}
+
 function buildBrowser(){
   _disposeScene(brSc);
   _brOverlay=[];_brMxCache={};_brLayers=[];
-  // Cap PCs for very large models — show first N where C(N,2) stays manageable
-  _brN=nK;
-  while(_brN>10&&_brN*(_brN-1)/2*_BR_PTS>500000)_brN--;// cap total points at ~500K
-  const n=_brN;const nPairs=n*(n-1)/2;
-  const step=Math.max(1,Math.floor(nN/_BR_PTS));const ptsPerPair=Math.ceil(nN/step);
+  _brCenterPair=[Math.min(vpPairs[0][0],vpPairs[0][1]),Math.max(vpPairs[0][0],vpPairs[0][1])];
+  _brComputeCells();
+  _brN=_brCells.length;
+  _brWinStart=0;// not used in radial mode
+  const nCells=_brCells.length;
+  const step=Math.max(1,Math.floor(nN/_BR_PTS));const ptsPerCell=Math.ceil(nN/step);
 
-  // Build one merged point cloud per layer
   for(let l=0;l<nL;l++){
     const S=allL[l];if(!S)continue;
-    const pos=new Float32Array(nPairs*ptsPerPair*3);
-    const col=new Float32Array(nPairs*ptsPerPair*3);
-    const origPos=new Float32Array(nPairs*ptsPerPair*3);
-    const tokMap=new Uint16Array(nPairs*ptsPerPair);
+    const pos=new Float32Array(nCells*ptsPerCell*3);
+    const col=new Float32Array(nCells*ptsPerCell*3);
+    const origPos=new Float32Array(nCells*ptsPerCell*3);
+    const tokMap=new Uint16Array(nCells*ptsPerCell);
     let idx=0;
-    for(let a=0;a<n;a++)for(let b=a+1;b<n;b++){
-      let mx=0;for(let i=0;i<nN;i+=step)mx=Math.max(mx,Math.abs(S[i][a]||0),Math.abs(S[i][b]||0));mx=mx||1;
-      _brMxCache[`${a},${b},${l}`]=mx;
+    _brCells.forEach(c=>{
+      const {pa,pb,cx,cy,rad}=c;
+      let mx=0;for(let i=0;i<nN;i+=step)mx=Math.max(mx,Math.abs(_getScore(l,i,pa)),Math.abs(_getScore(l,i,pb)));mx=mx||1;
+      _brMxCache[`${pa},${pb},${l}`]=mx;
       for(let i=0;i<nN;i+=step){
-        const sx=Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[i][a]||0)/mx*_BR_RAD));
-        const sy=Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[i][b]||0)/mx*_BR_RAD));
-        pos[idx*3]=b*_SP+sx;pos[idx*3+1]=-a*_SP-sy;pos[idx*3+2]=l*_ZSP;
+        const sx=Math.max(-rad,Math.min(rad,_getScore(l,i,pa)/mx*rad));
+        const sy=Math.max(-rad,Math.min(rad,_getScore(l,i,pb)/mx*rad));
+        pos[idx*3]=cx+sx;pos[idx*3+1]=cy-sy;pos[idx*3+2]=l*_ZSP;
         origPos[idx*3]=pos[idx*3];origPos[idx*3+1]=pos[idx*3+1];origPos[idx*3+2]=pos[idx*3+2];
         tokMap[idx]=i;
         const hex=CL[scripts[i]]||0xAAAAAA;
         col[idx*3]=((hex>>16)&0xFF)/255;col[idx*3+1]=((hex>>8)&0xFF)/255;col[idx*3+2]=(hex&0xFF)/255;
         idx++;
       }
-    }
+    });
     const geo=new THREE.BufferGeometry();
     geo.setAttribute('position',new THREE.BufferAttribute(pos.subarray(0,idx*3),3));
     geo.setAttribute('color',new THREE.BufferAttribute(col.subarray(0,idx*3),3));
@@ -517,7 +642,9 @@ function buildBrowser(){
     brSc.add(pts);_brLayers.push({pts,layer:l,origPos:origPos.subarray(0,idx*3),tokMap:tokMap.subarray(0,idx)});
   }
   _brBuilt=true;_updateBrowserLayer();_updateBrowserOverlay();
-  if(!brCam._fitted){const cx=Math.min(n,15)/2*_SP,cy=-Math.min(n,15)/3*_SP;brCam.position.set(cx,cy,25);brCtl.target.set(cx,cy,cL*_ZSP);brCtl.update();brCam._fitted=true;}
+  if(!brCam._fitted||true){// always refit on rebuild
+    brCam.position.set(0,0,15);brCtl.target.set(0,0,cL*_ZSP);brCtl.update();brCam._fitted=true;
+  }
 }
 
 function _updateBrowserLayer(){
@@ -565,16 +692,20 @@ function _updateBrowserSelBoxes(){
     });
     return;
   }
-  // Build persistent boxes for pair A (0) and pair B (2) only — skip delta (1)
-  [0,2].forEach(pi=>{const[pa,pb]=vpPairs[pi];if(pa>=n||pb>=n)return;const a=Math.min(pa,pb),b=Math.max(pa,pb);
+  // Build persistent boxes for pair A (0) and pair B (2)
+  [0,2].forEach(pi=>{const[pa,pb]=vpPairs[pi];
+    const a=Math.min(pa,pb),b=Math.max(pa,pb);
+    // Find this pair in radial cells
+    const cell=_brCells.find(c=>c.pa===a&&c.pb===b);
+    if(!cell)return;
     for(let l=0;l<nL;l++){
       const eg=new THREE.EdgesGeometry(new THREE.PlaneGeometry(_BR_RAD*2.2,_BR_RAD*2.2));
       const e=new THREE.LineSegments(eg,new THREE.LineBasicMaterial({color:pi===0?0xFF6644:0x4477AA,transparent:true,opacity:0}));
-      e.position.set(b*_SP,-a*_SP,l*_ZSP);brSc.add(e);
+      e.position.set(cell.cx,cell.cy,l*_ZSP);brSc.add(e);
       _brSelBoxes.push({mesh:e,pair:pi,layer:l});
     }
   });
-  _updateBrowserSelBoxes();// apply opacity
+  if(_brSelBoxes.length)_updateBrowserSelBoxes();// apply opacity only if boxes were created
 }
 function _clearBrowserSelBoxes(){
   _brSelBoxes.forEach(b=>{brSc.remove(b.mesh);b.mesh.geometry.dispose();b.mesh.material.dispose();});
@@ -583,55 +714,100 @@ function _clearBrowserSelBoxes(){
 function _updateBrowserOverlay(){
   _brOverlay.forEach(o=>{brSc.remove(o);if(o.geometry)o.geometry.dispose();if(o.material)o.material.dispose();});_brOverlay=[];
   _clearBrowserSelBoxes();_updateBrowserSelBoxes();
-  const n=_brN;
-  // Pin paths through ALL PC pair cells — selected pairs bright, others dim
+  // Pin paths through radial cells
   [pinnedToken,pinnedTokenB].forEach((tok,ti)=>{
     if(tok<0)return;const color=ti===0?0xFF6644:0x4477AA;
-    for(let a=0;a<n;a++)for(let b=a+1;b<n;b++){
-      const isSelected=[vpPairs[0],vpPairs[2]].some(([pa,pb])=>(Math.min(pa,pb)===a&&Math.max(pa,pb)===b));
+    _brCells.forEach(c=>{
+      const {pa,pb,cx,cy,rad}=c;
+      const isSelected=[vpPairs[0],vpPairs[2]].some(([sa,sb])=>(Math.min(sa,sb)===pa&&Math.max(sa,sb)===pb));
       const pts=[];
       for(let l=0;l<nL;l++){
-        let mx=_brMxCache[`${a},${b},${l}`];
-        if(!mx){const S=allL[l];mx=0;for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(S[i][a]||0),Math.abs(S[i][b]||0));mx=mx||1;_brMxCache[`${a},${b},${l}`]=mx;}
-        const S=allL[l];
+        let mx=_brMxCache[`${pa},${pb},${l}`];
+        if(!mx){mx=0;for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(_getScore(l,i,pa)),Math.abs(_getScore(l,i,pb)));mx=mx||1;_brMxCache[`${pa},${pb},${l}`]=mx;}
         pts.push(new THREE.Vector3(
-          b*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][a]||0)/mx*_BR_RAD)),
-          -a*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][b]||0)/mx*_BR_RAD)),
+          cx+Math.max(-rad,Math.min(rad,_getScore(l,tok,pa)/mx*rad)),
+          cy-Math.max(-rad,Math.min(rad,_getScore(l,tok,pb)/mx*rad)),
           l*_ZSP));
       }
+      if(!pts.length)return;
       const g=new THREE.BufferGeometry().setFromPoints(pts);
-      const line=new THREE.Line(g,new THREE.LineBasicMaterial({color,transparent:true,opacity:isSelected?0.9:0.25}));
+      const line=new THREE.Line(g,new THREE.LineBasicMaterial({color,transparent:true,opacity:isSelected?0.9:0.2}));
       line.frustumCulled=false;brSc.add(line);_brOverlay.push(line);
-    }
-    // Pin marker dots at current layer in ALL cells
-    const S=allL[cL];if(!S)return;
-    const nPairs=n*(n-1)/2;
-    const mkPos=new Float32Array(nPairs*3);let mi=0;
-    for(let a=0;a<n;a++)for(let b=a+1;b<n;b++){
-      const mx=_brMxCache[`${a},${b},${cL}`]||1;
-      mkPos[mi*3]=b*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][a]||0)/mx*_BR_RAD));
-      mkPos[mi*3+1]=-a*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][b]||0)/mx*_BR_RAD));
-      mkPos[mi*3+2]=cL*_ZSP;mi++;}
-
-    const mg=new THREE.BufferGeometry();mg.setAttribute('position',new THREE.BufferAttribute(mkPos,3));
+    });
+    // Pin marker dots at current layer
+    const mkPos=new Float32Array(_brCells.length*3);let mi=0;
+    _brCells.forEach(c=>{
+      const mx=_brMxCache[`${c.pa},${c.pb},${cL}`]||1;
+      mkPos[mi*3]=c.cx+Math.max(-c.rad,Math.min(c.rad,_getScore(cL,tok,c.pa)/mx*c.rad));
+      mkPos[mi*3+1]=c.cy-Math.max(-c.rad,Math.min(c.rad,_getScore(cL,tok,c.pb)/mx*c.rad));
+      mkPos[mi*3+2]=cL*_ZSP;mi++;
+    });
+    const mg=new THREE.BufferGeometry();mg.setAttribute('position',new THREE.BufferAttribute(mkPos.subarray(0,mi*3),3));
     const mp=new THREE.Points(mg,new THREE.PointsMaterial({size:0.12,color,transparent:true,opacity:0.95,sizeAttenuation:true,depthWrite:false,depthTest:false}));
     mp.renderOrder=10;mp.frustumCulled=false;mp.userData={tok};brSc.add(mp);_brOverlay.push(mp);
   });
 }
 function _updateBrowserPinPositions(){
-  const n=_brN;const S=allL[cL];if(!S)return;
   _brOverlay.forEach(o=>{
     if(o.userData?.tok===undefined)return;
     const tok=o.userData.tok;const pos=o.geometry.attributes.position?.array;if(!pos)return;
     let mi=0;
-    for(let a=0;a<n;a++)for(let b=a+1;b<n;b++){
-      if(mi*3+2>=pos.length)break;
-      const mx=_brMxCache[`${a},${b},${cL}`]||1;
-      pos[mi*3]=b*_SP+Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][a]||0)/mx*_BR_RAD));
-      pos[mi*3+1]=-a*_SP-Math.max(-_BR_RAD,Math.min(_BR_RAD,(S[tok][b]||0)/mx*_BR_RAD));
+    _brCells.forEach(c=>{
+      if(mi*3+2>=pos.length)return;
+      const mx=_brMxCache[`${c.pa},${c.pb},${cL}`]||1;
+      pos[mi*3]=c.cx+Math.max(-c.rad,Math.min(c.rad,_getScore(cL,tok,c.pa)/mx*c.rad));
+      pos[mi*3+1]=c.cy-Math.max(-c.rad,Math.min(c.rad,_getScore(cL,tok,c.pb)/mx*c.rad));
       pos[mi*3+2]=cL*_ZSP;mi++;
-    }
+    });
     o.geometry.attributes.position.needsUpdate=true;
+  });
+}
+
+// Cross-highlight: dim all pyramid layers except cells involving a specific PC
+let _brHighlightedPC=-1;
+function _brHighlightPC(pc){
+  if(pc===_brHighlightedPC)return;
+  _brHighlightedPC=pc;
+  if(!_brBuilt)return;
+  const step=Math.max(1,Math.floor(nN/_BR_PTS));
+  _brLayers.forEach(({pts})=>{
+    if(!pts.visible)return;
+    const col=pts.geometry.attributes.color.array;
+    let idx=0;
+    _brCells.forEach(c=>{
+      const involves=c.pa===pc||c.pb===pc;
+      for(let i=0;i<nN;i+=step){
+        if(idx*3>=col.length)break;
+        const dim=involves?1.0:0.08;
+        const hex=CL[scripts[i]]||0xAAAAAA;
+        col[idx*3]=((hex>>16)&0xFF)/255*dim;
+        col[idx*3+1]=((hex>>8)&0xFF)/255*dim;
+        col[idx*3+2]=(hex&0xFF)/255*dim;
+        idx++;
+      }
+    });
+    pts.geometry.attributes.color.needsUpdate=true;
+  });
+}
+function _brClearHighlight(){
+  if(_brHighlightedPC<0)return;
+  _brHighlightedPC=-1;
+  if(!_brBuilt)return;
+  const step=Math.max(1,Math.floor(nN/_BR_PTS));
+  _brLayers.forEach(({pts})=>{
+    const col=pts.geometry.attributes.color.array;
+    let idx=0;
+    _brCells.forEach(c=>{
+      for(let i=0;i<nN;i+=step){
+        if(idx*3>=col.length)break;
+        const hex=CL[scripts[i]]||0xAAAAAA;
+        col[idx*3]=((hex>>16)&0xFF)/255;
+        col[idx*3+1]=((hex>>8)&0xFF)/255;
+        col[idx*3+2]=(hex&0xFF)/255;
+        idx++;
+      }
+    });
+    pts.geometry.attributes.color.needsUpdate=true;
   });
 }
 
@@ -647,29 +823,64 @@ function _brResolveCell(e){
   const targets=_brLayers.map(l=>l.pts).filter(Boolean);
   const hits=bray.intersectObjects(targets);if(!hits.length)return null;
   const p=hits[0].point;
-  const b=Math.round(p.x/_SP),a=Math.round(-p.y/_SP);
-  if(a>=0&&a<nK&&b>a&&b<nK)return{a,b};
-  return null;
+  // Find closest cell center
+  let best=null,bestD=Infinity;
+  _brCells.forEach(c=>{
+    const dx=p.x-c.cx,dy=p.y-c.cy;
+    const d=dx*dx+dy*dy;
+    if(d<bestD&&d<(c.rad*2)*(c.rad*2)){bestD=d;best=c;}
+  });
+  return best?{a:best.pa,b:best.pb}:null;
 }
+// Pyramid tooltip
+const _brTip=(()=>{const d=document.createElement('div');d.id='brTip';d.style.cssText='display:none;position:absolute;z-index:20;background:rgba(10,10,10,0.92);border:1px solid #444;padding:4px 8px;font-size:8px;color:#ccc;pointer-events:none;border-radius:3px;white-space:nowrap';document.getElementById('br0top').appendChild(d);return d;})();
+let _brHoverCell=null;
+
 brCv.addEventListener('mousemove',e=>{
   const cell=_brResolveCell(e);
+  _brHoverCell=cell;
   if(cell){
-    _brHoverBox.position.set(cell.b*_SP,-cell.a*_SP,cL*_ZSP);
+    // Position hover box at the cell's radial position
+    const hCell=_brCells.find(c=>c.pa===Math.min(cell.a,cell.b)&&c.pb===Math.max(cell.a,cell.b));
+    _brHoverBox.position.set(hCell?hCell.cx:0,hCell?hCell.cy:0,cL*_ZSP);
     _brHoverBox.visible=true;
-    // Show label in blbl
-    const lbl=document.querySelector('#br0 .blbl');
-    if(lbl)lbl.textContent=`PC${cell.a}/${cell.b}  L-click=A  R-click=B`;
+    _brHoverBox.scale.set(1.1,1.1,1);// slight enlarge on hover
+    // Tooltip
+    const rect=brCv.getBoundingClientRect();
+    _brTip.style.display='block';
+    _brTip.style.left=Math.min(e.clientX-rect.left+12,rect.width-140)+'px';
+    _brTip.style.top=Math.max(e.clientY-rect.top-24,4)+'px';
+    let t=`PC${cell.a} × PC${cell.b}`;
+    const vA=_layerVar[cL]?.[cell.a]||0, vB=_layerVar[cL]?.[cell.b]||0;
+    t+=`  var:${(vA*100).toFixed(1)}%/${(vB*100).toFixed(1)}%`;
+    if(pinnedToken>=0)t+=`  A:${_getScore(cL,pinnedToken,cell.a).toFixed(1)},${_getScore(cL,pinnedToken,cell.b).toFixed(1)}`;
+    if(pinnedTokenB>=0)t+=`  B:${_getScore(cL,pinnedTokenB,cell.a).toFixed(1)},${_getScore(cL,pinnedTokenB,cell.b).toFixed(1)}`;
+    const selA=vpPairs[0][0]===cell.a&&vpPairs[0][1]===cell.b;
+    const selB=vpPairs[2][0]===cell.a&&vpPairs[2][1]===cell.b;
+    if(selA)t+='  [vpA]';if(selB)t+='  [vpB]';
+    _brTip.textContent=t;
+    const lbl=document.querySelector('#br0top .blbl');
+    if(lbl)lbl.textContent=`PC${cell.a}×PC${cell.b}  click=vpA  R-click=vpB`;
+    // Cross-highlight both PCs in spectrum
+    _pcsHoverPC=cell.a;_updatePCSDots();
   }else{
-    _brHoverBox.visible=false;
-    const lbl=document.querySelector('#br0 .blbl');if(lbl)lbl.textContent='R-click=Token B';
+    _brHoverBox.visible=false;_brHoverBox.scale.set(1,1,1);
+    _brTip.style.display='none';
+    const lbl=document.querySelector('#br0top .blbl');if(lbl)lbl.textContent='click=vpA  R-click=vpB';
+    if(_pcsHoverPC>=0){_pcsHoverPC=-1;_updatePCSDots();}
   }
   _markDirty();
 });
-brCv.addEventListener('mouseleave',()=>{_brHoverBox.visible=false;const lbl=document.querySelector('#br0 .blbl');if(lbl)lbl.textContent='R-click=Token B';_markDirty();});
+brCv.addEventListener('mouseleave',()=>{_brHoverBox.visible=false;_brHoverBox.scale.set(1,1,1);_brTip.style.display='none';_brClearHighlight();_brHoverCell=null;const lbl=document.querySelector('#br0top .blbl');if(lbl)lbl.textContent='click=vpA  R-click=vpB';if(_pcsHoverPC>=0){_pcsHoverPC=-1;_updatePCSDots();}_markDirty();});
 brCv.addEventListener('pointerdown',e=>{_bdx=e.clientX;_bdy=e.clientY;});
 brCv.addEventListener('pointerup',e=>{if(Math.abs(e.clientX-_bdx)+Math.abs(e.clientY-_bdy)>5)return;
   const cell=_brResolveCell(e);if(!cell)return;
-  const slot=_isRightClick(e)?2:0;vpPairs[slot]=[cell.a,cell.b];updateAllViewports();_updateBrowserOverlay();_saveState();
+  const slot=_isRightClick(e)?2:0;
+  vpPairs[slot]=[cell.a,cell.b];
+  _brFollow=slot;
+  updateAllViewports();_rebuildWeightLines();_updatePCSDots();_saveState();
+  // Rebuild pyramid centered on the clicked pair
+  buildBrowser();
 });
 
 // === 2 left viewports: Delta + Weight Landscape ===
@@ -755,73 +966,107 @@ function _rebuildWeightLines(){
   if(!_wlData||!Array.isArray(_wlData)||!_wlData.length)return;
   const key=`${vpPairs[0]},${vpPairs[1]},${vpPairs[2]}`;
   const needsRebuild=key!==_wlBuiltKey;
-  // Build/update each of the 3 internals viewports
   for(let vi=0;vi<3;vi++){_rebuildInternals(vi,vpPairs[vi],needsRebuild);}
   if(needsRebuild)_wlBuiltKey=key;
 }
+
 function _rebuildInternals(vi,pair,needsRebuild){
   const lv=leftViews[vi];if(!lv)return;
-  const pcs=new Set(pair);
-  if(!lv._grid){lv._grid=new THREE.GridHelper(2,6,0x1a1a1a,0x141414);lv._grid.rotation.x=Math.PI/2;lv.sc.add(lv._grid);}
-  const z=(cL/(_nRealLayers-1||1))*2-1;
-  const nMat=_wlData[0]?.matrices?.length||0;
-  // Update layer dots (weight alignment + variance + gate at current layer)
-  if(lv._wlLines){
-    if(!lv._layerDots){
-      const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(300),3));g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(300),3));
-      lv._layerDots=new THREE.Points(g,new THREE.PointsMaterial({size:0.08,vertexColors:true,transparent:true,opacity:0.95,sizeAttenuation:true,depthWrite:false,depthTest:false}));
-      lv._layerDots.renderOrder=10;lv._layerDots.frustumCulled=false;lv.sc.add(lv._layerDots);
-    }
-    const pos=lv._layerDots.geometry.attributes.position.array;
-    const col=lv._layerDots.geometry.attributes.color.array;
-    let di=0;
-    // Weight alignment dots for THIS pair's PCs
-    lv._wlLines.forEach(({mi,pc})=>{
-      if(!pcs.has(pc)||di>=50)return;
-      const al=_wlData[cL]?.matrices?.[mi]?.alignment||[];
-      pos[di*3]=(mi/(nMat-1||1))*2-1;pos[di*3+1]=(al[pc]||0)*1.2;pos[di*3+2]=z;
-      const hex=_WL_COLORS[mi];col[di*3]=((hex>>16)&0xFF)/255;col[di*3+1]=((hex>>8)&0xFF)/255;col[di*3+2]=(hex&0xFF)/255;
-      di++;
-    });
-    // Variance dots for THIS pair's PCs
-    pair.forEach((pc,pi)=>{if(di>=60||!_layerVar[cL])return;
-      const v=_layerVar[cL][pc]||0;
-      pos[di*3]=-1.2+pi*0.2;pos[di*3+1]=v*2;pos[di*3+2]=z;
-      col[di*3]=pi===0?0.9:0.3;col[di*3+1]=pi===0?0.4:0.5;col[di*3+2]=pi===0?0.2:0.9;
-      di++;
-    });
-    // Gate dots for pinned tokens at current layer
-    if(pinnedToken>=0&&_gateHeat&&di<80){const row=getGateRow(pinnedToken);if(row){const mx=Math.max(...row)||1;const gv=row[cL]/mx;
-      pos[di*3]=1.4;pos[di*3+1]=gv*1.5;pos[di*3+2]=z;col[di*3]=1;col[di*3+1]=0.4;col[di*3+2]=0.1;di++;}}
-    if(pinnedTokenB>=0&&_gateHeat&&di<80){const row=getGateRow(pinnedTokenB);if(row){const mx=Math.max(...row)||1;const gv=row[cL]/mx;
-      pos[di*3]=1.6;pos[di*3+1]=gv*1.5;pos[di*3+2]=z;col[di*3]=0.2;col[di*3+1]=0.4;col[di*3+2]=0.9;di++;}}
-    for(let i=di;i<100;i++){pos[i*3]=9999;pos[i*3+1]=9999;pos[i*3+2]=9999;}
-    lv._layerDots.geometry.attributes.position.needsUpdate=true;lv._layerDots.geometry.attributes.color.needsUpdate=true;lv._layerDots.geometry.setDrawRange(0,di);
+  const nMat=_wlData[0]?.matrices?.length||0;if(!nMat)return;
+  const pcA=pair[0],pcB=pair[1];
+  const zSpan=3.0;
+
+  // --- Layer dots: 7 bright dots at current layer position ---
+  if(!lv._layerDots){
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(nMat*3),3));
+    g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(nMat*3),3));
+    lv._layerDots=new THREE.Points(g,new THREE.PointsMaterial({size:5,vertexColors:true,sizeAttenuation:false,transparent:true,opacity:0.95,depthWrite:false,depthTest:false}));
+    lv._layerDots.renderOrder=10;lv._layerDots.frustumCulled=false;lv.sc.add(lv._layerDots);
   }
-  _updateGateLines(lv);
+  // Position dots at current layer
+  const dPos=lv._layerDots.geometry.attributes.position.array;
+  const dCol=lv._layerDots.geometry.attributes.color.array;
+  for(let mi=0;mi<nMat;mi++){
+    const al=_wlData[cL]?.matrices?.[mi]?.alignment||[];
+    const x=(al[pcA]||0)*2-1;// alignment 0..1 → -1..1
+    const y=(al[pcB]||0)*2-1;
+    const z=(cL/(_nRealLayers-1))*zSpan-zSpan/2;
+    dPos[mi*3]=x;dPos[mi*3+1]=y;dPos[mi*3+2]=z;
+    const hex=_WL_COLORS[mi];
+    dCol[mi*3]=((hex>>16)&0xFF)/255;dCol[mi*3+1]=((hex>>8)&0xFF)/255;dCol[mi*3+2]=(hex&0xFF)/255;
+  }
+  lv._layerDots.geometry.attributes.position.needsUpdate=true;
+  lv._layerDots.geometry.attributes.color.needsUpdate=true;
+  lv._layerDots.geometry.setDrawRange(0,nMat);
+
   if(!needsRebuild)return;
-  // Build weight lines for THIS pair's PCs
-  if(!lv._wlLines&&nMat){
-    lv._wlLines=[];lv._varLines=[];
-    for(let mi=0;mi<nMat;mi++){
-      for(let pc=0;pc<Math.min(_wlData[0].matrices[mi]?.alignment?.length||0,nK);pc++){
-        const pts=[];for(let l=0;l<_nRealLayers;l++){const al=_wlData[l]?.matrices?.[mi]?.alignment||[];pts.push(new THREE.Vector3((mi/(nMat-1||1))*2-1,(al[pc]||0)*1.2,(l/(_nRealLayers-1))*2-1));}
-        const geo=new THREE.BufferGeometry().setFromPoints(pts);const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:_WL_COLORS[mi],transparent:true,opacity:0}));
-        line.frustumCulled=false;line.visible=false;lv.sc.add(line);lv._wlLines.push({line,mi,pc});
-      }
+
+  // --- Clear old geometry ---
+  if(lv._wlTrajs){lv._wlTrajs.forEach(t=>{lv.sc.remove(t);t.geometry.dispose();t.material.dispose();});lv._wlTrajs=null;}
+  if(lv._grid){lv.sc.remove(lv._grid);lv._grid.geometry?.dispose();lv._grid.material?.dispose();lv._grid=null;}
+  if(lv._gateLineA){lv.sc.remove(lv._gateLineA);lv._gateLineA.geometry.dispose();lv._gateLineA.material.dispose();lv._gateLineA=null;}
+  if(lv._gateLineB){lv.sc.remove(lv._gateLineB);lv._gateLineB.geometry.dispose();lv._gateLineB.material.dispose();lv._gateLineB=null;}
+  if(lv._attnLines){lv._attnLines.forEach(l=>{lv.sc.remove(l);l.geometry.dispose();l.material.dispose();});lv._attnLines=null;}
+
+  // --- Build 7 trajectories: X=align(pcA), Y=align(pcB), Z=layer ---
+  lv._wlTrajs=[];
+  for(let mi=0;mi<nMat;mi++){
+    const pts=[];
+    for(let l=0;l<_nRealLayers;l++){
+      const al=_wlData[l]?.matrices?.[mi]?.alignment||[];
+      const x=(al[pcA]||0)*2-1;
+      const y=(al[pcB]||0)*2-1;
+      const z=(l/(_nRealLayers-1))*zSpan-zSpan/2;
+      pts.push(new THREE.Vector3(x,y,z));
     }
-    for(let pc=0;pc<nK;pc++){if(!_layerVar.length)break;
-      const pts=[];for(let l=0;l<_nRealLayers;l++){const v=_layerVar[l]?_layerVar[l][pc]||0:0;pts.push(new THREE.Vector3(-1.2+(pc%2)*0.2,v*2,(l/(_nRealLayers-1))*2-1));}
-      const geo=new THREE.BufferGeometry().setFromPoints(pts);const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:0x666666,transparent:true,opacity:0}));
-      line.frustumCulled=false;line.visible=false;lv.sc.add(line);lv._varLines.push({line,pc});
-    }
+    const geo=new THREE.BufferGeometry().setFromPoints(pts);
+    const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:_WL_COLORS[mi],transparent:true,opacity:0.35}));
+    line.frustumCulled=false;lv.sc.add(line);lv._wlTrajs.push(line);
   }
-  // Show only THIS pair's PCs
-  if(lv._wlLines)lv._wlLines.forEach(({line,pc})=>{const sel=pcs.has(pc);line.visible=sel;line.material.opacity=sel?0.7:0;});
-  if(lv._varLines)lv._varLines.forEach(({line,pc})=>{const sel=pcs.has(pc);line.visible=sel;line.material.opacity=sel?0.6:0;line.material.color.set(pc===pair[0]?0xFF6644:0x4477AA);});
+
   // Label
-  const lbl=document.getElementById('lv'+vi+'i');if(lbl)lbl.textContent=vi===0?`A: PC${pair[0]}/${pair[1]}`:vi===1?`Δ: PC${pair[0]}×PC${pair[1]}`:` B: PC${pair[0]}/${pair[1]}`;
-  if(!lv._camSet){lv.cam.position.set(0,1.5,3);lv.ctl.target.set(0,0.5,0);lv.ctl.update();lv._camSet=true;}
+  const lbl=document.getElementById('lv'+vi+'i');
+  if(lbl)lbl.textContent=vi===0?`A: PC${pcA}×PC${pcB}`:vi===1?`Δ: PC${pcA}×PC${pcB}`:` B: PC${pcA}×PC${pcB}`;
+  if(!lv._camSet){lv.cam.position.set(1.5,1.2,zSpan*0.8);lv.ctl.target.set(0,0,0);lv.ctl.update();lv._camSet=true;}
+  lv._wlLines=true;
+
+  // --- Interactive legend ---
+  let leg=lv.el.querySelector('.wl-legend');
+  if(!leg){
+    leg=document.createElement('div');leg.className='wl-legend';
+    leg.style.cssText='position:absolute;bottom:2px;left:2px;z-index:2;display:flex;gap:3px;flex-wrap:wrap;pointer-events:auto';
+    lv.el.style.position='relative';
+    lv.el.appendChild(leg);
+  }
+  while(leg.firstChild)leg.removeChild(leg.firstChild);
+  const hexStr=h=>'#'+h.toString(16).padStart(6,'0');
+  for(let mi=0;mi<nMat;mi++){
+    const btn=document.createElement('span');
+    btn.style.cssText=`font-size:7px;color:${hexStr(_WL_COLORS[mi])};cursor:pointer;padding:1px 2px;border:1px solid #222;border-radius:2px;opacity:0.8;user-select:none`;
+    btn.textContent=_WL_NAMES[mi];
+    btn.dataset.mi=mi;
+    btn.addEventListener('click',e=>{
+      e.stopPropagation();
+      const sel=parseInt(btn.dataset.mi);
+      const wasIsolated=lv._wlIsolated===sel;
+      lv._wlIsolated=wasIsolated?-1:sel;
+      lv._wlTrajs.forEach((t,i)=>{
+        if(lv._wlIsolated<0){t.material.opacity=0.35;t.visible=true;}
+        else{t.material.opacity=i===lv._wlIsolated?0.9:0.06;t.visible=true;}
+      });
+      const dPos=lv._layerDots.geometry.attributes.position.array;
+      for(let i=0;i<nMat;i++){
+        if(lv._wlIsolated>=0&&i!==lv._wlIsolated){dPos[i*3]=9999;dPos[i*3+1]=9999;dPos[i*3+2]=9999;}
+        else{const al=_wlData[cL]?.matrices?.[i]?.alignment||[];dPos[i*3]=(al[pcA]||0)*2-1;dPos[i*3+1]=(al[pcB]||0)*2-1;dPos[i*3+2]=(cL/(_nRealLayers-1))*zSpan-zSpan/2;}
+      }
+      lv._layerDots.geometry.attributes.position.needsUpdate=true;
+      leg.querySelectorAll('span').forEach((s,i)=>{s.style.opacity=lv._wlIsolated<0||i===lv._wlIsolated?'0.9':'0.3';});
+      _markDirty();
+    });
+    leg.appendChild(btn);
+  }
+  lv._wlIsolated=-1;
 }
 
 // --- Neuron activation charts (2D canvas) ---
@@ -942,188 +1187,534 @@ function buildLeftViewports(){buildWeightLandscape();buildRightColumn();}
 // === Right column: pre-built layer-sliced 3D viewports ===
 // All geometry built once on pin/model change. Playback only toggles opacity.
 
-// === Right column: token journey through model — all from loaded data ===
+// Right column uses pre-loaded data only — no API calls on interaction
 
 function buildRightColumn(){
   if(!rightViews.length||!_nRealLayers)return;
-  _buildRV0Entry();
-  _buildRV1Gate();
-  _buildRV2Residual();
+  _buildRV0Variance();
+  _buildRV1Neurons();
+  _buildRV2Attention();
 }
+
+// rv0: Variance spectrum — X=PC, Y=log(variance), Z=layer
+function _buildRV0Variance(){
+  const rv=rightViews[0];if(!rv||!_layerVar.length)return;
+  _clearRV(rv);
+  const nPC=Math.min(nK,20);rv._rvSlices=[];
+  // Use log scale so small PCs are visible alongside dominant ones
+  const logV=(v)=>v>0?Math.log10(v*1000+1)/3:0;// maps 0.001->0.3, 0.1->0.7, 1.0->1.0
+  for(let l=0;l<_nRealLayers;l++){
+    const z=(l/(_nRealLayers-1))*2-1;
+    const pos=[];const cols=[];
+    for(let pc=0;pc<nPC;pc++){
+      const v=_layerVar[l]?_layerVar[l][pc]||0:0;
+      const x=(pc/(nPC-1||1))*2-1;
+      const h=logV(v)*1.5;
+      pos.push(x,0,z, x,h,z);
+      const hue=pc/nPC;const c=new THREE.Color().setHSL(hue,0.8,0.5);
+      cols.push(c.r*0.3,c.g*0.3,c.b*0.3, c.r,c.g,c.b);// dark base, bright top
+    }
+    const geo=new THREE.BufferGeometry();
+    geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
+    geo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(cols),3));
+    const seg=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.15}));
+    seg.frustumCulled=false;rv.sc.add(seg);rv._rvSlices.push({mesh:seg,layer:l});
+  }
+  rv.cam.position.set(1.5,1.5,2);rv.ctl.target.set(0,0.5,0);rv.ctl.update();rv.built=true;
+  _updateRVLayer();
+}
+
+// rv1: Neuron field — current slice dots + persistence trails
+// Dots: current layer only, colored A(orange)/B(blue)/shared(white)
+// Trails: lines connecting same neuron across layers where it's active
+// All data pre-loaded — layer change is instant (no fetches)
+let _nfMesh=null;    // Points — current slice dots
+let _nfTrails=null;  // LineSegments — persistence trails
+let _nfMat=null;
+let _nfInter=0;
+let _nfCols=0,_nfRows=0;
+let _nfActA=null,_nfActB=null;
+let _nfLoadingA=-1,_nfLoadingB=-1;
+let _nfBaseXY=null;  // Float32Array [inter*2] — x,y per neuron (shared across layers)
+let _nfZPerLayer=null;// Float32Array [nLayers] — z position per layer
+let _nfLayerMax=null; // Float32Array [nLayers] — per-layer max activation
+const _NF_THRESH=0.02;
+
+function _nfNeuronXY(n){
+  return [_nfBaseXY[n*2], _nfBaseXY[n*2+1]];
+}
+
+function _buildRV1Neurons(){
+  const rv=rightViews[1];if(!rv)return;
+  _nfInter=dm?.intermediate_size||0;
+  if(!_nfInter||!_nRealLayers){rv.built=true;return;}
+  _nfCols=Math.ceil(Math.sqrt(_nfInter*1.5));
+  _nfRows=Math.ceil(_nfInter/_nfCols);
+  // Build per-neuron XY positions (constant across layers)
+  _nfBaseXY=new Float32Array(_nfInter*2);
+  const xSpan=2.4, ySpan=2.4, zSpan=3.0;
+  for(let n=0;n<_nfInter;n++){
+    const c=n%_nfCols, r=Math.floor(n/_nfCols);
+    const hexOff=(r&1)?0.5/_nfCols*xSpan:0;
+    const h=((n*2654435761)>>>0)/4294967296;
+    const jx=(h-0.5)*0.02, jy=(((n*1597334677)>>>0)/4294967296-0.5)*0.02;
+    _nfBaseXY[n*2]=(c/(_nfCols-1))*xSpan-xSpan/2+hexOff+jx;
+    _nfBaseXY[n*2+1]=(r/(_nfRows-1))*ySpan-ySpan/2+jy;
+  }
+  // Build per-layer Z positions
+  _nfZPerLayer=new Float32Array(_nRealLayers);
+  for(let l=0;l<_nRealLayers;l++)_nfZPerLayer[l]=(l/(_nRealLayers-1))*zSpan-zSpan/2;
+  // Clear old scene
+  _nfDispose();
+  _clearRV(rv);rv._rvSlices=[];
+  if(rv.sc.children[0])rv.sc.children[0].visible=false;
+  // Dots: allocate max size (one layer's worth of neurons)
+  const dotPos=new Float32Array(_nfInter*3);
+  const dotCol=new Float32Array(_nfInter*3);
+  const dotGeo=new THREE.BufferGeometry();
+  dotGeo.setAttribute('position',new THREE.BufferAttribute(dotPos,3));
+  dotGeo.setAttribute('color',new THREE.BufferAttribute(dotCol,3));
+  dotGeo.setDrawRange(0,0);
+  _nfMat=new THREE.PointsMaterial({size:3,vertexColors:true,sizeAttenuation:false,transparent:true,opacity:0.95,depthWrite:false});
+  _nfMesh=new THREE.Points(dotGeo,_nfMat);
+  _nfMesh.frustumCulled=false;
+  rv.sc.add(_nfMesh);
+  window._dbgNF={mesh:_nfMesh,rv,get trails(){return _nfTrails},get actA(){return _nfActA},get actB(){return _nfActB}};
+  if(!rv._camSet){rv.cam.position.set(2.0,1.8,2.5);rv.ctl.target.set(0,0,-0.3);rv.ctl.update();rv._camSet=true;}
+  rv.built=true;
+  _nfActA=null;_nfActB=null;_nfLoadingA=-1;_nfLoadingB=-1;
+  _nfUpdateActivations();_markDirty();
+}
+
+function _nfDispose(){
+  if(_nfMesh){_nfMesh.geometry.dispose();_nfMat?.dispose();_nfMesh=null;_nfMat=null;}
+  if(_nfTrails){_nfTrails.geometry.dispose();_nfTrails.material.dispose();_nfTrails=null;}
+}
+
+// Compute per-neuron color from A/B activations (normalized)
+// A-only → orange, B-only → blue, both → proportional blend (no white wash)
+function _nfColor(va, vb){
+  const activity=Math.max(va,vb);
+  if(activity<0.01)return [0,0,0];
+  const bright=0.4+0.6*Math.min(activity,1);
+  // Only one token loaded → pure color
+  if(!_nfActB){return [1.0*bright, 0.4*bright, 0.15*bright];}// orange
+  if(!_nfActA){return [0.25*bright, 0.5*bright, 1.0*bright];}// blue
+  // Both loaded: A-only → orange, B-only → blue, both → blend by dominance
+  const aOn=va>=_NF_THRESH, bOn=vb>=_NF_THRESH;
+  if(aOn&&!bOn)return [1.0*bright, 0.4*bright, 0.15*bright];// orange
+  if(bOn&&!aOn)return [0.25*bright, 0.5*bright, 1.0*bright];// blue
+  // Both active: blend by relative strength, no whitening
+  const t=vb/(va+vb+0.001);
+  return [(1.0-t*0.75)*bright, (0.4+t*0.1)*bright, (0.15+t*0.85)*bright];
+}
+
+// Rebuild current-layer dots — instant, reads from pre-loaded arrays
+function _nfBuildDots(){
+  if(!_nfMesh||!_nfBaseXY)return;
+  const pos=_nfMesh.geometry.getAttribute('position');
+  const col=_nfMesh.geometry.getAttribute('color');
+  const lm=_nfLayerMax?_nfLayerMax[cL]||1:1;
+  const z=_nfZPerLayer?_nfZPerLayer[cL]:0;
+  let di=0;
+  for(let n=0;n<_nfInter;n++){
+    const idx=cL*_nfInter+n;
+    const va=_nfActA?Math.abs(_nfActA[idx])/lm:0;
+    const vb=_nfActB?Math.abs(_nfActB[idx])/lm:0;
+    if(Math.max(va,vb)<_NF_THRESH)continue;
+    pos.array[di*3]=_nfBaseXY[n*2];
+    pos.array[di*3+1]=_nfBaseXY[n*2+1];
+    pos.array[di*3+2]=z;
+    const [r,g,b]=_nfColor(va,vb);
+    col.array[di*3]=r;col.array[di*3+1]=g;col.array[di*3+2]=b;
+    di++;
+  }
+  _nfMesh.geometry.setDrawRange(0,di);
+  pos.needsUpdate=true;col.needsUpdate=true;_markDirty();
+}
+
+// Build persistence trails — pre-allocated buffer, updated in place
+function _nfBuildTrails(){
+  const rv=rightViews[1];if(!rv||!_nfBaseXY||!_nfZPerLayer)return;
+  if(!_nfActA&&!_nfActB){
+    if(_nfTrails)_nfTrails.geometry.setDrawRange(0,0);
+    return;
+  }
+  // Compute per-layer max
+  _nfLayerMax=new Float32Array(_nRealLayers);
+  for(let l=0;l<_nRealLayers;l++){
+    let mx=0;
+    for(let n=0;n<_nfInter;n++){
+      const idx=l*_nfInter+n;
+      const va=_nfActA?Math.abs(_nfActA[idx]):0;
+      const vb=_nfActB?Math.abs(_nfActB[idx]):0;
+      if(va>mx)mx=va;if(vb>mx)mx=vb;
+    }
+    _nfLayerMax[l]=mx||1;
+  }
+  // Pre-allocate trail buffer (max possible: every neuron active at every pair of adjacent layers)
+  const maxSegs=_nfInter*(_nRealLayers-1);// worst case
+  if(!_nfTrails){
+    const geo=new THREE.BufferGeometry();
+    geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(maxSegs*6),3));
+    geo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(maxSegs*6),3));
+    geo.setDrawRange(0,0);
+    _nfTrails=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.25,depthWrite:false}));
+    _nfTrails.frustumCulled=false;
+    rv.sc.add(_nfTrails);
+  }
+  const tPos=_nfTrails.geometry.attributes.position.array;
+  const tCol=_nfTrails.geometry.attributes.color.array;
+  let si=0;// segment index (each seg = 2 vertices = 6 floats)
+  for(let n=0;n<_nfInter;n++){
+    const x=_nfBaseXY[n*2], y=_nfBaseXY[n*2+1];
+    let prevActive=false, prevZ=0, prevR=0, prevG=0, prevB=0;
+    for(let l=0;l<_nRealLayers;l++){
+      const idx=l*_nfInter+n;
+      const lm=_nfLayerMax[l];
+      const va=_nfActA?Math.abs(_nfActA[idx])/lm:0;
+      const vb=_nfActB?Math.abs(_nfActB[idx])/lm:0;
+      const active=Math.max(va,vb)>=_NF_THRESH;
+      if(active&&prevActive&&si<maxSegs){
+        const [r,g,b]=_nfColor(va,vb);
+        const o=si*6;
+        tPos[o]=x;tPos[o+1]=y;tPos[o+2]=prevZ;
+        tPos[o+3]=x;tPos[o+4]=y;tPos[o+5]=_nfZPerLayer[l];
+        tCol[o]=prevR;tCol[o+1]=prevG;tCol[o+2]=prevB;
+        tCol[o+3]=r;tCol[o+4]=g;tCol[o+5]=b;
+        si++;
+      }
+      if(active){
+        const [r,g,b]=_nfColor(va,vb);
+        prevActive=true;prevZ=_nfZPerLayer[l];prevR=r;prevG=g;prevB=b;
+      }else{prevActive=false;}
+    }
+  }
+  _nfTrails.geometry.setDrawRange(0,si*2);
+  _nfTrails.geometry.attributes.position.needsUpdate=true;
+  _nfTrails.geometry.attributes.color.needsUpdate=true;
+  _markDirty();
+}
+
+// Cache: token_idx → Float32Array
+const _nfCache=new Map();
+
+async function _nfLoadToken(tokIdx, slot){
+  if(tokIdx<0){
+    if(slot==='A'){_nfActA=null;_nfLoadingA=-1;}else{_nfActB=null;_nfLoadingB=-1;}
+    _nfBuildDots();_nfDeferTrails();return;
+  }
+  if(slot==='A'&&_nfLoadingA===tokIdx)return;
+  if(slot==='B'&&_nfLoadingB===tokIdx)return;
+  if(slot==='A')_nfLoadingA=tokIdx;else _nfLoadingB=tokIdx;
+  // Check cache first — instant
+  const cacheKey=`${model}/${mode}/${tokIdx}`;
+  if(_nfCache.has(cacheKey)){
+    if(slot==='A')_nfActA=_nfCache.get(cacheKey);else _nfActB=_nfCache.get(cacheKey);
+    _nfBuildDots();_nfDeferTrails();return;
+  }
+  // Show dots immediately with whatever data we have, fetch in background
+  _nfBuildDots();
+  try{
+    const resp=await fetch(`/api/neuron-field/${model}/${mode}?token=${tokIdx}`);
+    if(!resp.ok)return;
+    const ct=resp.headers.get('content-type')||'';
+    if(ct.includes('json'))return;
+    const buf=await resp.arrayBuffer();
+    const u16=new Uint16Array(buf);
+    const f32=new Float32Array(u16.length);
+    for(let i=0;i<u16.length;i++)f32[i]=f16(u16[i]);
+    _nfCache.set(cacheKey,f32);// cache for instant re-pin
+    if(slot==='A')_nfActA=f32;else _nfActB=f32;
+    _nfBuildDots();_nfDeferTrails();
+  }catch(e){console.error('neuron-field:',e);}
+}
+
+// Build trails in idle callback so dots appear instantly
+let _nfTrailTimer=0;
+function _nfDeferTrails(){
+  cancelAnimationFrame(_nfTrailTimer);
+  _nfTrailTimer=requestAnimationFrame(()=>_nfBuildTrails());
+}
+
+function _nfUpdateActivations(){
+  _nfLoadToken(pinnedToken,'A');
+  _nfLoadToken(pinnedTokenB,'B');
+}
+
+let _nfLastLayer=-1;
+function _nfSetLayer(l){if(l===_nfLastLayer)return;_nfLastLayer=l;_nfBuildDots();}
+
+// rv2: Attention — per-head attention distribution at each layer
+// rv2: empty (PC Spectrum moved to br0bot)
+function _buildRV2Attention(){
+  const rv=rightViews[2];if(!rv)return;
+  _clearRV(rv);rv._rvSlices=[];rv.built=true;
+  const rlbl=rv.el?.querySelector('.rlbl');if(rlbl)rlbl.textContent='—';
+}
+
+// === PC Spectrum in br0bot ===
+// X = PC index, Y = score (signed), Z = layer (time)
+// Uses full PCA data (all hidden dimensions) loaded per token
+let _pcsEl=null,_pcsSc=null,_pcsCam=null,_pcsCtl=null;
+let _pcsMeshA=null,_pcsMeshB=null;
+let _pcsDotsA=null,_pcsDotsB=null;
+let _pcsNK=0,_pcsScale=1;
+let _pcsHoverPC=-1;
+// Full PCA data per token: Float32Array [n_layers × full_K]
+let _pcsFullA=null,_pcsFullB=null;
+let _pcsFullK=0,_pcsFullNL=0;
+let _pcsLoadingA=-1,_pcsLoadingB=-1;
+
+function _initPCSScene(){
+  if(_pcsSc)return;
+  _pcsEl=document.getElementById('br0bot');if(!_pcsEl)return;
+  _pcsSc=new THREE.Scene();_pcsSc.background=new THREE.Color(0x060606);
+  _pcsCam=new THREE.PerspectiveCamera(50,1,0.001,200);_pcsCam.position.set(0,0.8,3.5);
+  _pcsCtl=new OrbitControls(_pcsCam,_pcsEl);_pcsCtl.enableDamping=true;_pcsCtl.dampingFactor=0.08;
+  _pcsCtl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};
+  _pcsCtl.addEventListener('change',_markDirty);
+  const ro2=new ResizeObserver(()=>{_resizeCanvas();_markDirty();});
+  ro2.observe(_pcsEl);
+  // Click: select PC for viewport A (left-click=PC1, shift-click=PC2)
+  _pcsEl.addEventListener('click',e=>{
+    e.stopPropagation();e.preventDefault();
+    if(!_pcsNK||!allL?.length)return;
+    const pc=_pcsHitTest(e);if(pc<0||pc>=_pcsNK)return;
+    if(e.shiftKey){vpPairs[0][1]=pc;}else{vpPairs[0][0]=pc;}
+    updateAllViewports();_rebuildWeightLines();_saveState();
+    _updatePCSDots();
+    buildBrowser();// rebuild radial around new selection
+    _markDirty();
+  });
+  // Hover: tooltip + cross-highlight pyramid
+  _pcsEl.addEventListener('mousemove',e=>{
+    e.stopPropagation();
+    const pc=_pcsHitTest(e);
+    const tip=document.getElementById('pcsTip');if(!tip)return;
+    if(pc<0||pc>=_pcsNK||!allL?.length){
+      tip.style.display='none';
+      if(_pcsHoverPC>=0){_pcsHoverPC=-1;_updatePCSDots();_brClearHighlight();}
+      return;
+    }
+    _pcsHoverPC=pc;
+    const rect=_pcsEl.getBoundingClientRect();
+    tip.style.display='block';
+    tip.style.left=Math.min(e.clientX-rect.left+10,rect.width-120)+'px';
+    tip.style.top=Math.max(e.clientY-rect.top-20,4)+'px';
+    const fK=_pcsFullK||nK;
+    const sA=_pcsFullA&&pinnedToken>=0?_pcsFullA[cL*fK+pc]:pinnedToken>=0?_getScore(cL,pinnedToken,pc):null;
+    const sB=_pcsFullB&&pinnedTokenB>=0?_pcsFullB[cL*fK+pc]:pinnedTokenB>=0?_getScore(cL,pinnedTokenB,pc):null;
+    const var_=_layerVar[cL]&&pc<_layerVar[cL].length?(_layerVar[cL][pc]||0):0;
+    const selA=vpPairs[0].includes(pc),selB=vpPairs[2].includes(pc);
+    let t=`PC${pc}`;
+    if(selA)t+=' [vpA]';if(selB)t+=' [vpB]';
+    t+=` var:${(var_*100).toFixed(1)}%`;
+    if(sA!==null)t+=` A:${sA.toFixed(1)}`;
+    if(sB!==null)t+=` B:${sB.toFixed(1)}`;
+    tip.textContent=t;
+    _updatePCSDots();
+    // Cross-highlight: show this PC's row+column in pyramid
+    _brHighlightPC(pc);
+    _markDirty();
+  });
+  _pcsEl.addEventListener('mouseleave',()=>{
+    const tip=document.getElementById('pcsTip');if(tip)tip.style.display='none';
+    _pcsHoverPC=-1;_updatePCSDots();_brClearHighlight();_markDirty();
+  });
+  // Right-click: set viewport B's PCs
+  _pcsEl.addEventListener('contextmenu',e=>{e.preventDefault();e.stopPropagation();
+    if(!_pcsNK||!allL?.length)return;
+    const pc=_pcsHitTest(e);if(pc<0||pc>=_pcsNK)return;
+    if(e.shiftKey){vpPairs[2][1]=pc;}else{vpPairs[2][0]=pc;}
+    updateAllViewports();_rebuildWeightLines();_saveState();
+    _updatePCSDots();
+    buildBrowser();// rebuild radial around new selection
+    _markDirty();
+  });
+  _pcsEl.addEventListener('mousedown',e=>e.stopPropagation());
+}
+
+function _pcsHitTest(e){
+  if(!_pcsDotsA&&!_pcsDotsB)return -1;
+  const dots=_pcsDotsA||_pcsDotsB;if(!dots)return -1;
+  const rect=_pcsEl.getBoundingClientRect();
+  if(rect.width<1||rect.height<1)return -1;
+  const mx=((e.clientX-rect.left)/rect.width)*2-1;
+  const my=-((e.clientY-rect.top)/rect.height)*2+1;
+  const pos=dots.geometry.attributes.position;
+  let best=-1,bestD=Infinity;
+  const v=new THREE.Vector3();
+  // Tighter threshold: 0.005 in NDC (roughly 5px on a 500px viewport)
+  for(let i=0;i<_pcsNK;i++){
+    v.set(pos.getX(i),pos.getY(i),pos.getZ(i));
+    v.project(_pcsCam);
+    if(v.z<-1||v.z>1)continue;// behind camera or beyond far plane
+    const dx=v.x-mx,dy=v.y-my;
+    const d=dx*dx+dy*dy;
+    if(d<bestD&&d<0.005){bestD=d;best=i;}
+  }
+  return best;
+}
+
+async function _pcsLoadFull(tokIdx, slot){
+  if(tokIdx<0){
+    if(slot==='A'){_pcsFullA=null;_pcsLoadingA=-1;}else{_pcsFullB=null;_pcsLoadingB=-1;}
+    _buildPCSSpectrum();return;
+  }
+  if(slot==='A'&&_pcsLoadingA===tokIdx)return;
+  if(slot==='B'&&_pcsLoadingB===tokIdx)return;
+  if(slot==='A')_pcsLoadingA=tokIdx;else _pcsLoadingB=tokIdx;
+  try{
+    const resp=await fetch(`/api/token-pca/${model}/${mode}?token=${tokIdx}`);
+    if(!resp.ok)return;
+    const ct=resp.headers.get('content-type')||'';
+    if(ct.includes('json'))return;
+    const buf=await resp.arrayBuffer();
+    const dv=new DataView(buf);
+    const nL=dv.getUint32(0,true), fK=dv.getUint32(4,true);
+    const data=new Float32Array(buf,8);
+    _pcsFullNL=nL;_pcsFullK=fK;
+    if(slot==='A')_pcsFullA=data;else _pcsFullB=data;
+    _buildPCSSpectrum();
+  }catch(e){console.error('token-pca:',e);}
+}
+
+function _buildPCSSpectrum(){
+  if(!_pcsSc)_initPCSScene();
+  if(!_pcsSc||!_nRealLayers)return;
+  // Use full PCA data if available, fall back to allL
+  const hasFullData=_pcsFullA||_pcsFullB;
+  _pcsNK=hasFullData?_pcsFullK:nK;
+  const zSpan=3.0, xSpan=2.4;
+  // Global max for Y scale — use full PCA data
+  let maxAbs=0.001;
+  const nL_pcs=_pcsFullNL||_nRealLayers;
+  [_pcsFullA,_pcsFullB].forEach(fd=>{
+    if(!fd)return;
+    for(let i=0;i<fd.length;i++)if(Math.abs(fd[i])>maxAbs)maxAbs=Math.abs(fd[i]);
+  });
+  // Fallback to allL if no full data
+  if(!_pcsFullA&&!_pcsFullB){
+    [pinnedToken,pinnedTokenB].forEach(tok=>{
+      if(tok<0)return;
+      for(let l=0;l<_nRealLayers;l++){const s=allL[l]?.[tok];if(!s)continue;
+        for(let pc=0;pc<_pcsNK;pc++)if(Math.abs(s[pc])>maxAbs)maxAbs=Math.abs(s[pc]);}
+    });
+  }
+  _pcsScale=maxAbs>0.001?1.2/maxAbs:1;
+  const maxPts=nL_pcs*_pcsNK;
+
+  // Dispose old meshes if size changed (nK changed between models/loads)
+  if(_pcsMeshA&&_pcsMeshA.geometry.attributes.position.count<maxPts){
+    [_pcsMeshA,_pcsMeshB,_pcsDotsA,_pcsDotsB].forEach(m=>{if(m){_pcsSc.remove(m);m.geometry.dispose();m.material.dispose();}});
+    _pcsMeshA=_pcsMeshB=_pcsDotsA=_pcsDotsB=null;
+  }
+
+  function _ensureSpec(mesh,dots,colHex){
+    if(!mesh){
+      const tGeo=new THREE.BufferGeometry();
+      tGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(maxPts*3),3));
+      tGeo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(maxPts*3),3));
+      tGeo.setDrawRange(0,0);
+      mesh=new THREE.Points(tGeo,new THREE.PointsMaterial({size:1.5,vertexColors:true,sizeAttenuation:false,transparent:true,opacity:0.8,depthWrite:false}));
+      mesh.frustumCulled=false;_pcsSc.add(mesh);
+    }
+    if(!dots){
+      const dGeo=new THREE.BufferGeometry();
+      dGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(_pcsNK*3),3));
+      dGeo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(_pcsNK*3),3));
+      dots=new THREE.Points(dGeo,new THREE.PointsMaterial({size:3,vertexColors:true,sizeAttenuation:false,transparent:true,opacity:0.95,depthWrite:false}));
+      dots.frustumCulled=false;dots.renderOrder=10;_pcsSc.add(dots);
+    }
+    return [mesh,dots];
+  }
+
+  function _fillSpec(mesh,dots,fullData,tok,colHex){
+    const cr=((colHex>>16)&0xFF)/255, cg=((colHex>>8)&0xFF)/255, cb=(colHex&0xFF)/255;
+    const tPos=mesh.geometry.attributes.position.array;
+    const tCol=mesh.geometry.attributes.color.array;
+    if(tok<0||!fullData){mesh.geometry.setDrawRange(0,0);dots.geometry.setDrawRange(0,0);return;}
+    const fK=_pcsFullK||_pcsNK;
+    for(let l=0;l<nL_pcs;l++){
+      const z=(l/(nL_pcs-1))*zSpan-zSpan/2;
+      for(let pc=0;pc<_pcsNK;pc++){
+        const i=l*_pcsNK+pc;
+        if(i*3+2>=tPos.length)break;
+        tPos[i*3]=(pc/(_pcsNK-1||1))*xSpan-xSpan/2;
+        const val=fullData[l*fK+pc]||0;
+        tPos[i*3+1]=val*_pcsScale;
+        tPos[i*3+2]=z;
+        tCol[i*3]=cr*0.1;tCol[i*3+1]=cg*0.1;tCol[i*3+2]=cb*0.1;
+      }
+    }
+    mesh.geometry.setDrawRange(0,Math.min(maxPts,nL_pcs*_pcsNK));
+    mesh.geometry.attributes.position.needsUpdate=true;
+    mesh.geometry.attributes.color.needsUpdate=true;
+    dots.geometry.setDrawRange(0,_pcsNK);
+  }
+
+  [_pcsMeshA,_pcsDotsA]=_ensureSpec(_pcsMeshA,_pcsDotsA,0xFF6644);
+  [_pcsMeshB,_pcsDotsB]=_ensureSpec(_pcsMeshB,_pcsDotsB,0x4477AA);
+  _fillSpec(_pcsMeshA,_pcsDotsA,_pcsFullA,pinnedToken,0xFF6644);
+  _fillSpec(_pcsMeshB,_pcsDotsB,_pcsFullB,pinnedTokenB,0x4477AA);
+  _updatePCSDots();
+  const lbl=document.getElementById('pcsLabel');
+  if(lbl)lbl.textContent=`PC Spectrum · ${_pcsNK} PCs · click=set A, shift=set B`;
+  _markDirty();
+}
+
+function _updatePCSDots(){
+  if(!_pcsNK)return;
+  const xSpan=2.4, zSpan=3.0;
+  const nL_pcs=_pcsFullNL||_nRealLayers;
+  const z=(cL/(nL_pcs-1))*zSpan-zSpan/2;
+  const fK=_pcsFullK||_pcsNK;
+  [[_pcsDotsA,pinnedToken,0xFF6644,_pcsFullA],[_pcsDotsB,pinnedTokenB,0x4477AA,_pcsFullB]].forEach(([dots,tok,colHex,fullData])=>{
+    if(!dots||tok<0)return;
+    const pos=dots.geometry.attributes.position.array;
+    const col=dots.geometry.attributes.color.array;
+    const cr=((colHex>>16)&0xFF)/255, cg=((colHex>>8)&0xFF)/255, cb=(colHex&0xFF)/255;
+    for(let pc=0;pc<_pcsNK;pc++){
+      pos[pc*3]=(pc/(_pcsNK-1||1))*xSpan-xSpan/2;
+      // Read from full data or allL fallback
+      let val=0;
+      if(fullData){val=fullData[cL*fK+pc]||0;}
+      else if(allL[cL]?.[tok]){val=allL[cL][tok][pc]||0;}
+      pos[pc*3+1]=val*_pcsScale;
+      pos[pc*3+2]=z;
+      const inA=vpPairs[0].includes(pc), inB=vpPairs[2].includes(pc);
+      const hov=pc===_pcsHoverPC;
+      if(hov){col[pc*3]=1;col[pc*3+1]=1;col[pc*3+2]=0.8;}
+      else if(inA&&inB){col[pc*3]=1;col[pc*3+1]=0.9;col[pc*3+2]=1;}
+      else if(inA){col[pc*3]=1;col[pc*3+1]=0.6;col[pc*3+2]=0.3;}
+      else if(inB){col[pc*3]=0.3;col[pc*3+1]=0.6;col[pc*3+2]=1;}
+      else{col[pc*3]=cr*0.5;col[pc*3+1]=cg*0.5;col[pc*3+2]=cb*0.5;}
+    }
+    dots.geometry.attributes.position.needsUpdate=true;
+    dots.geometry.attributes.color.needsUpdate=true;
+  });
+  _markDirty();
+}
+
+function _updateTrajDots(){_updatePCSDots();}
 
 function _clearRV(rv){
   if(!rv)return;rv._rvSlices=[];
   while(rv.sc.children.length>1){const c=rv.sc.children[rv.sc.children.length-1];rv.sc.remove(c);if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();}
 }
 
-// rv0: Entry & Variance — where is the information at each layer?
-// Variance spectrum bars + displacement magnitude for pinned tokens
-function _buildRV0Entry(){
-  const rv=rightViews[0];if(!rv||!_layerVar.length)return;
-  _clearRV(rv);rv._rvSlices=[];
-  const nPC=Math.min(nK,20);
-  const logV=(v)=>v>0?Math.log10(v*1000+1)/3:0;
-  // Variance bars per layer per PC
-  for(let l=0;l<_nRealLayers;l++){
-    const z=(l/(_nRealLayers-1))*2-1;const pos=[];const cols=[];
-    for(let pc=0;pc<nPC;pc++){
-      const v=_layerVar[l]?_layerVar[l][pc]||0:0;
-      const x=(pc/(nPC-1||1))*1.8-0.9;const h=logV(v)*1.5;
-      pos.push(x,0,z, x,h,z);
-      const hue=pc/nPC;const c=new THREE.Color().setHSL(hue,0.8,0.5);
-      cols.push(c.r*0.3,c.g*0.3,c.b*0.3, c.r,c.g,c.b);
-    }
-    // Token displacement magnitude bars (from allL)
-    [pinnedToken,pinnedTokenB].forEach((tok,ti)=>{
-      if(tok<0||!allL[l])return;const S=allL[l][tok];
-      let disp2=0;for(let p=0;p<Math.min(nK,10);p++)disp2+=(S[p]||0)**2;
-      const disp=Math.sqrt(disp2);const normDisp=Math.min(1.5,disp/500);// normalize to ~1.5 max
-      const x=ti===0?1.1:1.3;
-      pos.push(x,0,z, x,normDisp,z);
-      const rgb=ti===0?[1,0.4,0.2]:[0.2,0.5,1];
-      cols.push(rgb[0]*0.2,rgb[1]*0.2,rgb[2]*0.2, rgb[0],rgb[1],rgb[2]);
-    });
-    const geo=new THREE.BufferGeometry();
-    geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
-    geo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(cols),3));
-    const seg=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.15}));
-    seg.frustumCulled=false;rv.sc.add(seg);rv._rvSlices.push({mesh:seg,layer:l});
-  }
-  // Displacement trajectory lines (continuous through all layers)
-  [pinnedToken,pinnedTokenB].forEach((tok,ti)=>{
-    if(tok<0)return;const pts=[];
-    for(let l=0;l<_nRealLayers;l++){
-      if(!allL[l])continue;const S=allL[l][tok];
-      let disp2=0;for(let p=0;p<Math.min(nK,10);p++)disp2+=(S[p]||0)**2;
-      const normDisp=Math.min(1.5,Math.sqrt(disp2)/500);
-      pts.push(new THREE.Vector3(ti===0?1.1:1.3,normDisp,(l/(_nRealLayers-1))*2-1));
-    }
-    if(pts.length>1){const g=new THREE.BufferGeometry().setFromPoints(pts);
-      rv.sc.add(new THREE.Line(g,new THREE.LineBasicMaterial({color:ti===0?0xFF6644:0x4477AA,transparent:true,opacity:0.6})));}
-  });
-  if(!rv._camSet){rv.cam.position.set(1.5,1.5,2);rv.ctl.target.set(0.3,0.5,0);rv.ctl.update();rv._camSet=true;}
-  rv.built=true;_updateRVLayer();
-}
-
-// rv1: Gating — MLP gate activation for pinned tokens
-// Bar per layer + concentration line showing how distributed the gating is
-function _buildRV1Gate(){
-  const rv=rightViews[1];if(!rv)return;
-  _clearRV(rv);rv._rvSlices=[];
-  if(!_gateHeat||!_nRealLayers){rv.built=true;return;}
-  const rowA=pinnedToken>=0?getGateRow(pinnedToken):null;
-  const rowB=pinnedTokenB>=0?getGateRow(pinnedTokenB):null;
-  if(!rowA&&!rowB){rv.built=true;return;}
-  let mx=0;
-  if(rowA)for(let l=0;l<_nRealLayers;l++)mx=Math.max(mx,rowA[l]);
-  if(rowB)for(let l=0;l<_nRealLayers;l++)mx=Math.max(mx,rowB[l]);
-  mx=mx||1;
-  // Bars per layer
-  for(let l=0;l<_nRealLayers;l++){
-    const z=(l/(_nRealLayers-1))*2-1;const pos=[];const cols=[];
-    if(rowA){const v=rowA[l]/mx;
-      // Main bar
-      pos.push(-0.5,0,z, -0.5,v*1.5,z);
-      cols.push(0.3,0.1,0.05, 1,0.4+v*0.5,0.2);
-      // Wider bar for visual weight
-      pos.push(-0.3,0,z, -0.3,v*1.2,z);
-      cols.push(0.2,0.05,0.02, 0.8,0.3+v*0.4,0.15);
-    }
-    if(rowB){const v=rowB[l]/mx;
-      pos.push(0.5,0,z, 0.5,v*1.5,z);
-      cols.push(0.05,0.1,0.2, 0.2,0.5+v*0.4,1);
-      pos.push(0.3,0,z, 0.3,v*1.2,z);
-      cols.push(0.02,0.05,0.15, 0.15,0.4+v*0.3,0.8);
-    }
-    if(!pos.length)continue;
-    const geo=new THREE.BufferGeometry();
-    geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
-    geo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(cols),3));
-    const seg=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.15}));
-    seg.frustumCulled=false;rv.sc.add(seg);rv._rvSlices.push({mesh:seg,layer:l});
-  }
-  // Continuous gate trajectory lines
-  [rowA,rowB].forEach((row,ti)=>{
-    if(!row)return;const pts=[];
-    for(let l=0;l<_nRealLayers;l++)pts.push(new THREE.Vector3(ti===0?-0.5:0.5,(row[l]/mx)*1.5,(l/(_nRealLayers-1))*2-1));
-    const g=new THREE.BufferGeometry().setFromPoints(pts);
-    rv.sc.add(new THREE.Line(g,new THREE.LineBasicMaterial({color:ti===0?0xFF6644:0x4477AA,transparent:true,opacity:0.5})));
-  });
-  if(!rv._camSet){rv.cam.position.set(0,1,2.5);rv.ctl.target.set(0,0.5,0);rv.ctl.update();rv._camSet=true;}
-  rv.built=true;_updateRVLayer();_markDirty();
-}
-
-// rv2: Residual norm — how much total information the token carries at each layer
-// + attention self-fraction (template) or PC dominance (raw/naked)
-function _buildRV2Residual(){
-  const rv=rightViews[2];if(!rv)return;
-  _clearRV(rv);rv._rvSlices=[];
-  if(!_nRealLayers||!allL.length){rv.built=true;return;}
-  // Residual norm per layer for pinned tokens
-  [pinnedToken,pinnedTokenB].forEach((tok,ti)=>{
-    if(tok<0)return;const pts=[];
-    for(let l=0;l<_nRealLayers;l++){
-      if(!allL[l])continue;const S=allL[l][tok];
-      let norm2=0;for(let p=0;p<Math.min(nK,20);p++)norm2+=(S[p]||0)**2;
-      const norm=Math.sqrt(norm2);
-      pts.push(new THREE.Vector3(ti===0?-0.5:0.5,Math.min(1.5,norm/500),(l/(_nRealLayers-1))*2-1));
-    }
-    if(pts.length>1){const g=new THREE.BufferGeometry().setFromPoints(pts);
-      rv.sc.add(new THREE.Line(g,new THREE.LineBasicMaterial({color:ti===0?0xFF6644:0x4477AA,transparent:true,opacity:0.7})));}
-  });
-  // PC dominance: fraction of variance in PC0 vs rest at each layer
-  // This shows crystallization — when PC0 dominance spikes, the crystal forms
-  if(_layerVar.length){
-    const pts=[];
-    for(let l=0;l<_nRealLayers;l++){
-      const v0=_layerVar[l]?_layerVar[l][0]||0:0;
-      pts.push(new THREE.Vector3(0,v0*1.5,(l/(_nRealLayers-1))*2-1));
-    }
-    if(pts.length>1){const g=new THREE.BufferGeometry().setFromPoints(pts);
-      rv.sc.add(new THREE.Line(g,new THREE.LineBasicMaterial({color:0xFFFF44,transparent:true,opacity:0.5})));}
-  }
-  // Attention self-fraction if template mode
-  if(_attnData&&mode==='template'){
-    const pts=[];
-    for(let l=0;l<Math.min(_attnData.length,_nRealLayers);l++){
-      const heads=_attnData[l]?.heads;if(!heads||!heads.length){pts.push(new THREE.Vector3(1,0,(l/(_nRealLayers-1))*2-1));continue;}
-      let selfAttn=0;heads.forEach(h=>{selfAttn+=h[h.length-1]||0;});selfAttn/=heads.length;
-      pts.push(new THREE.Vector3(1,selfAttn*1.5,(l/(_nRealLayers-1))*2-1));
-    }
-    if(pts.length>1){const g=new THREE.BufferGeometry().setFromPoints(pts);
-      rv.sc.add(new THREE.Line(g,new THREE.LineBasicMaterial({color:0x88FFAA,transparent:true,opacity:0.6})));}
-  }
-  // Layer-sliced bars for residual norm (for playback opacity)
-  [pinnedToken,pinnedTokenB].forEach((tok,ti)=>{
-    if(tok<0)return;
-    for(let l=0;l<_nRealLayers;l++){
-      const z=(l/(_nRealLayers-1))*2-1;
-      if(!allL[l])continue;const S=allL[l][tok];
-      let norm2=0;for(let p=0;p<Math.min(nK,20);p++)norm2+=(S[p]||0)**2;
-      const norm=Math.min(1.5,Math.sqrt(norm2)/500);
-      const pos=new Float32Array([ti===0?-0.5:0.5,0,z, ti===0?-0.5:0.5,norm,z]);
-      const rgb=ti===0?[1,0.4,0.2]:[0.2,0.5,1];
-      const col=new Float32Array([rgb[0]*0.2,rgb[1]*0.2,rgb[2]*0.2, rgb[0],rgb[1],rgb[2]]);
-      const geo=new THREE.BufferGeometry();
-      geo.setAttribute('position',new THREE.BufferAttribute(pos,3));
-      geo.setAttribute('color',new THREE.BufferAttribute(col,3));
-      const seg=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.1}));
-      seg.frustumCulled=false;rv.sc.add(seg);rv._rvSlices.push({mesh:seg,layer:l});
-    }
-  });
-  if(!rv._camSet){rv.cam.position.set(0.5,1,2.5);rv.ctl.target.set(0,0.5,0);rv.ctl.update();rv._camSet=true;}
-  rv.built=true;_updateRVLayer();_markDirty();
-}
-
-// Playback: toggle layer opacity across all 3 right viewports
+// Playback: toggle layer opacity across all 3 right viewports + neuron field uniform
 function _updateRVLayer(){
   rightViews.forEach(rv=>{if(!rv._rvSlices)return;
     rv._rvSlices.forEach(({mesh,layer})=>{
       const d=Math.abs(layer-cL);
       mesh.material.opacity=d===0?0.9:d===1?0.4:d===2?0.2:d<=5?0.08:0.03;
-      mesh.visible=true;
+      mesh.visible=true;// show all layers — far ones very dim
     });
   });
+  _nfSetLayer(cL);// neuron field: update current slice
+  _updateTrajDots();// trajectory: slide dot along path
 }
 function updateLeftViewports(){
   _updateDeltaPins();
@@ -1136,8 +1727,10 @@ function updateLeftViewports(){
 }
 // Rebuild right column neurons/attention when pins change
 function _onPinChange(){
-  _buildRV1Neurons();
-  _buildRV2Attention();
+  _nfUpdateActivations();// neuron field (async)
+  _pcsLoadFull(pinnedToken,'A');// full PCA for spectrum (async, ~72KB)
+  _pcsLoadFull(pinnedTokenB,'B');
+  _buildPCSSpectrum();// immediate render with available data
 }
 
 let _nRealLayers=0;
@@ -1208,6 +1801,7 @@ async function loadAll(){
   const scoreOff=varOff+bnL*bnK*4;const sU16=new Uint16Array(buf,scoreOff,bnL*bnN*bnK);
   const aF=new Float32Array(bnL*bnN*bnK);for(let i=0;i<sU16.length;i++)aF[i]=f16(sU16[i]);
   allL=[];for(let l=0;l<bnL;l++){const ls=[];const off=l*bnN*bnK;for(let t=0;t<bnN;t++)ls.push(aF.subarray(off+t*bnK,off+t*bnK+bnK));allL.push(ls);}
+  nK=bnK;// nK = blob's actual PC count, not decomp's full count
 
   // Legend
   _hiddenScripts.clear();
@@ -1288,8 +1882,8 @@ async function init(){const models=await api('models');const sel=document.getEle
   // Token search (debounced, event delegation)
   let _searchTimer=null;
   const _tsResults=document.getElementById('tsresults');
-  _tsResults.addEventListener('click',e=>{const d=e.target.closest('[data-ti]');if(!d)return;const i=parseInt(d.dataset.ti);if(e.shiftKey||_isRightClick(e)){pinnedTokenB=i;}else{pinnedToken=i;}updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();});
-  _tsResults.addEventListener('contextmenu',e=>{e.preventDefault();const d=e.target.closest('[data-ti]');if(!d)return;pinnedTokenB=parseInt(d.dataset.ti);updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();});
+  _tsResults.addEventListener('click',e=>{const d=e.target.closest('[data-ti]');if(!d)return;const i=parseInt(d.dataset.ti);if(e.shiftKey||_isRightClick(e)){pinnedTokenB=i;}else{pinnedToken=i;}updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();});
+  _tsResults.addEventListener('contextmenu',e=>{e.preventDefault();const d=e.target.closest('[data-ti]');if(!d)return;pinnedTokenB=parseInt(d.dataset.ti);updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();});
   document.getElementById('tsearch').addEventListener('input',e=>{
     clearTimeout(_searchTimer);
     _searchTimer=setTimeout(()=>{
@@ -1346,6 +1940,7 @@ rightViews.forEach(v=>v.ctl.addEventListener('change',_markDirty));
   brCtl.update();_renderRegion(brEl,brSc,brCam);
   leftViews.forEach(v=>{if(v.built){v.ctl.update();_renderRegion(v.el,v.sc,v.cam);}});
   rightViews.forEach(v=>{v.ctl.update();_renderRegion(v.el,v.sc,v.cam);});
+  if(_pcsSc&&_pcsEl){_pcsCtl.update();_renderRegion(_pcsEl,_pcsSc,_pcsCam);}
   // FPS counter
   _frameCount++;const now=performance.now();if(now-_fpsTime>1000){const fps=Math.round(_frameCount*1000/(now-_fpsTime));const el=document.getElementById('fpsDisplay');if(el)el.textContent=fps+'fps';_frameCount=0;_fpsTime=now;}
 })();
