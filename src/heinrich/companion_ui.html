@@ -1478,7 +1478,7 @@ function _buildRV2Attention(){
 let _pcsEl=null,_pcsSc=null,_pcsCam=null,_pcsCtl=null;
 let _pcsMeshA=null,_pcsMeshB=null;
 let _pcsDotsA=null,_pcsDotsB=null;
-let _pcsNK=0,_pcsScale=1;
+let _pcsNK=0,_pcsScale=0;// 0 = not yet computed, auto-scale needed
 let _pcsHoverPC=-1;
 let _pcsLayerLine=null;// current-layer indicator line
 let _pcsVarLine=null;// variance envelope line
@@ -1838,6 +1838,8 @@ function _updatePCSHover(tokIdx){
       // Only render if still hovering this token AND still on the same layer
       if(_pcsHoverTok===tokIdx&&cL===fetchLayer)_renderPCSHoverLayer(tokIdx,f32);
     }).catch(()=>{_pcsHoverLoading=-1;});
+    // Speculative: preload full per-token data so click-to-pin is instant
+    _pcsFetchToken(tokIdx);// fires in background, populates _pcsHoverCache
   }
 }
 function _renderPCSHoverLayer(tokIdx,scores){
@@ -1958,7 +1960,7 @@ async function loadAll(){
   nL=dm.n_layers;_nRealLayers=dm.n_real_layers||nL;
   // Clear all PCA caches on model switch
   _pcsHoverCache.clear();_pcsLayerCache.clear();_pcFull.clear();_pcMedium.clear();
-  _pcsFullA=null;_pcsFullB=null;_pcsFullK=0;_pcsFullNL=0;
+  _pcsFullA=null;_pcsFullB=null;_pcsFullK=0;_pcsFullNL=0;_pcsScale=0;_pcsNK=0;
   _pcsLoadingA=-1;_pcsLoadingB=-1;_pcsHoverTok=-1;_pcsHoverLoading=-1;
 
   // Phase 2: parse scores binary + fetch layer0 metadata in parallel
