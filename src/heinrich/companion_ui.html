@@ -1612,7 +1612,7 @@ async function _pcsFetchToken(tokIdx){
 async function _pcsLoadFull(tokIdx, slot){
   if(tokIdx<0){
     if(slot==='A'){_pcsFullA=null;_pcsLoadingA=-1;}else{_pcsFullB=null;_pcsLoadingB=-1;}
-    _buildPCSSpectrum();return;
+    return;
   }
   if(slot==='A'&&_pcsLoadingA===tokIdx)return;
   if(slot==='B'&&_pcsLoadingB===tokIdx)return;
@@ -1622,7 +1622,7 @@ async function _pcsLoadFull(tokIdx, slot){
     if(!entry)return;
     _pcsFullNL=entry.nL;_pcsFullK=entry.fK;
     if(slot==='A')_pcsFullA=entry.data;else _pcsFullB=entry.data;
-    _buildPCSSpectrum();
+    // No _buildPCSSpectrum here — caller rebuilds after both slots load
   }catch(e){console.error('token-pca:',e);}
 }
 
@@ -1891,11 +1891,12 @@ function updateLeftViewports(){
   }
 }
 // Rebuild right column neurons/attention when pins change
-function _onPinChange(){
+async function _onPinChange(){
   _nfUpdateActivations();// neuron field (async)
-  _pcsLoadFull(pinnedToken,'A');// full PCA for spectrum (async, ~72KB)
-  _pcsLoadFull(pinnedTokenB,'B');
-  _buildPCSSpectrum();// immediate render with available data
+  // Sequential: load A, then B, then rebuild once. No interleaving.
+  await _pcsLoadFull(pinnedToken,'A');
+  await _pcsLoadFull(pinnedTokenB,'B');
+  _buildPCSSpectrum();
 }
 
 let _nRealLayers=0;
@@ -2031,6 +2032,7 @@ async function loadAll(){
   try{buildLeftViewports();}catch(e){console.error('left:',e);}
   await _yieldFrame();
   try{buildBrowser();}catch(e){console.error('browser:',e);}
+  try{_initPCSScene();}catch(e){console.error('pcs-init:',e);}
   _markDirty();
 }
 async function init(){const models=await api('models');const sel=document.getElementById('sm');const tM=models.filter(m=>m.architecture==='transformer');const bm={};tM.forEach(m=>{if(!bm[m.model])bm[m.model]=[];bm[m.model].push(m.mode);});Object.keys(bm).sort().forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);});
