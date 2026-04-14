@@ -528,7 +528,7 @@ function setupInteraction(vi){const v=views[vi];
   v.cv.addEventListener('pointerup',e=>{if(!nN||Math.abs(e.clientX-_dx)+Math.abs(e.clientY-_dy)>5)return;
     const i=_rayHit(vi,e);
     if(i>=0){if(_isRightClick(e)){pinnedTokenB=i;}else{pinnedToken=i;loadAttnData(i);}updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();}
-    else if(!_isRightClick(e)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();_updateBrowserOverlay();showPinDetail(-1);_saveState();}});}
+    else if(!_isRightClick(e)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();}});}
 views.forEach((_,i)=>setupInteraction(i));
 
 // Viewport updates
@@ -2729,8 +2729,7 @@ _addSnapButtons();
 document.getElementById('lrec').addEventListener('click',()=>{
   const t=_capTarget;if(t)recordViewport(t.sc,t.cam,t.el,t.vi);
 });
-document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;if(e.key==='ArrowRight')setLayer(_seqNext(cL));if(e.key==='ArrowLeft')setLayer(_seqPrev(cL));if(e.key===' '){e.preventDefault();_togglePlay();}if(e.key==='Escape'&&(pinnedToken>=0||pinnedTokenB>=0)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();}
-if(e.key==='p'||e.key==='P'){const t=_capTarget;if(t)captureViewport(t.sc,t.cam,t.el,t.vi);}
+document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;if(e.key==='ArrowRight')setLayer(_seqNext(cL));if(e.key==='ArrowLeft')setLayer(_seqPrev(cL));if(e.key===' '){e.preventDefault();_togglePlay();}if(e.key==='p'||e.key==='P'){const t=_capTarget;if(t)captureViewport(t.sc,t.cam,t.el,t.vi);}
 if(e.key==='g'||e.key==='G'){const t=_capTarget;if(t)recordViewport(t.sc,t.cam,t.el,t.vi);}
 });
 let _needsRender=true,_frameCount=0,_fpsTime=performance.now();
