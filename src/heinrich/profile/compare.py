@@ -5625,6 +5625,26 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
     print(f"  Token scores index: {n_sample} tokens × {total_layers} layers × {K} PCs = "
           f"{(16 + n_sample * stride) / (1024*1024):.0f}MB", file=sys.stderr)
 
+    # === PC-major index: [K × N_layers × N_tokens] float16 ===
+    # One seek per PC for cloud viewport queries. Iterates by PC, reads each layer's column.
+    print(f"  PC-major index...", file=sys.stderr)
+    pc_scores_path = decomp_dir / 'pc_scores.bin'
+    pc_hdr = struct.pack('<4sIII', b'PCSC', total_layers, n_sample, K)
+    pc_stride = total_layers * n_sample * 2  # bytes per PC
+    with open(pc_scores_path, 'wb') as f:
+        f.write(pc_hdr)
+        for pc in range(K):
+            slab = np.zeros((total_layers, n_sample), dtype=np.float16)
+            for li in range(total_layers):
+                sp = _get_score_mmap_local(decomp_dir, li, n_layers)
+                if sp is not None and pc < sp.shape[1]:
+                    slab[li] = sp[:, pc]
+            f.write(slab.tobytes())
+            if (pc + 1) % 50 == 0:
+                print(f"    PC {pc+1}/{K}", file=sys.stderr)
+    print(f"  PC-major index: {K} PCs × {total_layers} layers × {n_sample} tokens = "
+          f"{(16 + K * pc_stride) / (1024*1024):.0f}MB", file=sys.stderr)
+
     # === Transposed per-token neuron index: [N_tokens × N_layers × intermediate] float16 ===
     if mlp_dir.exists() and n_layers > 0:
         # Infer intermediate size from first gate file

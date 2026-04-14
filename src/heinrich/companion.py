@@ -489,15 +489,35 @@ def _token_layer_scores(mri_path: str, token: int, layer: int) -> bytes | dict:
 def _pc_full(mri_path: str, pc: int) -> bytes | dict:
     """One PC, all tokens, all layers. Returns float16 [nLayers × nTokens].
     ~3.1MB for SmolLM2-135M (32 layers × 48660 tokens × 2 bytes).
+
+    Uses PC-major index (pc_scores.bin) for single-seek O(1) reads.
+    Falls back to per-layer mmaps if index doesn't exist.
     """
     decomp = Path(mri_path) / "decomp"
+
+    # Fast path: PC-major index — one seek, one sequential read
+    pc_idx_path = decomp / "pc_scores.bin"
+    if pc_idx_path.exists():
+        import struct as _st
+        with open(pc_idx_path, 'rb') as f:
+            hdr = f.read(16)
+            magic, n_layers, n_tok, full_k = _st.unpack('<4sIII', hdr)
+            if magic == b'PCSC' and pc < full_k:
+                stride = n_layers * n_tok * 2
+                f.seek(16 + pc * stride)
+                result = np.frombuffer(f.read(stride), dtype=np.float16).reshape(n_layers, n_tok)
+                header = _st.pack('<III', n_layers, n_tok, pc)
+                return header + result.tobytes()
+            elif magic == b'PCSC' and pc >= full_k:
+                return {"error": f"PC {pc} out of range (max {full_k-1})"}
+
+    # Slow path: gather from per-layer mmaps (1.5M page faults on USB)
     meta_path = decomp / "meta.json"
     if not meta_path.exists():
         return {"error": "No decomposition"}
     meta = json.loads(meta_path.read_text())
     n_real = meta.get("n_real_layers", meta["n_layers"])
-    n_total = n_real + 2  # + emb + lmh
-    # Get token count and validate PC from first available layer
+    n_total = n_real + 2
     first = _get_score_mmap(mri_path, 0)
     if first is None:
         return {"error": "No score data"}
