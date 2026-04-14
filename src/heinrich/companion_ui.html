@@ -579,8 +579,10 @@ let _brCenterPair=[0,1];// the focused PC pair
 let _brCells=[];// [{pa,pb,cx,cy,radius}] — cell positions in the scene
 
 function _brComputeCells(){
-  const [ca,cb]=_brCenterPair;
-  const pcA=_brPanels[0].focusPC,pcB=_brPanels[1].focusPC;
+  // Build neighborhoods around BOTH vpA pair and vpB pair
+  const [aA,aB]=vpPairs[0],[bA,bB]=vpPairs[2];
+  const cA=[Math.min(aA,aB),Math.max(aA,aB)];
+  const cB=[Math.min(bA,bB),Math.max(bA,bB)];
   _brCells=[];
   const R=5;
   const added=new Set();
@@ -591,30 +593,34 @@ function _brComputeCells(){
     const key=`${a},${b}`;if(added.has(key))return;added.add(key);
     _brCells.push({pa:a,pb:b,ring});
   };
-  // Neighborhood around the selected pair
-  addCell(ca,cb,0);
+  // Cluster around vpA pair
+  addCell(cA[0],cA[1],0);
   for(let r=1;r<=R;r++)for(let d=-r;d<=r;d++)for(let e=-r;e<=r;e++){
     if(Math.max(Math.abs(d),Math.abs(e))!==r)continue;
-    addCell(ca+d,cb+e,r);
+    addCell(cA[0]+d,cA[1]+e,r);
   }
-  // Also add neighborhoods around each focus PC if far from selected pair
-  [pcA,pcB].forEach(pc=>{if(pc<0)return;
-    for(let d=-R;d<=R;d++)for(let e=d+1;e<=d+R+1;e++)addCell(pc+d,pc+e,Math.abs(d));
-  });
-  // Position cells: radial around the selected pair at origin
+  // Cluster around vpB pair (overlaps naturally when close)
+  addCell(cB[0],cB[1],0);
+  for(let r=1;r<=R;r++)for(let d=-r;d<=r;d++)for(let e=-r;e<=r;e++){
+    if(Math.max(Math.abs(d),Math.abs(e))!==r)continue;
+    addCell(cB[0]+d,cB[1]+e,r);
+  }
+  // Position ALL cells relative to vpA center (origin)
   _brCells.forEach(c=>{
-    const dx=c.pa-Math.min(ca,cb),dy=c.pb-Math.max(ca,cb);
+    const dx=c.pa-cA[0],dy=c.pb-cA[1];
     c.cx=(dy-dx)*_SP*0.8;
     c.cy=-(dy+dx)*_SP*0.8;
     c.rad=c.ring===0?_BR_RAD*1.8:c.ring===1?_BR_RAD*1.2:_BR_RAD*0.8;
   });
+  // Camera centers: panel 0 = vpA cell (origin), panel 1 = vpB cell offset
+  _brPanels[0]._cx=0;_brPanels[0]._cy=0;
+  const dxB=cB[0]-cA[0],dyB=cB[1]-cA[1];
+  _brPanels[1]._cx=(dyB-dxB)*_SP*0.8;_brPanels[1]._cy=-(dyB+dxB)*_SP*0.8;
 }
 
 function buildBrowser(){
   _disposeScene(brSc);
   _brOverlay=[];_brMxCache={};_brLayers=[];
-  _brPanels[0].focusPC=vpPairs[0][0];_brPanels[1].focusPC=vpPairs[0][1];
-  _brCenterPair=[Math.min(vpPairs[0][0],vpPairs[0][1]),Math.max(vpPairs[0][0],vpPairs[0][1])];
   _brComputeCells();
   _brN=_brCells.length;
   _brWinStart=0;// not used in radial mode
@@ -651,20 +657,16 @@ function buildBrowser(){
     brSc.add(pts);_brLayers.push({pts,layer:l,origPos:origPos.subarray(0,idx*3),tokMap:tokMap.subarray(0,idx)});
   }
   _brBuilt=true;_updateBrowserLayer();_updateBrowserOverlay();
-  // Position each panel's camera on its focus PC's neighborhood
-  _brPanels[0].focusPC=vpPairs[0][0];_brPanels[1].focusPC=vpPairs[0][1];
   _brFocusPanels();
 }
 function _brFocusPanels(){
+  const pairA=vpPairs[0],pairB=vpPairs[2];
   _brPanels.forEach((p,pi)=>{
-    const pc=p.focusPC;if(pc<0)return;
-    // Average position of all cells involving this PC
-    let sx=0,sy=0,n=0;
-    _brCells.forEach(c=>{if(c.pa===pc||c.pb===pc){sx+=c.cx;sy+=c.cy;n++;}});
-    const cx=n?sx/n:0,cy=n?sy/n:0,tz=cL*_ZSP;
+    const cx=p._cx||0,cy=p._cy||0,tz=cL*_ZSP;
     p.cam.position.set(cx,cy,tz+15);p.ctl.target.set(cx,cy,tz);p.ctl.update();
+    const pair=pi===0?pairA:pairB;
     const lbl=document.getElementById(pi===0?'brLblA':'brLblB');
-    if(lbl)lbl.textContent=`PC${pc}  click=vpA  R-click=vpB`;
+    if(lbl)lbl.textContent=`PC${pair[0]}×PC${pair[1]}`;
   });
 }
 
@@ -870,13 +872,13 @@ _brPanels.forEach((p,pi)=>{
       _pcsHoverPC=cell.a;_updatePCSDots();
     }else{
       _brHoverBox.visible=false;_brHoverBox.scale.set(1,1,1);tip.style.display='none';
-      const lbl=document.getElementById(pi===0?'brLblA':'brLblB');if(lbl)lbl.textContent=`PC${p.focusPC>=0?p.focusPC:'—'}  click=vpA  R-click=vpB`;
+      const lbl=document.getElementById(pi===0?'brLblA':'brLblB');if(lbl)lbl.textContent=`PC${vpPairs[pi===0?0:2].join('×PC')}`;
       if(_pcsHoverPC>=0){_pcsHoverPC=-1;_updatePCSDots();}
     }
     _markDirty();
   });
   p.el.addEventListener('mouseleave',()=>{_brHoverBox.visible=false;_brHoverBox.scale.set(1,1,1);tip.style.display='none';_brClearHighlight();_brHoverCell=null;
-    const lbl=document.getElementById(pi===0?'brLblA':'brLblB');if(lbl)lbl.textContent=`PC${p.focusPC>=0?p.focusPC:'—'}  click=vpA  R-click=vpB`;
+    const lbl=document.getElementById(pi===0?'brLblA':'brLblB');if(lbl)lbl.textContent=`PC${vpPairs[pi===0?0:2].join('×PC')}`;
     if(_pcsHoverPC>=0){_pcsHoverPC=-1;_updatePCSDots();}_markDirty();});
   p.el.addEventListener('pointerdown',e=>{_bdx=e.clientX;_bdy=e.clientY;});
   p.el.addEventListener('pointerup',e=>{if(Math.abs(e.clientX-_bdx)+Math.abs(e.clientY-_bdy)>5)return;
