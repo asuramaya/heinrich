@@ -1480,6 +1480,9 @@ let _pcsMeshA=null,_pcsMeshB=null;
 let _pcsDotsA=null,_pcsDotsB=null;
 let _pcsNK=0,_pcsScale=1;
 let _pcsHoverPC=-1;
+let _pcsLayerLine=null;// current-layer indicator line
+let _pcsVarLine=null;// variance envelope line
+let _pcsTicks=null;// PC index tick marks
 // Full PCA data per token: Float32Array [n_layers × full_K]
 let _pcsFullA=null,_pcsFullB=null;
 let _pcsFullK=0,_pcsFullNL=0;
@@ -1677,6 +1680,62 @@ function _buildPCSSpectrum(){
   [_pcsMeshB,_pcsDotsB]=_ensureSpec(_pcsMeshB,_pcsDotsB,0x4477AA);
   _fillSpec(_pcsMeshA,_pcsDotsA,_pcsFullA,pinnedToken,0xFF6644);
   _fillSpec(_pcsMeshB,_pcsDotsB,_pcsFullB,pinnedTokenB,0x4477AA);
+  // --- Navigational scaffolding ---
+  const xSpan=2.4, zSpan=3.0;
+  const nL_pcs=_pcsFullNL||_nRealLayers;
+
+  // 1. Variance envelope — line showing variance decay across PCs
+  if(_pcsVarLine){_pcsSc.remove(_pcsVarLine);_pcsVarLine.geometry.dispose();_pcsVarLine.material.dispose();_pcsVarLine=null;}
+  if(_layerVar[cL]){
+    const vPts=[];
+    for(let pc=0;pc<_pcsNK;pc++){
+      const x=(pc/(_pcsNK-1||1))*xSpan-xSpan/2;
+      const v=_layerVar[cL]?.[pc]||0;
+      vPts.push(new THREE.Vector3(x,Math.sqrt(v)*3,0));// sqrt for visual compression
+    }
+    if(vPts.length>1){
+      const g=new THREE.BufferGeometry().setFromPoints(vPts);
+      _pcsVarLine=new THREE.Line(g,new THREE.LineBasicMaterial({color:0x333333,transparent:true,opacity:0.5}));
+      _pcsVarLine.frustumCulled=false;_pcsSc.add(_pcsVarLine);
+    }
+  }
+
+  // 2. Current layer indicator — horizontal line across all PCs at cL's Z
+  if(!_pcsLayerLine){
+    const lg=new THREE.BufferGeometry();
+    lg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(6),3));
+    _pcsLayerLine=new THREE.Line(lg,new THREE.LineBasicMaterial({color:0x444444,transparent:true,opacity:0.4}));
+    _pcsLayerLine.frustumCulled=false;_pcsSc.add(_pcsLayerLine);
+  }
+
+  // 3. PC index ticks — vertical marks at round PC numbers
+  if(_pcsTicks){_pcsTicks.forEach(t=>{_pcsSc.remove(t);t.geometry.dispose();t.material.dispose();});}_pcsTicks=[];
+  const tickInterval=_pcsNK>200?100:_pcsNK>50?25:10;
+  for(let pc=0;pc<_pcsNK;pc+=tickInterval){
+    const x=(pc/(_pcsNK-1||1))*xSpan-xSpan/2;
+    const pts=[new THREE.Vector3(x,-0.02,-zSpan/2),new THREE.Vector3(x,0.02,-zSpan/2)];
+    const g=new THREE.BufferGeometry().setFromPoints(pts);
+    const l=new THREE.Line(g,new THREE.LineBasicMaterial({color:0x555555}));
+    l.frustumCulled=false;_pcsSc.add(l);_pcsTicks.push(l);
+  }
+
+  // 4. Layer-colored background: color trail points by depth
+  [_pcsMeshA,_pcsMeshB].forEach((mesh,mi)=>{
+    if(!mesh)return;
+    const col=mesh.geometry.attributes.color.array;
+    const baseHex=mi===0?0xFF6644:0x4477AA;
+    const cr=((baseHex>>16)&0xFF)/255,cg=((baseHex>>8)&0xFF)/255,cb=(baseHex&0xFF)/255;
+    for(let l=0;l<nL_pcs;l++){
+      const lFrac=l/(nL_pcs-1||1);// 0=first layer, 1=last
+      const bright=0.04+lFrac*0.12;// deeper layers slightly brighter
+      for(let pc=0;pc<_pcsNK;pc++){
+        const i=l*_pcsNK+pc;if(i*3+2>=col.length)break;
+        col[i*3]=cr*bright;col[i*3+1]=cg*bright;col[i*3+2]=cb*bright;
+      }
+    }
+    mesh.geometry.attributes.color.needsUpdate=true;
+  });
+
   _updatePCSDots();
   const lbl=document.getElementById('pcsLabel');
   if(lbl)lbl.textContent=`PC Spectrum · ${_pcsNK} PCs · click=set A, shift=set B`;
@@ -1713,6 +1772,22 @@ function _updatePCSDots(){
     dots.geometry.attributes.position.needsUpdate=true;
     dots.geometry.attributes.color.needsUpdate=true;
   });
+  // Update layer indicator line position
+  if(_pcsLayerLine){
+    const lp=_pcsLayerLine.geometry.attributes.position.array;
+    lp[0]=-xSpan/2;lp[1]=0;lp[2]=z;
+    lp[3]=xSpan/2;lp[4]=0;lp[5]=z;
+    _pcsLayerLine.geometry.attributes.position.needsUpdate=true;
+  }
+  // Update variance envelope to current layer
+  if(_pcsVarLine&&_layerVar[cL]){
+    const vp=_pcsVarLine.geometry.attributes.position.array;
+    for(let pc=0;pc<_pcsNK&&pc*3+2<vp.length;pc++){
+      const v=_layerVar[cL]?.[pc]||0;
+      vp[pc*3+1]=Math.sqrt(v)*3;vp[pc*3+2]=z;
+    }
+    _pcsVarLine.geometry.attributes.position.needsUpdate=true;
+  }
   _markDirty();
 }
 
