@@ -1124,8 +1124,10 @@ function _rebuildInternals(vi,pair,needsRebuild){
   const angles=[];for(let mi=0;mi<nMat;mi++)angles.push(mi*(2*Math.PI/nMat));
 
   // Alignment magnitude: max(al[pcA], al[pcB]) as petal length
+  // Clamp to real layers — virtual layers have no weight alignment data
   function _petalLen(l,mi){
-    const al=_wlData[l]?.matrices?.[mi]?.alignment||[];
+    const rl=l>=_nRealLayers?(l===_nRealLayers?0:_nRealLayers-1):l;
+    const al=_wlData[rl]?.matrices?.[mi]?.alignment||[];
     const vA=al[pcA]||0,vB=al[pcB]||0;
     return Math.sqrt(vA*vA+vB*vB);
   }
@@ -1136,7 +1138,9 @@ function _rebuildInternals(vi,pair,needsRebuild){
     lv._layerRing=new THREE.Mesh(rGeo,new THREE.MeshBasicMaterial({color:0x888888,transparent:true,opacity:0.5,side:THREE.DoubleSide}));
     lv._layerRing.frustumCulled=false;lv.sc.add(lv._layerRing);
   }
-  const cZ=(cL/(_nRealLayers-1))*zSpan-zSpan/2;
+  // Clamp to real layer range — virtual layers (emb/lmh) map to first/last
+  const _clampL=cL>=_nRealLayers?(cL===_nRealLayers?0:_nRealLayers-1):cL;
+  const cZ=(_clampL/(_nRealLayers-1))*zSpan-zSpan/2;
   lv._layerRing.position.z=cZ;
 
   // --- Current-layer petal dots (bright, large) ---
@@ -1188,13 +1192,14 @@ function _rebuildInternals(vi,pair,needsRebuild){
   // --- Token markers + trajectories: same style as main viewports ---
   // Position: angle=atan2(scoreB,scoreA), radius scaled to petal range
   function _tokRadialPos(ti,l){
-    const sA=_getScore(l<_nRealLayers?l:0,ti,pcA);
-    const sB=_getScore(l<_nRealLayers?l:0,ti,pcB);
-    let maxP=0.001;for(let mi=0;mi<nMat;mi++)maxP=Math.max(maxP,_petalLen(l<_nRealLayers?l:0,mi));
+    const rl=l>=_nRealLayers?(l===_nRealLayers?0:_nRealLayers-1):l;
+    const sA=_getScore(rl,ti,pcA);
+    const sB=_getScore(rl,ti,pcB);
+    let maxP=0.001;for(let mi=0;mi<nMat;mi++)maxP=Math.max(maxP,_petalLen(rl,mi));
     const mag=Math.sqrt(sA*sA+sB*sB);
     const angle=Math.atan2(sB,sA);
     const r=Math.min(maxP*1.2,mag*0.01);
-    const z=(l/(_nRealLayers-1))*zSpan-zSpan/2;
+    const z=(rl/(_nRealLayers-1))*zSpan-zSpan/2;
     return[Math.cos(angle)*r,Math.sin(angle)*r,z];
   }
   // Markers (current layer)
@@ -1227,9 +1232,8 @@ function _rebuildInternals(vi,pair,needsRebuild){
   [[pinnedToken,lv._tokPathA],[pinnedTokenB,lv._tokPathB]].forEach(([ti,path])=>{
     if(ti<0){path.visible=false;return;}
     path.visible=true;
-    // Include all layers in model order (emb → L0...LN → lmh)
-    const seq=_layerSeq.length?_layerSeq:[...Array(_nRealLayers).keys()];
-    const pts=[];for(const l of seq){const p=_tokRadialPos(ti,l);pts.push(new THREE.Vector3(p[0],p[1],p[2]));}
+    // Real layers only — weight alignment data doesn't exist for emb/lmh
+    const pts=[];for(let l=0;l<_nRealLayers;l++){const p=_tokRadialPos(ti,l);pts.push(new THREE.Vector3(p[0],p[1],p[2]));}
     path.geometry.dispose();path.geometry=new THREE.BufferGeometry().setFromPoints(pts);
   });
 
