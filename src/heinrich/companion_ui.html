@@ -1071,13 +1071,46 @@ function _rebuildWeightLines(){
 function _updateInternalsValues(lv,pcA,pcB){
   if(!lv._legBtns||!_wlData)return;
   const nMat=_wlData[0]?.matrices?.length||0;
+  // Compute correlation between each matrix's alignment curve and token A's trajectory
+  const _corrWith=pinnedToken>=0?_computeCorrelations(pcA,pcB,nMat):null;
   for(let mi=0;mi<nMat;mi++){
     const btn=lv._legBtns[mi];if(!btn)continue;
     const al=_wlData[cL]?.matrices?.[mi]?.alignment||[];
     const vA=(al[pcA]||0),vB=(al[pcB]||0);
     const mag=Math.sqrt(vA*vA+vB*vB);
-    btn.textContent=`${_WL_NAMES[mi]} ${mag.toFixed(2)}`;
+    let txt=`${_WL_NAMES[mi]} ${mag.toFixed(2)}`;
+    if(_corrWith)txt+=` r${_corrWith[mi]>=0?'+':''}${_corrWith[mi].toFixed(2)}`;
+    btn.textContent=txt;
   }
+}
+function _computeCorrelations(pcA,pcB,nMat){
+  // Pearson correlation between each matrix's alignment magnitude curve
+  // and the pinned token A's radial distance curve across layers
+  if(pinnedToken<0||!_wlData||_nRealLayers<3)return null;
+  const corrs=[];
+  // Token's radial distance at each layer
+  const tokR=[];
+  for(let l=0;l<_nRealLayers;l++){
+    const sA=_getScore(l,pinnedToken,pcA),sB=_getScore(l,pinnedToken,pcB);
+    tokR.push(Math.sqrt(sA*sA+sB*sB));
+  }
+  const tmean=tokR.reduce((s,v)=>s+v,0)/_nRealLayers;
+  for(let mi=0;mi<nMat;mi++){
+    const alR=[];
+    for(let l=0;l<_nRealLayers;l++){
+      const al=_wlData[l]?.matrices?.[mi]?.alignment||[];
+      const vA=al[pcA]||0,vB=al[pcB]||0;
+      alR.push(Math.sqrt(vA*vA+vB*vB));
+    }
+    const amean=alR.reduce((s,v)=>s+v,0)/_nRealLayers;
+    let num=0,da=0,dt=0;
+    for(let l=0;l<_nRealLayers;l++){
+      const a=alR[l]-amean,t=tokR[l]-tmean;
+      num+=a*t;da+=a*a;dt+=t*t;
+    }
+    corrs.push(da>0&&dt>0?num/Math.sqrt(da*dt):0);
+  }
+  return corrs;
 }
 function _rebuildInternals(vi,pair,needsRebuild){
   const lv=leftViews[vi];if(!lv)return;
@@ -1194,7 +1227,9 @@ function _rebuildInternals(vi,pair,needsRebuild){
   [[pinnedToken,lv._tokPathA],[pinnedTokenB,lv._tokPathB]].forEach(([ti,path])=>{
     if(ti<0){path.visible=false;return;}
     path.visible=true;
-    const pts=[];for(let l=0;l<_nRealLayers;l++){const p=_tokRadialPos(ti,l);pts.push(new THREE.Vector3(p[0],p[1],p[2]));}
+    // Include all layers in model order (emb → L0...LN → lmh)
+    const seq=_layerSeq.length?_layerSeq:[...Array(_nRealLayers).keys()];
+    const pts=[];for(const l of seq){const p=_tokRadialPos(ti,l);pts.push(new THREE.Vector3(p[0],p[1],p[2]));}
     path.geometry.dispose();path.geometry=new THREE.BufferGeometry().setFromPoints(pts);
   });
 
@@ -1294,8 +1329,8 @@ function _rebuildInternals(vi,pair,needsRebuild){
     const wasIsolated=lv._wlIsolated===sel;
     lv._wlIsolated=wasIsolated?-1:sel;
     // Direct opacity — no rebuild
-    lv._wlTubes.forEach((t,i)=>{t.material.opacity=lv._wlIsolated<0?0.4:(i===lv._wlIsolated?0.7:0.02);});
-    lv._wlTrajs.forEach((t,i)=>{if(i<nMat)t.material.opacity=lv._wlIsolated<0?0.5:(i===lv._wlIsolated?0.8:0.03);});
+    lv._wlTubes.forEach((t,i)=>{t.material.opacity=lv._wlIsolated<0?0.4:(i===lv._wlIsolated?0.7:0.1);});
+    lv._wlTrajs.forEach((t,i)=>{if(i<nMat)t.material.opacity=lv._wlIsolated<0?0.5:(i===lv._wlIsolated?0.8:0.08);});
     // Petal lines
     if(lv._petalLines)lv._petalLines.forEach((l,i)=>{l.material.opacity=lv._wlIsolated<0?0.8:(i===lv._wlIsolated?0.9:0.03);});
     // Update dots directly
@@ -1306,32 +1341,27 @@ function _rebuildInternals(vi,pair,needsRebuild){
       else{const r=_petalLen(cL,mi);const a=angles[mi];dPos[mi*3]=Math.cos(a)*r;dPos[mi*3+1]=Math.sin(a)*r;dPos[mi*3+2]=cZ;}
     }
     lv._layerDots.geometry.attributes.position.needsUpdate=true;
-    // Camera: focus = chart view (layers L→R, alignment bottom→top), unfocus = face-on Z
+    // Camera: focus = chart view, unfocus = restore previous orbit
     if(lv._wlIsolated>=0){
+      // Save current camera before snapping to focus
+      if(!lv._savedCam){lv._savedCam={pos:lv.cam.position.clone(),target:lv.ctl.target.clone(),up:lv.cam.up.clone()};}
       const si=lv._wlIsolated;const fa=angles[si];
-      // Compute tube bounding box for auto-zoom
       let minR=Infinity,maxR=-Infinity;
       for(let l=0;l<_nRealLayers;l++){const r=_petalLen(l,si);minR=Math.min(minR,r);maxR=Math.max(maxR,r);}
       const midR=(minR+maxR)/2;
-      // Target = midpoint of tube (along its radial direction, at z=0)
       const tx=Math.cos(fa)*midR,ty=Math.sin(fa)*midR;
-      // Camera: look from perpendicular direction so depth (Z) maps to screen X
-      // and radial distance maps to screen Y
       const range=Math.max(0.3,(maxR-minR)*1.5+0.5);
       const dist=range*1.8;
-      // Position perpendicular to the petal, elevated above the radial plane
-      const perpX=Math.cos(fa+Math.PI/2);
-      const perpY=Math.sin(fa+Math.PI/2);
-      lv.cam.position.set(tx+perpX*dist,ty+perpY*dist,0);
+      lv.cam.position.set(tx+Math.cos(fa+Math.PI/2)*dist,ty+Math.sin(fa+Math.PI/2)*dist,0);
       lv.ctl.target.set(tx,ty,0);
-      // Rotate the camera so Z axis (layers) maps to horizontal screen axis
-      lv.cam.up.set(Math.cos(fa),Math.sin(fa),0);// "up" = radial direction = screen Y
+      lv.cam.up.set(Math.cos(fa),Math.sin(fa),0);
       lv.ctl.update();
-    }else{
-      // Face-on Z view — look down the depth axis at the flower
-      lv.cam.position.set(0,0,zSpan*0.8);
-      lv.cam.up.set(0,1,0);// reset up vector
-      lv.ctl.target.set(0,0,0);lv.ctl.update();
+    }else if(lv._savedCam){
+      // Restore camera to position before focus
+      lv.cam.position.copy(lv._savedCam.pos);
+      lv.ctl.target.copy(lv._savedCam.target);
+      lv.cam.up.copy(lv._savedCam.up);
+      lv.ctl.update();lv._savedCam=null;
     }
     _updateInternalsValues(lv,pcA,pcB);
     lv._legBtns.forEach((s,i)=>{if(s)s.style.opacity=lv._wlIsolated<0||i===lv._wlIsolated?'0.9':'0.3';});
