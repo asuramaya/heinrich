@@ -20,7 +20,10 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .lvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .lvp .llbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
 /* lv-btn/lv-top/lv-bot removed — .cbtn handles all positioning (bottom-right) */
-.vp{position:relative;overflow:hidden;background:transparent}
+.vp{position:relative;overflow:hidden;background:transparent;border:1px solid transparent;transition:border-color 0.15s}
+.vp.vp-active{border-color:#444}
+.vp.vp-recording{border-color:#ff4444;animation:rec-pulse 0.5s ease-in-out infinite alternate}
+@keyframes rec-pulse{from{border-color:#ff4444}to{border-color:#661111}}
 .vp .axes{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
 .vp .info{position:absolute;top:3px;left:4px;font-size:9px;pointer-events:none;z-index:2}
 .vp .info .t{font-weight:bold}.vp .info .s{font-weight:bold;margin-left:4px}
@@ -2202,6 +2205,30 @@ function _captureLabel(vi){
 function _captureFilename(vi,suffix){
   return`${model}_${mode}_L${String(cL).padStart(2,'0')}_${_captureLabel(vi)}.${suffix}`;
 }
+// VP selection highlight
+function _setActiveVP(vi){
+  document.querySelectorAll('.vp').forEach(el=>el.classList.remove('vp-active'));
+  const idx=parseInt(vi);if(!isNaN(idx)&&views[idx])views[idx].el.classList.add('vp-active');
+}
+views.forEach((v,i)=>{v.el.addEventListener('pointerenter',()=>{_lastVP=i;_setActiveVP(i);});});
+
+// Text overlay for captures
+function _drawOverlay(ctx,w,h,vi,layer){
+  ctx.font=`bold ${Math.round(h*0.025)}px monospace`;ctx.textBaseline='top';
+  const pad=Math.round(w*0.01);
+  // Top-left: model + layer
+  ctx.fillStyle='rgba(255,255,255,0.85)';
+  ctx.fillText(`${model} ${mode} L${String(layer).padStart(2,'0')}`,pad,pad);
+  // Top-right: PC axes
+  const v=typeof vi==='number'&&views[vi]?views[vi]:null;
+  if(v){const ax=`PC${v.pcX} × PC${v.pcY} × PC${v.pcZ}`;const m=ctx.measureText(ax);ctx.fillText(ax,w-m.width-pad,pad);}
+  // Bottom: pinned tokens
+  ctx.font=`${Math.round(h*0.02)}px monospace`;
+  let y=h-pad-Math.round(h*0.025);
+  if(pinnedTokenB>=0){ctx.fillStyle='#4477AA';ctx.fillText(`B: ${texts[pinnedTokenB]||'?'}  ${scripts[pinnedTokenB]}  #${pinnedTokenB}`,pad,y);y-=Math.round(h*0.028);}
+  if(pinnedToken>=0){ctx.fillStyle='#FF6644';ctx.fillText(`A: ${texts[pinnedToken]||'?'}  ${scripts[pinnedToken]}  #${pinnedToken}`,pad,y);}
+}
+
 function captureViewport(sc,cam,el,vi,scale){
   scale=scale||3;
   const w=el.clientWidth*scale,h=el.clientHeight*scale;
@@ -2209,13 +2236,87 @@ function captureViewport(sc,cam,el,vi,scale){
   tmp.setSize(w,h);tmp.setClearColor(sc.background||0x0a0a0a);tmp.clear();
   cam.aspect=w/h;cam.updateProjectionMatrix();
   tmp.render(sc,cam);
-  tmp.domElement.toBlob(blob=>{
+  // Composite: WebGL render + text overlay
+  const cv2=document.createElement('canvas');cv2.width=w;cv2.height=h;
+  const ctx=cv2.getContext('2d');
+  ctx.drawImage(tmp.domElement,0,0);
+  _drawOverlay(ctx,w,h,vi,cL);
+  cv2.toBlob(blob=>{
     const a=document.createElement('a');a.href=URL.createObjectURL(blob);
     a.download=_captureFilename(vi,'png');a.click();
     URL.revokeObjectURL(a.href);tmp.dispose();
     cam.aspect=el.clientWidth/el.clientHeight;cam.updateProjectionMatrix();
   });
 }
+
+// --- GIF encoder (inline, no dependencies) ---
+class GIFEnc{
+  constructor(w,h){this.w=w;this.h=h;this.frames=[];this._pal=this._buildPal();this._cache=new Map();}
+  _buildPal(){
+    const p=[];
+    // Grayscale ramp (0-15)
+    for(let i=0;i<16;i++){const v=Math.round(i*17);p.push(v,v,v);}
+    // Script colors + pin colors
+    const c=[[0x44,0x77,0xAA],[0xEE,0x66,0x77],[0x22,0x88,0x33],[0xCC,0xBB,0x44],[0x66,0xCC,0xEE],[0xAA,0x33,0x77],[0x99,0x99,0x99],[0x44,0xBB,0x99],[0xEE,0x88,0x66],[0xFF,0x66,0x44],[0xFF,0xFF,0xFF],[0xFF,0x44,0x44],[0x44,0xFF,0x44],[0x33,0x33,0x66],[0x66,0x33,0x33],[0x33,0x66,0x33]];
+    c.forEach(([r,g,b])=>p.push(r,g,b));
+    // 6×6×6 color cube to fill remaining
+    for(let r=0;r<6;r++)for(let g=0;g<6;g++)for(let b=0;b<6;b++){if(p.length<768)p.push(r*51,g*51,b*51);}
+    while(p.length<768)p.push(0,0,0);
+    return new Uint8Array(p.slice(0,768));
+  }
+  _near(r,g,b){
+    const k=(r<<16)|(g<<8)|b;const c=this._cache.get(k);if(c!==undefined)return c;
+    let best=0,bd=Infinity;const p=this._pal;
+    for(let i=0;i<256;i++){const dr=r-p[i*3],dg=g-p[i*3+1],db=b-p[i*3+2];const d=dr*dr+dg*dg+db*db;if(d<bd){bd=d;best=i;if(d===0)break;}}
+    this._cache.set(k,best);return best;
+  }
+  addFrame(rgba,delay){
+    const n=this.w*this.h;const idx=new Uint8Array(n);
+    for(let i=0;i<n;i++)idx[i]=this._near(rgba[i*4],rgba[i*4+1],rgba[i*4+2]);
+    this.frames.push({idx,delay:delay||10});
+  }
+  _lzw(data){
+    const minCode=8,clear=256,eoi=257;let codeSize=9,next=258;
+    const table=new Map();for(let i=0;i<256;i++)table.set(String(i),i);
+    const out=[];let bits=0,nb=0;
+    const emit=c=>{bits|=c<<nb;nb+=codeSize;while(nb>=8){out.push(bits&0xFF);bits>>=8;nb-=8;}};
+    emit(clear);let w=String(data[0]);
+    for(let i=1;i<data.length;i++){
+      const k=String(data[i]),wk=w+','+k;
+      if(table.has(wk)){w=wk;}
+      else{emit(table.get(w));if(next<4096){table.set(wk,next++);if(next>(1<<codeSize)&&codeSize<12)codeSize++;}
+      else{emit(clear);table.clear();for(let j=0;j<256;j++)table.set(String(j),j);next=258;codeSize=9;}
+      w=k;}
+    }
+    emit(table.get(w));emit(eoi);if(nb>0)out.push(bits&0xFF);
+    return new Uint8Array(out);
+  }
+  encode(){
+    const w=this.w,h=this.h,p=this._pal;
+    const parts=[];const u8=(...v)=>new Uint8Array(v);
+    const u16le=v=>new Uint8Array([v&0xFF,(v>>8)&0xFF]);
+    // Header + LSD
+    parts.push(new TextEncoder().encode('GIF89a'));
+    parts.push(u16le(w),u16le(h),u8(0xF7,0,0));// GCT flag, 256 colors, bg=0
+    parts.push(p);// Global Color Table
+    // NETSCAPE looping extension
+    parts.push(u8(0x21,0xFF,0x0B));parts.push(new TextEncoder().encode('NETSCAPE2.0'));
+    parts.push(u8(3,1,0,0,0));// loop forever
+    for(const fr of this.frames){
+      // Graphic Control Extension
+      parts.push(u8(0x21,0xF9,4,0));parts.push(u16le(fr.delay));parts.push(u8(0,0));
+      // Image Descriptor
+      parts.push(u8(0x2C));parts.push(u16le(0),u16le(0),u16le(w),u16le(h),u8(0));
+      // LZW data
+      const lzw=this._lzw(fr.idx);parts.push(u8(8));// min code size
+      for(let i=0;i<lzw.length;i+=255){const chunk=lzw.slice(i,i+255);parts.push(u8(chunk.length));parts.push(chunk);}
+      parts.push(u8(0));// block terminator
+    }
+    parts.push(u8(0x3B));// trailer
+    return new Blob(parts,{type:'image/gif'});
+  }
+}
+
 let _recording=false;
 async function recordViewport(sc,cam,el,vi,fps){
   if(_recording)return;_recording=true;
@@ -2223,30 +2324,32 @@ async function recordViewport(sc,cam,el,vi,fps){
   const w=el.clientWidth*scale,h=el.clientHeight*scale;
   const tmp=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});
   tmp.setSize(w,h);
-  const stream=tmp.domElement.captureStream(0);
-  const rec=new MediaRecorder(stream,{mimeType:'video/webm;codecs=vp9',videoBitsPerSecond:5000000});
-  const chunks=[];
-  rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};
+  const cv2=document.createElement('canvas');cv2.width=w;cv2.height=h;
+  const ctx=cv2.getContext('2d');
+  const gif=new GIFEnc(w,h);
   const recBtn=document.getElementById('lrec');
   if(recBtn)recBtn.style.color='#ff4444';
-  rec.start();
+  el.classList.add('vp-recording');
   const startL=cL;
+  const delay=Math.round(100/fps);// GIF delay in 1/100th seconds
   for(let l=0;l<_nRealLayers;l++){
     setLayer(l,true);
     cam.aspect=w/h;cam.updateProjectionMatrix();
     tmp.render(sc,cam);
-    stream.getVideoTracks()[0].requestFrame();
-    await new Promise(r=>setTimeout(r,1000/fps));
+    // Composite: 3D render + text overlay
+    ctx.drawImage(tmp.domElement,0,0);
+    _drawOverlay(ctx,w,h,vi,l);
+    gif.addFrame(ctx.getImageData(0,0,w,h).data,delay);
+    await new Promise(r=>setTimeout(r,16));// yield to keep UI alive
   }
-  rec.stop();
-  await new Promise(r=>{rec.onstop=r;});
-  const blob=new Blob(chunks,{type:'video/webm'});
+  const blob=gif.encode();
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-  a.download=_captureFilename(vi,'webm');a.click();
+  a.download=`${model}_${mode}_${_captureLabel(vi)}.gif`;a.click();
   URL.revokeObjectURL(a.href);tmp.dispose();
   cam.aspect=el.clientWidth/el.clientHeight;cam.updateProjectionMatrix();
   setLayer(startL);
   _recording=false;
+  el.classList.remove('vp-recording');
   if(recBtn)recBtn.style.color='#664444';
 }
 // Wire [S] buttons on all .cbtn containers
