@@ -405,6 +405,42 @@ def _pc_column_cached(mri_path: str, pc: int, layer: int) -> bytes | dict:
     return arr[:, pc].astype(np.float16).tobytes()
 
 
+def _token_hover(mri_path: str, token: int, layer: int) -> bytes | dict:
+    """Combined hover data: PC scores + neuron activations for one token at one layer.
+
+    Returns: [4B K][4B inter][4B layer] [float16 × K] [float16 × inter]
+    ~4KB total. One fetch feeds both spectrum and neuron viewports.
+    """
+    import struct
+    # PC scores
+    score_arr = _get_score_mmap(mri_path, layer)
+    if score_arr is None:
+        return {"error": f"No scores for layer {layer}"}
+    if token >= score_arr.shape[0]:
+        return {"error": f"Token {token} out of range (max {score_arr.shape[0]-1})"}
+    K = score_arr.shape[1]
+    pc_row = score_arr[token].astype(np.float16)
+
+    # Neuron activations (gate × up at this layer)
+    entry = _get_mlp_mmaps(mri_path)
+    inter = 0
+    neuron_row = np.array([], dtype=np.float16)
+    if entry:
+        n_layers, intermediate, gates, ups = entry
+        inter = intermediate
+        if layer < n_layers and gates[layer] is not None and token < gates[layer].shape[0]:
+            gt = gates[layer][token].astype(np.float32)
+            if ups[layer] is not None:
+                neuron_row = (gt * ups[layer][token].astype(np.float32)).astype(np.float16)
+            else:
+                neuron_row = gt.astype(np.float16)
+        else:
+            neuron_row = np.zeros(intermediate, dtype=np.float16)
+
+    header = struct.pack('<III', K, inter, layer)
+    return header + pc_row.tobytes() + neuron_row.tobytes()
+
+
 def _token_layer_scores(mri_path: str, token: int, layer: int) -> bytes | dict:
     """All PCs for one token at one layer. ~1KB, instant via mmap."""
     arr = _get_score_mmap(mri_path, layer)
@@ -827,6 +863,18 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 layer = int(qs.get('layer', ['0'])[0])
                 mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
                 result = _pc_column_cached(mri_path, pc, layer)
+                if isinstance(result, dict):
+                    self._send_json(result)
+                else:
+                    self._send_bytes(result)
+        elif path.startswith('/api/token-hover/'):
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                token = int(qs.get('token', ['0'])[0])
+                layer = int(qs.get('layer', ['0'])[0])
+                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                result = _token_hover(mri_path, token, layer)
                 if isinstance(result, dict):
                     self._send_json(result)
                 else:

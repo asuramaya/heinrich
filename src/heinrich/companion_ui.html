@@ -275,14 +275,45 @@ function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
   line.geometry.attributes.position.needsUpdate=true;line.visible=true;}
 let _lastDimState=-1;
 function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC)v.mtl.opacity=dim?0.35:0.85;if(vi>=NC&&v.trajGroup){const baseOp=dim?0.08:0.15;v.trajGroup.children.forEach(c=>{if(c.material)c.material.opacity=baseOp;});if(v.trajMarker)v.trajMarker.material.opacity=dim?0.35:0.9;}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible){m.material.opacity=0.95;m.material.size=dim?0.08:0.06;}});}
-let _preloadTimer=0,_preloadTok=-1;
+let _hoverTimer=0,_hoverTok=-1,_hoverLoading='';
+// Unified hover cache: token,layer → {pcScores: Float32Array[K], neurons: Float32Array[inter]}
+const _hoverCache=new Map();
 function highlightToken(idx){hoveredToken=idx;views.forEach((v,vi)=>{const mk=highlightMarkers[vi];if(idx<0){mk.visible=false;hoverPaths[vi].visible=false;return;}mk.visible=true;_positionMarker(mk,v,vi,idx);_buildPathForVP(hoverPaths[vi],v,vi,idx);});_dimAll(idx>=0);
-  // Debounce preloads: only fire after mouse settles 50ms on same token
-  if(idx!==_preloadTok){_preloadTok=idx;clearTimeout(_preloadTimer);
-    if(idx>=0)_preloadTimer=setTimeout(()=>{_updatePCSHover(idx);_nfPreload(idx);},50);
-    else{_updatePCSHover(-1);}
+  if(idx!==_hoverTok){_hoverTok=idx;clearTimeout(_hoverTimer);
+    if(idx>=0)_hoverTimer=setTimeout(()=>_fetchHover(idx),30);
+    else{_updatePCSHover(-1);_nfShowHover(null);}
   }
   _markDirty();}
+function _fetchHover(tokIdx){
+  if(!model||tokIdx<0)return;
+  const key=`${tokIdx},${cL}`;
+  const cached=_hoverCache.get(key);
+  if(cached){_renderHover(tokIdx,cached);return;}
+  if(_hoverLoading===key)return;
+  _hoverLoading=key;
+  const fetchLayer=cL;
+  fetch(`/api/token-hover/${model}/${mode}?token=${tokIdx}&layer=${fetchLayer}`).then(r=>{
+    if(!r.ok)throw new Error(`token-hover ${r.status}`);
+    return r.arrayBuffer();
+  }).then(buf=>{
+    _hoverLoading='';
+    const dv=new DataView(buf);
+    const K=dv.getUint32(0,true),inter=dv.getUint32(4,true),layer=dv.getUint32(8,true);
+    const u16=new Uint16Array(buf,12);
+    const pcScores=new Float32Array(K);for(let j=0;j<K;j++)pcScores[j]=f16(u16[j]);
+    const neurons=new Float32Array(inter);for(let j=0;j<inter;j++)neurons[j]=f16(u16[K+j]);
+    const entry={pcScores,neurons,K,inter,layer};
+    if(_hoverCache.size>256){const first=_hoverCache.keys().next().value;_hoverCache.delete(first);}
+    _hoverCache.set(`${tokIdx},${layer}`,entry);
+    if(_hoverTok===tokIdx&&cL===fetchLayer)_renderHover(tokIdx,entry);
+  }).catch(()=>{_hoverLoading='';});
+  // Speculative: also preload full per-token PCA for instant pin
+  _pcsFetchToken(tokIdx);
+}
+function _renderHover(tokIdx,entry){
+  _renderPCSHoverLayer(tokIdx,entry.pcScores);
+  _nfShowHover(entry.neurons);
+}
 // Unified pin sync — positions all markers in all viewports + delta + prism
 // Called every layer change (including during playback)
 // paths=true rebuilds trajectory paths (skip during playback for perf)
@@ -1258,6 +1289,7 @@ function _buildRV0Variance(){
 let _nfMesh=null;    // Points — current slice dots
 let _nfTrails=null;  // LineSegments — persistence trails
 let _nfMat=null;
+let _nfHoverMesh=null;// Points — hover token neurons (white)
 let _nfInter=0;
 let _nfCols=0,_nfRows=0;
 let _nfActA=null,_nfActB=null;
@@ -1306,6 +1338,14 @@ function _buildRV1Neurons(){
   _nfMesh=new THREE.Points(dotGeo,_nfMat);
   _nfMesh.frustumCulled=false;
   rv.sc.add(_nfMesh);
+  // Hover mesh: white dots for hovered token's neurons
+  const hDotPos=new Float32Array(_nfInter*3);
+  const hDotGeo=new THREE.BufferGeometry();
+  hDotGeo.setAttribute('position',new THREE.BufferAttribute(hDotPos,3));
+  hDotGeo.setDrawRange(0,0);
+  _nfHoverMesh=new THREE.Points(hDotGeo,new THREE.PointsMaterial({size:2.5,color:0xFFFFFF,sizeAttenuation:false,transparent:true,opacity:0.6,depthWrite:false}));
+  _nfHoverMesh.frustumCulled=false;_nfHoverMesh.renderOrder=5;
+  rv.sc.add(_nfHoverMesh);
   window._dbgNF={mesh:_nfMesh,rv,get trails(){return _nfTrails},get actA(){return _nfActA},get actB(){return _nfActB}};
   if(!rv._camSet){rv.cam.position.set(2.0,1.8,2.5);rv.ctl.target.set(0,0,-0.3);rv.ctl.update();rv._camSet=true;}
   rv.built=true;
@@ -1473,25 +1513,27 @@ function _nfUpdateActivations(){
   _nfLoadToken(pinnedToken,'A');
   _nfLoadToken(pinnedTokenB,'B');
 }
-// Speculative preload: fetch neuron data on hover so click-to-pin is instant
-let _nfPreloading=-1;
-function _nfPreload(tokIdx){
-  if(tokIdx<0||!model||_nfPreloading===tokIdx)return;
-  const cacheKey=`${model}/${mode}/${tokIdx}`;
-  if(_nfCache.has(cacheKey))return;// already cached
-  _nfPreloading=tokIdx;
-  fetch(`/api/neuron-field/${model}/${mode}?token=${tokIdx}`).then(r=>{
-    if(!r.ok)return null;const ct=r.headers.get('content-type')||'';if(ct.includes('json'))return null;
-    return r.arrayBuffer();
-  }).then(buf=>{
-    _nfPreloading=-1;
-    if(!buf)return;
-    const u16=new Uint16Array(buf);
-    const f32=new Float32Array(u16.length);
-    for(let i=0;i<u16.length;i++)f32[i]=f16(u16[i]);
-    _nfCache.set(cacheKey,f32);
-  }).catch(()=>{_nfPreloading=-1;});
+// Show hover token's neurons as white dots at current layer
+function _nfShowHover(neurons){
+  if(!_nfHoverMesh||!_nfBaseXY)return;
+  if(!neurons){_nfHoverMesh.geometry.setDrawRange(0,0);_markDirty();return;}
+  const pos=_nfHoverMesh.geometry.attributes.position.array;
+  const z=_nfZPerLayer?_nfZPerLayer[cL]||0:0;
+  let mx=0.001;for(let i=0;i<neurons.length;i++)mx=Math.max(mx,Math.abs(neurons[i]));
+  let cnt=0;
+  for(let n=0;n<Math.min(neurons.length,_nfInter);n++){
+    const v=Math.abs(neurons[n])/mx;
+    if(v<_NF_THRESH)continue;
+    pos[cnt*3]=_nfBaseXY[n*2];
+    pos[cnt*3+1]=_nfBaseXY[n*2+1];
+    pos[cnt*3+2]=z;
+    cnt++;
+  }
+  _nfHoverMesh.geometry.setDrawRange(0,cnt);
+  _nfHoverMesh.geometry.attributes.position.needsUpdate=true;
+  _markDirty();
 }
+// _nfPreload removed — hover uses unified /api/token-hover/ endpoint
 
 let _nfLastLayer=-1;
 function _nfSetLayer(l){if(l===_nfLastLayer)return;_nfLastLayer=l;_nfBuildDots();}
@@ -1518,7 +1560,7 @@ let _pcsTicks=null;// PC index tick marks
 let _pcsHoverMesh=null;// hover token spectrum (current layer only)
 let _pcsHoverTok=-1;// which token the hover mesh shows
 const _pcsHoverCache=new Map();// tokIdx → {nL, fK, data: Float32Array}
-let _pcsHoverLoading=-1;
+// _pcsHoverLoading removed — hover uses unified _hoverCache
 // Full PCA data per token: Float32Array [n_layers × full_K]
 let _pcsFullA=null,_pcsFullB=null;
 let _pcsFullK=0,_pcsFullNL=0;
@@ -1836,38 +1878,14 @@ function _updateTrajDots(){_updatePCSDots();}
 
 // Hover spectrum: lightweight per-layer fetch (~1KB, <1ms on localhost)
 // Fetches all K PCs for one token at current layer only.
-const _pcsLayerCache=new Map();// `${tok},${layer}` → Float32Array[K]
-let _pcsHoverK=0;
-// _pcsHoverLoading: compound key `${tok},${layer}` or -1
+// _pcsLayerCache removed — hover uses unified _hoverCache
+// _updatePCSHover: thin wrapper, uses unified _hoverCache via _fetchHover
 function _updatePCSHover(tokIdx){
   if(!_pcsHoverMesh)return;
   if(tokIdx<0){_pcsHoverMesh.geometry.setDrawRange(0,0);_pcsHoverTok=-1;_markDirty();return;}
   _pcsHoverTok=tokIdx;
-  const cacheKey=`${tokIdx},${cL}`;
-  const cached=_pcsLayerCache.get(cacheKey);
-  if(cached){_renderPCSHoverLayer(tokIdx,cached);return;}
-  // Fetch all K PCs for this token at current layer (~1KB)
-  const loadKey=cacheKey;// includes token AND layer
-  if(_pcsHoverLoading!==loadKey&&model){
-    _pcsHoverLoading=loadKey;
-    const fetchLayer=cL;// capture layer at fetch time
-    fetch(`/api/token-layer/${model}/${mode}?token=${tokIdx}&layer=${fetchLayer}`).then(r=>{
-      if(!r.ok)throw new Error(`token-layer ${r.status}`);
-      return r.arrayBuffer();
-    }).then(buf=>{
-      _pcsHoverLoading=-1;
-      const dv=new DataView(buf);const K=dv.getUint32(0,true);
-      const u16=new Uint16Array(buf,8);
-      const f32=new Float32Array(K);for(let j=0;j<K;j++)f32[j]=f16(u16[j]);
-      _pcsHoverK=K;
-      if(_pcsLayerCache.size>256){const first=_pcsLayerCache.keys().next().value;_pcsLayerCache.delete(first);}
-      _pcsLayerCache.set(`${tokIdx},${fetchLayer}`,f32);
-      // Only render if still hovering this token AND still on the same layer
-      if(_pcsHoverTok===tokIdx&&cL===fetchLayer)_renderPCSHoverLayer(tokIdx,f32);
-    }).catch(()=>{_pcsHoverLoading=-1;});
-    // Speculative: preload full per-token data so click-to-pin is instant
-    _pcsFetchToken(tokIdx);// fires in background, populates _pcsHoverCache
-  }
+  const cached=_hoverCache.get(`${tokIdx},${cL}`);
+  if(cached)_renderPCSHoverLayer(tokIdx,cached.pcScores);
 }
 function _renderPCSHoverLayer(tokIdx,scores){
   if(!_pcsHoverMesh||_pcsHoverTok!==tokIdx)return;
@@ -1910,7 +1928,7 @@ function _updateRVLayer(){
   });
   _nfSetLayer(cL);// neuron field: update current slice
   _updateTrajDots();// trajectory: slide dot along path
-  if(_pcsHoverTok>=0)_updatePCSHover(_pcsHoverTok);// hover spectrum follows layer
+  if(_hoverTok>=0)_fetchHover(_hoverTok);// re-fetch hover data at new layer
 }
 function updateLeftViewports(){
   _updateDeltaPins();
@@ -1986,9 +2004,9 @@ async function loadAll(){
   dm=dmResult;model=newModel;mode=newMode;
   nL=dm.n_layers;_nRealLayers=dm.n_real_layers||nL;
   // Clear all PCA caches on model switch
-  _pcsHoverCache.clear();_pcsLayerCache.clear();_pcFull.clear();_pcMedium.clear();
+  _pcsHoverCache.clear();_hoverCache.clear();_pcFull.clear();_pcMedium.clear();_nfCache.clear();
   _pcsFullA=null;_pcsFullB=null;_pcsFullK=0;_pcsFullNL=0;_pcsScale=0;_pcsNK=0;
-  _pcsLoadingA=-1;_pcsLoadingB=-1;_pcsHoverTok=-1;_pcsHoverLoading=-1;
+  _pcsLoadingA=-1;_pcsLoadingB=-1;_pcsHoverTok=-1;_hoverTok=-1;
 
   // Phase 2: parse scores binary + fetch layer0 metadata in parallel
   const [buf,d0]=await Promise.all([
