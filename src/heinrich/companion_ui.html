@@ -1622,8 +1622,8 @@ async function _pcsLoadFull(tokIdx, slot){
     if(!entry)return;
     _pcsFullNL=entry.nL;_pcsFullK=entry.fK;
     if(slot==='A')_pcsFullA=entry.data;else _pcsFullB=entry.data;
-    // No _buildPCSSpectrum here — caller rebuilds after both slots load
-  }catch(e){console.error('token-pca:',e);}
+  }catch(e){console.error('token-pca:',e);
+  }finally{if(slot==='A')_pcsLoadingA=-1;else _pcsLoadingB=-1;}
 }
 
 function _buildPCSSpectrum(){
@@ -1811,6 +1811,7 @@ function _updateTrajDots(){_updatePCSDots();}
 // Fetches all K PCs for one token at current layer only.
 const _pcsLayerCache=new Map();// `${tok},${layer}` → Float32Array[K]
 let _pcsHoverK=0;
+// _pcsHoverLoading: compound key `${tok},${layer}` or -1
 function _updatePCSHover(tokIdx){
   if(!_pcsHoverMesh)return;
   if(tokIdx<0){_pcsHoverMesh.geometry.setDrawRange(0,0);_pcsHoverTok=-1;_markDirty();return;}
@@ -1819,9 +1820,11 @@ function _updatePCSHover(tokIdx){
   const cached=_pcsLayerCache.get(cacheKey);
   if(cached){_renderPCSHoverLayer(tokIdx,cached);return;}
   // Fetch all K PCs for this token at current layer (~1KB)
-  if(_pcsHoverLoading!==tokIdx&&model){
-    _pcsHoverLoading=tokIdx;
-    fetch(`/api/token-layer/${model}/${mode}?token=${tokIdx}&layer=${cL}`).then(r=>{
+  const loadKey=cacheKey;// includes token AND layer
+  if(_pcsHoverLoading!==loadKey&&model){
+    _pcsHoverLoading=loadKey;
+    const fetchLayer=cL;// capture layer at fetch time
+    fetch(`/api/token-layer/${model}/${mode}?token=${tokIdx}&layer=${fetchLayer}`).then(r=>{
       if(!r.ok)throw new Error(`token-layer ${r.status}`);
       return r.arrayBuffer();
     }).then(buf=>{
@@ -1831,8 +1834,9 @@ function _updatePCSHover(tokIdx){
       const f32=new Float32Array(K);for(let j=0;j<K;j++)f32[j]=f16(u16[j]);
       _pcsHoverK=K;
       if(_pcsLayerCache.size>256){const first=_pcsLayerCache.keys().next().value;_pcsLayerCache.delete(first);}
-      _pcsLayerCache.set(cacheKey,f32);
-      if(_pcsHoverTok===tokIdx)_renderPCSHoverLayer(tokIdx,f32);
+      _pcsLayerCache.set(`${tokIdx},${fetchLayer}`,f32);
+      // Only render if still hovering this token AND still on the same layer
+      if(_pcsHoverTok===tokIdx&&cL===fetchLayer)_renderPCSHoverLayer(tokIdx,f32);
     }).catch(()=>{_pcsHoverLoading=-1;});
   }
 }
@@ -1842,11 +1846,9 @@ function _renderPCSHoverLayer(tokIdx,scores){
   const xSpan=2.4,zSpan=3.0;
   const nL_pcs=_pcsFullNL||_nRealLayers||nL;
   const z=(cL/((nL_pcs-1)||1))*zSpan-zSpan/2;
-  // Scale: match what pinning would produce
-  let mx=0.001;for(let i=0;i<K;i++)mx=Math.max(mx,Math.abs(scores[i]));
-  // Combine with pinned token max for consistent scale
-  [_pcsFullA,_pcsFullB].forEach(fd=>{if(!fd)return;for(let i=0;i<fd.length;i++)mx=Math.max(mx,Math.abs(fd[i]));});
-  const scale=1.2/mx;
+  // Use _pcsScale if available (consistent with pinned dots), else auto-scale
+  let scale=_pcsScale;
+  if(!scale||scale<0.001){let mx=0.001;for(let i=0;i<K;i++)mx=Math.max(mx,Math.abs(scores[i]));scale=1.2/mx;}
   let pos=_pcsHoverMesh.geometry.attributes.position.array;
   if(pos.length<K*3){
     _pcsHoverMesh.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(K*3),3));
@@ -1891,11 +1893,15 @@ function updateLeftViewports(){
   }
 }
 // Rebuild right column neurons/attention when pins change
+let _pinChangeGen=0;
 async function _onPinChange(){
+  const gen=++_pinChangeGen;
   _nfUpdateActivations();// neuron field (async)
-  // Sequential: load A, then B, then rebuild once. No interleaving.
-  await _pcsLoadFull(pinnedToken,'A');
-  await _pcsLoadFull(pinnedTokenB,'B');
+  const tokA=pinnedToken,tokB=pinnedTokenB;// capture at call time
+  await _pcsLoadFull(tokA,'A');
+  if(_pinChangeGen!==gen)return;// superseded by newer pin change
+  await _pcsLoadFull(tokB,'B');
+  if(_pinChangeGen!==gen)return;// superseded by newer pin change
   _buildPCSSpectrum();
 }
 
@@ -1950,6 +1956,10 @@ async function loadAll(){
   if(dmResult.error){document.getElementById('st').textContent=dmResult.error;if(_ld)_ld.style.display='none';return;}
   dm=dmResult;model=newModel;mode=newMode;
   nL=dm.n_layers;_nRealLayers=dm.n_real_layers||nL;
+  // Clear all PCA caches on model switch
+  _pcsHoverCache.clear();_pcsLayerCache.clear();_pcFull.clear();_pcMedium.clear();
+  _pcsFullA=null;_pcsFullB=null;_pcsFullK=0;_pcsFullNL=0;
+  _pcsLoadingA=-1;_pcsLoadingB=-1;_pcsHoverTok=-1;_pcsHoverLoading=-1;
 
   // Phase 2: parse scores binary + fetch layer0 metadata in parallel
   const [buf,d0]=await Promise.all([
@@ -2018,6 +2028,7 @@ async function loadAll(){
   if(pinnedTokenB<0&&prevPinTextB){const idx=texts.indexOf(prevPinTextB);if(idx>=0)pinnedTokenB=idx;}
 
   // Phase 3: show clouds immediately, then build heavy stuff async
+  _initPCSScene();// must be before any hover or setLayer
   _clearBrowserSelBoxes();_lastPK='';// force precompute on first setLayer
   setLayer(_rstL);showPinDetail(pinnedToken);updatePinMarkers();
   document.getElementById('st').textContent=`${model}/${mode} ${nN}tok ${nL}L`;
@@ -2032,7 +2043,6 @@ async function loadAll(){
   try{buildLeftViewports();}catch(e){console.error('left:',e);}
   await _yieldFrame();
   try{buildBrowser();}catch(e){console.error('browser:',e);}
-  try{_initPCSScene();}catch(e){console.error('pcs-init:',e);}
   _markDirty();
 }
 async function init(){const models=await api('models');const sel=document.getElementById('sm');const tM=models.filter(m=>m.architecture==='transformer');const bm={};tM.forEach(m=>{if(!bm[m.model])bm[m.model]=[];bm[m.model].push(m.mode);});Object.keys(bm).sort().forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);});
