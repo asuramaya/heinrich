@@ -212,17 +212,15 @@ def _compute_pca(mri_path: str, n_sample: int = 5000) -> dict:
 
 
 def _load_decomp(mri_path: str, layer: int) -> dict:
-    """Load pre-computed PCA decomposition for a single layer."""
+    """Load decomposition metadata for a layer. No scores (use binary blob)."""
     p = Path(mri_path) / "decomp"
-    scores_path = p / f"L{layer:02d}_scores.npy"
     var_path = p / f"L{layer:02d}_variance.npy"
-    if not scores_path.exists():
+    if not var_path.exists():
         return {"error": f"No decomposition at L{layer}. Run mri-decompose."}
-    scores = np.load(scores_path).astype(np.float32)  # [N, K]
-    variance = np.load(var_path).astype(np.float32)    # [K]
-    # Token metadata — allow_pickle needed for variable-length string arrays in npz
+    variance = np.load(str(var_path)).astype(np.float32)
     meta_mri = json.loads((Path(mri_path) / "metadata.json").read_text())
-    tok = dict(np.load(Path(mri_path) / "tokens.npz", allow_pickle=True))
+    # allow_pickle needed for variable-length string arrays stored by numpy
+    tok = dict(np.load(str(Path(mri_path) / "tokens.npz"), allow_pickle=True))
     meta_decomp = json.loads((p / "meta.json").read_text())
     n_sample = meta_decomp["n_sample"]
     sample_raw = meta_decomp.get("sample_indices")
@@ -234,16 +232,20 @@ def _load_decomp(mri_path: str, layer: int) -> dict:
     scripts = [str(s) for s in tok["scripts"][sample_idx]]
     texts = [str(t) for t in tok["token_texts"][sample_idx]]
     ids = tok["token_ids"][sample_idx].tolist()
+    scores_path = p / f"L{layer:02d}_scores.npy"
+    n_components = len(variance)
+    if scores_path.exists():
+        s = np.load(str(scores_path), mmap_mode='r')
+        n_components = s.shape[1]
     lm = meta_decomp["layers"][layer] if layer < len(meta_decomp["layers"]) else {}
     return {
         "model": meta_mri["model"]["name"],
         "model_dir": Path(mri_path).parent.name,
         "mode": meta_mri.get("capture", {}).get("mode", "?"),
         "layer": layer,
-        "n_tokens": len(scores),
-        "n_components": len(variance),
+        "n_tokens": n_sample,
+        "n_components": n_components,
         "variance": variance.tolist(),
-        "scores": scores.tolist(),
         "scripts": scripts,
         "texts": texts,
         "token_ids": ids,
