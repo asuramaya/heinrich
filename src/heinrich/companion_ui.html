@@ -542,7 +542,8 @@ function updateAllViewports(){
     const _allPCs=new Set();
     for(const[a,b]of vpPairs){_allPCs.add(a);_allPCs.add(b);_allPCs.add(thirdPC(a,b));}
     const lbl=document.getElementById('lv0lbl');if(lbl)lbl.textContent='\u0394 PC'+vpPairs[1][0]+'\u00d7PC'+vpPairs[1][1];
-    // Load all tiers then rebuild
+    // Compute cells FIRST so _ensurePCData loads medium data for the right PCs
+    _brComputeCells();
     _ensurePCData().then(()=>{
       _rebuildClouds();_markDirty();
       for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];updateVP(i,a,b,thirdPC(a,b),cL);}
@@ -2039,7 +2040,7 @@ async function loadAll(){
   await _yieldFrame();
   try{buildLeftViewports();}catch(e){console.error('left:',e);}
   await _yieldFrame();
-  try{buildBrowser();}catch(e){console.error('browser:',e);}
+  try{_brComputeCells();await _ensurePCData();buildBrowser();}catch(e){console.error('browser:',e);}
   _markDirty();
 }
 async function init(){const models=await api('models');const sel=document.getElementById('sm');const tM=models.filter(m=>m.architecture==='transformer');const bm={};tM.forEach(m=>{if(!bm[m.model])bm[m.model]=[];bm[m.model].push(m.mode);});Object.keys(bm).sort().forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);});
