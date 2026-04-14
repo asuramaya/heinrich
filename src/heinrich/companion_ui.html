@@ -656,8 +656,9 @@ function buildBrowser(){
     brSc.add(pts);_brLayers.push({pts,layer:l,origPos:origPos.subarray(0,idx*3),tokMap:tokMap.subarray(0,idx)});
   }
   _brBuilt=true;_updateBrowserLayer();_updateBrowserOverlay();
-  // Focus panel: 0=left click changed vpA, 1=right click changed vpB, undefined=init
-  _brFocusPanels(_brFollow>=0?(_brFollow===0?0:1):undefined);
+  // Left click (slot 0) changes vpA = the origin reference, so ALL positions shift → reset both cameras
+  // Right click (slot 2) only changes vpB → only panel 1 needs to move
+  _brFocusPanels(_brFollow===2?1:undefined);
 }
 function _brFocusPanels(forcePanel){
   const pairA=vpPairs[0],pairB=vpPairs[2];
