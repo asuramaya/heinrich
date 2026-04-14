@@ -1150,11 +1150,61 @@ function _rebuildInternals(vi,pair,needsRebuild){
     lv._petalLines[mi].material.opacity=vis?0.8:0.05;
   }
 
+  // --- Token position dots: where pinned tokens sit in radial PC space ---
+  if(!lv._tokDots){
+    const g=new THREE.BufferGeometry();
+    g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(6),3));// A + B
+    g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(6),3));
+    lv._tokDots=new THREE.Points(g,new THREE.PointsMaterial({size:10,vertexColors:true,sizeAttenuation:false,transparent:true,opacity:1.0,depthWrite:false,depthTest:false}));
+    lv._tokDots.renderOrder=11;lv._tokDots.frustumCulled=false;lv.sc.add(lv._tokDots);
+  }
+  {const tp=lv._tokDots.geometry.attributes.position.array;
+   const tc=lv._tokDots.geometry.attributes.color.array;
+   let n=0;
+   [pinnedToken,pinnedTokenB].forEach((ti,si)=>{
+    if(ti<0){tp[n*3]=9999;tp[n*3+1]=9999;tp[n*3+2]=9999;}
+    else{
+      // Token's scores on these PCs → radial position
+      // Use _getScore to get the actual PC values, project to radial
+      const sA=_getScore(cL<_nRealLayers?cL:0,ti,pcA);
+      const sB=_getScore(cL<_nRealLayers?cL:0,ti,pcB);
+      // Map to radial: angle=atan2(sB,sA), radius=magnitude (scaled to match petal range)
+      const mag=Math.sqrt(sA*sA+sB*sB);
+      // Scale: find max petal length for normalization
+      let maxP=0.001;for(let mi=0;mi<nMat;mi++)maxP=Math.max(maxP,_petalLen(cL,mi));
+      const scl=maxP/(mag||1)*0.8;// scale token to ~80% of max petal
+      const angle=Math.atan2(sB,sA);
+      const r=Math.min(maxP*1.2,mag*0.01);// scale down — PC scores are much larger than alignment
+      tp[n*3]=Math.cos(angle)*r;tp[n*3+1]=Math.sin(angle)*r;tp[n*3+2]=cZ;
+    }
+    const col=si===0?[1,0.4,0.27]:[0.27,0.47,0.67];// #FF6644, #4477AA
+    tc[n*3]=col[0];tc[n*3+1]=col[1];tc[n*3+2]=col[2];
+    n++;
+   });
+   lv._tokDots.geometry.attributes.position.needsUpdate=true;
+   lv._tokDots.geometry.attributes.color.needsUpdate=true;
+   lv._tokDots.geometry.setDrawRange(0,n);
+  }
+
+  // --- Layer-delta glow: color tube opacity by rate of change ---
+  if(lv._wlTubes){
+    for(let mi=0;mi<Math.min(nMat,lv._wlTubes.length);mi++){
+      if(lv._wlIsolated>=0&&mi!==lv._wlIsolated)continue;
+      const prev=cL>0?_petalLen(cL-1,mi):_petalLen(cL,mi);
+      const cur=_petalLen(cL,mi);
+      const delta=Math.abs(cur-prev);
+      // Brighter = bigger change from previous layer
+      const glow=Math.min(0.9,0.3+delta*3);
+      if(lv._wlIsolated<0)lv._wlTubes[mi].material.opacity=glow;
+    }
+  }
+
   if(!needsRebuild)return;
 
   // --- Clear old geometry ---
   if(lv._wlTrajs){lv._wlTrajs.forEach(t=>{lv.sc.remove(t);t.geometry.dispose();t.material.dispose();});lv._wlTrajs=null;}
   if(lv._wlTubes){lv._wlTubes.forEach(t=>{lv.sc.remove(t);t.geometry.dispose();t.material.dispose();});lv._wlTubes=null;}
+  if(lv._wlArcs){lv._wlArcs.forEach(t=>{lv.sc.remove(t);t.geometry.dispose();t.material.dispose();});lv._wlArcs=null;}
   if(lv._grid){lv.sc.remove(lv._grid);lv._grid.geometry?.dispose();lv._grid.material?.dispose();lv._grid=null;}
   if(lv._gateLineA){lv.sc.remove(lv._gateLineA);lv._gateLineA.geometry.dispose();lv._gateLineA.material.dispose();lv._gateLineA=null;}
   if(lv._gateLineB){lv.sc.remove(lv._gateLineB);lv._gateLineB.geometry.dispose();lv._gateLineB.material.dispose();lv._gateLineB=null;}
@@ -1199,6 +1249,45 @@ function _rebuildInternals(vi,pair,needsRebuild){
     const geo=new THREE.BufferGeometry().setFromPoints(pts);
     const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:0x333333,transparent:true,opacity:0.15}));
     line.frustumCulled=false;lv.sc.add(line);lv._wlTrajs.push(line);
+  }
+
+  // --- Attention vs MLP arcs: aggregate alignment for each subsystem ---
+  lv._wlArcs=[];
+  // Attention = Q(0)+K(1)+V(2)+O(3), MLP = gate(4)+up(5)+down(6)
+  const arcGroups=[{name:'attn',indices:[0,1,2,3],color:0x66AACC},{name:'mlp',indices:[4,5,6],color:0xCCAA66}];
+  arcGroups.forEach((grp,gi)=>{
+    const pts=[];
+    for(let l=0;l<_nRealLayers;l++){
+      let sum=0;grp.indices.forEach(mi=>{sum+=_petalLen(l,mi);});
+      const avg=sum/grp.indices.length;
+      const z=(l/(_nRealLayers-1))*zSpan-zSpan/2;
+      // Arc at fixed radius from center, offset by group
+      const arcR=1.1+gi*0.15;
+      pts.push(new THREE.Vector3(arcR,avg*2-0.5,z));
+    }
+    const geo=new THREE.BufferGeometry().setFromPoints(pts);
+    const line=new THREE.Line(geo,new THREE.LineBasicMaterial({color:grp.color,transparent:true,opacity:0.4}));
+    line.frustumCulled=false;lv.sc.add(line);lv._wlArcs.push(line);
+  });
+
+  // --- Per-tube peak marker: diamond at layer with max alignment ---
+  for(let mi=0;mi<nMat;mi++){
+    let peakL=0,peakV=0;
+    for(let l=0;l<_nRealLayers;l++){const v=_petalLen(l,mi);if(v>peakV){peakV=v;peakL=l;}}
+    const a=angles[mi];const z=(peakL/(_nRealLayers-1))*zSpan-zSpan/2;
+    const pg=new THREE.BufferGeometry();
+    pg.setAttribute('position',new THREE.BufferAttribute(new Float32Array([Math.cos(a)*peakV,Math.sin(a)*peakV,z]),3));
+    const pm=new THREE.Points(pg,new THREE.PointsMaterial({size:12,color:_WL_COLORS[mi],sizeAttenuation:false,transparent:true,opacity:0.6,depthTest:false}));
+    pm.frustumCulled=false;pm.renderOrder=8;lv.sc.add(pm);lv._wlTrajs.push(pm);// dispose with trajs
+  }
+
+  // --- Layer tick labels (every 5 layers) along Z axis at x=-1.2 ---
+  for(let l=0;l<_nRealLayers;l+=5){
+    const z=(l/(_nRealLayers-1))*zSpan-zSpan/2;
+    const tg=new THREE.BufferGeometry();
+    tg.setAttribute('position',new THREE.BufferAttribute(new Float32Array([-1.2,-1.2,z,-1.15,-1.2,z]),3));
+    const tick=new THREE.Line(tg,new THREE.LineBasicMaterial({color:0x444444,transparent:true,opacity:0.3}));
+    tick.frustumCulled=false;lv.sc.add(tick);lv._wlTrajs.push(tick);
   }
 
   // Label
