@@ -275,7 +275,7 @@ function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
   line.geometry.attributes.position.needsUpdate=true;line.visible=true;}
 let _lastDimState=-1;
 function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC)v.mtl.opacity=dim?0.35:0.85;if(vi>=NC&&v.trajGroup){const baseOp=dim?0.08:0.15;v.trajGroup.children.forEach(c=>{if(c.material)c.material.opacity=baseOp;});if(v.trajMarker)v.trajMarker.material.opacity=dim?0.35:0.9;}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible){m.material.opacity=0.95;m.material.size=dim?0.08:0.06;}});}
-function highlightToken(idx){hoveredToken=idx;views.forEach((v,vi)=>{const mk=highlightMarkers[vi];if(idx<0){mk.visible=false;hoverPaths[vi].visible=false;return;}mk.visible=true;_positionMarker(mk,v,vi,idx);_buildPathForVP(hoverPaths[vi],v,vi,idx);});_dimAll(idx>=0);_markDirty();}
+function highlightToken(idx){hoveredToken=idx;views.forEach((v,vi)=>{const mk=highlightMarkers[vi];if(idx<0){mk.visible=false;hoverPaths[vi].visible=false;return;}mk.visible=true;_positionMarker(mk,v,vi,idx);_buildPathForVP(hoverPaths[vi],v,vi,idx);});_dimAll(idx>=0);_updatePCSHover(idx);_markDirty();}
 // Unified pin sync — positions all markers in all viewports + delta + prism
 // Called every layer change (including during playback)
 // paths=true rebuilds trajectory paths (skip during playback for perf)
@@ -1483,6 +1483,8 @@ let _pcsHoverPC=-1;
 let _pcsLayerLine=null;// current-layer indicator line
 let _pcsVarLine=null;// variance envelope line
 let _pcsTicks=null;// PC index tick marks
+let _pcsHoverMesh=null;// hover token spectrum (current layer only)
+let _pcsHoverTok=-1;// which token the hover mesh shows
 // Full PCA data per token: Float32Array [n_layers × full_K]
 let _pcsFullA=null,_pcsFullB=null;
 let _pcsFullK=0,_pcsFullNL=0;
@@ -1498,6 +1500,17 @@ function _initPCSScene(){
   _pcsCtl.addEventListener('change',_markDirty);
   const ro2=new ResizeObserver(()=>{_resizeCanvas();_markDirty();});
   ro2.observe(_pcsEl);
+  // Layer indicator line (always present)
+  const lg=new THREE.BufferGeometry();
+  lg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(6),3));
+  _pcsLayerLine=new THREE.Line(lg,new THREE.LineBasicMaterial({color:0x444444,transparent:true,opacity:0.4}));
+  _pcsLayerLine.frustumCulled=false;_pcsSc.add(_pcsLayerLine);
+  // Hover spectrum mesh (white, current layer, updates on hover)
+  const hGeo=new THREE.BufferGeometry();
+  hGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(576*3),3));
+  hGeo.setDrawRange(0,0);
+  _pcsHoverMesh=new THREE.Points(hGeo,new THREE.PointsMaterial({size:2.5,color:0xFFFFFF,sizeAttenuation:false,transparent:true,opacity:0.7,depthWrite:false}));
+  _pcsHoverMesh.frustumCulled=false;_pcsHoverMesh.renderOrder=5;_pcsSc.add(_pcsHoverMesh);
   // Click: select PC for viewport A (left-click=PC1, shift-click=PC2)
   _pcsEl.addEventListener('click',e=>{
     e.stopPropagation();e.preventDefault();
@@ -1681,6 +1694,8 @@ function _buildPCSSpectrum(){
   _fillSpec(_pcsMeshA,_pcsDotsA,_pcsFullA,pinnedToken,0xFF6644);
   _fillSpec(_pcsMeshB,_pcsDotsB,_pcsFullB,pinnedTokenB,0x4477AA);
   // --- Navigational scaffolding ---
+  const xSpan=2.4, zSpan=3.0;
+  const nL_pcs=_pcsFullNL||_nRealLayers;
 
   // 1. Variance envelope — line showing variance decay across PCs
   if(_pcsVarLine){_pcsSc.remove(_pcsVarLine);_pcsVarLine.geometry.dispose();_pcsVarLine.material.dispose();_pcsVarLine=null;}
@@ -1698,15 +1713,7 @@ function _buildPCSSpectrum(){
     }
   }
 
-  // 2. Current layer indicator — horizontal line across all PCs at cL's Z
-  if(!_pcsLayerLine){
-    const lg=new THREE.BufferGeometry();
-    lg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(6),3));
-    _pcsLayerLine=new THREE.Line(lg,new THREE.LineBasicMaterial({color:0x444444,transparent:true,opacity:0.4}));
-    _pcsLayerLine.frustumCulled=false;_pcsSc.add(_pcsLayerLine);
-  }
-
-  // 3. PC index ticks — vertical marks at round PC numbers
+  // 2. PC index ticks — vertical marks at round PC numbers
   if(_pcsTicks){_pcsTicks.forEach(t=>{_pcsSc.remove(t);t.geometry.dispose();t.material.dispose();});}_pcsTicks=[];
   const tickInterval=_pcsNK>200?100:_pcsNK>50?25:10;
   for(let pc=0;pc<_pcsNK;pc+=tickInterval){
@@ -1791,6 +1798,31 @@ function _updatePCSDots(){
 
 function _updateTrajDots(){_updatePCSDots();}
 
+// Hover spectrum: show any token's PC scores at current layer in real-time
+function _updatePCSHover(tokIdx){
+  if(!_pcsHoverMesh||!_pcsNK)return;
+  if(tokIdx<0){_pcsHoverMesh.geometry.setDrawRange(0,0);_pcsHoverTok=-1;_markDirty();return;}
+  _pcsHoverTok=tokIdx;
+  const xSpan=2.4,zSpan=3.0;
+  const nL_pcs=_pcsFullNL||_nRealLayers;
+  const z=(cL/(nL_pcs-1||1))*zSpan-zSpan/2;
+  // Ensure enough buffer
+  let pos=_pcsHoverMesh.geometry.attributes.position.array;
+  if(pos.length<_pcsNK*3){
+    const np=new Float32Array(_pcsNK*3);
+    _pcsHoverMesh.geometry.setAttribute('position',new THREE.BufferAttribute(np,3));
+    pos=np;
+  }
+  for(let pc=0;pc<_pcsNK;pc++){
+    pos[pc*3]=(pc/(_pcsNK-1||1))*xSpan-xSpan/2;
+    pos[pc*3+1]=_getScore(cL,tokIdx,pc)*_pcsScale;
+    pos[pc*3+2]=z;
+  }
+  _pcsHoverMesh.geometry.setDrawRange(0,_pcsNK);
+  _pcsHoverMesh.geometry.attributes.position.needsUpdate=true;
+  _markDirty();
+}
+
 function _clearRV(rv){
   if(!rv)return;rv._rvSlices=[];
   while(rv.sc.children.length>1){const c=rv.sc.children[rv.sc.children.length-1];rv.sc.remove(c);if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();}
@@ -1807,6 +1839,7 @@ function _updateRVLayer(){
   });
   _nfSetLayer(cL);// neuron field: update current slice
   _updateTrajDots();// trajectory: slide dot along path
+  if(_pcsHoverTok>=0)_updatePCSHover(_pcsHoverTok);// hover spectrum follows layer
 }
 function updateLeftViewports(){
   _updateDeltaPins();
