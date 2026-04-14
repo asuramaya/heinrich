@@ -579,38 +579,49 @@ let _brCenterPair=[0,1];// the focused PC pair
 let _brCells=[];// [{pa,pb,cx,cy,radius}] — cell positions in the scene
 
 function _brComputeCells(){
-  // Build neighborhoods around BOTH focus PCs, merged into one cell set
+  // Two clusters: one around pcA's neighborhood, one around pcB's
   const pcA=_brPanels[0].focusPC,pcB=_brPanels[1].focusPC;
-  const [ca,cb]=_brCenterPair;// still the selected pair
+  const [ca,cb]=_brCenterPair;
   _brCells=[];
   const R=5;
   const added=new Set();
   const maxPC=Math.max(nK,_pcsFullK||0,576);
-  const addCell=(pa,pb,ring)=>{
+  const addCell=(pa,pb,ring,cluster)=>{
     const a=Math.min(pa,pb),b=Math.max(pa,pb);
     if(a<0||b<0||a>=maxPC||b>=maxPC||a===b)return;
     const key=`${a},${b}`;if(added.has(key))return;added.add(key);
-    _brCells.push({pa:a,pb:b,ring});
+    _brCells.push({pa:a,pb:b,ring,cluster});
   };
-  // Neighborhood around the selected pair (original behavior)
-  addCell(ca,cb,0);
+  // Cluster 0: neighborhood around the selected pair (centered at origin)
+  addCell(ca,cb,0,0);
   for(let r=1;r<=R;r++)for(let d=-r;d<=r;d++)for(let e=-r;e<=r;e++){
     if(Math.max(Math.abs(d),Math.abs(e))!==r)continue;
-    addCell(ca+d,cb+e,r);
+    addCell(ca+d,cb+e,r,0);
   }
-  // If PCs are far apart, also build neighborhoods around each PC independently
+  // If PCs are far apart, build a second cluster around pcB
+  const _CLUSTER_GAP=20;// horizontal offset between clusters
   if(Math.abs(pcA-pcB)>R*2&&pcA>=0&&pcB>=0){
-    // Panel A: pcA paired with nearby PCs
-    for(let d=-R;d<=R;d++)for(let e=-R;e<=R;e++)addCell(pcA+d,pcA+R+1+e,Math.max(Math.abs(d),Math.abs(e)));
-    // Panel B: pcB paired with nearby PCs
-    for(let d=-R;d<=R;d++)for(let e=-R;e<=R;e++)addCell(pcB+d,pcB+R+1+e,Math.max(Math.abs(d),Math.abs(e)));
+    for(let d=-R;d<=R;d++)for(let e=-R;e<=R;e++){
+      const r=Math.max(Math.abs(d),Math.abs(e));
+      addCell(pcB+d,pcB+R+1+e,r,1);
+    }
   }
-  // Position all cells using absolute PC indices
+  // Position cells: cluster 0 at origin, cluster 1 offset to the right
   _brCells.forEach(c=>{
-    c.cx=c.pb*_SP*0.8;
-    c.cy=-c.pa*_SP*0.8;
+    const ref=c.cluster===0?[ca,cb]:[pcB,pcB+R+1];
+    const dx=c.pa-Math.min(ref[0],ref[1]),dy=c.pb-Math.max(ref[0],ref[1]);
+    const ox=c.cluster===1?_CLUSTER_GAP:0;
+    c.cx=ox+(dy-dx)*_SP*0.8;
+    c.cy=-(dy+dx)*_SP*0.8;
     c.rad=c.ring===0?_BR_RAD*1.8:c.ring===1?_BR_RAD*1.2:_BR_RAD*0.8;
   });
+  // Store cluster centers for camera positioning
+  _brPanels[0]._clusterCx=0;_brPanels[0]._clusterCy=0;
+  if(Math.abs(pcA-pcB)>R*2){
+    _brPanels[1]._clusterCx=_CLUSTER_GAP;_brPanels[1]._clusterCy=0;
+  }else{
+    _brPanels[1]._clusterCx=0;_brPanels[1]._clusterCy=0;
+  }
 }
 
 function buildBrowser(){
@@ -659,19 +670,10 @@ function buildBrowser(){
   _brFocusPanels();
 }
 function _brFocusPanels(){
-  const [ca,cb]=_brCenterPair;
   _brPanels.forEach((p,pi)=>{
     const pc=p.focusPC;if(pc<0)return;
-    // Center on the selected pair's cell position, projected to this PC's neighborhood
-    const tx=Math.max(ca,cb)*_SP*0.8,ty=-Math.min(ca,cb)*_SP*0.8,tz=cL*_ZSP;
-    // If PCs are far apart, center each panel on its own PC's neighborhood
-    let cx=tx,cy=ty;
-    if(Math.abs(_brPanels[0].focusPC-_brPanels[1].focusPC)>10){
-      // Find a cell involving this panel's focus PC
-      const cell=_brCells.find(c=>c.pa===pc||c.pb===pc);
-      if(cell){cx=cell.cx;cy=cell.cy;}
-    }
-    p.cam.position.set(cx,cy,tz+12);p.ctl.target.set(cx,cy,tz);p.ctl.update();
+    const cx=p._clusterCx||0,cy=p._clusterCy||0,tz=cL*_ZSP;
+    p.cam.position.set(cx,cy,tz+15);p.ctl.target.set(cx,cy,tz);p.ctl.update();
     const lbl=document.getElementById(pi===0?'brLblA':'brLblB');
     if(lbl)lbl.textContent=`PC${pc}  click=vpA  R-click=vpB`;
   });
