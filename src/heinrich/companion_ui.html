@@ -1633,22 +1633,16 @@ function _buildPCSSpectrum(){
   const hasFullData=_pcsFullA||_pcsFullB;
   _pcsNK=hasFullData?_pcsFullK:nK;
   const zSpan=3.0, xSpan=2.4;
-  // Global max for Y scale — use full PCA data
-  let maxAbs=0.001;
+  // Per-token Y scale — each token normalized independently so pinning one doesn't shift the other
   const nL_pcs=_pcsFullNL||_nRealLayers;
-  [_pcsFullA,_pcsFullB].forEach(fd=>{
-    if(!fd)return;
-    for(let i=0;i<fd.length;i++)if(Math.abs(fd[i])>maxAbs)maxAbs=Math.abs(fd[i]);
-  });
-  // Fallback to allL if no full data
-  if(!_pcsFullA&&!_pcsFullB){
-    [pinnedToken,pinnedTokenB].forEach(tok=>{
-      if(tok<0)return;
-      for(let l=0;l<_nRealLayers;l++){const s=allL[l]?.[tok];if(!s)continue;
-        for(let pc=0;pc<_pcsNK;pc++)if(Math.abs(s[pc])>maxAbs)maxAbs=Math.abs(s[pc]);}
-    });
+  function _tokenScale(fd){
+    if(!fd)return 0;
+    let mx=0.001;for(let i=0;i<fd.length;i++)if(Math.abs(fd[i])>mx)mx=Math.abs(fd[i]);
+    return 1.2/mx;
   }
-  _pcsScale=maxAbs>0.001?1.2/maxAbs:1;
+  const _scaleA=_tokenScale(_pcsFullA);
+  const _scaleB=_tokenScale(_pcsFullB);
+  _pcsScale=_scaleA||_scaleB||0;// expose best available for hover
   const maxPts=nL_pcs*_pcsNK;
 
   // Dispose old meshes if size changed (nK changed between models/loads)
@@ -1676,11 +1670,11 @@ function _buildPCSSpectrum(){
     return [mesh,dots];
   }
 
-  function _fillSpec(mesh,dots,fullData,tok,colHex){
+  function _fillSpec(mesh,dots,fullData,tok,colHex,scale){
     const cr=((colHex>>16)&0xFF)/255, cg=((colHex>>8)&0xFF)/255, cb=(colHex&0xFF)/255;
     const tPos=mesh.geometry.attributes.position.array;
     const tCol=mesh.geometry.attributes.color.array;
-    if(tok<0||!fullData){mesh.geometry.setDrawRange(0,0);dots.geometry.setDrawRange(0,0);return;}
+    if(tok<0||!fullData||!scale){mesh.geometry.setDrawRange(0,0);dots.geometry.setDrawRange(0,0);return;}
     const fK=_pcsFullK||_pcsNK;
     for(let l=0;l<nL_pcs;l++){
       const z=(l/(nL_pcs-1))*zSpan-zSpan/2;
@@ -1689,7 +1683,7 @@ function _buildPCSSpectrum(){
         if(i*3+2>=tPos.length)break;
         tPos[i*3]=(pc/(_pcsNK-1||1))*xSpan-xSpan/2;
         const val=fullData[l*fK+pc]||0;
-        tPos[i*3+1]=val*_pcsScale;
+        tPos[i*3+1]=val*scale;
         tPos[i*3+2]=z;
         tCol[i*3]=cr*0.1;tCol[i*3+1]=cg*0.1;tCol[i*3+2]=cb*0.1;
       }
@@ -1702,8 +1696,8 @@ function _buildPCSSpectrum(){
 
   [_pcsMeshA,_pcsDotsA]=_ensureSpec(_pcsMeshA,_pcsDotsA,0xFF6644);
   [_pcsMeshB,_pcsDotsB]=_ensureSpec(_pcsMeshB,_pcsDotsB,0x4477AA);
-  _fillSpec(_pcsMeshA,_pcsDotsA,_pcsFullA,pinnedToken,0xFF6644);
-  _fillSpec(_pcsMeshB,_pcsDotsB,_pcsFullB,pinnedTokenB,0x4477AA);
+  _fillSpec(_pcsMeshA,_pcsDotsA,_pcsFullA,pinnedToken,0xFF6644,_scaleA);
+  _fillSpec(_pcsMeshB,_pcsDotsB,_pcsFullB,pinnedTokenB,0x4477AA,_scaleB);
   // --- Navigational scaffolding ---
 
   // 1. Variance envelope — line showing variance decay across PCs
@@ -1762,18 +1756,19 @@ function _updatePCSDots(){
   const nL_pcs=_pcsFullNL||_nRealLayers;
   const z=(cL/(nL_pcs-1))*zSpan-zSpan/2;
   const fK=_pcsFullK||_pcsNK;
-  [[_pcsDotsA,pinnedToken,0xFF6644,_pcsFullA],[_pcsDotsB,pinnedTokenB,0x4477AA,_pcsFullB]].forEach(([dots,tok,colHex,fullData])=>{
-    if(!dots||tok<0)return;
+  // Per-token scales: compute same way as _buildPCSSpectrum
+  function _tkScale(fd){if(!fd)return 0;let mx=0.001;for(let i=0;i<fd.length;i++)if(Math.abs(fd[i])>mx)mx=Math.abs(fd[i]);return 1.2/mx;}
+  [[_pcsDotsA,pinnedToken,0xFF6644,_pcsFullA,_tkScale(_pcsFullA)],[_pcsDotsB,pinnedTokenB,0x4477AA,_pcsFullB,_tkScale(_pcsFullB)]].forEach(([dots,tok,colHex,fullData,scale])=>{
+    if(!dots||tok<0||!scale)return;
     const pos=dots.geometry.attributes.position.array;
     const col=dots.geometry.attributes.color.array;
     const cr=((colHex>>16)&0xFF)/255, cg=((colHex>>8)&0xFF)/255, cb=(colHex&0xFF)/255;
     for(let pc=0;pc<_pcsNK;pc++){
       pos[pc*3]=(pc/(_pcsNK-1||1))*xSpan-xSpan/2;
-      // Read from full data or allL fallback
       let val=0;
       if(fullData){val=fullData[cL*fK+pc]||0;}
       else if(allL[cL]?.[tok]){val=allL[cL][tok][pc]||0;}
-      pos[pc*3+1]=val*_pcsScale;
+      pos[pc*3+1]=val*scale;
       pos[pc*3+2]=z;
       const inA=vpPairs[0].includes(pc), inB=vpPairs[2].includes(pc);
       const hov=pc===_pcsHoverPC;
