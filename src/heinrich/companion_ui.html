@@ -1474,28 +1474,33 @@ async function _nfLoadToken(tokIdx, slot){
   if(slot==='A'&&_nfLoadingA===tokIdx)return;
   if(slot==='B'&&_nfLoadingB===tokIdx)return;
   if(slot==='A')_nfLoadingA=tokIdx;else _nfLoadingB=tokIdx;
-  // Check cache first — instant
   const cacheKey=`${model}/${mode}/${tokIdx}`;
+  // Full cache hit → instant dots + trails
   if(_nfCache.has(cacheKey)){
     if(slot==='A')_nfActA=_nfCache.get(cacheKey);else _nfActB=_nfCache.get(cacheKey);
+    if(slot==='A')_nfLoadingA=-1;else _nfLoadingB=-1;
     _nfBuildDots();_nfDeferTrails();return;
   }
-  // Show dots immediately with whatever data we have, fetch in background
-  _nfBuildDots();
+  // Hover cache hit → instant dots from single-layer data, fetch full for trails
+  const hoverEntry=_hoverCache.get(`${tokIdx},${cL}`);
+  if(hoverEntry&&hoverEntry.neurons&&_nfInter){
+    // Build temporary full array with just current layer populated
+    const tmp=new Float32Array(_nRealLayers*_nfInter);
+    for(let n=0;n<Math.min(hoverEntry.neurons.length,_nfInter);n++)tmp[cL*_nfInter+n]=hoverEntry.neurons[n];
+    if(slot==='A')_nfActA=tmp;else _nfActB=tmp;
+    _nfBuildDots();// instant dots from hover data
+  }
+  // Fetch full data (all layers) for trails — replaces temp array
   try{
-    // Check cache first — may have been preloaded on hover
-    let f32=_nfCache.get(cacheKey);
-    if(!f32){
-      const resp=await fetch(`/api/neuron-field/${model}/${mode}?token=${tokIdx}`);
-      if(!resp.ok)return;
-      const ct=resp.headers.get('content-type')||'';
-      if(ct.includes('json'))return;
-      const buf=await resp.arrayBuffer();
-      const u16=new Uint16Array(buf);
-      f32=new Float32Array(u16.length);
-      for(let i=0;i<u16.length;i++)f32[i]=f16(u16[i]);
-      _nfCache.set(cacheKey,f32);
-    }
+    const resp=await fetch(`/api/neuron-field/${model}/${mode}?token=${tokIdx}`);
+    if(!resp.ok)return;
+    const ct=resp.headers.get('content-type')||'';
+    if(ct.includes('json'))return;
+    const buf=await resp.arrayBuffer();
+    const u16=new Uint16Array(buf);
+    const f32=new Float32Array(u16.length);
+    for(let i=0;i<u16.length;i++)f32[i]=f16(u16[i]);
+    _nfCache.set(cacheKey,f32);
     if(slot==='A')_nfActA=f32;else _nfActB=f32;
     _nfBuildDots();_nfDeferTrails();
   }catch(e){console.error('neuron-field:',e);
