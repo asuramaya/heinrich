@@ -628,7 +628,6 @@ function buildBrowser(){
   const step=Math.max(1,Math.floor(nN/_BR_PTS));const ptsPerCell=Math.ceil(nN/step);
 
   for(let l=0;l<nL;l++){
-    const S=allL[l];if(!S)continue;
     const pos=new Float32Array(nCells*ptsPerCell*3);
     const col=new Float32Array(nCells*ptsPerCell*3);
     const origPos=new Float32Array(nCells*ptsPerCell*3);
@@ -657,13 +656,17 @@ function buildBrowser(){
     brSc.add(pts);_brLayers.push({pts,layer:l,origPos:origPos.subarray(0,idx*3),tokMap:tokMap.subarray(0,idx)});
   }
   _brBuilt=true;_updateBrowserLayer();_updateBrowserOverlay();
-  _brFocusPanels();
+  // Focus panel: 0=left click changed vpA, 1=right click changed vpB, undefined=init
+  _brFocusPanels(_brFollow>=0?(_brFollow===0?0:1):undefined);
 }
-function _brFocusPanels(){
+function _brFocusPanels(forcePanel){
   const pairA=vpPairs[0],pairB=vpPairs[2];
   _brPanels.forEach((p,pi)=>{
     const cx=p._cx||0,cy=p._cy||0,tz=cL*_ZSP;
-    p.cam.position.set(cx,cy,tz+15);p.ctl.target.set(cx,cy,tz);p.ctl.update();
+    // Only reset camera if forced or this panel's pair changed
+    if(forcePanel===undefined||forcePanel===pi||!p._inited){
+      p.cam.position.set(cx,cy,tz+15);p.ctl.target.set(cx,cy,tz);p.ctl.update();p._inited=true;
+    }
     const pair=pi===0?pairA:pairB;
     const lbl=document.getElementById(pi===0?'brLblA':'brLblB');
     if(lbl)lbl.textContent=`PC${pair[0]}×PC${pair[1]}`;
@@ -679,10 +682,12 @@ function _updateBrowserLayer(){
     pts.material.opacity=d===0?0.7:d===1?0.2:d===2?0.1:d<=3?0.04:0.02;
     pts.material.size=d===0?0.04:0.025;
   });
-  // Update Z target for layer scrub on both panels
+  // Smoothly track current layer Z on both panels
   _brPanels.forEach(p=>{
-    const off=p.cam.position.clone().sub(p.ctl.target);
-    const tz=cL*_ZSP;p.ctl.target.z=tz;p.cam.position.z=tz+off.z;p.ctl.update();
+    if(!p._inited)return;
+    const tz=cL*_ZSP;
+    const dz=tz-p.ctl.target.z;
+    p.ctl.target.z+=dz;p.cam.position.z+=dz;p.ctl.update();
   });
 }
 
@@ -885,8 +890,9 @@ _brPanels.forEach((p,pi)=>{
     const cell=_brResolveCell(e,pi);if(!cell)return;
     const slot=_isRightClick(e)?2:0;
     vpPairs[slot]=[cell.a,cell.b];_brFollow=slot;
+    // updateAllViewports triggers async PC load → buildBrowser in its .then()
+    // Don't call buildBrowser separately — it runs inside updateAllViewports
     updateAllViewports();_rebuildWeightLines();_updatePCSDots();_saveState();
-    buildBrowser();
   });
 });
 
