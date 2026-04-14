@@ -1797,26 +1797,34 @@ function _updatePCSDots(){
 function _updateTrajDots(){_updatePCSDots();}
 
 // Hover spectrum: show any token's PC scores at current layer in real-time
+// Uses allL blob (first nK PCs) — always available, no fetch needed
 function _updatePCSHover(tokIdx){
-  if(!_pcsHoverMesh||!_pcsNK)return;
+  if(!_pcsHoverMesh)return;
+  const k=_pcsNK||nK;if(!k)return;
   if(tokIdx<0){_pcsHoverMesh.geometry.setDrawRange(0,0);_pcsHoverTok=-1;_markDirty();return;}
   _pcsHoverTok=tokIdx;
   const xSpan=2.4,zSpan=3.0;
-  const nL_pcs=_pcsFullNL||_nRealLayers;
-  const z=(cL/(nL_pcs-1||1))*zSpan-zSpan/2;
-  // Ensure enough buffer
+  const nL_pcs=_pcsFullNL||_nRealLayers||nL;
+  const z=(cL/((nL_pcs-1)||1))*zSpan-zSpan/2;
+  // Collect scores and auto-scale from the hover data itself
+  const scores=new Float32Array(k);
+  let mx=0.001;
+  for(let pc=0;pc<k;pc++){scores[pc]=_getScore(cL,tokIdx,pc);mx=Math.max(mx,Math.abs(scores[pc]));}
+  // Use pinned scale if available, else auto-scale from hover data
+  const scale=_pcsScale>0.01?_pcsScale:1.2/mx;
+  // Ensure buffer fits
   let pos=_pcsHoverMesh.geometry.attributes.position.array;
-  if(pos.length<_pcsNK*3){
-    const np=new Float32Array(_pcsNK*3);
-    _pcsHoverMesh.geometry.setAttribute('position',new THREE.BufferAttribute(np,3));
-    pos=np;
+  if(pos.length<k*3){
+    _pcsHoverMesh.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(k*3),3));
+    pos=_pcsHoverMesh.geometry.attributes.position.array;
   }
-  for(let pc=0;pc<_pcsNK;pc++){
-    pos[pc*3]=(pc/(_pcsNK-1||1))*xSpan-xSpan/2;
-    pos[pc*3+1]=_getScore(cL,tokIdx,pc)*_pcsScale;
+  for(let pc=0;pc<k;pc++){
+    // X: map PC index across full spectrum width (same mapping as pinned dots)
+    pos[pc*3]=(pc/((k-1)||1))*xSpan-xSpan/2;
+    pos[pc*3+1]=scores[pc]*scale;
     pos[pc*3+2]=z;
   }
-  _pcsHoverMesh.geometry.setDrawRange(0,_pcsNK);
+  _pcsHoverMesh.geometry.setDrawRange(0,k);
   _pcsHoverMesh.geometry.attributes.position.needsUpdate=true;
   _markDirty();
 }
