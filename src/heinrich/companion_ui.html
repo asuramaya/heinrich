@@ -1681,8 +1681,6 @@ function _buildPCSSpectrum(){
   _fillSpec(_pcsMeshA,_pcsDotsA,_pcsFullA,pinnedToken,0xFF6644);
   _fillSpec(_pcsMeshB,_pcsDotsB,_pcsFullB,pinnedTokenB,0x4477AA);
   // --- Navigational scaffolding ---
-  const xSpan=2.4, zSpan=3.0;
-  const nL_pcs=_pcsFullNL||_nRealLayers;
 
   // 1. Variance envelope — line showing variance decay across PCs
   if(_pcsVarLine){_pcsSc.remove(_pcsVarLine);_pcsVarLine.geometry.dispose();_pcsVarLine.material.dispose();_pcsVarLine=null;}
