@@ -38,6 +38,21 @@ def _is_mlx_backend(backend) -> bool:
     return type(backend).__name__ == 'MLXBackend'
 
 
+def _find_layer_file(mri_dir: Path, layer: int, name: str) -> Path | None:
+    """Find a per-layer .npy file in nested or flat layout.
+
+    Nested: mri_dir/layers/L{NN}/{name}.npy  (used by mmap captures >1GB)
+    Flat:   mri_dir/L{NN}_{name}.npy         (used by in-memory captures)
+    """
+    nested = mri_dir / "layers" / f"L{layer:02d}" / f"{name}.npy"
+    if nested.exists():
+        return nested
+    flat = mri_dir / f"L{layer:02d}_{name}.npy"
+    if flat.exists():
+        return flat
+    return None
+
+
 def _extract_weight(module, in_dim: int, is_mlx: bool) -> np.ndarray:
     """Extract weight matrix via identity probing (works with quantized models)."""
     if is_mlx:
@@ -163,7 +178,7 @@ def _framework_ops(backend):
                 scores = scores + mask
             weights = mx.softmax(scores, axis=-1)
 
-            return h_exit, weights, scores, h_pre_mlp, attn_out, _gate_val, _up_val
+            return h_exit, weights, scores, h_pre_mlp, attn_out, _gate_val, _up_val, _mlp_out
 
         def _mlx_embedding_grad(emb, mask):
             """Gradient of top-1 logit w.r.t. embedding. One backward pass.
@@ -306,7 +321,7 @@ def _framework_ops(backend):
                 else:
                     h_exit = h_after_attn + _mo
 
-                return h_exit, weights, None, h_pre_mlp, attn_hidden, _gv, _uv
+                return h_exit, weights, None, h_pre_mlp, attn_hidden, _gv, _uv, _mo
 
         def _hf_mlp_internals(ly, h_pre_mlp):
             """Get gate AND up values."""
@@ -522,6 +537,242 @@ def _capture_mri_causal_bank(backend, *, mode="raw", n_index=None,
     }
 
 
+def _capture_mri_causal_bank_sequence(
+    backend, *, val_data: str, n_seqs: int = 50, seq_len: int = 512,
+    seed: int = 42, output: str | None = None,
+) -> dict:
+    """Sequence-mode MRI for causal bank: per-position internals on real sequences.
+
+    Unlike impulse mode (single token from zero state), this captures substrate
+    accumulation, routing dynamics, and loss decomposition across full sequences.
+    """
+    from ..backend.decepticon import load_val_sequences
+
+    cfg = backend.config
+    t0 = time.time()
+
+    seqs = load_val_sequences(val_data, seq_len=seq_len, n_seqs=n_seqs, seed=seed)
+    actual_seqs = seqs.shape[0]
+    n_modes = cfg.n_modes
+    n_experts = cfg.n_experts
+    n_bands = cfg.n_bands
+    embed_dim = cfg.embed_dim
+    vocab_size = cfg.vocab_size
+
+    print(f"MRI capture (causal_bank, sequence): {actual_seqs} seqs x {seq_len} pos, "
+          f"{n_modes} modes, {n_experts} experts, {n_bands} bands")
+
+    # Inner model (CausalBankModel) for flag checking
+    _inner = getattr(backend.model, '_model', backend.model)
+
+    # Allocate
+    substrate_all = np.zeros((actual_seqs, seq_len, n_modes), dtype=np.float16)
+    embedding_all = np.zeros((actual_seqs, seq_len, embed_dim), dtype=np.float16)
+    loss_all = np.full((actual_seqs, seq_len), np.nan, dtype=np.float32)
+
+    routing_all = (np.zeros((actual_seqs, seq_len, n_experts), dtype=np.float16)
+                   if n_experts > 1 else None)
+    band_loss_all = (np.full((actual_seqs, seq_len, n_bands), np.nan, dtype=np.float32)
+                     if n_bands > 1 else None)
+    local_norm_all = None
+
+    has_temporal = hasattr(_inner, '_temporal_attention')
+    snapshot_interval = getattr(_inner, '_temporal_snapshot_interval', 64)
+    n_snapshots = seq_len // snapshot_interval if has_temporal else 0
+    temporal_weights_all = (np.zeros((actual_seqs, seq_len, n_snapshots), dtype=np.float16)
+                           if has_temporal else None)
+    temporal_output_all = (np.zeros((actual_seqs, seq_len, n_modes), dtype=np.float16)
+                          if has_temporal else None)
+
+    _inner = getattr(backend.model, '_model', backend.model)
+    has_gated_delta = getattr(_inner, '_use_gated_delta_substrate', False)
+    # gated_delta stores mean-across-heads gate values: [n_seqs, seq_len, head_dim]
+    state_head_dim = getattr(_inner, '_state_head_dim', 0) if has_gated_delta else 0
+    gated_delta_write_all = (np.zeros((actual_seqs, seq_len, state_head_dim), dtype=np.float16)
+                            if has_gated_delta else None)
+    gated_delta_retain_all = (np.zeros((actual_seqs, seq_len, state_head_dim), dtype=np.float16)
+                             if has_gated_delta else None)
+    gated_delta_erase_all = (np.zeros((actual_seqs, seq_len, state_head_dim), dtype=np.float16)
+                            if has_gated_delta else None)
+
+    has_overwrite_gate = getattr(_inner, '_use_overwrite_gate', False)
+    overwrite_gate_all = (np.zeros((actual_seqs, seq_len, n_modes), dtype=np.float16)
+                         if has_overwrite_gate else None)
+    has_mode_selector = getattr(_inner, '_use_mode_selector', False)
+    mode_selector_all = (np.zeros((actual_seqs, seq_len, n_modes), dtype=np.float16)
+                        if has_mode_selector else None)
+    has_magnitude_norm = getattr(_inner, '_use_magnitude_norm', False)
+    magnitude_norm_all = (np.zeros((actual_seqs, seq_len), dtype=np.float32)
+                         if has_magnitude_norm else None)
+
+    for i in range(actual_seqs):
+        seq = seqs[i:i+1]  # [1, seq_len]
+        result = backend.forward_captured(seq)
+
+        substrate_all[i] = result['substrate_states'][0].astype(np.float16)
+        embedding_all[i] = result['embedding'][0].astype(np.float16)
+
+        # Cross-entropy at each position (predict next token), in bits
+        logits = result['logits'][0].astype(np.float64)  # [seq_len, vocab]
+        targets = seq[0, 1:]  # [seq_len - 1]
+        # Stable log-softmax: x - max(x) - log(sum(exp(x - max(x))))
+        max_logits = logits[:-1].max(axis=-1, keepdims=True)
+        log_probs = logits[:-1] - max_logits - np.log(np.exp(logits[:-1] - max_logits).sum(axis=-1, keepdims=True))
+        ce = -log_probs[np.arange(len(targets)), targets]
+        loss_all[i, 1:] = (ce / np.log(2)).astype(np.float32)  # bits
+
+        # Routing
+        if routing_all is not None and result.get('route_weights') is not None:
+            rw = result['route_weights']
+            if rw.ndim == 2:
+                routing_all[i] = rw[:seq_len].astype(np.float16)
+            elif rw.ndim == 3:
+                routing_all[i] = rw[0].astype(np.float16)
+
+        # Band loss
+        if band_loss_all is not None and result.get('band_logits') is not None:
+            for b, bl in enumerate(result['band_logits']):
+                bl_0 = bl[0].astype(np.float64)
+                bl_max = bl_0[:-1].max(axis=-1, keepdims=True)
+                bl_lp = bl_0[:-1] - bl_max - np.log(np.exp(bl_0[:-1] - bl_max).sum(axis=-1, keepdims=True))
+                bl_ce = -bl_lp[np.arange(len(targets)), targets]
+                band_loss_all[i, 1:, b] = (bl_ce / np.log(2)).astype(np.float32)
+
+        # Local path norm
+        if result.get('local_logits') is not None:
+            if local_norm_all is None:
+                local_norm_all = np.zeros((actual_seqs, seq_len), dtype=np.float32)
+            local_norm_all[i] = np.linalg.norm(result['local_logits'][0], axis=-1).astype(np.float32)
+
+        # Temporal attention
+        if has_temporal and result.get('temporal_attn_weights') is not None:
+            tw = result['temporal_attn_weights'][0]  # [heads, seq, M]
+            temporal_weights_all[i] = tw.mean(axis=0)[:, :n_snapshots].astype(np.float16)
+        if has_temporal and result.get('temporal_attn_output') is not None:
+            temporal_output_all[i] = result['temporal_attn_output'][0].astype(np.float16)
+
+        # Gated delta gates
+        if gated_delta_write_all is not None and result.get('gated_delta_write') is not None:
+            gated_delta_write_all[i] = result['gated_delta_write'][0].astype(np.float16)
+        if gated_delta_retain_all is not None and result.get('gated_delta_retain') is not None:
+            gated_delta_retain_all[i] = result['gated_delta_retain'][0].astype(np.float16)
+        if gated_delta_erase_all is not None and result.get('gated_delta_erase') is not None:
+            gated_delta_erase_all[i] = result['gated_delta_erase'][0].astype(np.float16)
+
+        # Substrate transforms
+        if overwrite_gate_all is not None and result.get('overwrite_gate_values') is not None:
+            overwrite_gate_all[i] = result['overwrite_gate_values'][0].astype(np.float16)
+        if mode_selector_all is not None and result.get('mode_selector_mask') is not None:
+            mode_selector_all[i] = result['mode_selector_mask'][0].astype(np.float16)
+        if magnitude_norm_all is not None and result.get('magnitude_before_norm') is not None:
+            magnitude_norm_all[i] = result['magnitude_before_norm'][0, :, 0].astype(np.float32)
+
+        elapsed = time.time() - t0
+        rate = (i + 1) / max(elapsed, 0.01)
+        if (i + 1) % 5 == 0 or i + 1 == actual_seqs:
+            print(f"  {i+1}/{actual_seqs} ({rate:.1f} seq/s)")
+
+    elapsed = time.time() - t0
+
+    metadata = {
+        "version": MRI_VERSION,
+        "type": "mri",
+        "architecture": "causal_bank",
+        "generated_at": time.time(),
+        "elapsed_s": round(elapsed),
+        "model": {
+            "name": cfg.model_type,
+            "n_modes": n_modes,
+            "n_experts": n_experts,
+            "n_bands": n_bands,
+            "embed_dim": embed_dim,
+            "vocab_size": vocab_size,
+            "n_layers": 1,
+            "hidden_size": n_modes,
+        },
+        "capture": {
+            "mode": "sequence",
+            "n_seqs": actual_seqs,
+            "seq_len": seq_len,
+            "n_tokens": actual_seqs * seq_len,
+            "has_temporal": has_temporal,
+            "has_routing": routing_all is not None,
+            "has_band_loss": band_loss_all is not None,
+            "has_local": local_norm_all is not None,
+            "has_gated_delta": has_gated_delta,
+            "has_overwrite_gate": has_overwrite_gate,
+            "has_mode_selector": has_mode_selector,
+            "has_magnitude_norm": has_magnitude_norm,
+            "snapshot_interval": snapshot_interval if has_temporal else None,
+        },
+        "provenance": {
+            "seed": seed,
+            "val_data": val_data,
+        },
+    }
+
+    if output:
+        out_dir = Path(output)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        with open(out_dir / "metadata.json", 'w') as f:
+            json.dump(metadata, f, indent=2)
+
+        np.savez_compressed(out_dir / "tokens.npz", token_ids=seqs.astype(np.int32))
+        np.save(out_dir / "substrate.npy", substrate_all)
+        np.save(out_dir / "embedding.npy", embedding_all)
+        np.save(out_dir / "loss.npy", loss_all)
+        np.save(out_dir / "half_lives.npy", backend.model.half_lives)
+
+        if routing_all is not None:
+            np.save(out_dir / "routing.npy", routing_all)
+        if band_loss_all is not None:
+            np.save(out_dir / "band_loss.npy", band_loss_all)
+        if local_norm_all is not None:
+            np.save(out_dir / "local_norm.npy", local_norm_all)
+        if temporal_weights_all is not None:
+            np.save(out_dir / "temporal_weights.npy", temporal_weights_all)
+        if temporal_output_all is not None:
+            np.save(out_dir / "temporal_output.npy", temporal_output_all)
+        if gated_delta_write_all is not None:
+            np.save(out_dir / "gated_delta_write.npy", gated_delta_write_all)
+            np.save(out_dir / "gated_delta_retain.npy", gated_delta_retain_all)
+            np.save(out_dir / "gated_delta_erase.npy", gated_delta_erase_all)
+        if overwrite_gate_all is not None:
+            np.save(out_dir / "overwrite_gate.npy", overwrite_gate_all)
+        if mode_selector_all is not None:
+            np.save(out_dir / "mode_selector.npy", mode_selector_all)
+        if magnitude_norm_all is not None:
+            np.save(out_dir / "magnitude_norm.npy", magnitude_norm_all)
+
+        # Weights (skip if sibling impulse MRI already has them)
+        weights_dir = out_dir / "weights"
+        if not weights_dir.exists():
+            weights = backend.weights()
+            weights_dir.mkdir(exist_ok=True)
+            for name, w in weights.items():
+                safe_name = name.replace('.', '_').replace('/', '_')
+                np.save(weights_dir / f"{safe_name}.npy", w)
+
+        size = sum(f.stat().st_size for f in out_dir.rglob("*") if f.is_file())
+        print(f"\n  Saved to {out_dir}/ ({size / 1e6:.1f} MB)")
+
+    return {
+        "metadata": metadata,
+        "substrate_states": substrate_all,
+        "embedding": embedding_all,
+        "loss": loss_all,
+        "routing": routing_all,
+        "band_loss": band_loss_all,
+        "local_norm": local_norm_all,
+        "temporal_weights": temporal_weights_all,
+        "temporal_output": temporal_output_all,
+        "overwrite_gate": overwrite_gate_all,
+        "mode_selector": mode_selector_all,
+        "magnitude_norm": magnitude_norm_all,
+    }
+
+
 def capture_mri(
     backend,
     *,
@@ -530,6 +781,7 @@ def capture_mri(
     seed: int = 42,
     output: str | None = None,
     db_path: str | None = None,
+    **kwargs,
 ) -> dict:
     """Capture a complete .mri for a model.
 
@@ -540,9 +792,18 @@ def capture_mri(
     Dispatches to architecture-specific capture:
     - Transformers (MLX/HF): per-layer entry/exit residuals
     - Causal bank (decepticon): substrate states + routing + band logits
+    - Causal bank sequence mode: per-position internals on val sequences
     """
     cfg = backend.config
     if getattr(cfg, 'model_type', '') == 'causal_bank':
+        if mode == "sequence":
+            if not kwargs.get('val_data'):
+                raise ValueError("Sequence mode requires --data <path_to_val.bin>")
+            return _capture_mri_causal_bank_sequence(
+                backend, val_data=kwargs['val_data'],
+                n_seqs=kwargs.get('n_seqs', 50),
+                seq_len=kwargs.get('seq_len', 512),
+                seed=seed, output=output)
         return _capture_mri_causal_bank(backend, mode=mode, n_index=n_index,
                                          seed=seed, output=output)
 
@@ -643,15 +904,9 @@ def capture_mri(
                 import os
                 is_alive = False
                 try:
-                    os.kill(pid, 0)
-                    # PID exists — check if it's actually a Python/heinrich process
-                    # by comparing start time (guards against PID reuse)
-                    lock_time = lock_info.get("started", "")
-                    import subprocess as _sp
-                    ps = _sp.run(["ps", "-p", str(pid), "-o", "lstart="],
-                                 capture_output=True, text=True, timeout=2)
-                    is_alive = ps.returncode == 0
-                except (OSError, _sp.TimeoutExpired):
+                    os.kill(pid, 0)  # signal 0: check if process exists (POSIX)
+                    is_alive = True
+                except OSError:
                     is_alive = False
                 if is_alive:
                     raise RuntimeError(
@@ -675,9 +930,9 @@ def capture_mri(
         if out_dir_check.exists():
             # Case 1: all exit layer files exist — skip capture, backfill weights
             existing_exit = sum(1 for i in range(n_layers)
-                                if (out_dir_check / f"L{i:02d}_exit.npy").exists())
+                                if _find_layer_file(out_dir_check, i, "exit") is not None)
             if existing_exit == n_layers:
-                test_path = out_dir_check / "L00_exit.npy"
+                test_path = _find_layer_file(out_dir_check, 0, "exit")
                 test_arr = np.load(test_path, mmap_mode='r')
                 if test_arr.shape == (n_tokens, hidden):
                     print(f"  All {n_layers} layer files exist — resuming from weight extraction")
@@ -761,26 +1016,36 @@ def capture_mri(
         out_dir_alloc.mkdir(parents=True, exist_ok=True)
 
     if use_mmap:
+        # Nest residual files into layers/L{NN}/
+        layers_dir = out_dir_alloc / "layers"
+        layers_dir.mkdir(exist_ok=True)
         exit_arrays = {}
         entry_arrays = {}
         pre_mlp_arrays = {}
+        mlp_out_arrays = {}
         for i in range(n_layers):
+            ldir = layers_dir / f"L{i:02d}"
+            ldir.mkdir(exist_ok=True)
             exit_arrays[i] = np.lib.format.open_memmap(
-                str(out_dir_alloc / f"L{i:02d}_exit.npy"),
+                str(ldir / "exit.npy"),
                 mode='w+', dtype=np.float16, shape=(n_tokens, hidden))
             pre_mlp_arrays[i] = np.lib.format.open_memmap(
-                str(out_dir_alloc / f"L{i:02d}_pre_mlp.npy"),
+                str(ldir / "pre_mlp.npy"),
                 mode='w+', dtype=np.float16, shape=(n_tokens, hidden))
             entry_arrays[i] = np.lib.format.open_memmap(
-                str(out_dir_alloc / f"L{i:02d}_entry.npy"),
+                str(ldir / "entry.npy"),
                 mode='w+', dtype=np.float16, shape=(n_tokens, hidden))
-        print(f"  Writing directly to {out_dir_alloc}/ (memory-mapped .npy)")
+            mlp_out_arrays[i] = np.lib.format.open_memmap(
+                str(ldir / "mlp_out.npy"),
+                mode='w+', dtype=np.float16, shape=(n_tokens, hidden))
+        print(f"  Writing directly to {out_dir_alloc}/layers/ (memory-mapped .npy)")
     else:
         if output:
             Path(output).parent.mkdir(parents=True, exist_ok=True)
         exit_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16) for i in range(n_layers)}
         entry_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16) for i in range(n_layers)}
         pre_mlp_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16) for i in range(n_layers)}
+        mlp_out_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16) for i in range(n_layers)}
 
     # Attn_out: mmap (hidden-sized, small per layer)
     # Attn weights/logits: mmap (tiny per layer)
@@ -790,7 +1055,7 @@ def capture_mri(
         attn_mmap_dir = out_dir_alloc / "attention"
         attn_mmap_dir.mkdir(exist_ok=True)
         attn_out_arrays = {i: np.lib.format.open_memmap(
-            str(out_dir_alloc / f"L{i:02d}_attn_out.npy"),
+            str(layers_dir / f"L{i:02d}" / "attn_out.npy"),
             mode='w+', dtype=np.float16, shape=(n_tokens, hidden))
             for i in range(n_layers)}
         attn_weight_arrays = {i: np.lib.format.open_memmap(
@@ -809,31 +1074,26 @@ def capture_mri(
         attn_logit_arrays = {i: np.zeros((n_tokens, n_heads, T_seq), dtype=np.float16)
                              for i in range(n_layers)}
 
-    # Gate/up: write per-batch to pre-allocated files (no mmap, no accumulation)
-    # Pre-allocate .npy files with correct headers, keep file handles open
-    gate_files = {}
-    up_files = {}
+    # Gate/up: write per-batch to pre-allocated files via persistent file handles
+    gate_handles = {}
+    up_handles = {}
+    _gate_header_size = 0
     if output:
         mlp_out_dir = Path(output) / "mlp"
         mlp_out_dir.mkdir(parents=True, exist_ok=True)
         for i in range(n_layers):
-            for name, store in [("gate", gate_files), ("up", up_files)]:
+            for name, store in [("gate", gate_handles), ("up", up_handles)]:
                 fpath = mlp_out_dir / f"L{i:02d}_{name}.npy"
-                # Write numpy header, then keep file open for batch writes
                 header = np.lib.format.header_data_from_array_1_0(
                     np.zeros((n_tokens, intermediate_size), dtype=np.float16))
                 with open(fpath, 'wb') as f:
                     np.lib.format.write_array_header_1_0(f, header)
-                store[i] = {"path": fpath, "header_size": 128}  # .npy v1 header is 128 bytes typically
-        # Measure actual header size from first file
-        _test_path = mlp_out_dir / "L00_gate.npy"
-        with open(_test_path, 'rb') as f:
-            np.lib.format.read_magic(f)
-            np.lib.format.read_array_header_1_0(f)
-            _header_bytes = f.tell()
-        for i in range(n_layers):
-            gate_files[i]["header_size"] = _header_bytes
-            up_files[i]["header_size"] = _header_bytes
+                fh = open(fpath, 'r+b')
+                fh.seek(0)
+                np.lib.format.read_magic(fh)
+                np.lib.format.read_array_header_1_0(fh)
+                _gate_header_size = fh.tell()
+                store[i] = {"fh": fh, "header_size": _gate_header_size}
 
     # Embedding gradient: d(top1_logit) / d(embedding)
     emb_grad_arrays = {i: np.zeros((n_tokens, hidden), dtype=np.float16)
@@ -856,9 +1116,37 @@ def capture_mri(
     scripts = np.array([_detect_script(tok) for _, tok in sample])
 
     # === Capture ===
-    batch_size = 32  # all modes batchable — template has fixed length
+    # Adaptive batch size: larger models need smaller batches to fit in GPU memory.
+    # mem_factor correlates with peak memory per batch per layer.
+    _mem_factor = n_layers * hidden
+    if _mem_factor > 30000:
+        batch_size = 4
+    elif _mem_factor > 20000:
+        batch_size = 8
+    elif _mem_factor > 10000:
+        batch_size = 16
+    else:
+        batch_size = 32
+    print(f"  Batch size: {batch_size} (layers*hidden={_mem_factor})")
     checkpoint_interval = max(n_tokens // 10, 1000)
     t_start = time.time()
+
+    # Per-layer conversion helpers. Converting to numpy forces MLX graph
+    # evaluation, so intermediates are freed after each layer instead of
+    # accumulating across all layers.
+    def _at_pos(t, pos):
+        """Extract position from [B, T, D]. No-op for [B, D]."""
+        return t[:, pos, :] if len(t.shape) == 3 else t
+
+    if is_mlx:
+        import mlx.core as mx
+        def _to_np(t):
+            """MLX tensor -> numpy float32. Forces graph evaluation."""
+            return np.array(t.astype(mx.float32))
+    else:
+        def _to_np(t):
+            """Torch tensor -> numpy float32."""
+            return t.float().cpu().numpy()
 
     for batch_start in range(0, n_tokens, batch_size):
         batch_end = min(batch_start + batch_size, n_tokens)
@@ -874,76 +1162,71 @@ def capture_mri(
             mask = ops.triu_mask(T)
 
         h = ops.embed(inp)
-        layer_entries = []
-        layer_exits = []
-        layer_pre_mlps = []
-        layer_attn_outs = []
-        batch_attn_w = []
-        batch_attn_s = []
-        batch_gates = []
-        batch_ups = []
         for i, ly in enumerate(model_inner.layers):
-            h, attn_w, attn_scores, h_pre_mlp, attn_output, gate_val, up_val = \
+            h, attn_w, attn_scores, h_pre_mlp, attn_output, gate_val, up_val, mlp_out = \
                 ops.layer_decomposed(ly, h, mask)
 
-            layer_pre_mlps.append(h_pre_mlp[:, -1, :] if len(h_pre_mlp.shape) == 3 else h_pre_mlp)
-            layer_attn_outs.append(attn_output[:, -1, :] if len(attn_output.shape) == 3 else attn_output)
+            # --- Per-layer: convert to numpy immediately, freeing the MLX graph ---
+            # _to_np forces graph evaluation; h becomes concrete for the next layer.
+            # h is [B, T, hidden]. Exit = last pos, entry = token_pos.
+            exit_arrays[i][batch_start:batch_end] = \
+                (_to_np(_at_pos(h, -1)) - baseline_exit[i]).astype(np.float16)
+            entry_arrays[i][batch_start:batch_end] = \
+                (_to_np(_at_pos(h, token_pos)) - baseline_entry[i]).astype(np.float16)
 
-            aw_row = attn_w[:, :, token_pos, :]
-            batch_attn_w.append(np.array(aw_row.astype(ops.float32)).astype(np.float16))
+            # h_pre_mlp, attn_output, mlp_out: [B, T, hidden] -> last pos
+            pre_mlp_arrays[i][batch_start:batch_end] = \
+                _to_np(_at_pos(h_pre_mlp, -1)).astype(np.float16)
+            attn_out_arrays[i][batch_start:batch_end] = \
+                _to_np(_at_pos(attn_output, -1)).astype(np.float16)
+            mlp_out_arrays[i][batch_start:batch_end] = \
+                _to_np(_at_pos(mlp_out, -1)).astype(np.float16)
+
+            # Attention weights: [B, heads, T, T] -> [B, heads, T_seq] at token_pos row
+            attn_weight_arrays[i][batch_start:batch_end] = \
+                _to_np(attn_w[:, :, token_pos, :]).astype(np.float16)
+
+            # Attention scores: needs clip to float16 range. None on HF backend.
             if attn_scores is not None:
-                scores_np = np.array(attn_scores[:, :, token_pos, :].astype(ops.float32)).astype(np.float32)
-                scores_np = np.clip(scores_np, -65504, 65504)
-                batch_attn_s.append(scores_np.astype(np.float16))
+                attn_logit_arrays[i][batch_start:batch_end] = \
+                    np.clip(_to_np(attn_scores[:, :, token_pos, :]),
+                            -65504, 65504).astype(np.float16)
             else:
-                batch_attn_s.append(np.zeros((B, n_heads, T_seq), dtype=np.float16))
+                attn_logit_arrays[i][batch_start:batch_end] = \
+                    np.zeros((B, n_heads, T_seq), dtype=np.float16)
 
+            # Gate/up: [B, T, inter] -> last pos. May be None for models without gated MLP.
             if gate_val is not None:
-                gv = gate_val[:, -1, :] if len(gate_val.shape) == 3 else gate_val
-                uv = up_val[:, -1, :] if len(up_val.shape) == 3 else up_val
-                # MLX bfloat16 -> float32 -> numpy float16 (bfloat16 not supported by numpy)
-                gv_f32 = gv.astype(ops.float32) if hasattr(gv, 'astype') and not isinstance(gv, np.ndarray) else gv
-                uv_f32 = uv.astype(ops.float32) if hasattr(uv, 'astype') and not isinstance(uv, np.ndarray) else uv
-                batch_gates.append(np.array(gv_f32).astype(np.float16))
-                batch_ups.append(np.array(uv_f32).astype(np.float16))
+                gv_np = _to_np(_at_pos(gate_val, -1)).astype(np.float16)
+                uv_np = _to_np(_at_pos(up_val, -1)).astype(np.float16)
             else:
-                batch_gates.append(np.zeros((B, intermediate_size), dtype=np.float16))
-                batch_ups.append(np.zeros((B, intermediate_size), dtype=np.float16))
+                gv_np = np.zeros((B, intermediate_size), dtype=np.float16)
+                uv_np = np.zeros((B, intermediate_size), dtype=np.float16)
 
-            layer_entries.append(h[:, token_pos, :])
-            layer_exits.append(h[:, -1, :])
+            # Write gate/up via persistent file handles
+            if output and i in gate_handles:
+                row_bytes = intermediate_size * 2
+                foffset = gate_handles[i]["header_size"] + batch_start * row_bytes
+                gate_handles[i]["fh"].seek(foffset)
+                gate_handles[i]["fh"].write(gv_np.tobytes())
+                up_handles[i]["fh"].seek(foffset)
+                up_handles[i]["fh"].write(uv_np.tobytes())
 
-        # Store everything
-        all_exit = ops.stack_to_numpy(layer_exits)
-        all_entry = ops.stack_to_numpy(layer_entries)
-        all_pre_mlp = ops.stack_to_numpy(layer_pre_mlps)
-        all_attn_out = ops.stack_to_numpy(layer_attn_outs)
-        for i in range(n_layers):
-            exit_arrays[i][batch_start:batch_end] = (all_exit[i] - baseline_exit[i]).astype(np.float16)
-            entry_arrays[i][batch_start:batch_end] = (all_entry[i] - baseline_entry[i]).astype(np.float16)
-            pre_mlp_arrays[i][batch_start:batch_end] = all_pre_mlp[i].astype(np.float16)
-            attn_out_arrays[i][batch_start:batch_end] = all_attn_out[i].astype(np.float16)
-            attn_weight_arrays[i][batch_start:batch_end] = batch_attn_w[i]
-            attn_logit_arrays[i][batch_start:batch_end] = batch_attn_s[i]
-            # Write gate/up batch directly to file (no memory accumulation)
-            if output and i in gate_files:
-                row_bytes = intermediate_size * 2  # float16
-                offset = gate_files[i]["header_size"] + batch_start * row_bytes
-                with open(gate_files[i]["path"], 'r+b') as f:
-                    f.seek(offset)
-                    f.write(batch_gates[i].tobytes())
-                with open(up_files[i]["path"], 'r+b') as f:
-                    f.seek(offset)
-                    f.write(batch_ups[i].tobytes())
-
-        # Backward pass: embedding gradient
-        emb_for_grad = ops.embed(inp)
-        eg = ops.embedding_grad(emb_for_grad, mask)
-        # eg is [B, seq_len, hidden] — take the token position
-        if len(eg.shape) == 3:
-            emb_grad_arrays[0][batch_start:batch_end] = eg[:, token_pos, :].astype(np.float16)
-        else:
-            emb_grad_arrays[0][batch_start:batch_end] = eg.astype(np.float16)
+        # Embedding gradient: separate sub-batches. The gradient computation
+        # does probe forward + forward + backward through ALL layers per batch.
+        # No per-layer eval possible inside it. Use batch_size//4 to cap memory.
+        _eg_batch = max(1, min(B, batch_size // 4))
+        for _eg_s in range(0, B, _eg_batch):
+            _eg_e = min(_eg_s + _eg_batch, B)
+            _eg_inp = inp[_eg_s:_eg_e]
+            _eg_emb = ops.embed(_eg_inp)
+            _eg = ops.embedding_grad(_eg_emb, mask)
+            if len(_eg.shape) == 3:
+                emb_grad_arrays[0][batch_start + _eg_s:batch_start + _eg_e] = \
+                    _eg[:, token_pos, :].astype(np.float16)
+            else:
+                emb_grad_arrays[0][batch_start + _eg_s:batch_start + _eg_e] = \
+                    _eg.astype(np.float16)
 
         if (batch_end) % 1000 < batch_size or batch_end == n_tokens:
             elapsed = time.time() - t_start
@@ -962,6 +1245,11 @@ def capture_mri(
                 "mmap_dir": str(mmap_dir) if mmap_dir else "",
                 "timestamp": time.time(),
             }))
+
+    # Close gate/up file handles
+    for i in gate_handles:
+        gate_handles[i]["fh"].close()
+        up_handles[i]["fh"].close()
 
     elapsed = time.time() - t0
 
@@ -1027,26 +1315,21 @@ def capture_mri(
             for i in range(n_layers):
                 exit_arrays[i].flush()
                 entry_arrays[i].flush()
-                total_size += (out_dir / f"L{i:02d}_exit.npy").stat().st_size
-                total_size += (out_dir / f"L{i:02d}_entry.npy").stat().st_size
-        else:
-            for i in range(n_layers):
-                np.save(out_dir / f"L{i:02d}_exit.npy", exit_arrays[i])
-                np.save(out_dir / f"L{i:02d}_entry.npy", entry_arrays[i])
-                total_size += (out_dir / f"L{i:02d}_exit.npy").stat().st_size
-                total_size += (out_dir / f"L{i:02d}_entry.npy").stat().st_size
-        # Pre-MLP states
-        if use_mmap:
-            for i in range(n_layers):
                 pre_mlp_arrays[i].flush()
-                total_size += (out_dir / f"L{i:02d}_pre_mlp.npy").stat().st_size
+                mlp_out_arrays[i].flush()
+                for name in ("exit", "entry", "pre_mlp", "mlp_out"):
+                    f = _find_layer_file(out_dir, i, name)
+                    if f:
+                        total_size += f.stat().st_size
         else:
             for i in range(n_layers):
-                pre_mlp_path = out_dir / f"L{i:02d}_pre_mlp.npy"
-                np.save(pre_mlp_path, pre_mlp_arrays[i])
-                total_size += pre_mlp_path.stat().st_size
+                for name, arr_dict in [("exit", exit_arrays), ("entry", entry_arrays),
+                                        ("pre_mlp", pre_mlp_arrays), ("mlp_out", mlp_out_arrays)]:
+                    p = out_dir / f"L{i:02d}_{name}.npy"
+                    np.save(p, arr_dict[i])
+                    total_size += p.stat().st_size
 
-        # Attention and MLP arrays
+        # Attention arrays
         attn_dir = out_dir / "attention"
         mlp_dir = out_dir / "mlp"
         if use_mmap:
@@ -1054,20 +1337,19 @@ def capture_mri(
                 attn_out_arrays[i].flush()
                 attn_weight_arrays[i].flush()
                 attn_logit_arrays[i].flush()
+                ao = _find_layer_file(out_dir, i, "attn_out")
+                if ao:
+                    total_size += ao.stat().st_size
         else:
             attn_dir.mkdir(exist_ok=True)
             for i in range(n_layers):
                 np.save(out_dir / f"L{i:02d}_attn_out.npy", attn_out_arrays[i])
                 np.save(attn_dir / f"L{i:02d}_weights.npy", attn_weight_arrays[i])
                 np.save(attn_dir / f"L{i:02d}_logits.npy", attn_logit_arrays[i])
+                total_size += (out_dir / f"L{i:02d}_attn_out.npy").stat().st_size
 
-        # Gate/up: already written per-batch during capture
-        if output:
-            for i in range(n_layers):
-                total_size += (mlp_dir / f"L{i:02d}_gate.npy").stat().st_size
-                total_size += (mlp_dir / f"L{i:02d}_up.npy").stat().st_size
+        # Attention weights/logits and gate/up (paths identical in both layouts)
         for i in range(n_layers):
-            total_size += (out_dir / f"L{i:02d}_attn_out.npy").stat().st_size
             total_size += (attn_dir / f"L{i:02d}_weights.npy").stat().st_size
             total_size += (attn_dir / f"L{i:02d}_logits.npy").stat().st_size
             total_size += (mlp_dir / f"L{i:02d}_gate.npy").stat().st_size
@@ -1519,13 +1801,19 @@ def verify_mri(path: str) -> dict:
     else:
         issues.append("Missing tokens.npz")
 
+    def _resolve(layer_idx, name):
+        """Find file in nested or flat layout."""
+        nested = p / "layers" / f"L{layer_idx:02d}" / f"{name}.npy"
+        flat = p / f"L{layer_idx:02d}_{name}.npy"
+        return nested if nested.exists() else flat if flat.exists() else None
+
     has_entry = capture.get("has_entry", True)  # legacy MRIs default to True
     suffixes = ["entry", "exit"] if has_entry else ["exit"]
     for i in range(n_layers):
         for suffix in suffixes:
-            fpath = p / f"L{i:02d}_{suffix}.npy"
-            if not fpath.exists():
-                issues.append(f"Missing L{i:02d}_{suffix}.npy")
+            fpath = _resolve(i, suffix)
+            if not fpath:
+                issues.append(f"Missing L{i:02d}_{suffix}")
                 continue
             try:
                 arr = np.load(fpath, mmap_mode='r')
@@ -1538,8 +1826,8 @@ def verify_mri(path: str) -> dict:
     check_layers = [0, n_layers // 2, n_layers - 1] if n_layers > 2 else list(range(n_layers))
     check_positions = [0, n_tok // 2, n_tok - 1] if n_tok > 2 else list(range(n_tok))
     for li in check_layers:
-        fpath = p / f"L{li:02d}_exit.npy"
-        if not fpath.exists():
+        fpath = _resolve(li, "exit")
+        if not fpath:
             continue
         try:
             arr = np.load(fpath, mmap_mode='r')
@@ -1665,7 +1953,8 @@ def verify_mri(path: str) -> dict:
                     if np.any(np.isnan(sample)):
                         issues.append(f"L{li:02d} gate contains NaN")
                     # Variance check: constant gates indicate wrong input state
-                    if sample.size > 0 and np.std(sample) < 1e-10:
+                    # Threshold accounts for float16 precision (eps ~6e-8)
+                    if sample.size > 0 and np.std(sample.astype(np.float32)) < 1e-6:
                         issues.append(f"L{li:02d} gate constant (zero variance)")
                     # Magnitude check: post-SiLU gates should be bounded
                     max_abs = float(np.abs(sample).max())
@@ -1789,8 +2078,9 @@ def load_mri(path: str) -> LazyMRI:
         "metadata": meta,
         "path": str(p),
         "token_ids": tokens["token_ids"],
-        "token_texts": tokens["token_texts"],
     }
+    if "token_texts" in tokens.files:
+        eager["token_texts"] = tokens["token_texts"]
     for key in tokens.files:
         eager[key] = tokens[key]
 
@@ -1803,6 +2093,14 @@ def load_mri(path: str) -> LazyMRI:
             fp = p / f"{name}.npy"
             if fp.exists():
                 fmap[name if name != "substrate" else "substrate_states"] = (fp, 'r')
+        # Sequence-mode arrays
+        for name in ["loss", "band_loss", "local_norm",
+                     "temporal_weights", "temporal_output",
+                     "overwrite_gate", "mode_selector", "magnitude_norm",
+                     "gated_delta_write", "gated_delta_retain", "gated_delta_erase"]:
+            fp = p / f"{name}.npy"
+            if fp.exists():
+                fmap[name] = (fp, 'r')
     else:
         n_layers = meta["model"]["n_layers"]
 
@@ -1820,11 +2118,13 @@ def load_mri(path: str) -> LazyMRI:
             for key in norms.files:
                 eager[f"norm_{key}"] = norms[key]
 
-        # Per-layer arrays: ALL lazy
+        # Per-layer arrays: ALL lazy. Check nested (layers/L{NN}/) first, flat fallback
         for i in range(n_layers):
-            for name in ["exit", "entry", "pre_mlp", "attn_out"]:
-                fp = p / f"L{i:02d}_{name}.npy"
-                if fp.exists():
+            for name in ["exit", "entry", "pre_mlp", "attn_out", "mlp_out"]:
+                nested = p / "layers" / f"L{i:02d}" / f"{name}.npy"
+                flat = p / f"L{i:02d}_{name}.npy"
+                fp = nested if nested.exists() else flat if flat.exists() else None
+                if fp:
                     fmap[f"{name}_L{i}"] = (fp, 'r')
 
         # Embedding, lmhead

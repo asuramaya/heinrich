@@ -239,3 +239,39 @@ class TestAttentionAnalysis:
         d = _make_mri(tmp_path, has_attention=False)
         r = attention_analysis(str(d))
         assert "error" in r
+
+
+class TestFindLayerFile:
+
+    def test_flat_layout(self, tmp_path):
+        from heinrich.profile.mri import _find_layer_file
+        d = tmp_path / "test.mri"
+        d.mkdir()
+        np.save(d / "L00_exit.npy", np.zeros((5, 4), dtype=np.float16))
+        assert _find_layer_file(d, 0, "exit") == d / "L00_exit.npy"
+
+    def test_nested_layout(self, tmp_path):
+        from heinrich.profile.mri import _find_layer_file
+        d = tmp_path / "test.mri"
+        d.mkdir()
+        ldir = d / "layers" / "L00"
+        ldir.mkdir(parents=True)
+        np.save(ldir / "exit.npy", np.zeros((5, 4), dtype=np.float16))
+        assert _find_layer_file(d, 0, "exit") == ldir / "exit.npy"
+
+    def test_nested_preferred_over_flat(self, tmp_path):
+        from heinrich.profile.mri import _find_layer_file
+        d = tmp_path / "test.mri"
+        d.mkdir()
+        np.save(d / "L00_exit.npy", np.zeros((5, 4), dtype=np.float16))
+        ldir = d / "layers" / "L00"
+        ldir.mkdir(parents=True)
+        np.save(ldir / "exit.npy", np.ones((5, 4), dtype=np.float16))
+        result = _find_layer_file(d, 0, "exit")
+        assert result == ldir / "exit.npy"
+
+    def test_missing_returns_none(self, tmp_path):
+        from heinrich.profile.mri import _find_layer_file
+        d = tmp_path / "test.mri"
+        d.mkdir()
+        assert _find_layer_file(d, 0, "exit") is None

@@ -81,6 +81,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
     <span id="llbl" style="color:#aaa;font-size:9px;min-width:24px;text-align:center">L00</span>
     <button id="lplay" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9654;</button>
     <button id="lnext" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9654;</button>
+    <button id="lrec" style="background:#1a1a1a;border:1px solid #333;color:#664444;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9679;</button>
     <span id="ntok" style="color:#444;font-size:7px"></span>
     <button id="lemb" style="background:#1a1a1a;border:1px solid #333;color:#666;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">emb</button>
     <button id="llmh" style="background:#1a1a1a;border:1px solid #333;color:#666;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">lmh</button>
@@ -2038,13 +2039,18 @@ async function loadAll(){
   document.getElementById('ntok').textContent=nN+' tok / '+nK+' PC';
   document.getElementById('st').textContent='Parsing...';
 
-  // Parse binary scores
+  // Parse binary scores — v2 (HEI2): separate var_k and score_k; v1 (HEIN/0000): shared k
   const dv=new DataView(buf);
-  const bnL=dv.getUint32(4,true),bnN=dv.getUint32(8,true),bnK=dv.getUint32(12,true);const varOff=16;_layerVar=[];
-  for(let l=0;l<bnL;l++){const v=new Float32Array(bnK);for(let k=0;k<bnK;k++)v[k]=dv.getFloat32(varOff+(l*bnK+k)*4,true);_layerVar.push(v);}
-  // Parse scores: decode float16 one layer at a time to control peak memory
-  const scoreOff=varOff+bnL*bnK*4;
-  const totalScores=bnL*bnN*bnK;
+  const magic=String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3));
+  let bnL,bnN,bnK,bnVK,varOff;
+  if(magic==='HEI2'){
+    bnL=dv.getUint32(4,true);bnN=dv.getUint32(8,true);bnK=dv.getUint32(12,true);bnVK=dv.getUint32(16,true);varOff=20;
+  }else{
+    bnL=dv.getUint32(4,true);bnN=dv.getUint32(8,true);bnK=dv.getUint32(12,true);bnVK=bnK;varOff=16;
+  }
+  _layerVar=[];
+  for(let l=0;l<bnL;l++){const v=new Float32Array(bnVK);for(let k=0;k<bnVK;k++)v[k]=dv.getFloat32(varOff+(l*bnVK+k)*4,true);_layerVar.push(v);}
+  const scoreOff=varOff+bnL*bnVK*4;
   allL=[];
   for(let l=0;l<bnL;l++){
     const layerU16=new Uint16Array(buf,scoreOff+l*bnN*bnK*2,bnN*bnK);
@@ -2054,7 +2060,7 @@ async function loadAll(){
     for(let t=0;t<bnN;t++)ls[t]=f.subarray(t*bnK,t*bnK+bnK);
     allL.push(ls);
   }
-  nK=bnK;// nK = blob's actual PC count, not decomp's full count
+  nK=bnVK;// nK = full variance PC count (spectrum uses this), not the capped score count
 
   // Legend
   _hiddenScripts.clear();
@@ -2170,7 +2176,94 @@ function _togglePlay(){
   if(play){_playLastT=performance.now();_playRAF=requestAnimationFrame(_playFrame);}
   else{if(_playRAF){cancelAnimationFrame(_playRAF);_playRAF=null;}_updateBrowserLayer();_updateBrowserSelBoxes();_updateBrowserOverlay();if(pinnedToken>=0){updatePinMarkers();showPinDetail(pinnedToken);}}
 }
-document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;if(e.key==='ArrowRight')setLayer((cL+1)%_nRealLayers);if(e.key==='ArrowLeft')setLayer((cL-1+_nRealLayers)%_nRealLayers);if(e.key===' '){e.preventDefault();_togglePlay();}if(e.key==='Escape'&&(pinnedToken>=0||pinnedTokenB>=0)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();}});
+// --- Viewport capture ---
+function _captureLabel(vi){
+  if(vi==='pcs')return'spectrum';if(vi==='br0')return'prism';
+  if(typeof vi==='string'&&vi.startsWith('l'))return'internals'+vi[1];
+  if(typeof vi==='string'&&vi.startsWith('r'))return'right'+vi[1];
+  return'vp'+vi;
+}
+function _captureFilename(vi,suffix){
+  return`${model}_${mode}_L${String(cL).padStart(2,'0')}_${_captureLabel(vi)}.${suffix}`;
+}
+function captureViewport(sc,cam,el,vi,scale){
+  scale=scale||3;
+  const w=el.clientWidth*scale,h=el.clientHeight*scale;
+  const tmp=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true,alpha:false});
+  tmp.setSize(w,h);tmp.setClearColor(sc.background||0x0a0a0a);tmp.clear();
+  cam.aspect=w/h;cam.updateProjectionMatrix();
+  tmp.render(sc,cam);
+  tmp.domElement.toBlob(blob=>{
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+    a.download=_captureFilename(vi,'png');a.click();
+    URL.revokeObjectURL(a.href);tmp.dispose();
+    cam.aspect=el.clientWidth/el.clientHeight;cam.updateProjectionMatrix();
+  });
+}
+let _recording=false;
+async function recordViewport(sc,cam,el,vi,fps){
+  if(_recording)return;_recording=true;
+  fps=fps||10;const scale=2;
+  const w=el.clientWidth*scale,h=el.clientHeight*scale;
+  const tmp=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});
+  tmp.setSize(w,h);
+  const stream=tmp.domElement.captureStream(0);
+  const rec=new MediaRecorder(stream,{mimeType:'video/webm;codecs=vp9',videoBitsPerSecond:5000000});
+  const chunks=[];
+  rec.ondataavailable=e=>{if(e.data.size)chunks.push(e.data);};
+  const recBtn=document.getElementById('lrec');
+  if(recBtn)recBtn.style.color='#ff4444';
+  rec.start();
+  const startL=cL;
+  for(let l=0;l<_nRealLayers;l++){
+    setLayer(l,true);
+    cam.aspect=w/h;cam.updateProjectionMatrix();
+    tmp.render(sc,cam);
+    stream.getVideoTracks()[0].requestFrame();
+    await new Promise(r=>setTimeout(r,1000/fps));
+  }
+  rec.stop();
+  await new Promise(r=>{rec.onstop=r;});
+  const blob=new Blob(chunks,{type:'video/webm'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download=_captureFilename(vi,'webm');a.click();
+  URL.revokeObjectURL(a.href);tmp.dispose();
+  cam.aspect=el.clientWidth/el.clientHeight;cam.updateProjectionMatrix();
+  setLayer(startL);
+  _recording=false;
+  if(recBtn)recBtn.style.color='#664444';
+}
+// Wire [S] buttons on all .cbtn containers
+function _addSnapButtons(){
+  document.querySelectorAll('.cbtn[data-v]').forEach(bar=>{
+    const vk=bar.dataset.v;
+    const btn=document.createElement('button');btn.textContent='S';btn.title='Snapshot (P)';
+    btn.style.cssText='margin-left:2px';
+    btn.addEventListener('click',e=>{
+      e.stopPropagation();
+      // Resolve scene+camera for this viewport key
+      const vi=parseInt(vk);
+      if(!isNaN(vi)&&views[vi]){captureViewport(views[vi].sc,views[vi].cam,views[vi].el,vi);return;}
+      if(vk==='pcs'&&_pcsSc&&_pcsCam&&_pcsEl){captureViewport(_pcsSc,_pcsCam,_pcsEl,'pcs');return;}
+      // left/right viewports
+      const li=vk.match(/^l(\d)/);if(li&&leftViews[+li[1]]){const v=leftViews[+li[1]];captureViewport(v.sc,v.cam,v.el,'l'+li[1]);return;}
+      const ri=vk.match(/^r(\d)/);if(ri&&rightViews[+ri[1]]){const v=rightViews[+ri[1]];captureViewport(v.sc,v.cam,v.el,'r'+ri[1]);return;}
+      if(vk==='all'){/* master snap: capture all viewports */
+        views.forEach((v,i)=>captureViewport(v.sc,v.cam,v.el,i));return;}
+    });
+    bar.appendChild(btn);
+  });
+}
+_addSnapButtons();
+// REC button: record last-hovered viewport (or vp0)
+document.getElementById('lrec').addEventListener('click',()=>{
+  const vi=_lastVP;const v=views[vi];
+  if(v)recordViewport(v.sc,v.cam,v.el,vi);
+});
+document.addEventListener('keydown',e=>{if(e.target.tagName==='INPUT'||e.target.tagName==='SELECT')return;if(e.key==='ArrowRight')setLayer((cL+1)%_nRealLayers);if(e.key==='ArrowLeft')setLayer((cL-1+_nRealLayers)%_nRealLayers);if(e.key===' '){e.preventDefault();_togglePlay();}if(e.key==='Escape'&&(pinnedToken>=0||pinnedTokenB>=0)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();}
+if(e.key==='p'||e.key==='P'){/* snapshot last-hovered viewport */const vi=_lastVP;const v=views[vi];if(v)captureViewport(v.sc,v.cam,v.el,vi);}
+if(e.key==='g'||e.key==='G'){/* record last-hovered viewport */const vi=_lastVP;const v=views[vi];if(v)recordViewport(v.sc,v.cam,v.el,vi);}
+});
 let _needsRender=true,_frameCount=0,_fpsTime=performance.now();
 function _markDirty(){_needsRender=true;}
 views.forEach(v=>v.ctl.addEventListener('change',_markDirty));

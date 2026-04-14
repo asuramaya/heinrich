@@ -5294,9 +5294,16 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
     print(f"  {K} components (hidden_size={hidden_size})", file=sys.stderr)
     layer_meta = []
 
-    # Collect all scores for the binary blob
-    all_variances = []  # [n_layers, K]
-    all_scores = []     # [n_layers, N, K]
+    # BIN_K: cap for binary blob. Full scores saved per-layer to disk,
+    # only BIN_K columns accumulated in memory for the viewer blob.
+    _est_total_layers = n_layers + 2  # real layers + emb + lmh
+    _max_blob_bytes = 100 * 1024 * 1024
+    _max_k = max(3, _max_blob_bytes // (_est_total_layers * n_sample * 2))
+    BIN_K = min(K, 50, _max_k)
+
+    # Collect capped scores for the binary blob
+    all_variances = []  # [n_layers, BIN_K]
+    all_scores = []     # [n_layers, N, BIN_K]
 
     def _find_exit(li):
         """Find exit file in nested or flat layout."""
@@ -5311,7 +5318,7 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
             layer_meta.append({"layer": li, "pc1_pct": 0, "intrinsic_dim": 0,
                                "neighbor_stability": 0})
             all_variances.append(np.zeros(K, dtype=np.float32))
-            all_scores.append(np.zeros((n_sample, K), dtype=np.float16))
+            all_scores.append(np.zeros((n_sample, BIN_K), dtype=np.float16))
             continue
 
         print(f"  L{li:02d}/{n_layers}  ({n_sample} tokens, {K} PCs)...",
@@ -5339,8 +5346,8 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
         np.save(decomp_dir / f'L{li:02d}_variance.npy', variance)
         np.save(decomp_dir / f'L{li:02d}_components.npy', components)
 
-        all_variances.append(variance)
-        all_scores.append(scores)
+        all_variances.append(variance)           # full K (tiny, ~2KB/layer)
+        all_scores.append(scores[:, :BIN_K].copy())  # capped (large)
 
         # Per-layer stats
         var_ratio = (S ** 2) / (S ** 2).sum()
@@ -5378,7 +5385,7 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
         if not vf.exists():
             print(f"  {vname}: not found, skipping", file=sys.stderr)
             all_variances.append(np.zeros(K, dtype=np.float32))
-            all_scores.append(np.zeros((n_sample, K), dtype=np.float16))
+            all_scores.append(np.zeros((n_sample, BIN_K), dtype=np.float16))
             layer_meta.append({"layer": vname, "pc1_pct": 0, "intrinsic_dim": 0, "neighbor_stability": 0})
             continue
         print(f"  {vname} PCA...", file=sys.stderr)
@@ -5393,8 +5400,8 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
         if k < K:
             scores = np.pad(scores, ((0, 0), (0, K - k)))
             variance = np.pad(variance, (0, K - k))
-        all_variances.append(variance)
-        all_scores.append(scores)
+        all_variances.append(variance)              # full K
+        all_scores.append(scores[:, :BIN_K].copy())  # capped
         var_ratio = (S ** 2) / (S ** 2).sum()
         cum = np.cumsum(var_ratio)
         layer_meta.append({"layer": vname, "pc1_pct": round(float(var_ratio[0]) * 100, 1),
@@ -5442,38 +5449,18 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
         gate_summary["layers"] = gate_layers
         gate_summary["n_tokens"] = n_sample
         (decomp_dir / 'gate_summary.json').write_text(json.dumps(gate_summary))
-        # Precompute per-token gate heatmap: max |gate * up| per layer (actual neuron contribution)
-        print(f"  Gate heatmap...", file=sys.stderr)
-        gate_heat = np.zeros((n_sample, n_layers), dtype=np.float16)
-        for li in range(n_layers):
-            gp = mlp_dir / f'L{li:02d}_gate.npy'
-            up = mlp_dir / f'L{li:02d}_up.npy'
-            if gp.exists() and up.exists():
-                g = np.load(str(gp), mmap_mode='r')
-                u = np.load(str(up), mmap_mode='r')
-                gate_heat[:, li] = np.abs(g * u).max(axis=1).astype(np.float16)
-            elif gp.exists():
-                g = np.load(str(gp), mmap_mode='r')
-                gate_heat[:, li] = np.abs(g).max(axis=1).astype(np.float16)
-        np.save(decomp_dir / 'gate_heatmap.npy', gate_heat)
-        print(f"  Gate heatmap: {gate_heat.shape}", file=sys.stderr)
 
-    # BIN_K: cap for binary blob and delta PCA (viewer initial load)
-    # Cap blob to ~100MB (JS doubles to float32 on parse)
     total_layers = len(all_scores)
-    max_blob_bytes = 100 * 1024 * 1024
-    max_k = max(3, max_blob_bytes // (total_layers * n_sample * 2))
-    BIN_K = min(K, 50, max_k)
-    print(f"  Blob: {total_layers} layers × {n_sample} tokens × {BIN_K} PCs = "
-          f"{total_layers * n_sample * BIN_K * 2 / (1024*1024):.0f}MB", file=sys.stderr)
+    _var_k = len(all_variances[0]) if all_variances else K
+    print(f"  Blob: {total_layers} layers x {n_sample} tokens x {BIN_K} score PCs + {_var_k} var PCs = "
+          f"{(total_layers * n_sample * BIN_K * 2 + total_layers * _var_k * 4) / (1024*1024):.0f}MB",
+          file=sys.stderr)
 
     # === Precompute delta PCA (exit - entry) ===
     delta_scores_all = []
     delta_var_all = []
     for li in range(n_layers):
-        entry_path = _find_exit(li)  # reuse resolver (entry has same path pattern)
         exit_path = _find_exit(li)
-        # entry uses same resolver logic
         entry_nested = mri_dir / 'layers' / f'L{li:02d}' / 'entry.npy'
         entry_flat = mri_dir / f'L{li:02d}_entry.npy'
         entry_path = entry_nested if entry_nested.exists() else entry_flat if entry_flat.exists() else None
@@ -5503,25 +5490,58 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
             f.write(d_header); f.write(d_var); f.write(d_sc)
         print(f"  Delta PCA: {len(delta_scores_all)} layers, {dK} PCs", file=sys.stderr)
 
-    # === Precompute per-token neuron profiles (top neurons by contribution) ===
+    # === Gate heatmap + neuron profiles in one pass ===
+    # Single sequential read per layer (no mmap — critical for NAS/USB).
+    # Computes both gate heatmap (max |g*u| per token) and neuron importance
+    # (mean |g*u| per neuron) from the same data.
     mlp_dir = mri_dir / 'mlp'
     if mlp_dir.exists():
-        print(f"  Neuron profiles...", file=sys.stderr)
-        # For each layer, compute |gate * up| contribution per neuron, averaged across tokens
-        neuron_importance = []  # per-layer top neuron indices
+        print(f"  Gate heatmap + neuron profiles...", file=sys.stderr)
+        gate_heat = np.zeros((n_sample, n_layers), dtype=np.float16)
+        neuron_importance = []
         for li in range(n_layers):
             gp = mlp_dir / f'L{li:02d}_gate.npy'
             up_p = mlp_dir / f'L{li:02d}_up.npy'
             if gp.exists() and up_p.exists():
-                g = np.load(str(gp), mmap_mode='r').astype(np.float32)
-                u = np.load(str(up_p), mmap_mode='r').astype(np.float32)
-                contrib = np.abs(g * u).mean(axis=0)  # [intermediate]
+                # Sequential read: one I/O per file, entire array into RAM
+                g = np.load(str(gp))   # no mmap — reads whole file once
+                u = np.load(str(up_p))
+                _inter = g.shape[1]
+                # Process in chunks to limit float32 peak (gate+up are float16 on disk)
+                _heat_col = np.zeros(n_sample, dtype=np.float32)
+                _contrib = np.zeros(_inter, dtype=np.float64)
+                _chunk = 16384
+                for _s in range(0, n_sample, _chunk):
+                    _e = min(_s + _chunk, n_sample)
+                    _gc = g[_s:_e].astype(np.float32)
+                    _uc = u[_s:_e].astype(np.float32)
+                    _gu = np.abs(_gc * _uc)
+                    _heat_col[_s:_e] = _gu.max(axis=1)
+                    _contrib += _gu.sum(axis=0)
+                gate_heat[:, li] = _heat_col.astype(np.float16)
+                contrib = _contrib / n_sample
                 top50 = np.argsort(contrib)[-50:][::-1]
                 neuron_importance.append({"layer": li, "top_neurons": top50.tolist(),
                     "top_contrib": contrib[top50].tolist()})
+                del g, u  # free RAM before next layer
+            elif gp.exists():
+                g = np.load(str(gp))
+                _chunk = 16384
+                _col = np.zeros(n_sample, dtype=np.float32)
+                for _s in range(0, n_sample, _chunk):
+                    _e = min(_s + _chunk, n_sample)
+                    _col[_s:_e] = np.abs(g[_s:_e].astype(np.float32)).max(axis=1)
+                gate_heat[:, li] = _col.astype(np.float16)
+                neuron_importance.append({"layer": li, "top_neurons": [], "top_contrib": []})
+                del g
             else:
                 neuron_importance.append({"layer": li, "top_neurons": [], "top_contrib": []})
+            if (li + 1) % 5 == 0:
+                print(f"    L{li}/{n_layers}", file=sys.stderr)
+        np.save(decomp_dir / 'gate_heatmap.npy', gate_heat)
         (decomp_dir / 'neuron_importance.json').write_text(json.dumps(neuron_importance))
+        print(f"  Gate heatmap: {gate_heat.shape}, neurons: {len(neuron_importance)} layers",
+              file=sys.stderr)
 
     # === Precompute attention summary ===
     attn_dir = mri_dir / 'attention'
@@ -5545,13 +5565,14 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
     total_layers = len(all_scores)  # n_layers + 2 virtual layers
 
     # Build all_scores.bin (includes virtual layers)
-    # BIN_K already set above (cap to first 50 PCs for viewer binary)
-    # Format: [4B magic 'HEIN'][4B n_layers][4B n_tokens][4B n_components]
-    #         [float32 variance: n_layers * BIN_K]
-    #         [uint16 scores: n_layers * N * BIN_K]  (float16 as raw uint16)
-    header = struct.pack('<4sIII', b'HEIN', total_layers, n_sample, BIN_K)
-    var_block = np.concatenate([v[:BIN_K] for v in all_variances]).tobytes()
-    score_block = np.concatenate([s[:, :BIN_K].view(np.uint16).ravel()
+    # Scores capped to BIN_K (50) for memory. Variance at full K (tiny).
+    # Format v2: [4B magic 'HEI2'][4B n_layers][4B n_tokens][4B score_k][4B var_k]
+    #            [float32 variance: n_layers * var_k]
+    #            [uint16 scores: n_layers * N * score_k]
+    VAR_K = len(all_variances[0]) if all_variances else K
+    header = struct.pack('<4sIIII', b'HEI2', total_layers, n_sample, BIN_K, VAR_K)
+    var_block = np.concatenate(all_variances).tobytes()
+    score_block = np.concatenate([s.view(np.uint16).ravel()
                                   for s in all_scores]).tobytes()
     bin_path = decomp_dir / 'all_scores.bin'
     with open(bin_path, 'wb') as f:

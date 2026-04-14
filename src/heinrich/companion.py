@@ -182,7 +182,9 @@ def _compute_pca(mri_path: str, n_sample: int = 5000) -> dict:
             continue
         exits = mri[exit_key][idx].astype(np.float32)
         centered = exits - exits.mean(axis=0)
-        U, S, _ = np.linalg.svd(centered, full_matrices=False)
+        from sklearn.utils.extmath import randomized_svd
+        U, S, _ = randomized_svd(centered, n_components=min(10, centered.shape[1]),
+                                  random_state=42)
         proj = U[:, :3] * S[:3]
         pmax = np.abs(proj).max() + 1e-8
         proj_norm = (proj / pmax).astype(np.float16)
@@ -307,6 +309,7 @@ def _weight_alignment_all(mri_path: str) -> list | dict:
 
 # Cache mmap'd gate/up arrays per MRI path — avoids 60 file opens per request
 _mlp_mmap_cache: dict[str, tuple] = {}  # mri_path → (n_layers, intermediate, gates[], ups[])
+_NEURON_CACHE_MAX = 2000  # ~180MB at 90KB/entry
 _neuron_result_cache: dict[str, bytes] = {}  # "mri_path:token_idx" → result bytes
 
 def _get_mlp_mmaps(mri_path: str):
@@ -362,7 +365,11 @@ def _neuron_field(mri_path: str, token_idx: int) -> bytes | dict:
         else:
             result[li] = gt.astype(np.float16)
     data = result.tobytes()
-    _neuron_result_cache[cache_key] = data  # ~90KB per token, cached in memory
+    if len(_neuron_result_cache) >= _NEURON_CACHE_MAX:
+        keys = list(_neuron_result_cache.keys())
+        for k in keys[:len(keys) // 4]:
+            del _neuron_result_cache[k]
+    _neuron_result_cache[cache_key] = data
     return data
 
 
@@ -722,6 +729,11 @@ def _list_commands() -> list[dict]:
 class CompanionHandler(SimpleHTTPRequestHandler):
     """HTTP handler for the companion API + viewer."""
 
+    mri_root = "/Volumes/sharts"
+
+    def _mri_path(self, model: str, mode: str) -> str:
+        return f"{self.mri_root}/{model}/{mode}.mri"
+
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
@@ -742,7 +754,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
                 n = int(qs.get('n', ['0'])[0])
-                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                mri_path = self._mri_path(model, mode)
                 if not Path(mri_path).exists():
                     self._send_json({"error": f"MRI not found: {mri_path}"})
                     return
@@ -758,7 +770,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             parts = path.split('/')
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
-                decomp_dir = Path(f"/Volumes/sharts/{model}/{mode}.mri/decomp")
+                decomp_dir = Path(self._mri_path(model, mode)) / "decomp"
                 bin_path = decomp_dir / "all_scores.bin"
                 meta_path = decomp_dir / "meta.json"
                 if bin_path.exists():
@@ -766,20 +778,28 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                     import struct
                     file_size = bin_path.stat().st_size
                     with open(bin_path, 'rb') as f:
-                        header = f.read(16)
+                        header = f.read(20)
                     if len(header) >= 16 and meta_path.exists():
-                        magic, bnL, bnN, bnK = struct.unpack_from('<4sIII', header)
-                        # Accept both old (0x00000000) and new ('HEIN') magic
-                        if magic not in (b'HEIN', b'\x00\x00\x00\x00'):
+                        magic = header[:4]
+                        if magic == b'HEI2':
+                            # v2: separate var_k and score_k
+                            bnL, bnN, bnK, bnVK = struct.unpack_from('<IIII', header, 4)
+                            hdr_size = 20
+                        elif magic in (b'HEIN', b'\x00\x00\x00\x00'):
+                            # v1: shared k for variance and scores
+                            bnL, bnN, bnK = struct.unpack_from('<III', header, 4)
+                            bnVK = bnK
+                            hdr_size = 16
+                        else:
                             self._send_json({"error": f"Unknown binary format (magic: {magic!r})"})
                             return
                         meta = json.loads(meta_path.read_text())
-                        expected = 16 + bnL * bnK * 4 + bnL * bnN * bnK * 2
+                        expected = hdr_size + bnL * bnVK * 4 + bnL * bnN * bnK * 2
                         if file_size != expected:
                             self._send_json({"error": f"Stale binary: size {file_size} != expected {expected}. Re-run decomposition."})
                             return
-                        if meta.get("n_sample") != bnN or meta.get("n_components") != bnK:
-                            self._send_json({"error": f"Binary/meta mismatch: bin has {bnN}tok/{bnK}pc, meta has {meta.get('n_sample')}/{meta.get('n_components')}. Re-run decomposition."})
+                        if meta.get("n_sample") != bnN:
+                            self._send_json({"error": f"Binary/meta mismatch: bin has {bnN} tokens, meta has {meta.get('n_sample')}. Re-run decomposition."})
                             return
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/octet-stream')
@@ -800,7 +820,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
                 layer = int(qs.get('layer', ['0'])[0])
-                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                mri_path = self._mri_path(model, mode)
                 result = _load_decomp(mri_path, layer)
                 self._send_json(result)
             else:
@@ -809,7 +829,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             parts = path.split('/')
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
-                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                mri_path = self._mri_path(model, mode)
                 result = _load_decomp_meta(mri_path)
                 self._send_json(result)
             else:
@@ -819,7 +839,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
                 token = int(qs.get('token', ['0'])[0])
-                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                mri_path = self._mri_path(model, mode)
                 self._send_json(_token_biography(mri_path, token))
             else:
                 self._send_json({"error": "Usage: /api/token-bio/<model>/<mode>?token=N"})
@@ -827,7 +847,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             parts = path.split('/')
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
-                hp = Path(f"/Volumes/sharts/{model}/{mode}.mri/decomp/gate_heatmap.npy")
+                hp = Path(self._mri_path(model, mode)) / "decomp" / "gate_heatmap.npy"
                 if hp.exists():
                     self._send_file(hp)
                 else:
@@ -837,7 +857,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
                 pc = int(qs.get('pc', ['0'])[0])
-                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                mri_path = self._mri_path(model, mode)
                 result = _pc_full(mri_path, pc)
                 if isinstance(result, dict):
                     self._send_json(result)
@@ -850,7 +870,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 pcs_str = qs.get('pcs', [''])[0]
                 pcs = [int(p) for p in pcs_str.split(',') if p]
                 step = int(qs.get('step', ['10'])[0])
-                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                mri_path = self._mri_path(model, mode)
                 result = _pc_medium(mri_path, pcs, step)
                 if isinstance(result, dict):
                     self._send_json(result)
@@ -863,7 +883,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 model, mode = parts[3], parts[4]
                 pc = int(qs.get('pc', ['0'])[0])
                 layer = int(qs.get('layer', ['0'])[0])
-                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                mri_path = self._mri_path(model, mode)
                 result = _pc_column_cached(mri_path, pc, layer)
                 if isinstance(result, dict):
                     self._send_json(result)
@@ -875,7 +895,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 model, mode = parts[3], parts[4]
                 token = int(qs.get('token', ['0'])[0])
                 layer = int(qs.get('layer', ['0'])[0])
-                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                mri_path = self._mri_path(model, mode)
                 result = _token_hover(mri_path, token, layer)
                 if isinstance(result, dict):
                     self._send_json(result)
@@ -888,7 +908,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 model, mode = parts[3], parts[4]
                 token = int(qs.get('token', ['0'])[0])
                 layer = int(qs.get('layer', ['0'])[0])
-                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                mri_path = self._mri_path(model, mode)
                 result = _token_layer_scores(mri_path, token, layer)
                 if isinstance(result, dict):
                     self._send_json(result)
@@ -899,7 +919,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
                 token = int(qs.get('token', ['0'])[0])
-                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                mri_path = self._mri_path(model, mode)
                 result = _token_pca_full(mri_path, token)
                 if isinstance(result, dict):
                     self._send_json(result)
@@ -910,7 +930,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
                 token = int(qs.get('token', ['0'])[0])
-                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                mri_path = self._mri_path(model, mode)
                 result = _neuron_field(mri_path, token)
                 if isinstance(result, dict):
                     self._send_json(result)
@@ -923,20 +943,20 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
                 token = int(qs.get('token', ['0'])[0])
-                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                mri_path = self._mri_path(model, mode)
                 self._send_json(_token_neurons(mri_path, token))
         elif path.startswith('/api/token-attn/'):
             parts = path.split('/')
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
                 token = int(qs.get('token', ['0'])[0])
-                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                mri_path = self._mri_path(model, mode)
                 self._send_json(_token_attention(mri_path, token))
         elif path.startswith('/api/norms/'):
             parts = path.split('/')
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
-                norms_path = Path(f"/Volumes/sharts/{model}/{mode}.mri/norms.npz")
+                norms_path = Path(self._mri_path(model, mode)) / "norms.npz"
                 if norms_path.exists():
                     norms = dict(np.load(str(norms_path)))
                     result = {}
@@ -951,7 +971,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             parts = path.split('/')
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
-                bl_path = Path(f"/Volumes/sharts/{model}/{mode}.mri/baselines.npz")
+                bl_path = Path(self._mri_path(model, mode)) / "baselines.npz"
                 if bl_path.exists():
                     bl = dict(np.load(str(bl_path)))
                     result = {}
@@ -966,7 +986,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             parts = path.split('/')
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
-                bin_path = Path(f"/Volumes/sharts/{model}/{mode}.mri/decomp/delta_scores.bin")
+                bin_path = Path(self._mri_path(model, mode)) / "decomp" / "delta_scores.bin"
                 if bin_path.exists():
                     self._send_file(bin_path)
                 else:
@@ -975,7 +995,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             parts = path.split('/')
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
-                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                mri_path = self._mri_path(model, mode)
                 result = _weight_alignment_all(mri_path)
                 self._send_json(result)
         elif path.startswith('/api/weight-align/'):
@@ -983,7 +1003,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
                 layer = int(qs.get('layer', ['0'])[0])
-                mri_path = f"/Volumes/sharts/{model}/{mode}.mri"
+                mri_path = self._mri_path(model, mode)
                 self._send_json(_weight_alignment(mri_path, layer))
             else:
                 self._send_json({"error": "Usage: /api/weight-align/<model>/<mode>?layer=N"})
@@ -1080,9 +1100,11 @@ class CompanionHandler(SimpleHTTPRequestHandler):
         pass  # silence request logs
 
 
-def run_companion(port: int = 8377):
+def run_companion(port: int = 8377, mri_root: str = "/Volumes/sharts"):
     """Run the companion HTTP server (threaded)."""
     from socketserver import ThreadingMixIn
+
+    CompanionHandler.mri_root = mri_root
 
     class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
         daemon_threads = True
