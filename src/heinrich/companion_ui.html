@@ -1818,20 +1818,26 @@ function _updatePCSHover(tokIdx){
   const cacheKey=`${tokIdx},${cL}`;
   const cached=_pcsLayerCache.get(cacheKey);
   if(cached){_renderPCSHoverLayer(tokIdx,cached);return;}
-  // Fire lightweight fetch — ~1KB, essentially instant
-  if(_pcsHoverLoading!==tokIdx){
+  // Show immediate fallback from _getScore (first nK PCs), then upgrade with full fetch
+  const k=_pcsNK||nK;
+  if(k){
+    const fallback=new Float32Array(k);
+    for(let pc=0;pc<k;pc++)fallback[pc]=_getScore(cL,tokIdx,pc);
+    _renderPCSHoverLayer(tokIdx,fallback);
+  }
+  // Fire lightweight fetch for full K — ~1KB, <1ms on localhost
+  if(_pcsHoverLoading!==tokIdx&&model){
     _pcsHoverLoading=tokIdx;
     fetch(`/api/token-layer/${model}/${mode}?token=${tokIdx}&layer=${cL}`).then(r=>{
       if(!r.ok)return null;const ct=r.headers.get('content-type')||'';if(ct.includes('json'))return null;
       return r.arrayBuffer();
     }).then(buf=>{
       _pcsHoverLoading=-1;
-      if(!buf)return;
+      if(!buf||_pcsHoverTok!==tokIdx)return;
       const dv=new DataView(buf);const K=dv.getUint32(0,true);
       const u16=new Uint16Array(buf,8);
       const f32=new Float32Array(K);for(let j=0;j<K;j++)f32[j]=f16(u16[j]);
       _pcsHoverK=K;
-      // LRU: keep last 256 entries (token×layer pairs)
       if(_pcsLayerCache.size>256){const first=_pcsLayerCache.keys().next().value;_pcsLayerCache.delete(first);}
       _pcsLayerCache.set(cacheKey,f32);
       if(_pcsHoverTok===tokIdx)_renderPCSHoverLayer(tokIdx,f32);
