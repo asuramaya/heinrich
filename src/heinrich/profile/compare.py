@@ -5330,52 +5330,55 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
         _score_mmaps[li] = arr
         return arr
 
-    for li in range(n_layers):
-        exit_path = _find_exit(li)
-        if not exit_path:
-            print(f"  L{li:02d}: no exit vectors, skipping", file=sys.stderr)
-            layer_meta.append({"layer": li, "pc1_pct": 0, "intrinsic_dim": 0,
-                               "neighbor_stability": 0})
-            all_variances.append(np.zeros(K, dtype=np.float32))
-            all_scores.append(np.zeros((n_sample, BIN_K), dtype=np.float16))
-            continue
+    # --- Per-layer PCA: threaded, GPU-accelerated SVD where available ---
+    def _svd_gpu(centered, K):
+        """Try MLX GPU SVD (Apple Silicon), return (U, S, Vt) or None."""
+        try:
+            import mlx.core as mx
+            mx_data = mx.array(centered)
+            U_mx, S_mx, Vt_mx = mx.linalg.svd(mx_data, stream=mx.gpu)
+            # Force computation
+            _u = np.array(U_mx[:, :K].astype(mx.float32))
+            _s = np.array(S_mx[:K].astype(mx.float32))
+            _vt = np.array(Vt_mx[:K].astype(mx.float32))
+            del mx_data, U_mx, S_mx, Vt_mx
+            return _u, _s, _vt
+        except Exception:
+            return None
 
-        print(f"  L{li:02d}/{n_layers}  ({n_sample} tokens, {K} PCs)...",
-              end="\r", file=sys.stderr)
-
-        vecs = np.load(str(exit_path), mmap_mode='r')[idx].astype(np.float32)
+    def _pca_one_layer(args):
+        li, exit_path, _idx, _K, _n_sample, _decomp_dir, _BIN_K = args
+        if exit_path is None:
+            return li, None, None, {"layer": li, "pc1_pct": 0, "intrinsic_dim": 0, "neighbor_stability": 0}
+        vecs = np.load(str(exit_path), mmap_mode='r')[_idx].astype(np.float32)
         centered = vecs - vecs.mean(axis=0)
-        # Randomized SVD: O(n*k*d) instead of O(n*d^2). 18x faster for 150K tokens.
-        from sklearn.utils.extmath import randomized_svd
-        U, S, Vt = randomized_svd(centered, n_components=K, random_state=42)
 
-        # Keep top K
-        k = min(K, len(S))
-        scores = (U[:, :k] * S[:k]).astype(np.float16)   # [N, k]
-        variance = ((S[:k] ** 2) / (S ** 2).sum()).astype(np.float32)
-        components = Vt[:k].astype(np.float32)            # [k, D]
+        result = _svd_gpu(centered, _K)
+        if result:
+            U, S, Vt = result
+        else:
+            from sklearn.utils.extmath import randomized_svd
+            U, S, Vt = randomized_svd(centered, n_components=_K, random_state=42)
 
-        # Pad to K if fewer components available
-        if k < K:
-            scores = np.pad(scores, ((0, 0), (0, K - k)))
-            variance = np.pad(variance, (0, K - k))
-            components = np.pad(components, ((0, K - k), (0, 0)))
+        k = min(_K, len(S))
+        scores = (U[:, :k] * S[:k]).astype(np.float16)
+        _ss = (S ** 2).sum()
+        variance = ((S[:k] ** 2) / _ss).astype(np.float32) if _ss > 0 else np.zeros(k, dtype=np.float32)
+        components = Vt[:k].astype(np.float32)
+        if k < _K:
+            scores = np.pad(scores, ((0, 0), (0, _K - k)))
+            variance = np.pad(variance, (0, _K - k))
+            components = np.pad(components, ((0, _K - k), (0, 0)))
 
-        np.save(decomp_dir / f'L{li:02d}_scores.npy', scores)
-        np.save(decomp_dir / f'L{li:02d}_variance.npy', variance)
-        np.save(decomp_dir / f'L{li:02d}_components.npy', components)
+        np.save(_decomp_dir / f'L{li:02d}_scores.npy', scores)
+        np.save(_decomp_dir / f'L{li:02d}_variance.npy', variance)
+        np.save(_decomp_dir / f'L{li:02d}_components.npy', components)
 
-        all_variances.append(variance)           # full K (tiny, ~2KB/layer)
-        all_scores.append(scores[:, :BIN_K].copy())  # capped (large)
-
-        # Per-layer stats
-        var_ratio = (S ** 2) / (S ** 2).sum()
+        var_ratio = (S ** 2) / _ss if _ss > 0 else np.zeros_like(S)
         cum = np.cumsum(var_ratio)
         intrinsic = float(np.searchsorted(cum, 0.5)) + 1
-
-        # Neighbor stability: fraction of 5-NN consistent between full and 3D
         nbr_stab = 0.0
-        if n_sample <= 10000:
+        if _n_sample <= 10000:
             try:
                 from sklearn.neighbors import NearestNeighbors
                 nn_full = NearestNeighbors(n_neighbors=6).fit(scores.astype(np.float32))
@@ -5386,14 +5389,35 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
                             for a, b in zip(idx_full, idx_3d)]
                 nbr_stab = float(np.mean(overlaps))
             except ImportError:
-                nbr_stab = 0.0
+                pass
 
-        layer_meta.append({
-            "layer": li,
-            "pc1_pct": round(float(var_ratio[0]) * 100, 1),
-            "intrinsic_dim": round(intrinsic, 1),
-            "neighbor_stability": round(nbr_stab, 2),
-        })
+        meta = {"layer": li, "pc1_pct": round(float(var_ratio[0]) * 100, 1) if len(var_ratio) else 0,
+                "intrinsic_dim": round(intrinsic, 1), "neighbor_stability": round(nbr_stab, 2)}
+        return li, variance, scores[:, :_BIN_K].copy(), meta
+
+    pca_args = [(li, _find_exit(li), idx, K, n_sample, decomp_dir, BIN_K) for li in range(n_layers)]
+
+    # Threaded: numpy/MLX release the GIL during SVD computation
+    from concurrent.futures import ThreadPoolExecutor
+    import os
+    n_workers = min(n_layers, max(1, os.cpu_count() or 4))
+    print(f"  PCA: {n_layers} layers x {n_sample} tokens x {K} PCs ({n_workers} threads)",
+          file=sys.stderr)
+    results = [None] * n_layers
+    with ThreadPoolExecutor(max_workers=n_workers) as pool:
+        for li, var, sc, meta in pool.map(_pca_one_layer, pca_args):
+            results[li] = (var, sc, meta)
+            print(f"  L{li:02d}/{n_layers} done", end="\r", file=sys.stderr)
+
+    for li in range(n_layers):
+        var, sc, meta = results[li]
+        if var is None:
+            all_variances.append(np.zeros(K, dtype=np.float32))
+            all_scores.append(np.zeros((n_sample, BIN_K), dtype=np.float16))
+        else:
+            all_variances.append(var)
+            all_scores.append(sc)
+        layer_meta.append(meta)
 
     print(f"  {n_layers} layers done.{' ' * 30}", file=sys.stderr)
 
@@ -5665,22 +5689,23 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
                 f.write(b'\x00' * (n_sample * n_stride))
             out = np.memmap(str(tok_neurons_path), dtype=np.float16, mode='r+',
                             offset=16, shape=(n_sample, n_layers, _inter))
-            for li in range(n_layers):
+            def _neuron_layer(li):
                 gp = mlp_dir / f'L{li:02d}_gate.npy'
                 up_p = mlp_dir / f'L{li:02d}_up.npy'
-                if not gp.exists():
-                    continue
-                # Sequential read: one I/O per file (not mmap)
+                if not gp.exists(): return li
                 g = np.load(str(gp))
                 u = np.load(str(up_p)) if up_p.exists() else None
-                # Compute gate×up for all tokens at this layer in one vectorized op
                 if u is not None:
                     out[:g.shape[0], li, :] = (g.astype(np.float32) * u.astype(np.float32)).astype(np.float16)
                 else:
                     out[:g.shape[0], li, :] = g
                 del g, u
-                if (li + 1) % 5 == 0:
-                    print(f"    layer {li+1}/{n_layers}", file=sys.stderr)
+                return li
+            # Threaded: I/O + numpy vectorized ops release GIL
+            with ThreadPoolExecutor(max_workers=min(n_layers, n_workers)) as pool:
+                for li in pool.map(_neuron_layer, range(n_layers)):
+                    if (li + 1) % 5 == 0:
+                        print(f"    layer {li+1}/{n_layers}", file=sys.stderr)
             out.flush(); del out
             print(f"  Token neuron index: {n_sample} tokens × {n_layers} layers × {_inter} neurons = "
                   f"{(16 + n_sample * n_stride) / (1024*1024):.0f}MB", file=sys.stderr)
