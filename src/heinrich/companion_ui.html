@@ -90,6 +90,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
       <div class="cbtn" data-v="all" style="position:static;bottom:auto;right:auto"><button data-a="x" style="border-color:#444;color:#666">X</button><button data-a="y" style="border-color:#444;color:#666">Y</button><button data-a="z" style="border-color:#444;color:#666">Z</button><button data-a="r" style="border-color:#444;color:#666">R</button></div>
     </div>
   </div>
+  <div id="loadStatus" style="font-size:7px;color:#555;margin-bottom:2px;min-height:9px"></div>
   <div style="margin-bottom:4px"><span id="ht" style="font-weight:bold;font-size:10px"></span> <span id="hs" style="font-weight:bold;font-size:10px"></span><div style="color:#555;font-size:7px" id="hst"></div><span id="st" style="color:#444;font-size:7px"></span><div id="legend2" style="font-size:7px;color:#555;margin-top:2px"></div></div>
   <hr style="border:none;border-top:1px solid #1a1a1a;margin:4px 0">
   <div style="margin-bottom:4px"><input id="tsearch" type="text" placeholder="search tokens..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:8px;font-family:inherit;border-radius:2px"><div id="tsresults" style="max-height:80px;overflow-y:auto;font-size:8px;color:#555"></div></div>
@@ -442,6 +443,7 @@ function _rayHit(vi,e){const v=views[vi];const r=v.cv.getBoundingClientRect();
   const d=v.cam.position.length()||1;
   const pickRadiusPx=6;// pixels of pick tolerance
   ray.params.Points.threshold=pickRadiusPx*pixelToWorld*d;
+  if(!v.pts.geometry.attributes.position)return -1;
   const h=ray.intersectObject(v.pts);
   if(h.length>1){
     // Multiple hits — pick the one closest to the ray (not closest to camera)
@@ -2461,6 +2463,9 @@ async function loadAll(){
   const isSameModel=newModel===_prevModel;
   const _ld=document.getElementById('loading');if(_ld)_ld.style.display='flex';
   document.getElementById('st').textContent='Loading...';
+  const _ls=document.getElementById('loadStatus');
+  function _setLoad(msg){if(_ls)_ls.textContent=msg;}
+  _setLoad('fetching metadata + scores...');
   try{
   // Phase 1: parallel fetch of metadata + scores (the two biggest waits)
   const [dmResult,scoreResp]=await Promise.all([
@@ -2483,6 +2488,7 @@ async function loadAll(){
   scripts=d0.scripts;texts=d0.texts;nN=d0.n_tokens;nK=d0.n_components;tokenIds=d0.token_ids||[];
   document.getElementById('ntok').textContent=nN+' tok / '+nK+' PC';
   document.getElementById('st').textContent='Parsing...';
+  _setLoad(`parsing ${nN} tokens x ${nK} PCs...`);
 
   // Parse binary scores — v2 (HEI2): separate var_k and score_k; v1 (HEIN/0000): shared k
   const dv=new DataView(buf);
@@ -2515,9 +2521,20 @@ async function loadAll(){
     const d=document.createElement('div');d.className='lg';d.dataset.script=s;
     const dt=document.createElement('span');dt.className='ld';dt.style.background=CLh[s]||'#aaa';
     d.appendChild(dt);d.appendChild(document.createTextNode(s+'('+c+')'));
-    d.addEventListener('click',()=>{
-      if(_hiddenScripts.has(s)){_hiddenScripts.delete(s);d.classList.remove('off');}
-      else{_hiddenScripts.add(s);d.classList.add('off');}
+    d.addEventListener('click',(e)=>{
+      if(e.shiftKey){
+        // Shift-click: isolate this script (hide all others)
+        const allScripts=Object.keys(ss);
+        const wasIsolated=_hiddenScripts.size===allScripts.length-1&&!_hiddenScripts.has(s);
+        _hiddenScripts.clear();
+        if(!wasIsolated){allScripts.forEach(sc=>{if(sc!==s)_hiddenScripts.add(sc);});}
+        lg.querySelectorAll('.lg').forEach(el=>{
+          el.classList.toggle('off',_hiddenScripts.has(el.dataset.script));
+        });
+      }else{
+        if(_hiddenScripts.has(s)){_hiddenScripts.delete(s);d.classList.remove('off');}
+        else{_hiddenScripts.add(s);d.classList.add('off');}
+      }
       _applyFilter();
     });
     lg.appendChild(d);
@@ -2565,8 +2582,9 @@ async function loadAll(){
   if(pinnedTokenB<0&&prevPinTextB){const idx=texts.indexOf(prevPinTextB);if(idx>=0)pinnedTokenB=idx;}
 
   // Phase 3: show clouds immediately, then build heavy stuff async
-  _initPCSScene();// must be before any hover or setLayer
-  _clearBrowserSelBoxes();_lastPK='';// force precompute on first setLayer
+  _setLoad('rendering clouds...');
+  _initPCSScene();
+  _clearBrowserSelBoxes();_lastPK='';
   setLayer(_rstL);showPinDetail(pinnedToken);updatePinMarkers();
   document.getElementById('st').textContent=`${model}/${mode} ${nN}tok ${nL}L`;
   _prevModel=model;_prevMode=mode;
@@ -2575,11 +2593,15 @@ async function loadAll(){
 
   // Phase 4: heavy builds in background (don't block interaction)
   await _yieldFrame();
+  _setLoad('loading gate heatmap...');
   try{loadGateHeatmap();}catch(e){console.error('gate:',e);}
   await _yieldFrame();
+  _setLoad('building internals...');
   try{buildLeftViewports();}catch(e){console.error('left:',e);}
   await _yieldFrame();
+  _setLoad('loading PC data...');
   try{_brComputeCells();await _ensurePCData();buildBrowser();}catch(e){console.error('browser:',e);}
+  _setLoad('');
   _markDirty();
 }
 async function init(){const models=await api('models');const sel=document.getElementById('sm');const tM=models.filter(m=>m.architecture==='transformer');const bm={};tM.forEach(m=>{if(!bm[m.model])bm[m.model]=[];bm[m.model].push(m.mode);});Object.keys(bm).sort().forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);});
