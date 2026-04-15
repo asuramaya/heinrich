@@ -5331,13 +5331,12 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
         return arr
 
     # --- Per-layer PCA: threaded, GPU-accelerated SVD where available ---
-    def _svd_gpu(centered, K):
-        """Try MLX GPU SVD (Apple Silicon), return (U, S, Vt) or None."""
+    def _svd_mlx(centered, K):
+        """Try MLX SVD (Accelerate backend on CPU), return (U, S, Vt) or None."""
         try:
             import mlx.core as mx
             mx_data = mx.array(centered)
-            U_mx, S_mx, Vt_mx = mx.linalg.svd(mx_data, stream=mx.gpu)
-            # Force computation
+            U_mx, S_mx, Vt_mx = mx.linalg.svd(mx_data, stream=mx.cpu)
             _u = np.array(U_mx[:, :K].astype(mx.float32))
             _s = np.array(S_mx[:K].astype(mx.float32))
             _vt = np.array(Vt_mx[:K].astype(mx.float32))
@@ -5353,7 +5352,7 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
         vecs = np.load(str(exit_path), mmap_mode='r')[_idx].astype(np.float32)
         centered = vecs - vecs.mean(axis=0)
 
-        result = _svd_gpu(centered, _K)
+        result = _svd_mlx(centered, _K)
         if result:
             U, S, Vt = result
         else:
@@ -5400,8 +5399,10 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
     # Threaded: numpy/MLX release the GIL during SVD computation
     from concurrent.futures import ThreadPoolExecutor
     import os
-    n_workers = min(n_layers, max(1, os.cpu_count() or 4))
-    print(f"  PCA: {n_layers} layers x {n_sample} tokens x {K} PCs ({n_workers} threads)",
+    # 2-3 workers: each SVD uses multi-threaded BLAS internally.
+    # More workers = memory thrash without speedup (BLAS contention).
+    n_workers = min(n_layers, 3)
+    print(f"  PCA: {n_layers} layers x {n_sample} tokens x {K} PCs ({n_workers} workers)",
           file=sys.stderr)
     results = [None] * n_layers
     with ThreadPoolExecutor(max_workers=n_workers) as pool:
@@ -5702,7 +5703,8 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
                 del g, u
                 return li
             # Threaded: I/O + numpy vectorized ops release GIL
-            with ThreadPoolExecutor(max_workers=min(n_layers, n_workers)) as pool:
+            _nw_io = min(n_layers, max(1, os.cpu_count() or 4))
+            with ThreadPoolExecutor(max_workers=_nw_io) as pool:
                 for li in pool.map(_neuron_layer, range(n_layers)):
                     if (li + 1) % 5 == 0:
                         print(f"    layer {li+1}/{n_layers}", file=sys.stderr)
