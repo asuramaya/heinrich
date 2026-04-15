@@ -268,10 +268,11 @@ function _precomputeTraj(vi){
 }
 // Delta is now handled by viewports 1 (cloud) and 4 (trajectory) in the main pipeline
 function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
-  // Reuse geometry buffer if same size, else allocate
-  const n=nL;let buf=line.geometry.attributes.position?.array;
+  // Use model-order sequence so emb→L0→...→LN→lmh draws without loopback
+  const seq=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
+  const n=seq.length;let buf=line.geometry.attributes.position?.array;
   if(!buf||buf.length!==n*3){line.geometry.dispose();const a=new Float32Array(n*3);line.geometry=new THREE.BufferGeometry();line.geometry.setAttribute('position',new THREE.BufferAttribute(a,3));buf=a;}
-  if(vi<NC){for(let l=0;l<n;l++){const lm=v._layerMx?v._layerMx[l]:null;const mxX=lm?lm[0]:1,mxY=lm?lm[1]:1,mxZ=lm?lm[2]:1;buf[l*3]=_getScore(l,idx,v.pcX)/mxX;buf[l*3+1]=_getScore(l,idx,v.pcY)/mxY;buf[l*3+2]=_getScore(l,idx,v.pcZ)/mxZ;}}else{const tlMx=v._trajLayerMx;for(let l=0;l<n;l++){const lm=tlMx?tlMx[l]:[1,1];buf[l*3]=_getScore(l,idx,v.pcX)/lm[0];buf[l*3+1]=_getScore(l,idx,v.pcY)/lm[1];buf[l*3+2]=_layerZ[l]!==undefined?_layerZ[l]:(l/(n-1))*2-1;}}
+  if(vi<NC){for(let si=0;si<n;si++){const l=seq[si];const lm=v._layerMx?v._layerMx[l]:null;const mxX=lm?lm[0]:1,mxY=lm?lm[1]:1,mxZ=lm?lm[2]:1;buf[si*3]=_getScore(l,idx,v.pcX)/mxX;buf[si*3+1]=_getScore(l,idx,v.pcY)/mxY;buf[si*3+2]=_getScore(l,idx,v.pcZ)/mxZ;}}else{const tlMx=v._trajLayerMx;for(let si=0;si<n;si++){const l=seq[si];const lm=tlMx?tlMx[l]:[1,1];buf[si*3]=_getScore(l,idx,v.pcX)/lm[0];buf[si*3+1]=_getScore(l,idx,v.pcY)/lm[1];buf[si*3+2]=_layerZ[l]!==undefined?_layerZ[l]:(si/(n-1))*2-1;}}
   line.geometry.attributes.position.needsUpdate=true;line.visible=true;}
 let _lastDimState=-1;
 function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC)v.mtl.opacity=dim?0.35:0.85;if(vi>=NC&&v.trajGroup){const baseOp=dim?0.08:0.15;v.trajGroup.children.forEach(c=>{if(c.material)c.material.opacity=baseOp;});if(v.trajMarker)v.trajMarker.material.opacity=dim?0.35:0.9;}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible){m.material.opacity=0.95;m.material.size=dim?0.08:0.06;}});}
