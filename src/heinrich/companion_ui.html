@@ -180,13 +180,26 @@ let _pcMedStep=10,_pcMedNS=0;
 function _getScore(l,i,pc){
   // Tier 1: full resolution cache (primary path for ALL PCs)
   const full=_pcFull.get(pc);
-  if(full)return full[l*_pcFullNT+i]||0;
+  if(full){const v=full[l*_pcFullNT+i];return v===v?v:0;}// NaN check via v===v
   // Tier 2: blob fallback (first _blobScoreK PCs only)
-  if(pc<_blobScoreK&&allL[l]?.[i])return allL[l][i][pc]||0;
+  if(pc<_blobScoreK){const row=allL[l];if(row){const s=row[i];if(s)return s[pc]||0;}}
   // Tier 3: medium resolution (sampled, for radial neighbors)
   const med=_pcMedium.get(pc);
-  if(med){const si=Math.floor(i/med.step);if(si<med.nS)return med.data[l*med.nS+si]||0;}
+  if(med){const si=(i/med.step)|0;if(si<med.nS){const v=med.data[l*med.nS+si];return v===v?v:0;}}
   return 0;
+}
+// Fast bulk access: extract one PC's data for all tokens at one layer as a Float32Array.
+// Avoids per-token Map lookup in hot loops.
+function _getScoreColumn(l,pc){
+  const full=_pcFull.get(pc);
+  if(full)return full.subarray(l*_pcFullNT,l*_pcFullNT+_pcFullNT);// zero-copy view
+  if(pc<_blobScoreK&&allL[l]){
+    // Build column from blob — allL[l] is Array of Float32Array subarrays
+    const col=new Float32Array(nN);const row=allL[l];
+    for(let i=0;i<nN;i++)col[i]=row[i]?row[i][pc]||0:0;
+    return col;
+  }
+  return null;// caller handles missing data
 }
 
 async function _loadPCFull(pc){
@@ -246,14 +259,25 @@ async function _ensurePCs(pcs){
 function _precomputeCloud(vi){
   const v=views[vi];const{pcX,pcY,pcZ}=v;
   if(!v._cloudBufs||v._cloudBufs.length!==nL)v._cloudBufs=new Array(nL);
-  v._layerMx=new Array(nL);// kept for compat — stores [mxX, mxY, mxZ]
+  v._layerMx=new Array(nL);
   for(let l=0;l<nL;l++){
+    // Bulk column access: one typed array per PC per layer (zero-copy from _pcFull)
+    const colX=_getScoreColumn(l,pcX),colY=_getScoreColumn(l,pcY),colZ=_getScoreColumn(l,pcZ);
     let mxX=0,mxY=0,mxZ=0;
-    for(let i=0;i<nN;i++){mxX=Math.max(mxX,Math.abs(_getScore(l,i,pcX)));mxY=Math.max(mxY,Math.abs(_getScore(l,i,pcY)));mxZ=Math.max(mxZ,Math.abs(_getScore(l,i,pcZ)));}
+    if(colX&&colY&&colZ){
+      for(let i=0;i<nN;i++){const ax=Math.abs(colX[i]),ay=Math.abs(colY[i]),az=Math.abs(colZ[i]);if(ax>mxX)mxX=ax;if(ay>mxY)mxY=ay;if(az>mxZ)mxZ=az;}
+    }else{
+      for(let i=0;i<nN;i++){mxX=Math.max(mxX,Math.abs(_getScore(l,i,pcX)));mxY=Math.max(mxY,Math.abs(_getScore(l,i,pcY)));mxZ=Math.max(mxZ,Math.abs(_getScore(l,i,pcZ)));}
+    }
     mxX=mxX||1;mxY=mxY||1;mxZ=mxZ||1;v._layerMx[l]=[mxX,mxY,mxZ];
     if(!v._cloudBufs[l]||v._cloudBufs[l].length!==nN*3)v._cloudBufs[l]=new Float32Array(nN*3);
     const buf=v._cloudBufs[l];
-    for(let i=0;i<nN;i++){buf[i*3]=_getScore(l,i,pcX)/mxX;buf[i*3+1]=_getScore(l,i,pcY)/mxY;buf[i*3+2]=_getScore(l,i,pcZ)/mxZ;}
+    if(colX&&colY&&colZ){
+      const imxX=1/mxX,imxY=1/mxY,imxZ=1/mxZ;
+      for(let i=0;i<nN;i++){buf[i*3]=colX[i]*imxX;buf[i*3+1]=colY[i]*imxY;buf[i*3+2]=colZ[i]*imxZ;}
+    }else{
+      for(let i=0;i<nN;i++){buf[i*3]=_getScore(l,i,pcX)/mxX;buf[i*3+1]=_getScore(l,i,pcY)/mxY;buf[i*3+2]=_getScore(l,i,pcZ)/mxZ;}
+    }
   }
 }
 function _precomputeTraj(vi){
@@ -263,7 +287,13 @@ function _precomputeTraj(vi){
     const z=_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1;const lm=tlMx?tlMx[l]:[1,1];
     if(!v._trajBufs[l]||v._trajBufs[l].length!==nN*3)v._trajBufs[l]=new Float32Array(nN*3);
     const buf=v._trajBufs[l];
-    for(let i=0;i<nN;i++){buf[i*3]=_getScore(l,i,pcX)/lm[0];buf[i*3+1]=_getScore(l,i,pcY)/lm[1];buf[i*3+2]=z;}
+    const colX=_getScoreColumn(l,pcX),colY=_getScoreColumn(l,pcY);
+    if(colX&&colY){
+      const imx=1/lm[0],imy=1/lm[1];
+      for(let i=0;i<nN;i++){buf[i*3]=colX[i]*imx;buf[i*3+1]=colY[i]*imy;buf[i*3+2]=z;}
+    }else{
+      for(let i=0;i<nN;i++){buf[i*3]=_getScore(l,i,pcX)/lm[0];buf[i*3+1]=_getScore(l,i,pcY)/lm[1];buf[i*3+2]=z;}
+    }
   }
 }
 // Delta is now handled by viewports 1 (cloud) and 4 (trajectory) in the main pipeline
@@ -582,7 +612,60 @@ function updateVP(vi,pcX,pcY,pcZ,layer){const v=views[vi];v.pcX=pcX;v.pcY=pcY;v.
   v.geo.attributes.position.needsUpdate=true;if(!play)v.geo.computeBoundingSphere();
   document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}/${pcZ}`;
   if(!v._fitted){v.cam.position.set(0,0,2.5);v.ctl.target.set(0,0,0);v.ctl.update();v._fitted=true;}}
-function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;if(v.trajGroup){v.trajGroup.children.forEach(c=>{if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();});v.sc.remove(v.trajGroup);}if(v.trajMarker){v.trajMarker.geometry.dispose();v.trajMarker.material.dispose();v.sc.remove(v.trajMarker);}v.trajGroup=new THREE.Group();const _tlMx=new Array(nL);for(let l=0;l<nL;l++){let mxX=0,mxY=0;for(let i=0;i<nN;i++){mxX=Math.max(mxX,Math.abs(_getScore(l,i,pcX)));mxY=Math.max(mxY,Math.abs(_getScore(l,i,pcY)));}mxX=mxX||1;mxY=mxY||1;_tlMx[l]=[mxX,mxY];}v._trajLayerMx=_tlMx;v._trajScaleXY=[1,1];v._trajScale=1;const maxLines=Math.min(nN,800);const step=Math.max(1,Math.floor(nN/maxLines));const _trajSeq=_layerSeq.length?_layerSeq:[...Array(nL).keys()];for(let i=0;i<nN;i+=step){const pts=[];for(const l of _trajSeq){pts.push(new THREE.Vector3(_getScore(l,i,pcX)/_tlMx[l][0],_getScore(l,i,pcY)/_tlMx[l][1],_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1));}const g=new THREE.BufferGeometry().setFromPoints(pts);const line=new THREE.Line(g,new THREE.LineBasicMaterial({color:CL[scripts[i]]||0xAAAAAA,transparent:true,opacity:0.15,depthWrite:false}));line.userData={ti:i};v.trajGroup.add(line);}v.sc.add(v.trajGroup);const pg=new THREE.BufferGeometry();const _tp=new Float32Array(nN*3),_tc=new Float32Array(nN*3);for(let i=0;i<nN;i++){const hex=CL[scripts[i]]||0xAAAAAA;_tc[i*3]=((hex>>16)&0xFF)/255;_tc[i*3+1]=((hex>>8)&0xFF)/255;_tc[i*3+2]=(hex&0xFF)/255;}pg.setAttribute('position',new THREE.BufferAttribute(_tp,3));pg.setAttribute('color',new THREE.BufferAttribute(_tc,3));v.trajMarker=new THREE.Points(pg,new THREE.PointsMaterial({size:0.018,vertexColors:true,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false}));v.sc.add(v.trajMarker);updateTrajMarker(vi);document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}+d`;}
+function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
+  // Dispose old
+  if(v.trajGroup){v.sc.remove(v.trajGroup);v.trajGroup.geometry?.dispose();v.trajGroup.material?.dispose();v.trajGroup=null;}
+  if(v.trajMarker){v.trajMarker.geometry.dispose();v.trajMarker.material.dispose();v.sc.remove(v.trajMarker);}
+  // Compute per-layer normalization using bulk columns
+  const _tlMx=new Array(nL);
+  for(let l=0;l<nL;l++){
+    const cx=_getScoreColumn(l,pcX),cy=_getScoreColumn(l,pcY);
+    let mxX=0,mxY=0;
+    if(cx&&cy){for(let i=0;i<nN;i++){const ax=Math.abs(cx[i]),ay=Math.abs(cy[i]);if(ax>mxX)mxX=ax;if(ay>mxY)mxY=ay;}}
+    else{for(let i=0;i<nN;i++){mxX=Math.max(mxX,Math.abs(_getScore(l,i,pcX)));mxY=Math.max(mxY,Math.abs(_getScore(l,i,pcY)));}}
+    mxX=mxX||1;mxY=mxY||1;_tlMx[l]=[mxX,mxY];
+  }
+  v._trajLayerMx=_tlMx;v._trajScaleXY=[1,1];v._trajScale=1;
+  // Merged LineSegments: sample tokens, all layer transitions in one geometry
+  // Each token: (nL-1) segments × 2 vertices = (nL-1)*2 vertices per token
+  const maxTokens=Math.min(nN,5000);
+  const step=Math.max(1,Math.floor(nN/maxTokens));
+  const _trajSeq=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
+  const nSegs=_trajSeq.length-1;// segments per token
+  const nSampledTokens=Math.ceil(nN/step);
+  const totalVerts=nSampledTokens*nSegs*2;
+  const tPos=new Float32Array(totalVerts*3);
+  const tCol=new Float32Array(totalVerts*3);
+  let vi2=0;
+  for(let ii=0;ii<nN;ii+=step){
+    const hex=CL[scripts[ii]]||0xAAAAAA;
+    const cr=((hex>>16)&0xFF)/255,cg=((hex>>8)&0xFF)/255,cb=(hex&0xFF)/255;
+    for(let si=0;si<nSegs;si++){
+      const l0=_trajSeq[si],l1=_trajSeq[si+1];
+      const z0=_layerZ[l0]!==undefined?_layerZ[l0]:(l0/(nL-1))*2-1;
+      const z1=_layerZ[l1]!==undefined?_layerZ[l1]:(l1/(nL-1))*2-1;
+      tPos[vi2*3]=_getScore(l0,ii,pcX)/_tlMx[l0][0];tPos[vi2*3+1]=_getScore(l0,ii,pcY)/_tlMx[l0][1];tPos[vi2*3+2]=z0;
+      tCol[vi2*3]=cr;tCol[vi2*3+1]=cg;tCol[vi2*3+2]=cb;vi2++;
+      tPos[vi2*3]=_getScore(l1,ii,pcX)/_tlMx[l1][0];tPos[vi2*3+1]=_getScore(l1,ii,pcY)/_tlMx[l1][1];tPos[vi2*3+2]=z1;
+      tCol[vi2*3]=cr;tCol[vi2*3+1]=cg;tCol[vi2*3+2]=cb;vi2++;
+    }
+  }
+  const tGeo=new THREE.BufferGeometry();
+  tGeo.setAttribute('position',new THREE.BufferAttribute(tPos,3));
+  tGeo.setAttribute('color',new THREE.BufferAttribute(tCol,3));
+  tGeo.setDrawRange(0,vi2);
+  v.trajGroup=new THREE.LineSegments(tGeo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.15,depthWrite:false}));
+  v.trajGroup.frustumCulled=false;v.sc.add(v.trajGroup);
+  // Trajectory marker dots (all tokens, updated per layer)
+  const pg=new THREE.BufferGeometry();
+  const _tp=new Float32Array(nN*3),_tc=new Float32Array(nN*3);
+  for(let i=0;i<nN;i++){const hex=CL[scripts[i]]||0xAAAAAA;_tc[i*3]=((hex>>16)&0xFF)/255;_tc[i*3+1]=((hex>>8)&0xFF)/255;_tc[i*3+2]=(hex&0xFF)/255;}
+  pg.setAttribute('position',new THREE.BufferAttribute(_tp,3));
+  pg.setAttribute('color',new THREE.BufferAttribute(_tc,3));
+  v.trajMarker=new THREE.Points(pg,new THREE.PointsMaterial({size:0.018,vertexColors:true,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false}));
+  v.sc.add(v.trajMarker);updateTrajMarker(vi);
+  document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}+d`;
+}
 function updateTrajMarker(vi){const v=views[vi];
   const buf=v._trajBufs&&v._trajBufs[cL];if(!buf)return;
   if(v.trajMarker){const tp=v.trajMarker.geometry.attributes.position.array;tp.set(buf);
