@@ -5332,7 +5332,11 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
 
     # --- Per-layer PCA: threaded, GPU-accelerated SVD where available ---
     def _svd_mlx(centered, K):
-        """Try MLX SVD (Accelerate backend on CPU), return (U, S, Vt) or None."""
+        """Try MLX SVD for small matrices only. Full SVD = O(n^2*d) memory."""
+        n, d = centered.shape
+        # Full SVD on 150K rows would allocate 150K×150K = 90GB. Only viable for small n.
+        if n > 20000:
+            return None
         try:
             import mlx.core as mx
             mx_data = mx.array(centered)
