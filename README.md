@@ -10,18 +10,22 @@ Model forensics through geometry. Heinrich measures what language models compute
 
 ## What It Does
 
-**Profile pipeline** — the working frontier:
+**MRI pipeline** — the primary workflow:
+- **`.mri` (model residual image)** — complete capture of every layer's residual state for every token in the vocabulary. Entry/exit vectors, attention weights, MLP gate activations, projection weights. Three modes: raw (no context), naked (BOS), template (chat frame).
+- **`mri-decompose`** — PCA decomposition at every layer. Produces per-layer score files + three transposed indexes for O(1) queries by token, by PC, or by neuron. Parallel SVD across layers.
+- **`companion`** — 20-viewport 3D viewer at http://localhost:8377. Point clouds, trajectories, radial weight alignment flowers, PC spectrum, neuron field, prism browser. Full vocabulary interactive (150K+ tokens). Snapshot (PNG) and record (GIF) per viewport.
+
+**Profile pipeline**:
 - **`.frt` (tokenizer profile)** — vocabulary analysis: byte counts, script detection, system prompt extraction. No model needed.
-- **`.shrt` (shart profile)** — residual displacement per token vs silence baseline. Token IDs spliced directly (no decode round-trip). Dynamic baseline strips system prompt for any template format. Multi-layer support.
+- **`.shrt` (shart profile)** — residual displacement per token vs silence baseline. Token IDs spliced directly (no decode round-trip). Dynamic baseline strips system prompt for any template format.
 - **`.sht` (output profile)** — KL divergence from silence baseline. What the user actually receives.
-- **Cross-model survey** — within-model ranking, Kendall's W concordance, tokenizer-weight mismatch, layer trajectory comparison at normalized depth.
+- **Cross-model survey** — within-model ranking, Kendall's W concordance, tokenizer-weight mismatch, layer trajectory comparison.
 
 **Eval pipeline**:
 - **Captures generation geometry** — one forward pass captures text AND pre-linguistic signals (first-token distribution, entropy, contrastive projection, top-k alternatives)
 - **Runs independent scorers** — word_match, regex_harm, refusal, self_kl, qwen3guard, llamaguard. Each in its own lane. Disagreements between judges are the signal.
 - **Maps basin geometry** — PCA on residual states reveals the model's internal category structure
 - **Finds safety cliffs** — binary search for the steering magnitude where behavior flips, per layer
-- **Visualizes** — web sidecar reading from the same DB, live refresh
 
 All benchmark data from HuggingFace datasets. No hardcoded prompts. The DB is the single source of truth.
 
@@ -40,50 +44,63 @@ pip install mlx mlx-lm              # MLX backend, 10-50x faster generation
 ## Quick Start
 
 ```bash
-# Profile a model's tokenizer (no model needed, fast)
-heinrich frt-profile --tokenizer mlx-community/Qwen2.5-7B-Instruct-4bit
+# MRI: capture full vocabulary residual state (the primary workflow)
+heinrich mri --model smollm2-135m --mode raw --output /Volumes/sharts/smollm2-135m/raw.mri
+heinrich mri-scan --model smollm2-135m --output /Volumes/sharts/smollm2-135m  # all 3 modes
 
-# Profile the model's residual response (needs model, ~100 tok/s)
+# Decompose: PCA + transposed indexes for the viewer
+heinrich mri-decompose --mri /Volumes/sharts/smollm2-135m/raw.mri
+
+# View: 3D interactive viewer
+heinrich companion    # http://localhost:8377
+
+# Profile pipeline (lighter, no full capture)
+heinrich frt-profile --tokenizer mlx-community/Qwen2.5-7B-Instruct-4bit
 heinrich shart-profile --model mlx-community/Qwen2.5-7B-Instruct-4bit --n-index 3000
 
-# Profile the model's output distribution
-heinrich sht-profile --model mlx-community/Qwen2.5-7B-Instruct-4bit --n-index 3000
-
-# Compare across models
-heinrich profile-survey --shrt data/runs/*.shrt.npz --frt data/runs/*.frt.npz
-
-# Full eval pipeline
+# Eval pipeline
 heinrich run --model mlx-community/Qwen2.5-7B-Instruct-4bit \
     --prompts simple_safety --scorers word_match,regex_harm,qwen3guard
-
-# Visualizer
-heinrich viz    # http://localhost:8377
 ```
 
 ## CLI
 
 ```bash
-# Profile pipeline (the working frontier)
+# MRI capture (the primary workflow)
+heinrich mri --model <model_id> --mode raw --output X.mri       # single mode
+heinrich mri-scan --model <model_id> --output DIR               # all 3 modes + analysis
+heinrich mri-backfill --model <model_id> --mri X.mri            # fill missing weights
+heinrich mri-health --dir /Volumes/sharts                       # deep health check
+heinrich mri-status --dir /Volumes/sharts                       # what's complete
+heinrich mri-decompose --mri X.mri                              # PCA + transposed indexes
+
+# MRI analysis (reads .mri, no model needed)
+heinrich profile-layer-deltas --mri X.mri                       # per-layer delta norms
+heinrich profile-logit-lens --mri X.mri                         # per-layer predictions
+heinrich profile-gates --mri X.mri                              # MLP gate analysis
+heinrich profile-attention --mri X.mri                          # attention patterns
+heinrich profile-pca-depth --mri X.mri                          # per-layer PCA structure
+
+# Viewer
+heinrich companion               # 3D MRI viewer (http://localhost:8377)
+heinrich viz                     # alias for companion
+
+# Profile pipeline
 heinrich frt-profile --tokenizer <model_id>                     # tokenizer analysis
 heinrich shart-profile --model <model_id> --n-index 3000        # residual displacement
-heinrich shart-profile --model <model_id> --layers all          # all-layer sweep
 heinrich sht-profile --model <model_id> --n-index 3000          # output distribution
 
 # Profile analysis (reads .npz files, no model needed)
 heinrich profile-chain --frt F --shrt S --sht T                 # three-stage correlation
 heinrich profile-cross --a S1 --b S2 --frt F                   # two-model comparison
 heinrich profile-survey --shrt S1 S2 S3 --frt F1 F2 F3        # multi-model concordance
-heinrich profile-mismatch --shrt S --frt F                      # tokenizer-weight gap
-heinrich profile-depth --shrt S1 S2 --frt F1 F2                # layer trajectory
 
 # Eval pipeline
 heinrich run --model <model_id> --prompts <datasets> --scorers <scorers>
-heinrich eval --model <model_id> --prompts <datasets> --scorers <scorers>
 heinrich audit <model_id>
 
 # Infrastructure
 heinrich serve                   # MCP stdio server
-heinrich viz                     # web visualizer (http://localhost:8377)
 heinrich db summary              # database overview
 ```
 
@@ -102,7 +119,13 @@ Add to your Claude Code project settings (`.claude/settings.json`):
 }
 ```
 
-**Profile tools (start here):**
+**MRI tools (primary):**
+- `heinrich_mri` — complete model MRI capture (subprocess, 10h timeout)
+- `heinrich_mri_backfill` — fill missing weights/norms/embedding
+- `heinrich_mri_status` — what's complete, incomplete, running
+- `heinrich_mri_health` — deep health check (shapes, NaN, gates, attention)
+
+**Profile tools:**
 - `heinrich_frt_profile` — tokenizer profile (in-process, fast)
 - `heinrich_shrt_profile` — shart profile (subprocess-isolated, accepts `layers` param)
 - `heinrich_sht_profile` — output profile (subprocess-isolated)
@@ -120,9 +143,18 @@ Add to your Claude Code project settings (`.claude/settings.json`):
 
 ## Architecture
 
-Two pipelines. The profile pipeline measures individual tokens. The eval pipeline measures behavioral responses to prompts.
+Three pipelines. The MRI pipeline captures full model state. The profile pipeline measures individual tokens. The eval pipeline measures behavioral responses.
 
 ```
+MRI pipeline (primary):
+  model → capture (raw/naked/template) → .mri/ (per-layer residuals + weights)
+            ↓
+          mri-decompose → PCA scores + transposed indexes
+            ↓
+          companion viewer (http://localhost:8377)
+            ↓
+          20 viewports: clouds, trajectories, flowers, spectrum, neurons, prism
+
 Profile pipeline:
   tokenizer → .frt (vocab, bytes, scripts)
   model     → .shrt (residual displacement per token, all layers)
@@ -132,15 +164,7 @@ Profile pipeline:
 Eval pipeline:
   HF benchmarks → DB (prompts)
                    ↓
-                discover (directions, neurons, sharts per layer)
-                   ↓
-                attack (cliff search, steering conditions)
-                   ↓
-                generate_with_geometry (text + residual in one pass)
-                   ↓
-                score (word_match, regex_harm, qwen3guard, llamaguard, refusal, self_kl)
-                   ↓
-                report → viz (http://localhost:8377)
+                discover → attack → generate_with_geometry → score → report
 ```
 
 Each scorer is independent. No calibration step. The report presents raw signal distributions. Interpretation is the reader's job.
