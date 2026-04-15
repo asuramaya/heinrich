@@ -5688,31 +5688,33 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
             tok_neurons_path = decomp_dir / 'token_neurons.bin'
             n_hdr = struct.pack('<4sIII', b'TOKN', n_sample, n_layers, _inter)
             n_stride = n_layers * _inter * 2
-            # Pre-allocate output as memmap
+            # Chunked transpose: process tokens in chunks, all layers per chunk.
+            # Each chunk: load gate*up for all layers for this token range,
+            # transpose to token-major, write sequentially. Peak RAM = chunk × layers × inter.
+            # Chunk of 4096 tokens: 4096 × 24 × 4864 × 2 = 900MB — fits.
+            _chunk = min(4096, n_sample)
             with open(tok_neurons_path, 'wb') as f:
                 f.write(n_hdr)
-                f.write(b'\x00' * (n_sample * n_stride))
-            out = np.memmap(str(tok_neurons_path), dtype=np.float16, mode='r+',
-                            offset=16, shape=(n_sample, n_layers, _inter))
-            def _neuron_layer(li):
-                gp = mlp_dir / f'L{li:02d}_gate.npy'
-                up_p = mlp_dir / f'L{li:02d}_up.npy'
-                if not gp.exists(): return li
-                g = np.load(str(gp))
-                u = np.load(str(up_p)) if up_p.exists() else None
-                if u is not None:
-                    out[:g.shape[0], li, :] = (g.astype(np.float32) * u.astype(np.float32)).astype(np.float16)
-                else:
-                    out[:g.shape[0], li, :] = g
-                del g, u
-                return li
-            # Threaded: I/O + numpy vectorized ops release GIL
-            _nw_io = min(n_layers, max(1, os.cpu_count() or 4))
-            with ThreadPoolExecutor(max_workers=_nw_io) as pool:
-                for li in pool.map(_neuron_layer, range(n_layers)):
-                    if (li + 1) % 5 == 0:
-                        print(f"    layer {li+1}/{n_layers}", file=sys.stderr)
-            out.flush(); del out
+                for ti_s in range(0, n_sample, _chunk):
+                    ti_e = min(ti_s + _chunk, n_sample)
+                    _cn = ti_e - ti_s
+                    buf = np.zeros((_cn, n_layers, _inter), dtype=np.float16)
+                    for li in range(n_layers):
+                        gp = mlp_dir / f'L{li:02d}_gate.npy'
+                        up_p = mlp_dir / f'L{li:02d}_up.npy'
+                        if not gp.exists(): continue
+                        g = np.load(str(gp), mmap_mode='r')[ti_s:ti_e].astype(np.float32)
+                        if up_p.exists():
+                            u = np.load(str(up_p), mmap_mode='r')[ti_s:ti_e].astype(np.float32)
+                            buf[:, li, :] = (g * u).astype(np.float16)
+                            del u
+                        else:
+                            buf[:, li, :] = g.astype(np.float16)
+                        del g
+                    f.write(buf.tobytes())
+                    del buf
+                    if (ti_s + _chunk) % 16384 < _chunk:
+                        print(f"    {min(ti_e, n_sample)}/{n_sample} tokens", file=sys.stderr)
             print(f"  Token neuron index: {n_sample} tokens × {n_layers} layers × {_inter} neurons = "
                   f"{(16 + n_sample * n_stride) / (1024*1024):.0f}MB", file=sys.stderr)
 
