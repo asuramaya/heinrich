@@ -593,9 +593,25 @@ function _applyFilter(){
       v.trajMarker.geometry.attributes.position.needsUpdate=true;
     }
   });
-  // Filter trajectory lines
-  views.forEach((v,vi)=>{if(vi>=NC&&v.trajGroup){
-    v.trajGroup.children.forEach(c=>{const ti=c.userData?.ti;if(ti!==undefined)c.visible=!_hiddenScripts.has(scripts[ti]);});
+  // Filter trajectory lines — move hidden tokens' vertices off-screen
+  views.forEach((v,vi)=>{if(vi>=NC&&v.trajGroup&&v._trajTokenMap){
+    const pos=v.trajGroup.geometry.attributes.position.array;
+    const src=v.trajGroup.geometry.userData?._origPos;
+    // Save original positions on first filter
+    if(!src){
+      v.trajGroup.geometry.userData=v.trajGroup.geometry.userData||{};
+      v.trajGroup.geometry.userData._origPos=new Float32Array(pos);
+    }
+    const orig=v.trajGroup.geometry.userData._origPos;
+    for(const{ti,start,count}of v._trajTokenMap){
+      const hide=_hiddenScripts.has(scripts[ti]);
+      for(let j=start;j<start+count;j++){
+        pos[j*3]=hide?9999:orig[j*3];
+        pos[j*3+1]=hide?9999:orig[j*3+1];
+        pos[j*3+2]=hide?9999:orig[j*3+2];
+      }
+    }
+    v.trajGroup.geometry.attributes.position.needsUpdate=true;
   }});
   _applyBrowserFilter();
   _markDirty();
@@ -638,8 +654,11 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
   const totalVerts=nSampledTokens*nSegs*2;
   const tPos=new Float32Array(totalVerts*3);
   const tCol=new Float32Array(totalVerts*3);
+  // Track vertex ranges per sampled token for script filtering
+  v._trajTokenMap=[];// [{ti, start, count}]
   let vi2=0;
   for(let ii=0;ii<nN;ii+=step){
+    const vStart=vi2;
     const hex=CL[scripts[ii]]||0xAAAAAA;
     const cr=((hex>>16)&0xFF)/255,cg=((hex>>8)&0xFF)/255,cb=(hex&0xFF)/255;
     for(let si=0;si<nSegs;si++){
@@ -651,6 +670,7 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
       tPos[vi2*3]=_getScore(l1,ii,pcX)/_tlMx[l1][0];tPos[vi2*3+1]=_getScore(l1,ii,pcY)/_tlMx[l1][1];tPos[vi2*3+2]=z1;
       tCol[vi2*3]=cr;tCol[vi2*3+1]=cg;tCol[vi2*3+2]=cb;vi2++;
     }
+    v._trajTokenMap.push({ti:ii,start:vStart,count:vi2-vStart});
   }
   const tGeo=new THREE.BufferGeometry();
   tGeo.setAttribute('position',new THREE.BufferAttribute(tPos,3));
