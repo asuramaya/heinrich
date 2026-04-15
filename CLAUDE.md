@@ -203,8 +203,8 @@ All unit tests run without GPU. Integration tests need MLX + cached Qwen 0.5B.
 - `discover/` — direction finding, neuron profiling (legacy shrt.py here is stale — use profile/)
 - `attack/` — cliff search, steering, distributed attacks
 - `cartography/` — model config, templates, datasets, runtime, audit
-- `companion.py` — Live 3D MRI viewer server (companion_ui.html frontend)
-- `companion_ui.html` — Single-page 3D viewer: cloud/trajectory/prism/spectrum/neurons
+- `companion.py` — Live 3D MRI viewer server. Configurable `mri_root`. Serves transposed indexes (O(1) per-token and per-PC queries). Neuron cache bounded.
+- `companion_ui.html` — Single-page 3D viewer: 20 viewports (cloud/trajectory/flower/prism/spectrum/neurons/weights). Inline GIF encoder. Bulk column access for 150K token performance.
 - `viz.py` — [deprecated] old DB-based visualizer, use `companion` instead
 - `mcp.py` — MCP tool definitions and ToolServer
 - `mcp_transport.py` — JSON-RPC stdio transport
@@ -350,6 +350,23 @@ mlp/L{NN}_up.npy                     # MLP up activations [N, intermediate] (ful
 Raw/naked mode: no entry arrays (single-token, entry == exit). No attention (self-attention = 1.0).
 Template mode: entry + exit (different positions) + attention weights + gate activations.
 Gate and up activations captured in all modes — full intermediate values from the exact pre-MLP state via decomposed forward.
+Nested layout (`layers/L{NN}/exit.npy`) for mmap captures >1GB; flat layout (`L{NN}_exit.npy`) otherwise.
+
+**Decomposition outputs** (`decomp/` directory, written by `mri-decompose`):
+```
+L{NN}_scores.npy              # [N, K] float16 PCA scores per layer
+L{NN}_variance.npy            # [K] float32 variance explained per PC
+L{NN}_components.npy          # [K, D] float32 principal components
+all_scores.bin                 # HEI2 blob: [score_k PCs scores + var_k PCs variance]
+token_scores.bin               # [N, layers, K] float16 — per-token O(1) seek
+pc_scores.bin                  # [K, layers, N] float16 — per-PC O(1) seek
+token_neurons.bin              # [N, layers, intermediate] float16 — gate×up per token
+gate_heatmap.npy               # [N, layers] float16 — max |gate×up| per token
+neuron_importance.json         # top 50 neurons per layer by mean contribution
+weight_alignment.json          # per-layer per-matrix alignment with PCs
+delta_scores.bin               # delta PCA (exit-entry) scores
+meta.json                      # decomposition metadata
+```
 
 **Key metadata fields:**
 - `has_entry`: whether L{NN}_entry.npy files exist (False for raw/naked)
@@ -401,3 +418,61 @@ Key results: displacement is language sorting. ~14 PCs for 50% in Qwen 0.5B. The
 - **Layer deltas reveal the architecture.** SmolLM2-135M: L11=123x amplification (crystal birth), L28=75x (output assembly). L3-L10 and L12-L27: delta norms of 3-20 (the frozen zone — waiting for a question that never comes).
 - **Fused mmap.** MRI captures write directly to final .npy files via `np.lib.format.open_memmap`. No copy phase. Saves ~50 min on large captures.
 - **`mri-scan` is the primary command.** One command, one model: captures all 3 modes, health checks, runs layer deltas, logit lens, gate analysis, attention analysis, PCA depth. The queue script just lists models.
+
+## MRI capture improvements (Session 10)
+
+- **MLX graph break.** The capture loop now converts intermediates to numpy per-layer inside the loop. MLX's lazy evaluation was building a computation graph across ALL layers per batch — OOMing on models larger than SmolLM2-135M. Fix: `_to_np()` helper forces evaluation after each layer, freeing graph nodes.
+- **Adaptive batch size.** `batch_size = f(n_layers * hidden)`. SmolLM2-135M: 32, SmolLM2-360M: 8, Qwen 0.5B: 8. Was hardcoded at 32.
+- **Embedding gradient sub-batching.** The gradient computation does a full forward+backward through all layers. Now processed in sub-batches of `batch_size//4` to cap peak memory.
+- **Nested layout support.** Mmap captures (>1GB) write to `layers/L{NN}/exit.npy` (nested). Resume check, stat paths, and `_find_layer_file()` handle both nested and flat layouts.
+- **mlp_out saved.** `mlp_out_arrays` were computed but never flushed (mmap) or saved (non-mmap). Now persisted.
+- **Gate/up file handles kept open.** Was opening/closing per batch × per layer = 140K open/close ops. Now opened once, closed after capture.
+
+## mri-decompose improvements (Session 10)
+
+- **BIN_K cap.** The binary blob (`all_scores.bin`) caps score PCs to BIN_K=min(K, 50, 100MB/(layers*tokens*2)). Variance stays at full K (tiny). Blob format v2 (`HEI2` magic) with separate `score_k` and `var_k` in header.
+- **Transposed indexes.** Three file layouts for three access patterns:
+  - `L{NN}_scores.npy` — `[tokens × K]` per layer — for analysis tools
+  - `token_scores.bin` — `[tokens × layers × K]` — for per-token queries (pin, spectrum). O(1) seek.
+  - `pc_scores.bin` — `[K × layers × tokens]` — for per-PC queries (cloud viewports). O(1) seek.
+  - `token_neurons.bin` — `[tokens × layers × intermediate]` — for neuron field. O(1) seek.
+- **Parallel PCA.** `ThreadPoolExecutor(max_workers=3)` across layers. Each SVD gets full BLAS parallelism. MLX SVD on CPU stream for matrices ≤20K rows, sklearn `randomized_svd` for larger.
+- **Chunked gate/neuron.** Gate heatmap + neuron importance computed in one pass with 16K-row chunks. Sequential file reads (no mmap) for USB/NAS compatibility.
+- **Layer-by-layer index build.** Token scores and neuron indexes iterate by layer (48 sequential reads) instead of by token (7.2M page faults). Neuron index uses chunked transpose (4096 tokens at a time, 900MB peak).
+- **Divide-by-zero fix.** Delta PCA handles zero singular values (raw/naked mode where entry ≈ exit at some layers).
+
+## Companion viewer (Session 10)
+
+`heinrich companion` at http://localhost:8377 — 20-viewport 3D MRI viewer.
+
+**Layout:**
+```
+Row 1: vp0 (cloud A) | vp1 (delta) | vp2 (cloud B) | prism (dual browser) | right column
+Row 2: vp3 (traj A)  | vp4 (traj Δ)| vp5 (traj B)  | prism (continued)    | (weights/neurons/attn)
+Row 3: lv0 (flower A)| lv1 (flower Δ)| lv2 (flower B)| PC spectrum         |
+```
+
+**Viewport types:**
+- **Cloud (vp0-2):** 3D point clouds. X/Y/Z = PC scores. All tokens rendered. Per-axis normalization.
+- **Trajectory (vp3-5):** Token paths through layers. Z=depth. 5000 sampled trajectories as merged `LineSegments` (1 draw call). All tokens as dots at current layer.
+- **Internals/Flower (lv0-2):** Radial alignment profile. 7 petals (Q/K/V/O/gate/up/down) at fixed angles. Length = weight-PC alignment magnitude. Tubes through depth. Hover highlight, click isolate with chart-view camera snap. Token trajectory overlay. Per-matrix correlation with pinned token.
+- **Prism (br0):** Dual browser panels showing all PC pair combinations as mini scatter plots. Click to select viewport PCs.
+- **PC Spectrum (br0bot):** Full-K variance and per-token PCA scores across all layers. X=PC index, Y=score, Z=layer.
+- **Right column:** rv0=variance landscape, rv1=neuron field (gate×up activations), rv2=unused.
+
+**Interaction:**
+- Left-click: pin token A. Right/shift-click: pin token B. Click empty space: deselect.
+- Hover: highlight token across all viewports + trajectory path + detail popup.
+- Script legend: click to toggle, shift-click to isolate one script.
+- Layer: arrow keys, play/pause (space), prev/next buttons. Playback includes emb → L0...LN → lmh.
+- Capture: `[S]` button or `P` key = PNG snapshot with text overlay. `[REC]` or `G` key = GIF recording (one frame per layer). Works on any viewport.
+- XYZR: per-viewport camera snap buttons + master XYZR in tokpanel.
+
+**Data flow:**
+- Initial load: `all_scores.bin` (HEI2 blob, ~100MB) + decomp metadata. Blob provides first `_blobScoreK` PCs for all tokens.
+- On-demand: `/api/pc-full/` reads from `pc_scores.bin` (O(1) seek per PC). `/api/token-pca/` reads from `token_scores.bin`. `/api/neuron-field/` reads from `token_neurons.bin`.
+- Performance: `_getScoreColumn()` returns zero-copy `Float32Array` subarray from `_pcFull` cache. Cloud precompute uses bulk column access (96 subarray calls instead of 14.4M Map lookups).
+
+**Configurable:**
+- `run_companion(port=8377, mri_root="/Volumes/sharts")` — MRI data directory.
+- Neuron cache bounded to 2000 entries with 25% eviction.
