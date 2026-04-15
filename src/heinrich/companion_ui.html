@@ -2088,10 +2088,13 @@ function _buildPCSSpectrum(){
     const tCol=mesh.geometry.attributes.color.array;
     if(tok<0||!fullData||!scale){mesh.geometry.setDrawRange(0,0);dots.geometry.setDrawRange(0,0);return;}
     const fK=_pcsFullK||_pcsNK;
-    for(let l=0;l<nL_pcs;l++){
-      const z=(l/(nL_pcs-1))*zSpan-zSpan/2;
+    // Iterate in model order so emb→L0→...→LN→lmh are at correct Z
+    const seq=_layerSeq.length&&_layerSeq.length<=nL_pcs?_layerSeq:[...Array(nL_pcs).keys()];
+    for(let si=0;si<seq.length;si++){
+      const l=seq[si];
+      const z=_layerZ[l]!==undefined?_layerZ[l]*zSpan/2:(si/(seq.length-1))*zSpan-zSpan/2;
       for(let pc=0;pc<_pcsNK;pc++){
-        const i=l*_pcsNK+pc;
+        const i=si*_pcsNK+pc;
         if(i*3+2>=tPos.length)break;
         tPos[i*3]=(pc/(_pcsNK-1||1))*xSpan-xSpan/2;
         const val=fullData[l*fK+pc]||0;
@@ -2100,7 +2103,7 @@ function _buildPCSSpectrum(){
         tCol[i*3]=cr*0.1;tCol[i*3+1]=cg*0.1;tCol[i*3+2]=cb*0.1;
       }
     }
-    mesh.geometry.setDrawRange(0,Math.min(maxPts,nL_pcs*_pcsNK));
+    mesh.geometry.setDrawRange(0,Math.min(maxPts,seq.length*_pcsNK));
     mesh.geometry.attributes.position.needsUpdate=true;
     mesh.geometry.attributes.color.needsUpdate=true;
     dots.geometry.setDrawRange(0,_pcsNK);
@@ -2166,7 +2169,9 @@ function _updatePCSDots(){
   if(!_pcsNK)return;
   const xSpan=2.4, zSpan=3.0;
   const nL_pcs=_pcsFullNL||_nRealLayers;
-  const z=(cL/(nL_pcs-1))*zSpan-zSpan/2;
+  const _clL=cL>=_nRealLayers?(cL===_nRealLayers?0:_nRealLayers-1):cL;
+  // Use model-order Z, scaled to spectrum's zSpan
+  const z=_layerZ[_clL]!==undefined?_layerZ[_clL]*zSpan/2:(_clL/(nL_pcs-1))*zSpan-zSpan/2;
   const fK=_pcsFullK||_pcsNK;
   // Per-token scales: compute same way as _buildPCSSpectrum
   function _tkScale(fd){if(!fd)return 0;let mx=0.001;for(let i=0;i<fd.length;i++)if(Math.abs(fd[i])>mx)mx=Math.abs(fd[i]);return 1.2/mx;}
@@ -2230,7 +2235,8 @@ function _renderPCSHoverLayer(tokIdx,scores){
   const K=scores.length;
   const xSpan=2.4,zSpan=3.0;
   const nL_pcs=_pcsFullNL||_nRealLayers||nL;
-  const z=(cL/((nL_pcs-1)||1))*zSpan-zSpan/2;
+  const _hcl=cL>=_nRealLayers?(cL===_nRealLayers?0:_nRealLayers-1):cL;
+  const z=_layerZ[_hcl]!==undefined?_layerZ[_hcl]*zSpan/2:(_hcl/((nL_pcs-1)||1))*zSpan-zSpan/2;
   // Use _pcsScale if available (consistent with pinned dots), else auto-scale
   let scale=_pcsScale;
   if(!scale||scale<0.001){let mx=0.001;for(let i=0;i<K;i++)mx=Math.max(mx,Math.abs(scores[i]));scale=1.2/mx;}
