@@ -1421,6 +1421,14 @@ function _rebuildInternals(vi,pair,needsRebuild){
     leg.appendChild(btn);lv._legBtns.push(btn);
   }
   lv._wlIsolated=-1;
+  lv._savedCam=null;// clear stale focus camera from old PCs
+  // Reset camera to default flower view for new PCs
+  lv.cam.position.set(0,0,zSpan*0.8);
+  lv.cam.up.set(0,1,0);
+  lv.ctl.target.set(0,0,0);lv.ctl.update();lv._camSet=true;
+  // Clear focus label
+  const _fl=lv.el?.querySelector('.wl-focus-label');if(_fl)_fl.textContent='';
+  _clearCorrCache();
   _updateInternalsValues(lv,pcA,pcB);
 
   // Hover + click on tubes — raycast
