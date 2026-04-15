@@ -5604,24 +5604,28 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
 
     # === Transposed per-token index: [N_tokens × N_layers × K] float16 ===
     # One seek per token instead of N_layers file reads. Critical for USB/NAS.
+    # Token scores index: layer-by-layer build (48 sequential reads, not 3.9M page faults)
     print(f"  Token index (scores)...", file=sys.stderr)
     tok_scores_path = decomp_dir / 'token_scores.bin'
-    # Header: [4B magic 'TOKS'][4B n_tokens][4B n_layers][4B full_k]
     tok_hdr = struct.pack('<4sIII', b'TOKS', n_sample, total_layers, K)
-    stride = total_layers * K * 2  # bytes per token (float16)
+    stride = total_layers * K * 2
+    # Pre-allocate output as memmap for large files
     with open(tok_scores_path, 'wb') as f:
         f.write(tok_hdr)
-        # Write token-by-token: gather layer L's row for this token
-        for ti in range(n_sample):
-            row = np.zeros((total_layers, K), dtype=np.float16)
-            for li in range(total_layers):
-                sp = _get_score_mmap_local(decomp_dir, li, n_layers)
-                if sp is not None and ti < sp.shape[0]:
-                    nk = min(K, sp.shape[1])
-                    row[li, :nk] = sp[ti, :nk]
-            f.write(row.tobytes())
-            if (ti + 1) % 10000 == 0:
-                print(f"    {ti+1}/{n_sample}", file=sys.stderr)
+        f.write(b'\x00' * (n_sample * stride))  # reserve space
+    out = np.memmap(str(tok_scores_path), dtype=np.float16, mode='r+',
+                    offset=16, shape=(n_sample, total_layers, K))
+    for li in range(total_layers):
+        sp = _get_score_mmap_local(decomp_dir, li, n_layers)
+        if sp is not None:
+            # One sequential read of the entire layer file
+            data = np.array(sp)  # force full read from mmap
+            nk = min(K, data.shape[1])
+            out[:data.shape[0], li, :nk] = data[:, :nk]
+            del data
+        if (li + 1) % 5 == 0:
+            print(f"    layer {li+1}/{total_layers}", file=sys.stderr)
+    out.flush(); del out
     print(f"  Token scores index: {n_sample} tokens × {total_layers} layers × {K} PCs = "
           f"{(16 + n_sample * stride) / (1024*1024):.0f}MB", file=sys.stderr)
 
@@ -5646,8 +5650,8 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
           f"{(16 + K * pc_stride) / (1024*1024):.0f}MB", file=sys.stderr)
 
     # === Transposed per-token neuron index: [N_tokens × N_layers × intermediate] float16 ===
+    # Layer-by-layer build: 48 sequential reads instead of 7.2M page faults
     if mlp_dir.exists() and n_layers > 0:
-        # Infer intermediate size from first gate file
         _gp0 = mlp_dir / 'L00_gate.npy'
         if _gp0.exists():
             _inter = np.load(str(_gp0), mmap_mode='r').shape[1]
@@ -5655,30 +5659,29 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
             tok_neurons_path = decomp_dir / 'token_neurons.bin'
             n_hdr = struct.pack('<4sIII', b'TOKN', n_sample, n_layers, _inter)
             n_stride = n_layers * _inter * 2
-            # Load all gate/up mmaps once
-            _g_maps = []
-            _u_maps = []
-            for li in range(n_layers):
-                gp = mlp_dir / f'L{li:02d}_gate.npy'
-                up = mlp_dir / f'L{li:02d}_up.npy'
-                _g_maps.append(np.load(str(gp), mmap_mode='r') if gp.exists() else None)
-                _u_maps.append(np.load(str(up), mmap_mode='r') if up.exists() else None)
+            # Pre-allocate output as memmap
             with open(tok_neurons_path, 'wb') as f:
                 f.write(n_hdr)
-                for ti in range(n_sample):
-                    row = np.zeros((n_layers, _inter), dtype=np.float16)
-                    for li in range(n_layers):
-                        g = _g_maps[li]
-                        if g is not None and ti < g.shape[0]:
-                            gt = g[ti].astype(np.float32)
-                            u = _u_maps[li]
-                            if u is not None:
-                                row[li] = (gt * u[ti].astype(np.float32)).astype(np.float16)
-                            else:
-                                row[li] = gt.astype(np.float16)
-                    f.write(row.tobytes())
-                    if (ti + 1) % 10000 == 0:
-                        print(f"    {ti+1}/{n_sample}", file=sys.stderr)
+                f.write(b'\x00' * (n_sample * n_stride))
+            out = np.memmap(str(tok_neurons_path), dtype=np.float16, mode='r+',
+                            offset=16, shape=(n_sample, n_layers, _inter))
+            for li in range(n_layers):
+                gp = mlp_dir / f'L{li:02d}_gate.npy'
+                up_p = mlp_dir / f'L{li:02d}_up.npy'
+                if not gp.exists():
+                    continue
+                # Sequential read: one I/O per file (not mmap)
+                g = np.load(str(gp))
+                u = np.load(str(up_p)) if up_p.exists() else None
+                # Compute gate×up for all tokens at this layer in one vectorized op
+                if u is not None:
+                    out[:g.shape[0], li, :] = (g.astype(np.float32) * u.astype(np.float32)).astype(np.float16)
+                else:
+                    out[:g.shape[0], li, :] = g
+                del g, u
+                if (li + 1) % 5 == 0:
+                    print(f"    layer {li+1}/{n_layers}", file=sys.stderr)
+            out.flush(); del out
             print(f"  Token neuron index: {n_sample} tokens × {n_layers} layers × {_inter} neurons = "
                   f"{(16 + n_sample * n_stride) / (1024*1024):.0f}MB", file=sys.stderr)
 
