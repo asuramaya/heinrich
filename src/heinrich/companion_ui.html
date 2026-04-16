@@ -747,7 +747,9 @@ async function _applyDirectionColors(){
     const dv=new DataView(buf);
     const hdrLen=dv.getUint32(0,true);
     const hdr=JSON.parse(new TextDecoder().decode(new Uint8Array(buf,4,hdrLen)));
-    const proj=new Float32Array(buf,4+hdrLen);
+    // Copy to aligned buffer (4+hdrLen may not be 4-byte aligned)
+    const projBytes=new Uint8Array(buf,4+hdrLen);
+    const proj=new Float32Array(projBytes.buffer.slice(projBytes.byteOffset,projBytes.byteOffset+projBytes.byteLength));
     if(proj.length!==nN)return;// mismatch
     // Normalize: percentile-based for maximum contrast
     // Sort a sample to find 10th and 90th percentiles

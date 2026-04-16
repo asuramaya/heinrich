@@ -1388,7 +1388,10 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                     proj = np.array(result["projections"], dtype=np.float32)
                     header = json.dumps({k: v for k, v in result.items()
                                         if k != "projections"}).encode()
-                    body = struct.pack('<I', len(header)) + header + proj.tobytes()
+                    # Pad header to 4-byte alignment for Float32Array
+                    pad = (4 - len(header) % 4) % 4
+                    header_padded = header + b'\x00' * pad
+                    body = struct.pack('<I', len(header_padded)) + header_padded + proj.tobytes()
                     self._send_bytes(body)
                 else:
                     self._send_json(result)
