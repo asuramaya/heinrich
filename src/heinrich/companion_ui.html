@@ -450,7 +450,7 @@ function renderPCBar(idx,canvasId,rgb){
 let _predsReqA=0,_predsReqB=0;
 function _fetchPredicts(tokIdx,containerId){
   const el=document.getElementById(containerId);if(!el)return;
-  if(tokIdx<0||!model||!mode){el.textContent='';return;}
+  if(tokIdx<0||!model||!mode||cL>=_nRealLayers){el.textContent='';return;}
   const isA=containerId==='predsA';
   const reqId=isA?++_predsReqA:++_predsReqB;
   el.textContent='predicts...';
@@ -494,8 +494,8 @@ let _sepReqId=0;
 async function _updateSeparation(a,b){
   const panel=document.getElementById('sepPanel');
   if(a<0||b<0||!model||!mode||!nN){panel.style.display='none';return;}
-  // Defer during load — don't fire heavy server request while model data is loading
   if(document.getElementById('loading')?.style.display==='flex'){panel.style.display='none';return;}
+  if(cL>=_nRealLayers){panel.style.display='none';return;}// no decomp at emb/lmh
   panel.style.display='block';
   const list=document.getElementById('sepList');
   const distEl=document.getElementById('sepDist');
@@ -876,8 +876,9 @@ async function _applyDirectionColors(){
     }
     return;
   }
-  // Skip during model load
+  // Skip during model load or on pseudo-layers (emb/lmh) where no score data exists
   if(document.getElementById('loading')?.style.display==='flex')return;
+  if(cL>=_nRealLayers)return;// emb/lmh pseudo-layers have no decomp scores
   const _a=pinnedToken,_b=pinnedTokenB,_layer=cL;
   const reqId=++_dirColorReqId;
   try{
