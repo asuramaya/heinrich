@@ -26,7 +26,19 @@ from typing import Any, Iterator, Sequence
 from .signal import Signal
 
 
-DEFAULT_DB_PATH = Path("./data/heinrich.db")
+def _project_db_path() -> Path:
+    """Resolve DB path relative to the project root (3 levels up from this file).
+
+    Works whether run from source tree or installed as a package.
+    Falls back to ./data/heinrich.db if the project path doesn't exist.
+    """
+    project = Path(__file__).resolve().parent.parent.parent.parent / "data" / "heinrich.db"
+    if project.parent.exists():
+        return project
+    return Path("./data/heinrich.db")
+
+
+DEFAULT_DB_PATH = _project_db_path()
 
 _SENTINEL = object()  # poison pill for writer thread shutdown
 
@@ -45,8 +57,8 @@ class SignalDB:
     - ``_write_queue`` — all mutations are serialized through this queue.
     """
 
-    def __init__(self, path: str | Path = DEFAULT_DB_PATH):
-        self.path = Path(path)
+    def __init__(self, path: str | Path | None = None):
+        self.path = Path(path) if path else DEFAULT_DB_PATH
         self.path.parent.mkdir(parents=True, exist_ok=True)
 
         # --- writer connection (only touched by _writer_loop) ---

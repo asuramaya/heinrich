@@ -229,6 +229,83 @@ def _load_decomp_meta(mri_path: str) -> dict:
     return meta
 
 
+def _direction_quality(mri_path: str, a: int, b: int, layer: int) -> dict:
+    """Full-K direction analysis between two tokens at a layer.
+
+    Returns magnitude, concentration, bimodality, explained variance,
+    and top tokens per side — all computed in the full hidden dimension.
+    """
+    decomp = Path(mri_path) / "decomp"
+    score_path = decomp / f"L{layer:02d}_scores.npy"
+    if not score_path.exists():
+        return {"error": f"No scores at L{layer}"}
+
+    tok = dict(np.load(str(Path(mri_path) / "tokens.npz"), allow_pickle=True))
+    texts = [str(t) for t in tok["token_texts"]]
+    scripts_arr = [str(s) for s in tok["scripts"]]
+
+    scores = np.load(str(score_path), mmap_mode="r")
+    N, K = scores.shape
+
+    if a >= N or b >= N:
+        return {"error": f"Token index out of range (max {N-1})"}
+
+    # Direction vector (full K)
+    diff = scores[a].astype(np.float32) - scores[b].astype(np.float32)
+    mag = float(np.linalg.norm(diff))
+    direction = diff / (mag + 1e-8)
+
+    # Concentration: how many PCs for 50%, 80%, 95%
+    diff2 = diff ** 2
+    total_d2 = float(diff2.sum())
+    order = np.argsort(diff2)[::-1]
+    cumul = np.cumsum(diff2[order]) / (total_d2 + 1e-8)
+    pcs_50 = int(np.searchsorted(cumul, 0.5)) + 1
+    pcs_80 = int(np.searchsorted(cumul, 0.8)) + 1
+    pcs_95 = int(np.searchsorted(cumul, 0.95)) + 1
+    top_pcs = [{"pc": int(order[i]),
+                "share": float(diff2[order[i]] / (total_d2 + 1e-8)),
+                "delta": float(diff[order[i]])}
+               for i in range(min(5, len(order)))]
+
+    # Project all tokens onto direction
+    proj = scores.astype(np.float32) @ direction
+
+    # Explained variance: var(projection) / total layer variance
+    proj_var = float(np.var(proj))
+    total_var = float(np.sum(np.var(scores.astype(np.float32), axis=0)))
+    explained = proj_var / (total_var + 1e-8)
+
+    # Bimodality: histogram valley test
+    hist, edges = np.histogram(proj, bins=100)
+    mid = len(hist) // 2
+    left_peak = float(hist[:mid].max())
+    right_peak = float(hist[mid:].max())
+    valley = float(hist[max(0, mid - 5):mid + 5].min())
+    bimodal_ratio = valley / (min(left_peak, right_peak) + 1e-8)
+
+    # Top tokens per side
+    top_a_idx = np.argsort(proj)[-10:][::-1]
+    top_b_idx = np.argsort(proj)[:10]
+    top_a_list = [{"idx": int(i), "text": texts[i], "script": scripts_arr[i],
+                   "proj": float(proj[i])} for i in top_a_idx]
+    top_b_list = [{"idx": int(i), "text": texts[i], "script": scripts_arr[i],
+                   "proj": float(proj[i])} for i in top_b_idx]
+
+    return {
+        "layer": layer, "K": K, "N": N,
+        "token_a": {"idx": a, "text": texts[a], "script": scripts_arr[a]},
+        "token_b": {"idx": b, "text": texts[b], "script": scripts_arr[b]},
+        "magnitude": mag,
+        "concentration": {"pcs_50": pcs_50, "pcs_80": pcs_80, "pcs_95": pcs_95},
+        "top_pcs": top_pcs,
+        "explained_variance": explained,
+        "bimodality": bimodal_ratio,
+        "top_a": top_a_list,
+        "top_b": top_b_list,
+    }
+
+
 def _token_biography(mri_path: str, token_idx: int) -> dict:
     """Get precomputed gate heatmap for one token."""
     p = Path(mri_path) / "decomp" / "gate_heatmap.npy"
@@ -1039,6 +1116,20 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             model = qs.get('model', [None])[0]
             target = qs.get('target', [None])[0]
             self._send_json(_query_signals(kind=kind, model=model, target=target))
+        elif path.startswith('/api/direction-quality/'):
+            # /api/direction-quality/model/mode?a=N&b=N&layer=L
+            # Full-K direction analysis between two tokens
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                a = int(qs.get('a', ['0'])[0])
+                b = int(qs.get('b', ['0'])[0])
+                layer = int(qs.get('layer', ['0'])[0])
+                mri_path = self._mri_path(model, mode)
+                result = _direction_quality(mri_path, a, b, layer)
+                self._send_json(result)
+            else:
+                self._send_json({"error": "Usage: /api/direction-quality/<model>/<mode>?a=N&b=N&layer=L"})
         elif path == '/api/commands':
             self._send_json(_list_commands())
         elif path.startswith('/api/run/'):

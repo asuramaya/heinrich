@@ -25,6 +25,7 @@ hf = [
 ]
 analysis = [
     "scipy>=1.10",
+    "scikit-learn>=1.3",
 ]
 dev = [
     "pytest>=8",

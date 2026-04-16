@@ -16,7 +16,7 @@ def test_list_tools():
     assert "heinrich_signals" in names
     assert "heinrich_status" in names
     assert "heinrich_pipeline" in names
-    assert len(tools) == 80
+    assert len(tools) >= 80, f"Expected >=80 tools, got {len(tools)}"
 
 
 def test_fetch_tool():

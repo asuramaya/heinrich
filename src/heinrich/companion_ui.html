@@ -438,50 +438,84 @@ function showPinDetail(idx){
   _updateSeparation(idx,pinnedTokenB);
   _applyDirectionColors();
 }
-function _updateSeparation(a,b){
+let _sepReqId=0;
+async function _updateSeparation(a,b){
   const panel=document.getElementById('sepPanel');
-  if(a<0||b<0||!allL[cL]){panel.style.display='none';return;}
+  if(a<0||b<0||!model||!mode||!nN){panel.style.display='none';return;}
+  // Defer during load — don't fire heavy server request while model data is loading
+  if(document.getElementById('loading')?.style.display==='flex'){panel.style.display='none';return;}
   panel.style.display='block';
-  const sa=allL[cL][a],sb=allL[cL][b];
-  if(!sa||!sb){panel.style.display='none';return;}
-  // Per-PC absolute difference
-  const diffs=[];
-  const k=Math.min(sa.length,sb.length,_blobScoreK);
-  for(let p=0;p<k;p++)diffs.push({p,d:Math.abs((sa[p]||0)-(sb[p]||0))});
-  diffs.sort((a,b)=>b.d-a.d);
-  // Top PC pairs: pick the top-2 individual PCs, then top pair by L2
-  const topPCs=diffs.slice(0,10);
-  // Also find best PC pair (2D separation)
-  const top5=diffs.slice(0,6).map(d=>d.p);
-  let bestPair=null,bestDist=0;
-  for(let i=0;i<top5.length;i++)for(let j=i+1;j<top5.length;j++){
-    const dx=(sa[top5[i]]||0)-(sb[top5[i]]||0),dy=(sa[top5[j]]||0)-(sb[top5[j]]||0);
-    const d2=Math.sqrt(dx*dx+dy*dy);
-    if(d2>bestDist){bestDist=d2;bestPair=[top5[i],top5[j]];}
-  }
-  document.getElementById('sepDist').textContent=bestPair?`(L2=${bestDist.toFixed(1)})`:'';
-  const list=document.getElementById('sepList');list.textContent='';
-  // Best pair button
-  if(bestPair){
-    const btn=document.createElement('div');
-    btn.style.cssText='cursor:pointer;padding:2px 4px;margin:1px 0;border-radius:2px;background:#1a2a1a;color:#6c6';
-    btn.textContent=`★ PC${bestPair[0]} × PC${bestPair[1]}  Δ=${bestDist.toFixed(1)}`;
-    btn.addEventListener('click',()=>{_navToSepPCs(bestPair[0],bestPair[1]);});
-    list.appendChild(btn);
-  }
-  // Individual top PCs
-  topPCs.slice(0,5).forEach(({p,d})=>{
-    const row=document.createElement('div');
-    row.style.cssText='cursor:pointer;padding:1px 4px;margin:1px 0;border-radius:2px;color:#888';
-    row.textContent=`PC${p}: Δ=${d.toFixed(2)}  A=${(sa[p]||0).toFixed(1)} B=${(sb[p]||0).toFixed(1)}`;
-    row.addEventListener('mouseenter',()=>{row.style.background='#1a1a2a';});
-    row.addEventListener('mouseleave',()=>{row.style.background='';});
-    row.addEventListener('click',()=>{
-      const second=topPCs.find(x=>x.p!==p);
-      _navToSepPCs(p,second?second.p:0);
+  const list=document.getElementById('sepList');
+  const distEl=document.getElementById('sepDist');
+  distEl.textContent='computing...';
+  list.textContent='';
+  // Full-K server-side analysis
+  const reqId=++_sepReqId;
+  try{
+    const r=await api(`direction-quality/${model}/${mode}?a=${a}&b=${b}&layer=${cL}`);
+    if(_sepReqId!==reqId)return;// superseded
+    if(r.error){distEl.textContent=r.error;return;}
+    const c=r.concentration;
+    const bm=r.bimodality;
+    const bmLabel=bm<0.3?'BIMODAL':bm<0.6?'partial':bm<0.85?'weak':'UNIMODAL';
+    const bmColor=bm<0.3?'#4f4':bm<0.6?'#cc4':bm<0.85?'#c84':'#c44';
+    distEl.textContent=`${r.K}D  mag=${r.magnitude.toFixed(1)}`;
+    // Feature quality summary
+    const summary=document.createElement('div');
+    summary.style.cssText='padding:2px 4px;margin:2px 0;font-size:8px;color:#aaa;line-height:1.5';
+    const bmSpan=document.createElement('span');
+    bmSpan.style.cssText=`color:${bmColor};font-weight:bold`;
+    bmSpan.textContent=bmLabel;
+    summary.appendChild(bmSpan);
+    summary.appendChild(document.createTextNode(` bimodality=${bm.toFixed(2)}`));
+    summary.appendChild(document.createElement('br'));
+    summary.appendChild(document.createTextNode(`concentration: ${c.pcs_50} PCs→50%, ${c.pcs_80}→80%, ${c.pcs_95}→95%`));
+    summary.appendChild(document.createElement('br'));
+    summary.appendChild(document.createTextNode(`explained variance: ${(r.explained_variance*100).toFixed(3)}%`));
+    list.appendChild(summary);
+    // Best PC pair
+    if(r.top_pcs.length>=2){
+      const p0=r.top_pcs[0],p1=r.top_pcs[1];
+      const btn=document.createElement('div');
+      btn.style.cssText='cursor:pointer;padding:2px 4px;margin:2px 0;border-radius:2px;background:#1a2a1a;color:#6c6';
+      btn.textContent=`★ PC${p0.pc} × PC${p1.pc}  (${(p0.share*100).toFixed(0)}% + ${(p1.share*100).toFixed(0)}%)`;
+      btn.addEventListener('click',()=>{_navToSepPCs(p0.pc,p1.pc);});
+      list.appendChild(btn);
+    }
+    // Top PCs
+    r.top_pcs.forEach(({pc,share,delta})=>{
+      const row=document.createElement('div');
+      row.style.cssText='cursor:pointer;padding:1px 4px;margin:1px 0;border-radius:2px;color:#888;font-size:8px';
+      row.textContent=`PC${pc}: ${(share*100).toFixed(1)}% Δ=${delta.toFixed(2)}`;
+      row.addEventListener('mouseenter',()=>{row.style.background='#1a1a2a';});
+      row.addEventListener('mouseleave',()=>{row.style.background='';});
+      row.addEventListener('click',()=>{
+        const second=r.top_pcs.find(x=>x.pc!==pc);
+        _navToSepPCs(pc,second?second.pc:0);
+      });
+      list.appendChild(row);
     });
-    list.appendChild(row);
-  });
+    // Top tokens per side
+    const mkTokList=(items,label,color)=>{
+      if(!items.length)return;
+      const hdr=document.createElement('div');
+      hdr.style.cssText=`color:${color};font-size:7px;margin-top:4px`;
+      hdr.textContent=label;list.appendChild(hdr);
+      items.slice(0,5).forEach(t=>{
+        const row=document.createElement('div');
+        row.style.cssText='padding:0 4px;color:#666;font-size:7px;cursor:pointer';
+        row.textContent=`#${t.idx} ${t.text}  ${t.script}  proj=${t.proj.toFixed(1)}`;
+        row.addEventListener('click',()=>{pinnedToken=t.idx;updatePinMarkers();showPinDetail(pinnedToken);_onPinChange();_saveState();});
+        row.addEventListener('mouseenter',()=>{row.style.color='#aaa';});
+        row.addEventListener('mouseleave',()=>{row.style.color='#666';});
+        list.appendChild(row);
+      });
+    };
+    mkTokList(r.top_a,`Most ${r.token_a.text}-like:`,'#c64');
+    mkTokList(r.top_b,`Most ${r.token_b.text}-like:`,'#48a');
+  }catch(e){
+    if(_sepReqId===reqId)distEl.textContent='error: '+e.message;
+  }
 }
 function _navToSepPCs(px,py){
   const pz=0;// PC0 as depth

@@ -15,6 +15,38 @@ from pathlib import Path
 import numpy as np
 
 
+def load_val_sequences(
+    path: str,
+    *,
+    seq_len: int = 512,
+    n_seqs: int = 50,
+    seed: int = 42,
+    byte_level: bool = False,
+) -> np.ndarray:
+    """Load validation data from a .bin file, return [n_seqs, seq_len] int64.
+
+    Takes non-overlapping random slices from the token stream.
+    Returns fewer sequences if data is too short.
+    For byte_level=True, reads uint8 (raw bytes) instead of uint16 (sp tokens).
+    """
+    dtype = np.uint8 if byte_level else np.uint16
+    tokens = np.fromfile(path, dtype=dtype).astype(np.int64)
+    n_total = len(tokens)
+    max_seqs = n_total // seq_len
+    actual_seqs = min(n_seqs, max_seqs)
+    if actual_seqs == 0:
+        raise ValueError(f"Val data too short: {n_total} tokens < seq_len {seq_len}")
+
+    rng = np.random.RandomState(seed)
+    all_starts = np.arange(max_seqs) * seq_len
+    chosen = rng.choice(len(all_starts), actual_seqs, replace=False)
+    chosen.sort()
+    starts = all_starts[chosen]
+
+    seqs = np.stack([tokens[s:s + seq_len] for s in starts])
+    return seqs
+
+
 @dataclass
 class DecepticonConfig:
     """Minimal config that matches what Heinrich expects."""

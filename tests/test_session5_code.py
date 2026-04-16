@@ -245,7 +245,7 @@ class TestDecomposedForward:
 
         inp = mx.array([[42]])
         h = ops.embed(inp)
-        _, _, _, h_pre_mlp, _, gate_val, _ = ops.layer_decomposed(model_inner.layers[0], h, None)
+        _, _, _, h_pre_mlp, _, gate_val, _, _ = ops.layer_decomposed(model_inner.layers[0], h, None)
 
         # Manual gate computation
         ly = model_inner.layers[0]

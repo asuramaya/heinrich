@@ -539,7 +539,7 @@ def _capture_mri_causal_bank(backend, *, mode="raw", n_index=None,
 
 def _capture_mri_causal_bank_sequence(
     backend, *, val_data: str, n_seqs: int = 50, seq_len: int = 512,
-    seed: int = 42, output: str | None = None,
+    seed: int = 42, output: str | None = None, byte_level: bool = False,
 ) -> dict:
     """Sequence-mode MRI for causal bank: per-position internals on real sequences.
 
@@ -551,7 +551,8 @@ def _capture_mri_causal_bank_sequence(
     cfg = backend.config
     t0 = time.time()
 
-    seqs = load_val_sequences(val_data, seq_len=seq_len, n_seqs=n_seqs, seed=seed)
+    seqs = load_val_sequences(val_data, seq_len=seq_len, n_seqs=n_seqs, seed=seed,
+                              byte_level=byte_level)
     actual_seqs = seqs.shape[0]
     n_modes = cfg.n_modes
     n_experts = cfg.n_experts
@@ -565,8 +566,12 @@ def _capture_mri_causal_bank_sequence(
     # Inner model (CausalBankModel) for flag checking
     _inner = getattr(backend.model, '_model', backend.model)
 
+    # Detect substrate output dim (may differ from n_modes for adaptive substrate)
+    probe_result = backend.forward_captured(seqs[0:1, :2])  # minimal probe
+    substrate_dim = probe_result['substrate_states'].shape[-1]
+
     # Allocate
-    substrate_all = np.zeros((actual_seqs, seq_len, n_modes), dtype=np.float16)
+    substrate_all = np.zeros((actual_seqs, seq_len, substrate_dim), dtype=np.float16)
     embedding_all = np.zeros((actual_seqs, seq_len, embed_dim), dtype=np.float16)
     loss_all = np.full((actual_seqs, seq_len), np.nan, dtype=np.float32)
 
@@ -688,7 +693,7 @@ def _capture_mri_causal_bank_sequence(
             "embed_dim": embed_dim,
             "vocab_size": vocab_size,
             "n_layers": 1,
-            "hidden_size": n_modes,
+            "hidden_size": substrate_dim,
         },
         "capture": {
             "mode": "sequence",
@@ -803,7 +808,8 @@ def capture_mri(
                 backend, val_data=kwargs['val_data'],
                 n_seqs=kwargs.get('n_seqs', 50),
                 seq_len=kwargs.get('seq_len', 512),
-                seed=seed, output=output)
+                seed=seed, output=output,
+                byte_level=kwargs.get('byte_level', False))
         return _capture_mri_causal_bank(backend, mode=mode, n_index=n_index,
                                          seed=seed, output=output)
 

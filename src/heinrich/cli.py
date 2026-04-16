@@ -331,6 +331,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_cb_decompose.add_argument("--mri", required=True, help=".mri directory (causal bank, sequence mode)")
     p_cb_decompose.add_argument("--n-sample", type=int, default=None, help="Tokens to sample (default: all)")
 
+    p_cb_rot = sub.add_parser("profile-cb-rotation-probe", help="Nonlinear + rotational information probes: MLP vs linear, angular decomposition")
+    p_cb_rot.add_argument("--mri", required=True, help=".mri directory (causal bank, sequence mode)")
+    p_cb_rot.add_argument("--n-sample", type=int, default=None, help="Tokens to sample (default: all)")
+
     p_cb_gate = sub.add_parser("profile-cb-gate-forensics", help="Causal bank write gate forensics: position dependence, difficulty correlation, effective rank")
     p_cb_gate.add_argument("--mri", required=True, help=".mri directory (causal bank, sequence mode)")
 
@@ -442,6 +446,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_mri.add_argument("--data", default=None, help="Validation data .bin file (uint16 tokens, for causal bank sequence mode)")
     p_mri.add_argument("--n-seqs", type=int, default=50, help="Number of sequences for sequence mode (default: 50)")
     p_mri.add_argument("--seq-len", type=int, default=512, help="Sequence length for sequence mode (default: 512)")
+    p_mri.add_argument("--byte-level", action="store_true", help="Read val data as uint8 bytes (for byte-level models)")
 
     p_capture = sub.add_parser("total-capture", help="[legacy] Use 'mri' instead. Capture every token, every layer.")
     p_capture.add_argument("--model", required=True, help="Model ID")
@@ -723,6 +728,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_cb_modes(args)
     elif args.command == "profile-cb-decompose":
         _cmd_cb_decompose(args)
+    elif args.command == "profile-cb-rotation-probe":
+        _cmd_cb_rotation_probe(args)
     elif args.command == "profile-cb-gate-forensics":
         _cmd_cb_gate_forensics(args)
     elif args.command == "profile-cb-substrate-local":
@@ -1333,6 +1340,8 @@ def _cmd_mri(args: argparse.Namespace) -> None:
         extra['n_seqs'] = args.n_seqs
     if getattr(args, 'seq_len', None):
         extra['seq_len'] = args.seq_len
+    if getattr(args, 'byte_level', False):
+        extra['byte_level'] = True
     result = capture_mri(backend, mode=args.mode, n_index=args.n_index,
                           output=args.output, db_path=getattr(args, 'db', None),
                           **extra)
@@ -2600,6 +2609,51 @@ def _cmd_cb_decompose(args: argparse.Namespace) -> None:
     for i in range(min(10, len(result['top_variance_pct']))):
         print(f"  {i+1:>4} {result['top_variance_pct'][i]:>5.1f}% "
               f"{result['pc_position_r'][i]:>7.3f} {result['pc_loss_r'][i]:>7.3f}")
+
+
+def _cmd_cb_rotation_probe(args: argparse.Namespace) -> None:
+    """Nonlinear + rotational information probes."""
+    from .profile.compare import causal_bank_rotation_probe
+
+    result = causal_bank_rotation_probe(args.mri, n_sample=getattr(args, 'n_sample', None))
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== CB Rotation Probe: {result['model']} — "
+          f"{result['n_modes']} modes, {result['n_seqs']} seqs ===\n")
+
+    p = result['probes']
+    print(f"  Position probes (test R²):")
+    print(f"    Linear (PCA50):    {p['position']['linear_pca50']:.6f}")
+    print(f"    MLP (PCA50):       {p['position']['mlp_pca50']:.6f}")
+    print(f"    MLP (raw256):      {p['position']['mlp_raw256']:.6f}")
+    print(f"    Angle (linear):    {p['position']['angle_linear']:.6f}")
+    print(f"    Angle (MLP):       {p['position']['angle_mlp']:.6f}")
+
+    boost = p['position']['mlp_pca50'] - p['position']['linear_pca50']
+    print(f"    MLP boost:         {boost:+.6f} {'*** NONLINEAR SIGNAL' if boost > 0.01 else ''}")
+
+    print(f"\n  Loss probes (test R²):")
+    print(f"    Linear (PCA50):    {p['loss']['linear_pca50']:.6f}")
+    print(f"    MLP (PCA50):       {p['loss']['mlp_pca50']:.6f}")
+    loss_boost = p['loss']['mlp_pca50'] - p['loss']['linear_pca50']
+    print(f"    MLP boost:         {loss_boost:+.6f}")
+
+    a = result['angular']
+    print(f"\n  Angular analysis ({a['n_pairs_analyzed']} mode pairs):")
+    print(f"    Max pair-position |r|: {a['max_pair_position_r']:.4f}")
+    print(f"    Mean pair-position |r|: {a['mean_pair_position_r']:.4f}")
+    if a['velocity_difficulty_corr'] is not None:
+        print(f"    Velocity-difficulty r:  {a['velocity_difficulty_corr']:.4f}")
+
+    print(f"\n  Phase velocity by position:")
+    for v in a['velocity_by_position']:
+        print(f"    {v['range']:>12}: |v|={v['mean_abs_velocity']:.4f}  std={v['velocity_std']:.4f}")
+
+    print(f"\n  Top position-correlated pairs:")
+    for tp in a['top_position_pairs']:
+        print(f"    modes {tp['modes']}: r={tp['position_r']:.4f}")
 
 
 def _cmd_cb_gate_forensics(args: argparse.Namespace) -> None:
