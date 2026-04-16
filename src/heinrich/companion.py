@@ -229,6 +229,30 @@ def _load_decomp_meta(mri_path: str) -> dict:
     return meta
 
 
+# --- Score cache: keeps last 3 layers' float32 arrays in RAM ---
+# First load from USB is ~4s, cached access is ~5ms.
+_score_cache: dict[str, np.ndarray] = {}  # key → float32 array
+_score_cache_order: list[str] = []
+_SCORE_CACHE_MAX = 3
+
+
+def _get_scores_f32(mri_path: str, layer: int) -> np.ndarray | None:
+    """Get float32 score array for a layer, cached in RAM."""
+    key = f"{mri_path}:L{layer:02d}"
+    if key in _score_cache:
+        return _score_cache[key]
+    score_path = Path(mri_path) / "decomp" / f"L{layer:02d}_scores.npy"
+    if not score_path.exists():
+        return None
+    arr = np.load(str(score_path)).astype(np.float32)
+    _score_cache[key] = arr
+    _score_cache_order.append(key)
+    while len(_score_cache_order) > _SCORE_CACHE_MAX:
+        evict = _score_cache_order.pop(0)
+        _score_cache.pop(evict, None)
+    return arr
+
+
 def _direction_quality(mri_path: str, a: int, b: int, layer: int) -> dict:
     """Full-K direction analysis between two tokens at a layer.
 
@@ -269,11 +293,11 @@ def _direction_quality(mri_path: str, a: int, b: int, layer: int) -> dict:
                for i in range(min(5, len(order)))]
 
     # Project all tokens onto direction
-    proj = scores.astype(np.float32) @ direction
+    proj = scores @ direction
 
     # Explained variance: var(projection) / total layer variance
     proj_var = float(np.var(proj))
-    total_var = float(np.sum(np.var(scores.astype(np.float32), axis=0)))
+    total_var = float(np.sum(np.var(scores, axis=0)))
     explained = proj_var / (total_var + 1e-8)
 
     # Bimodality: histogram valley test
@@ -313,21 +337,19 @@ def _direction_project(mri_path: str, a: int, b: int, layer: int) -> dict:
     suitable for direct use as color values in the browser.
     """
     decomp = Path(mri_path) / "decomp"
-    score_path = decomp / f"L{layer:02d}_scores.npy"
-    if not score_path.exists():
+    scores = _get_scores_f32(mri_path, layer)
+    if scores is None:
         return {"error": f"No scores at L{layer}"}
-
-    scores = np.load(str(score_path), mmap_mode="r")
     N, K = scores.shape
 
     if a >= N or b >= N:
         return {"error": f"Token index out of range (max {N-1})"}
 
-    diff = scores[a].astype(np.float32) - scores[b].astype(np.float32)
+    diff = scores[a] - scores[b]
     mag = float(np.linalg.norm(diff))
     direction = diff / (mag + 1e-8)
 
-    proj = (scores.astype(np.float32) @ direction).tolist()
+    proj = (scores @ direction).tolist()
 
     return {"projections": proj, "magnitude": mag, "K": K,
             "proj_a": proj[a], "proj_b": proj[b]}
@@ -356,7 +378,7 @@ def _direction_nonlinear(mri_path: str, a: int, b: int, layer: int,
     diff = scores[a].astype(np.float32) - scores[b].astype(np.float32)
     mag = float(np.linalg.norm(diff))
     direction = diff / (mag + 1e-8)
-    proj = scores.astype(np.float32) @ direction
+    proj = scores @ direction
 
     # Labels: 1 = A-side (positive projection), 0 = B-side
     pa, pb = float(proj[a]), float(proj[b])
@@ -428,25 +450,22 @@ def _direction_depth(mri_path: str, a: int, b: int) -> dict:
 
     layers = []
     for li in range(n_layers):
-        score_path = decomp / f"L{li:02d}_scores.npy"
-        if not score_path.exists():
+        scores = _get_scores_f32(mri_path, li)
+        if scores is None:
             continue
-        scores = np.load(str(score_path), mmap_mode="r")
         N, K = scores.shape
         if a >= N or b >= N:
             continue
 
-        diff = scores[a].astype(np.float32) - scores[b].astype(np.float32)
+        diff = scores[a] - scores[b]
         mag = float(np.linalg.norm(diff))
         direction = diff / (mag + 1e-8)
 
-        # Project A, B, and sample of population
-        pa = float(scores[a].astype(np.float32) @ direction)
-        pb = float(scores[b].astype(np.float32) @ direction)
+        pa = float(scores[a] @ direction)
+        pb = float(scores[b] @ direction)
 
-        # Sample percentiles
         step = max(1, N // 500)
-        sample_proj = scores[::step].astype(np.float32) @ direction
+        sample_proj = scores[::step] @ direction
         p10 = float(np.percentile(sample_proj, 10))
         p50 = float(np.percentile(sample_proj, 50))
         p90 = float(np.percentile(sample_proj, 90))

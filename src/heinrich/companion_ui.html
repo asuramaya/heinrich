@@ -765,19 +765,7 @@ async function _applyDirectionColors(){
   }
   // Skip during model load
   if(document.getElementById('loading')?.style.display==='flex')return;
-  // Phase 1: INSTANT 50-PC coloring from blob (approximate but immediate)
   const _a=pinnedToken,_b=pinnedTokenB,_layer=cL;
-  const sa=allL[cL]?.[_a],sb=allL[cL]?.[_b];
-  if(sa&&sb){
-    const K=Math.min(sa.length,sb.length,_blobScoreK);
-    const dir=new Float32Array(K);let norm2=0;
-    for(let k=0;k<K;k++){dir[k]=(sa[k]||0)-(sb[k]||0);norm2+=dir[k]*dir[k];}
-    const norm=Math.sqrt(norm2)||1;for(let k=0;k<K;k++)dir[k]/=norm;
-    const proj50=new Float32Array(nN);
-    for(let i=0;i<nN;i++){const si=allL[cL]?.[i];if(!si)continue;let d=0;for(let k=0;k<K;k++)d+=(si[k]||0)*dir[k];proj50[i]=d;}
-    _colorFromProj(proj50);
-  }
-  // Phase 2: FULL-K server refinement (accurate, ~4 sec delay)
   const reqId=++_dirColorReqId;
   try{
     const resp=await fetch(`/api/direction-project/${model}/${mode}?a=${_a}&b=${_b}&layer=${_layer}`);
