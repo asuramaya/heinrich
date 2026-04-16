@@ -672,13 +672,14 @@ function _ensureColors(v){
 // recolor all tokens by their projection onto that direction.
 // Red = A-like, Blue = B-like, grey = orthogonal.
 let _dirColorActive=false;
-function _applyDirectionColors(){
-  if(pinnedToken<0||pinnedTokenB<0||!allL[cL]){
+let _dirColorReqId=0;
+async function _applyDirectionColors(){
+  if(pinnedToken<0||pinnedTokenB<0||!model||!mode||!nN){
     if(_dirColorActive){
       _dirColorActive=false;
+      // Reset to script colors
       for(const v of views){
         _ensureColors(v);
-        // Reset trajectory colors to script
         if(v.trajMarker){const tc=v.trajMarker.geometry.attributes.color?.array;
           if(tc){for(let i=0;i<nN;i++){const hex=CL[scripts[i]]||0xAAAAAA;tc[i*3]=((hex>>16)&0xFF)/255;tc[i*3+1]=((hex>>8)&0xFF)/255;tc[i*3+2]=(hex&0xFF)/255;}v.trajMarker.geometry.attributes.color.needsUpdate=true;}}
         if(v.trajGroup&&v._trajTokenMap){const lc=v.trajGroup.geometry.attributes.color?.array;
@@ -689,53 +690,42 @@ function _applyDirectionColors(){
     }
     return;
   }
-  const sa=allL[cL][pinnedToken],sb=allL[cL][pinnedTokenB];
-  if(!sa||!sb)return;
-  const K=Math.min(sa.length,sb.length,_blobScoreK);
-  // Direction vector: A - B
-  const dir=new Float32Array(K);
-  let norm2=0;
-  for(let k=0;k<K;k++){dir[k]=(sa[k]||0)-(sb[k]||0);norm2+=dir[k]*dir[k];}
-  const norm=Math.sqrt(norm2)||1;
-  for(let k=0;k<K;k++)dir[k]/=norm;
-  // Project every token onto direction
-  const proj=new Float32Array(nN);
-  let mn=Infinity,mx=-Infinity;
-  for(let i=0;i<nN;i++){
-    const si=allL[cL][i];if(!si){proj[i]=0;continue;}
-    let dot=0;for(let k=0;k<K;k++)dot+=(si[k]||0)*dir[k];
-    proj[i]=dot;if(dot<mn)mn=dot;if(dot>mx)mx=dot;
-  }
-  // Color: red(A-like) → grey(neutral) → blue(B-like)
-  // Map projection to [-1,1] centered at midpoint of A and B projections
-  const pa=proj[pinnedToken],pb=proj[pinnedTokenB];
-  const mid=(pa+pb)/2,span=Math.abs(pa-pb)/2||1;
-  // Compute RGB per token
-  const _dirR=new Float32Array(nN),_dirG=new Float32Array(nN),_dirB=new Float32Array(nN);
-  for(let i=0;i<nN;i++){
-    const t=Math.max(-1,Math.min(1,(proj[i]-mid)/span));
-    const at=Math.abs(t);
-    if(t>0){_dirR[i]=0.25+0.75*at;_dirG[i]=0.25*(1-at);_dirB[i]=0.15*(1-at);}
-    else{_dirR[i]=0.15*(1-at);_dirG[i]=0.25*(1-at);_dirB[i]=0.25+0.55*at;}
-  }
-  for(const v of views){
-    // Cloud points
-    const col=v.geo.attributes.color?.array;
-    if(col){for(let i=0;i<nN;i++){col[i*3]=_dirR[i];col[i*3+1]=_dirG[i];col[i*3+2]=_dirB[i];}v.geo.attributes.color.needsUpdate=true;}
-    // Trajectory marker dots
-    if(v.trajMarker){
-      const tc=v.trajMarker.geometry.attributes.color?.array;
-      if(tc){for(let i=0;i<nN;i++){tc[i*3]=_dirR[i];tc[i*3+1]=_dirG[i];tc[i*3+2]=_dirB[i];}v.trajMarker.geometry.attributes.color.needsUpdate=true;}
+  // Skip during model load
+  if(document.getElementById('loading')?.style.display==='flex')return;
+  const reqId=++_dirColorReqId;
+  try{
+    const resp=await fetch(`/api/direction-project/${model}/${mode}?a=${pinnedToken}&b=${pinnedTokenB}&layer=${cL}`);
+    if(_dirColorReqId!==reqId)return;// superseded
+    const buf=await resp.arrayBuffer();
+    // Parse: 4-byte header length (uint32 LE) + JSON header + float32 projections
+    const dv=new DataView(buf);
+    const hdrLen=dv.getUint32(0,true);
+    const hdr=JSON.parse(new TextDecoder().decode(new Uint8Array(buf,4,hdrLen)));
+    const proj=new Float32Array(buf,4+hdrLen);
+    if(proj.length!==nN)return;// mismatch
+    // Normalize: center on midpoint, scale by half-gap
+    const pa=hdr.proj_a,pb=hdr.proj_b;
+    const mid=(pa+pb)/2,span=Math.abs(pa-pb)/2||1;
+    // Compute RGB per token
+    const _dirR=new Float32Array(nN),_dirG=new Float32Array(nN),_dirB=new Float32Array(nN);
+    for(let i=0;i<nN;i++){
+      const t=Math.max(-1,Math.min(1,(proj[i]-mid)/span));
+      const at=Math.abs(t);
+      if(t>0){_dirR[i]=0.25+0.75*at;_dirG[i]=0.25*(1-at);_dirB[i]=0.15*(1-at);}
+      else{_dirR[i]=0.15*(1-at);_dirG[i]=0.25*(1-at);_dirB[i]=0.25+0.55*at;}
     }
-    // Trajectory lines (sampled tokens)
-    if(v.trajGroup&&v._trajTokenMap){
-      const lc=v.trajGroup.geometry.attributes.color?.array;
-      if(lc){for(const{ti,start,count}of v._trajTokenMap){
-        for(let j=start;j<start+count;j++){lc[j*3]=_dirR[ti];lc[j*3+1]=_dirG[ti];lc[j*3+2]=_dirB[ti];}
-      }v.trajGroup.geometry.attributes.color.needsUpdate=true;}
+    for(const v of views){
+      const col=v.geo.attributes.color?.array;
+      if(col){for(let i=0;i<nN;i++){col[i*3]=_dirR[i];col[i*3+1]=_dirG[i];col[i*3+2]=_dirB[i];}v.geo.attributes.color.needsUpdate=true;}
+      if(v.trajMarker){const tc=v.trajMarker.geometry.attributes.color?.array;
+        if(tc){for(let i=0;i<nN;i++){tc[i*3]=_dirR[i];tc[i*3+1]=_dirG[i];tc[i*3+2]=_dirB[i];}v.trajMarker.geometry.attributes.color.needsUpdate=true;}}
+      if(v.trajGroup&&v._trajTokenMap){const lc=v.trajGroup.geometry.attributes.color?.array;
+        if(lc){for(const{ti,start,count}of v._trajTokenMap){
+          for(let j=start;j<start+count;j++){lc[j*3]=_dirR[ti];lc[j*3+1]=_dirG[ti];lc[j*3+2]=_dirB[ti];}
+        }v.trajGroup.geometry.attributes.color.needsUpdate=true;}}
     }
-  }
-  _dirColorActive=true;_markDirty();
+    _dirColorActive=true;_markDirty();
+  }catch(e){/* silently fail — coloring is best-effort */}
 }
 function _applyFilter(){
   if(!nN)return;
