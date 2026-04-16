@@ -15,7 +15,13 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #rightcol{grid-column:5;grid-row:1/4;display:flex;flex-direction:column;gap:1px;overflow:hidden}
 .rvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .rvp .rlbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
-#tokpanel{position:fixed;right:8px;top:8px;width:280px;max-height:60vh;overflow-y:auto;background:rgba(10,10,10,0.95);border:1px solid #222;border-radius:4px;padding:8px;z-index:20;font-size:9px;backdrop-filter:blur(4px);cursor:default}
+#tokpanel{position:fixed;right:8px;top:8px;width:560px;max-height:85vh;overflow-y:auto;background:rgba(10,10,10,0.95);border:1px solid #222;border-radius:4px;padding:8px;z-index:20;font-size:9px;backdrop-filter:blur(4px);cursor:default}
+#tokAB{display:flex;gap:8px}
+#tokAB>div{flex:1;min-width:0}
+#tokChat{border-top:1px solid #222;margin-top:6px;padding-top:4px}
+#tokChat.collapsed #chatBody{display:none}
+#chatBody{max-height:150px;overflow-y:auto;margin-top:4px;font-size:8px}
+#chatInput{width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:8px;font-family:inherit;border-radius:2px;margin-top:4px}
 #tokpanel .drag-handle{cursor:move;padding:2px 0;margin-bottom:4px;border-bottom:1px solid #222;color:#444;font-size:7px;user-select:none}
 .lvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .lvp .llbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
@@ -97,13 +103,23 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   <button id="discoverBtn" style="width:100%;background:#1a2a1a;border:1px solid #333;color:#6c6;padding:2px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer;margin-top:2px">Discover features</button>
   <div id="discoverResults" style="max-height:200px;overflow-y:auto;font-size:7px;color:#555;margin-top:2px"></div>
   <hr style="border:none;border-top:1px solid #1a1a1a;margin:4px 0">
-  <div class="th">Token A (click) · Token B (R-click)</div>
-  <div id="tokA"><div class="tn" id="taName" style="color:#FF6644">—</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarA" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="taMeta" style="font-size:8px">click a token to pin</div></div>
-  <hr style="border:none;border-top:1px solid #1a1a1a;margin:6px 0">
-  <div id="tokB"><div class="tn" id="tbName" style="color:#4477AA">—</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarB" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="tbMeta" style="font-size:8px">R-click for comparison</div></div>
+  <div id="tokAB">
+    <div id="tokA"><div style="color:#555;font-size:7px;margin-bottom:2px">Token A (click)</div><div class="tn" id="taName" style="color:#FF6644">—</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarA" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="taMeta" style="font-size:8px">click a token to pin</div></div>
+    <div id="tokB"><div style="color:#555;font-size:7px;margin-bottom:2px">Token B (R-click)</div><div class="tn" id="tbName" style="color:#4477AA">—</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarB" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="tbMeta" style="font-size:8px">R-click for comparison</div></div>
+  </div>
   <div id="sepPanel" style="display:none;margin:6px 0"><div style="color:#555;font-size:7px;margin-bottom:2px">Max separation PCs <span id="sepDist" style="color:#888"></span></div><div id="sepList" style="font-size:8px"></div></div>
   <hr style="border:none;border-top:1px solid #1a1a1a;margin:6px 0">
   <div id="attnPanel" style="display:none"><div style="color:#555;font-size:7px;margin-bottom:2px">Attention (Token A, current layer)</div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
+  <div id="tokChat" class="collapsed">
+    <div style="display:flex;align-items:center;cursor:pointer" id="chatToggle">
+      <span style="color:#555;font-size:7px;flex:1">MCP Collaboration</span>
+      <span id="chatArrow" style="color:#444;font-size:10px">&#9654;</span>
+    </div>
+    <div id="chatBody">
+      <div id="chatLog" style="color:#666;font-size:8px;line-height:1.5"></div>
+      <input id="chatInput" type="text" placeholder="ask about this direction...">
+    </div>
+  </div>
 </div>
 <div id="detail"><div class="tok" id="tt"></div><div class="meta" id="tm"></div></div>
 <div id="loading" style="position:fixed;top:0;left:0;right:0;bottom:0;background:#0a0a0a;display:flex;align-items:center;justify-content:center;z-index:100;color:#555;font-size:13px;font-family:inherit">Loading...</div>
@@ -3631,6 +3647,35 @@ async function _captureGifRemote(sc,cam,el,vi,rid){
 
 // Start polling after initial load completes
 setTimeout(_pollLoop,1000);
+
+// --- MCP Chat toggle ---
+document.getElementById('chatToggle')?.addEventListener('click',()=>{
+  const chat=document.getElementById('tokChat');
+  const arrow=document.getElementById('chatArrow');
+  chat.classList.toggle('collapsed');
+  arrow.textContent=chat.classList.contains('collapsed')?'\u25B6':'\u25BC';
+});
+document.getElementById('chatInput')?.addEventListener('keydown',e=>{
+  if(e.key!=='Enter')return;
+  const input=e.target;const msg=input.value.trim();if(!msg)return;
+  input.value='';
+  const log=document.getElementById('chatLog');
+  const userMsg=document.createElement('div');
+  userMsg.style.cssText='color:#ccc;margin:2px 0';
+  userMsg.textContent='> '+msg;
+  log.appendChild(userMsg);
+  // Send to MCP via navigate command with chat payload
+  fetch('/api/navigate',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({cmd:'chat',message:msg,pinnedA:pinnedToken,pinnedB:pinnedTokenB,layer:cL,model,mode})
+  }).then(r=>r.json()).then(r=>{
+    const reply=document.createElement('div');
+    reply.style.cssText='color:#6c6;margin:2px 0';
+    reply.textContent=r.reply||r.error||'sent';
+    log.appendChild(reply);
+    log.scrollTop=log.scrollHeight;
+  }).catch(()=>{});
+  log.scrollTop=log.scrollHeight;
+});
 </script>
 </body>
 </html>
