@@ -495,6 +495,23 @@ async function _updateSeparation(a,b){
       });
       list.appendChild(row);
     });
+    // Nonlinearity test (async, updates panel when done)
+    const nlDiv=document.createElement('div');
+    nlDiv.style.cssText='padding:2px 4px;margin:2px 0;font-size:8px;color:#555';
+    nlDiv.textContent='testing linearity...';
+    list.appendChild(nlDiv);
+    api(`direction-nonlinear/${model}/${mode}?a=${a}&b=${b}&layer=${cL}&n_sample=2000`).then(nl=>{
+      if(_sepReqId!==reqId)return;
+      if(nl.error){nlDiv.textContent='linearity: '+nl.error;return;}
+      const vColor=nl.verdict==='linear'?'#4f4':nl.verdict==='nonlinear'?'#f44':'#cc4';
+      nlDiv.textContent='';
+      const vSpan=document.createElement('span');
+      vSpan.style.cssText=`color:${vColor};font-weight:bold`;
+      vSpan.textContent=nl.verdict.toUpperCase();
+      nlDiv.appendChild(vSpan);
+      nlDiv.appendChild(document.createTextNode(
+        ` linear=${(nl.linear_acc*100).toFixed(0)}% knn=${(nl.knn_acc*100).toFixed(0)}% gap=${(nl.gap*100).toFixed(0)}%`));
+    }).catch(()=>{nlDiv.textContent='linearity: failed';});
     // Top tokens per side
     const mkTokList=(items,label,color)=>{
       if(!items.length)return;
