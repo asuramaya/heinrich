@@ -333,6 +333,86 @@ def _direction_project(mri_path: str, a: int, b: int, layer: int) -> dict:
             "proj_a": proj[a], "proj_b": proj[b]}
 
 
+def _direction_nonlinear(mri_path: str, a: int, b: int, layer: int,
+                         n_sample: int = 2000) -> dict:
+    """Test whether a direction is linear or nonlinear.
+
+    Splits tokens into A-side and B-side by projection sign.
+    Compares linear probe accuracy vs k-NN accuracy.
+    Large gap (knn >> linear) means the concept boundary is curved.
+    """
+    decomp = Path(mri_path) / "decomp"
+    score_path = decomp / f"L{layer:02d}_scores.npy"
+    if not score_path.exists():
+        return {"error": f"No scores at L{layer}"}
+
+    scores = np.load(str(score_path), mmap_mode="r")
+    N, K = scores.shape
+
+    if a >= N or b >= N:
+        return {"error": f"Token index out of range (max {N-1})"}
+
+    # Compute direction and project
+    diff = scores[a].astype(np.float32) - scores[b].astype(np.float32)
+    mag = float(np.linalg.norm(diff))
+    direction = diff / (mag + 1e-8)
+    proj = scores.astype(np.float32) @ direction
+
+    # Labels: 1 = A-side (positive projection), 0 = B-side
+    pa, pb = float(proj[a]), float(proj[b])
+    mid = (pa + pb) / 2
+    labels = (proj > mid).astype(np.int32)
+
+    # Sample for speed
+    rng = np.random.RandomState(42)
+    n_sample = min(n_sample, N)
+    idx = rng.choice(N, n_sample, replace=False)
+    X = scores[idx].astype(np.float32)
+    y = labels[idx]
+
+    # Skip if too imbalanced
+    pos = y.sum()
+    if pos < 10 or (n_sample - pos) < 10:
+        return {"linear_acc": 0.5, "knn_acc": 0.5, "gap": 0.0,
+                "verdict": "too_few_samples", "n_sample": n_sample}
+
+    # Train/test split
+    n_train = int(n_sample * 0.7)
+    perm = rng.permutation(n_sample)
+    train_idx, test_idx = perm[:n_train], perm[n_train:]
+    X_train, y_train = X[train_idx], y[train_idx]
+    X_test, y_test = X[test_idx], y[test_idx]
+
+    # Linear probe: project onto direction, threshold at midpoint
+    proj_test = X_test @ direction
+    linear_pred = (proj_test > mid).astype(np.int32)
+    linear_acc = float((linear_pred == y_test).mean())
+
+    # k-NN: 5-nearest-neighbors in full K space
+    from numpy.linalg import norm
+    k = 5
+    knn_correct = 0
+    for i in range(len(X_test)):
+        dists = norm(X_train - X_test[i], axis=1)
+        nn_idx = np.argpartition(dists, k)[:k]
+        nn_labels = y_train[nn_idx]
+        pred = 1 if nn_labels.sum() > k / 2 else 0
+        if pred == y_test[i]:
+            knn_correct += 1
+    knn_acc = knn_correct / len(X_test)
+
+    gap = knn_acc - linear_acc
+    if gap > 0.1:
+        verdict = "nonlinear"
+    elif gap > 0.03:
+        verdict = "slightly_nonlinear"
+    else:
+        verdict = "linear"
+
+    return {"linear_acc": linear_acc, "knn_acc": knn_acc,
+            "gap": gap, "verdict": verdict, "n_sample": n_sample, "K": K}
+
+
 def _token_biography(mri_path: str, token_idx: int) -> dict:
     """Get precomputed gate heatmap for one token."""
     p = Path(mri_path) / "decomp" / "gate_heatmap.npy"
@@ -1178,6 +1258,19 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                     self._send_json(result)
             else:
                 self._send_json({"error": "Usage: /api/direction-project/<model>/<mode>?a=N&b=N&layer=L"})
+        elif path.startswith('/api/direction-nonlinear/'):
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                a = int(qs.get('a', ['0'])[0])
+                b = int(qs.get('b', ['0'])[0])
+                layer = int(qs.get('layer', ['0'])[0])
+                n_sample = int(qs.get('n_sample', ['2000'])[0])
+                mri_path = self._mri_path(model, mode)
+                result = _direction_nonlinear(mri_path, a, b, layer, n_sample)
+                self._send_json(result)
+            else:
+                self._send_json({"error": "Usage: /api/direction-nonlinear/<model>/<mode>?a=N&b=N&layer=L"})
         elif path == '/api/commands':
             self._send_json(_list_commands())
         elif path.startswith('/api/run/'):

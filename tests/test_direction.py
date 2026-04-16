@@ -48,3 +48,32 @@ def test_direction_project_normalization():
         mid = (pa + pb) / 2
         span = abs(pa - pb) / 2
         assert span > 0  # tokens should be different
+
+
+def test_direction_nonlinear_linear_data():
+    """A perfectly linear split should have knn ~= linear accuracy."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create data with a clean linear split on dim 0
+        n = 200
+        scores = np.zeros((n, 10), dtype=np.float16)
+        scores[:, 0] = np.linspace(-5, 5, n)  # linear gradient
+        scores[:, 1:] = np.random.randn(n, 9).astype(np.float16) * 0.1  # noise
+        decomp = Path(tmpdir) / "decomp"
+        decomp.mkdir()
+        np.save(str(decomp / "L00_scores.npy"), scores)
+        tokens_path = Path(tmpdir) / "tokens.npz"
+        np.savez(tokens_path,
+                 token_texts=np.array([f"tok{i}" for i in range(n)]),
+                 scripts=np.array(["latin"] * n),
+                 token_ids=np.arange(n))
+        meta = {"n_sample": n, "n_real_layers": 1,
+                "layers": [{"layer": 0, "pc1_pct": 50, "intrinsic_dim": 10, "neighbor_stability": 0.5}]}
+        (decomp / "meta.json").write_text(json.dumps(meta))
+
+        from heinrich.companion import _direction_nonlinear
+        result = _direction_nonlinear(tmpdir, a=0, b=n - 1, layer=0, n_sample=100)
+        assert "linear_acc" in result
+        assert "knn_acc" in result
+        # For perfectly linear data, both should be high and gap should be small
+        assert result["linear_acc"] > 0.8
+        assert abs(result["knn_acc"] - result["linear_acc"]) < 0.15
