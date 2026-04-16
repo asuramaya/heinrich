@@ -413,6 +413,65 @@ def _direction_nonlinear(mri_path: str, a: int, b: int, layer: int,
             "gap": gap, "verdict": verdict, "n_sample": n_sample, "K": K}
 
 
+def _direction_depth(mri_path: str, a: int, b: int) -> dict:
+    """Compute full-K direction strength at every layer.
+
+    Returns per-layer: magnitude, concentration (pcs_50), token A and B
+    projections, and population percentiles (10th, 50th, 90th).
+    """
+    decomp = Path(mri_path) / "decomp"
+    meta_path = decomp / "meta.json"
+    if not meta_path.exists():
+        return {"error": "No decomp/meta.json"}
+    meta = json.loads(meta_path.read_text())
+    n_layers = len(meta["layers"])
+
+    layers = []
+    for li in range(n_layers):
+        score_path = decomp / f"L{li:02d}_scores.npy"
+        if not score_path.exists():
+            continue
+        scores = np.load(str(score_path), mmap_mode="r")
+        N, K = scores.shape
+        if a >= N or b >= N:
+            continue
+
+        diff = scores[a].astype(np.float32) - scores[b].astype(np.float32)
+        mag = float(np.linalg.norm(diff))
+        direction = diff / (mag + 1e-8)
+
+        # Project A, B, and sample of population
+        pa = float(scores[a].astype(np.float32) @ direction)
+        pb = float(scores[b].astype(np.float32) @ direction)
+
+        # Sample percentiles
+        step = max(1, N // 500)
+        sample_proj = scores[::step].astype(np.float32) @ direction
+        p10 = float(np.percentile(sample_proj, 10))
+        p50 = float(np.percentile(sample_proj, 50))
+        p90 = float(np.percentile(sample_proj, 90))
+
+        # Concentration: how many PCs carry 50% of squared difference
+        diff2 = diff ** 2
+        total_d2 = float(diff2.sum())
+        order = np.argsort(diff2)[::-1]
+        cumul = np.cumsum(diff2[order]) / (total_d2 + 1e-8)
+        pcs_50 = int(np.searchsorted(cumul, 0.5)) + 1
+
+        # Top PC at this layer
+        top_pc = int(order[0])
+        top_share = float(diff2[order[0]] / (total_d2 + 1e-8))
+
+        layers.append({
+            "layer": li, "magnitude": mag,
+            "proj_a": pa, "proj_b": pb,
+            "p10": p10, "p50": p50, "p90": p90,
+            "pcs_50": pcs_50, "top_pc": top_pc, "top_share": top_share,
+        })
+
+    return {"layers": layers, "n_layers": n_layers}
+
+
 _steer_backend_cache = {}
 
 def _get_steer_backend(model_id: str):
@@ -1348,6 +1407,17 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 self._send_json(result)
             else:
                 self._send_json({"error": "Usage: /api/direction-nonlinear/<model>/<mode>?a=N&b=N&layer=L"})
+        elif path.startswith('/api/direction-depth/'):
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                a = int(qs.get('a', ['0'])[0])
+                b = int(qs.get('b', ['0'])[0])
+                mri_path = self._mri_path(model, mode)
+                result = _direction_depth(mri_path, a, b)
+                self._send_json(result)
+            else:
+                self._send_json({"error": "Usage: /api/direction-depth/<model>/<mode>?a=N&b=N"})
         elif path == '/api/commands':
             self._send_json(_list_commands())
         elif path.startswith('/api/run/'):

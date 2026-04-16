@@ -79,6 +79,35 @@ def test_direction_nonlinear_linear_data():
         assert abs(result["knn_acc"] - result["linear_acc"]) < 0.15
 
 
+def test_direction_depth_all_layers():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        # Create 3 layers of fake scores
+        decomp = Path(tmpdir) / "decomp"
+        decomp.mkdir()
+        n, k = 50, 20
+        for layer in range(3):
+            scores = np.random.randn(n, k).astype(np.float16)
+            np.save(str(decomp / f"L{layer:02d}_scores.npy"), scores)
+        tokens_path = Path(tmpdir) / "tokens.npz"
+        np.savez(tokens_path,
+                 token_texts=np.array([f"tok{i}" for i in range(n)]),
+                 scripts=np.array(["latin"] * n),
+                 token_ids=np.arange(n))
+        meta = {"n_sample": n, "n_real_layers": 3,
+                "layers": [{"layer": i} for i in range(3)]}
+        (decomp / "meta.json").write_text(json.dumps(meta))
+
+        from heinrich.companion import _direction_depth
+        result = _direction_depth(tmpdir, a=0, b=1)
+        assert "layers" in result
+        assert len(result["layers"]) == 3
+        for ld in result["layers"]:
+            assert "magnitude" in ld
+            assert "proj_a" in ld
+            assert "pcs_50" in ld
+            assert "top_pc" in ld
+
+
 def test_steer_test_returns_structure():
     """Steer test should return clean/steered outputs and a change metric."""
     with tempfile.TemporaryDirectory() as tmpdir:
