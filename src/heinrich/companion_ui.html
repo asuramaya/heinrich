@@ -3765,23 +3765,27 @@ async function _captureGifRemote(sc,cam,el,vi,rid){
     const gif=new GIFEnc(w,h);
     const delay=Math.round(100/fps);
     const seq=_layerSeq.length?_layerSeq:[...Array(_nRealLayers).keys()];
-    // Fibonacci spiral camera: uniform coverage of viewing sphere
-    const golden=(1+Math.sqrt(5))/2;
+    // Multi-loop orbit: each loop sweeps all layers, camera advances between loops
+    // 3 loops × N layers = 3N frames. Each loop shows full depth from a new angle.
+    const nLoops=3;
     const camDist=cam.position.length()||2.5;
-    const camTarget=cam.position.clone().add(cam.getWorldDirection(new THREE.Vector3()).multiplyScalar(-camDist));// orbit target
     const ctl=views.find(v=>v.cam===cam)?.ctl;
     const savedPos=cam.position.clone();
     const savedTarget=ctl?ctl.target.clone():new THREE.Vector3();
     const N=seq.length;
-    for(let si=0;si<N;si++){
+    const totalFrames=nLoops*N;
+    // Elevation: start at 30°, end at 60° across all loops
+    for(let frame=0;frame<totalFrames;frame++){
+      const loop=Math.floor(frame/N);
+      const si=frame%N;
       setLayer(seq[si],true);
-      // Fibonacci spiral viewpoint
-      const theta=2*Math.PI*si/golden;
-      const phi=Math.acos(1-2*(si+0.5)/N);
+      // Smooth turntable: azimuth advances continuously, elevation varies by loop
+      const azimuth=(frame/totalFrames)*Math.PI*2;// full 360° over all frames
+      const elevation=0.4+0.3*(loop/(nLoops-1||1));// 0.4 to 0.7 rad (~23° to ~40°)
       cam.position.set(
-        camDist*Math.sin(phi)*Math.cos(theta),
-        camDist*Math.cos(phi),
-        camDist*Math.sin(phi)*Math.sin(theta)
+        camDist*Math.cos(elevation)*Math.sin(azimuth),
+        camDist*Math.sin(elevation),
+        camDist*Math.cos(elevation)*Math.cos(azimuth)
       );
       cam.lookAt(0,0,0);
       cam.aspect=w/h;cam.updateProjectionMatrix();
@@ -3789,7 +3793,7 @@ async function _captureGifRemote(sc,cam,el,vi,rid){
       ctx.drawImage(tmp.domElement,0,0);
       _drawOverlay(ctx,w,h,vi,seq[si]);
       gif.addFrame(ctx.getImageData(0,0,w,h).data,delay);
-      await new Promise(r=>setTimeout(r,4));
+      await new Promise(r=>setTimeout(r,2));
     }
     // Restore camera
     cam.position.copy(savedPos);
