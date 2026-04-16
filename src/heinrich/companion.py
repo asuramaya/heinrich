@@ -413,6 +413,83 @@ def _direction_nonlinear(mri_path: str, a: int, b: int, layer: int,
             "gap": gap, "verdict": verdict, "n_sample": n_sample, "K": K}
 
 
+_steer_backend_cache = {}
+
+def _get_steer_backend(model_id: str):
+    """Get or create a model backend for steering tests."""
+    if model_id not in _steer_backend_cache:
+        from .cartography.runtime import get_backend
+        _steer_backend_cache[model_id] = get_backend(model_id)
+    return _steer_backend_cache[model_id]
+
+
+def _direction_steer_test(mri_path: str, a: int, b: int, layer: int,
+                          prompt: str, alpha: float = 2.0,
+                          max_tokens: int = 30,
+                          model_id: str = "") -> dict:
+    """Test if steering along the A->B direction changes model output.
+
+    Generates text with and without steering, compares outputs.
+    If output changes meaningfully, the direction is causal.
+    """
+    decomp = Path(mri_path) / "decomp"
+    score_path = decomp / f"L{layer:02d}_scores.npy"
+    if not score_path.exists():
+        return {"error": f"No scores at L{layer}"}
+
+    # Load direction from full-K components
+    comp_path = decomp / f"L{layer:02d}_components.npy"
+    if not comp_path.exists():
+        return {"error": f"No components at L{layer} — needed to map PC direction to hidden space"}
+
+    scores = np.load(str(score_path), mmap_mode="r")
+    components = np.load(str(comp_path))  # [K, hidden_dim]
+    N, K = scores.shape
+
+    # Direction in PC space
+    diff = scores[a].astype(np.float32) - scores[b].astype(np.float32)
+    mag = float(np.linalg.norm(diff))
+    dir_pc = diff / (mag + 1e-8)
+
+    # Map to hidden space: direction_hidden = components.T @ dir_pc
+    direction = (components.T @ dir_pc[:components.shape[0]]).astype(np.float32)
+    direction = direction / (np.linalg.norm(direction) + 1e-8)
+
+    # Get backend
+    if not model_id:
+        meta = json.loads((Path(mri_path) / "metadata.json").read_text())
+        model_id = meta["model"]["name"]
+
+    try:
+        backend = _get_steer_backend(model_id)
+    except Exception as e:
+        return {"error": f"Cannot load model {model_id}: {e}"}
+
+    # Generate clean
+    clean = backend.generate(prompt, max_tokens=max_tokens)
+
+    # Generate steered (A->B direction, positive alpha)
+    steer_dirs = {layer: (direction, alpha)}
+    steered_pos = backend.generate(prompt, steer_dirs=steer_dirs, max_tokens=max_tokens)
+
+    # Simple change metric: character-level edit distance ratio
+    def _change_ratio(a_text, b_text):
+        if not a_text and not b_text:
+            return 0.0
+        common = sum(c1 == c2 for c1, c2 in zip(a_text, b_text))
+        return 1.0 - common / max(len(a_text), len(b_text), 1)
+
+    change_pos = _change_ratio(clean, steered_pos)
+
+    return {
+        "prompt": prompt, "layer": layer, "alpha": alpha,
+        "clean": clean,
+        "steered": steered_pos,
+        "change": change_pos,
+        "changed": change_pos > 0.2,
+    }
+
+
 def _token_biography(mri_path: str, token_idx: int) -> dict:
     """Get precomputed gate heatmap for one token."""
     p = Path(mri_path) / "decomp" / "gate_heatmap.npy"
@@ -1377,6 +1454,25 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 if ev:
                     ev.set()
             self._send_json({"ok": True})
+
+        elif path == '/api/direction-steer':
+            model_name = args.get("model", "")
+            mode_name = args.get("mode", "")
+            a = int(args.get("a", 0))
+            b = int(args.get("b", 0))
+            layer = int(args.get("layer", 0))
+            prompt = args.get("prompt", "Once upon a time")
+            alpha = float(args.get("alpha", 2.0))
+            max_tokens = int(args.get("max_tokens", 30))
+            if not model_name:
+                self._send_json({"error": "model required"})
+                return
+            mri_path = self._mri_path(model_name, mode_name or "raw")
+            model_meta = json.loads((Path(mri_path) / "metadata.json").read_text())
+            model_id = model_meta["model"]["name"]
+            result = _direction_steer_test(
+                mri_path, a, b, layer, prompt, alpha, max_tokens, model_id)
+            self._send_json(result)
 
         else:
             self.send_error(404)

@@ -2,7 +2,7 @@
 import numpy as np
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import patch, MagicMock
 import tempfile
 
 
@@ -77,3 +77,35 @@ def test_direction_nonlinear_linear_data():
         # For perfectly linear data, both should be high and gap should be small
         assert result["linear_acc"] > 0.8
         assert abs(result["knn_acc"] - result["linear_acc"]) < 0.15
+
+
+def test_steer_test_returns_structure():
+    """Steer test should return clean/steered outputs and a change metric."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        scores = _make_fake_scores(100, 50, tmpdir)
+
+        # Create fake components file (needed to map PC->hidden space)
+        decomp = Path(tmpdir) / "decomp"
+        hidden_dim = 128
+        components = np.random.randn(50, hidden_dim).astype(np.float32)
+        np.save(str(decomp / "L00_components.npy"), components)
+
+        mock_backend = MagicMock()
+        mock_backend.generate.side_effect = [
+            "The king was powerful",   # clean generation
+            "The queen was beautiful",  # steered generation
+        ]
+
+        with patch('heinrich.companion._get_steer_backend', return_value=mock_backend):
+            from heinrich.companion import _direction_steer_test
+            result = _direction_steer_test(
+                tmpdir, a=0, b=1, layer=0,
+                prompt="The ruler was", alpha=2.0, max_tokens=20,
+                model_id="test-model")
+            assert "clean" in result
+            assert "steered" in result
+            assert "changed" in result
+            assert result["clean"] == "The king was powerful"
+            assert result["steered"] == "The queen was beautiful"
+            # Verify backend.generate was called twice (clean + steered)
+            assert mock_backend.generate.call_count == 2
