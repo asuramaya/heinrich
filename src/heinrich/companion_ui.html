@@ -749,9 +749,14 @@ async function _applyDirectionColors(){
     const hdr=JSON.parse(new TextDecoder().decode(new Uint8Array(buf,4,hdrLen)));
     const proj=new Float32Array(buf,4+hdrLen);
     if(proj.length!==nN)return;// mismatch
-    // Normalize: center on midpoint, scale by half-gap
-    const pa=hdr.proj_a,pb=hdr.proj_b;
-    const mid=(pa+pb)/2,span=Math.abs(pa-pb)/2||1;
+    // Normalize: percentile-based for maximum contrast
+    // Sort a sample to find 10th and 90th percentiles
+    const sampleStep=Math.max(1,Math.floor(nN/5000));
+    const samp=[];for(let i=0;i<nN;i+=sampleStep)samp.push(proj[i]);
+    samp.sort((a,b)=>a-b);
+    const p10=samp[Math.floor(samp.length*0.1)];
+    const p90=samp[Math.floor(samp.length*0.9)];
+    const mid=(p10+p90)/2,span=(p90-p10)/2||1;
     // Compute RGB per token
     const _dirR=new Float32Array(nN),_dirG=new Float32Array(nN),_dirB=new Float32Array(nN);
     for(let i=0;i<nN;i++){
