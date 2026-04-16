@@ -719,6 +719,33 @@ function _ensureColors(v){
 // Red = A-like, Blue = B-like, grey = orthogonal.
 let _dirColorActive=false;
 let _dirColorReqId=0;
+function _colorFromProj(proj){
+  // Percentile normalization + apply to all viewports
+  const step=Math.max(1,Math.floor(nN/5000));
+  const samp=[];for(let i=0;i<nN;i+=step)samp.push(proj[i]);
+  samp.sort((a,b)=>a-b);
+  const p10=samp[Math.floor(samp.length*0.1)];
+  const p90=samp[Math.floor(samp.length*0.9)];
+  const mid=(p10+p90)/2,span=(p90-p10)/2||1;
+  const _dirR=new Float32Array(nN),_dirG=new Float32Array(nN),_dirB=new Float32Array(nN);
+  for(let i=0;i<nN;i++){
+    const t=Math.max(-1,Math.min(1,(proj[i]-mid)/span));
+    const at=Math.abs(t);
+    if(t>0){_dirR[i]=0.25+0.75*at;_dirG[i]=0.25*(1-at);_dirB[i]=0.15*(1-at);}
+    else{_dirR[i]=0.15*(1-at);_dirG[i]=0.25*(1-at);_dirB[i]=0.25+0.55*at;}
+  }
+  for(const v of views){
+    const col=v.geo.attributes.color?.array;
+    if(col){for(let i=0;i<nN;i++){col[i*3]=_dirR[i];col[i*3+1]=_dirG[i];col[i*3+2]=_dirB[i];}v.geo.attributes.color.needsUpdate=true;}
+    if(v.trajMarker){const tc=v.trajMarker.geometry.attributes.color?.array;
+      if(tc){for(let i=0;i<nN;i++){tc[i*3]=_dirR[i];tc[i*3+1]=_dirG[i];tc[i*3+2]=_dirB[i];}v.trajMarker.geometry.attributes.color.needsUpdate=true;}}
+    if(v.trajGroup&&v._trajTokenMap){const lc=v.trajGroup.geometry.attributes.color?.array;
+      if(lc){for(const{ti,start,count}of v._trajTokenMap){
+        for(let j=start;j<start+count;j++){lc[j*3]=_dirR[ti];lc[j*3+1]=_dirG[ti];lc[j*3+2]=_dirB[ti];}
+      }v.trajGroup.geometry.attributes.color.needsUpdate=true;}}
+  }
+  _dirColorActive=true;_markDirty();
+}
 async function _applyDirectionColors(){
   if(pinnedToken<0||pinnedTokenB<0||!model||!mode||!nN){
     if(_dirColorActive){
@@ -738,47 +765,31 @@ async function _applyDirectionColors(){
   }
   // Skip during model load
   if(document.getElementById('loading')?.style.display==='flex')return;
+  // Phase 1: INSTANT 50-PC coloring from blob (approximate but immediate)
+  const _a=pinnedToken,_b=pinnedTokenB,_layer=cL;
+  const sa=allL[cL]?.[_a],sb=allL[cL]?.[_b];
+  if(sa&&sb){
+    const K=Math.min(sa.length,sb.length,_blobScoreK);
+    const dir=new Float32Array(K);let norm2=0;
+    for(let k=0;k<K;k++){dir[k]=(sa[k]||0)-(sb[k]||0);norm2+=dir[k]*dir[k];}
+    const norm=Math.sqrt(norm2)||1;for(let k=0;k<K;k++)dir[k]/=norm;
+    const proj50=new Float32Array(nN);
+    for(let i=0;i<nN;i++){const si=allL[cL]?.[i];if(!si)continue;let d=0;for(let k=0;k<K;k++)d+=(si[k]||0)*dir[k];proj50[i]=d;}
+    _colorFromProj(proj50);
+  }
+  // Phase 2: FULL-K server refinement (accurate, ~4 sec delay)
   const reqId=++_dirColorReqId;
   try{
-    const resp=await fetch(`/api/direction-project/${model}/${mode}?a=${pinnedToken}&b=${pinnedTokenB}&layer=${cL}`);
-    if(_dirColorReqId!==reqId)return;// superseded
+    const resp=await fetch(`/api/direction-project/${model}/${mode}?a=${_a}&b=${_b}&layer=${_layer}`);
+    if(_dirColorReqId!==reqId)return;
     const buf=await resp.arrayBuffer();
-    // Parse: 4-byte header length (uint32 LE) + JSON header + float32 projections
     const dv=new DataView(buf);
     const hdrLen=dv.getUint32(0,true);
-    const hdr=JSON.parse(new TextDecoder().decode(new Uint8Array(buf,4,hdrLen)));
-    // Copy to aligned buffer (4+hdrLen may not be 4-byte aligned)
     const projBytes=new Uint8Array(buf,4+hdrLen);
     const proj=new Float32Array(projBytes.buffer.slice(projBytes.byteOffset,projBytes.byteOffset+projBytes.byteLength));
-    if(proj.length!==nN)return;// mismatch
-    // Normalize: percentile-based for maximum contrast
-    // Sort a sample to find 10th and 90th percentiles
-    const sampleStep=Math.max(1,Math.floor(nN/5000));
-    const samp=[];for(let i=0;i<nN;i+=sampleStep)samp.push(proj[i]);
-    samp.sort((a,b)=>a-b);
-    const p10=samp[Math.floor(samp.length*0.1)];
-    const p90=samp[Math.floor(samp.length*0.9)];
-    const mid=(p10+p90)/2,span=(p90-p10)/2||1;
-    // Compute RGB per token
-    const _dirR=new Float32Array(nN),_dirG=new Float32Array(nN),_dirB=new Float32Array(nN);
-    for(let i=0;i<nN;i++){
-      const t=Math.max(-1,Math.min(1,(proj[i]-mid)/span));
-      const at=Math.abs(t);
-      if(t>0){_dirR[i]=0.25+0.75*at;_dirG[i]=0.25*(1-at);_dirB[i]=0.15*(1-at);}
-      else{_dirR[i]=0.15*(1-at);_dirG[i]=0.25*(1-at);_dirB[i]=0.25+0.55*at;}
-    }
-    for(const v of views){
-      const col=v.geo.attributes.color?.array;
-      if(col){for(let i=0;i<nN;i++){col[i*3]=_dirR[i];col[i*3+1]=_dirG[i];col[i*3+2]=_dirB[i];}v.geo.attributes.color.needsUpdate=true;}
-      if(v.trajMarker){const tc=v.trajMarker.geometry.attributes.color?.array;
-        if(tc){for(let i=0;i<nN;i++){tc[i*3]=_dirR[i];tc[i*3+1]=_dirG[i];tc[i*3+2]=_dirB[i];}v.trajMarker.geometry.attributes.color.needsUpdate=true;}}
-      if(v.trajGroup&&v._trajTokenMap){const lc=v.trajGroup.geometry.attributes.color?.array;
-        if(lc){for(const{ti,start,count}of v._trajTokenMap){
-          for(let j=start;j<start+count;j++){lc[j*3]=_dirR[ti];lc[j*3+1]=_dirG[ti];lc[j*3+2]=_dirB[ti];}
-        }v.trajGroup.geometry.attributes.color.needsUpdate=true;}}
-    }
-    _dirColorActive=true;_markDirty();
-  }catch(e){/* silently fail — coloring is best-effort */}
+    if(proj.length!==nN)return;
+    _colorFromProj(proj);
+  }catch(e){/* silently fail — 50-PC coloring remains as fallback */}
 }
 function _applyFilter(){
   if(!nN)return;
