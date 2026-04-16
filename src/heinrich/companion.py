@@ -839,7 +839,7 @@ def _live_forward(mri_path: str, prompt: str, model_id: str = "") -> dict:
     # Forward with residual capture at all layers
     all_layers = list(range(n_layers))
     try:
-        result = backend.forward(prompt, residual_layers=all_layers)
+        result = backend.forward(prompt, return_residual=True, residual_layers=all_layers)
     except Exception as e:
         return {"error": f"Forward pass failed: {e}"}
 
@@ -891,8 +891,8 @@ _steer_backend_cache = {}
 def _get_steer_backend(model_id: str):
     """Get or create a model backend for steering tests."""
     if model_id not in _steer_backend_cache:
-        from .cartography.runtime import get_backend
-        _steer_backend_cache[model_id] = get_backend(model_id)
+        from .backend.mlx import MLXBackend
+        _steer_backend_cache[model_id] = MLXBackend(model_id)
     return _steer_backend_cache[model_id]
 
 
@@ -1990,13 +1990,14 @@ class CompanionHandler(SimpleHTTPRequestHandler):
 
         elif path == '/api/live-forward':
             prompt = args.get("prompt", "")
-            model_name = args.get("model", "")
+            model_id = args.get("model_id", "")  # HF model ID for loading
+            mri_model = args.get("mri_model", "qwen-0.5b")  # MRI directory name
             mode_name = args.get("mode", "raw")
             if not prompt:
                 self._send_json({"error": "prompt required"})
                 return
-            mri_path = self._mri_path(model_name or "qwen-0.5b", mode_name)
-            result = _live_forward(mri_path, prompt)
+            mri_path = self._mri_path(mri_model, mode_name)
+            result = _live_forward(mri_path, prompt, model_id=model_id)
             self._send_json(result)
 
         elif path == '/api/direction-steer':
