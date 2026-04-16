@@ -41,7 +41,10 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #tokpanel{background:#0a0a0a;overflow-y:auto;padding:6px 8px;border-top:1px solid #1a1a1a;font-size:9px}
 #tokpanel .th{font-size:8px;color:#555;margin-bottom:4px}
 #tokpanel .ta,.tokpanel .tb{margin-bottom:6px}
-#tokpanel .tn{font-size:14px;font-weight:bold;margin-bottom:2px}
+#tokpanel .tn{font-size:18px;font-weight:bold;margin-bottom:4px}
+#sepPanel .sep-cols{display:flex;gap:8px}
+#sepPanel .sep-cols>div{flex:1;min-width:0}
+#sepPanel .sep-metrics{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:4px}
 #tokpanel .tm{color:#666;font-size:8px;white-space:pre;line-height:1.4}
 .nbar{display:flex;gap:1px;height:8px;margin:2px 0}
 .nbar .nb{height:100%;min-width:1px;border-radius:1px}
@@ -480,16 +483,21 @@ async function _updateSeparation(a,b){
     distEl.textContent=`${r.K}D  mag=${r.magnitude.toFixed(1)}`;
     // Feature quality summary
     const summary=document.createElement('div');
-    summary.style.cssText='padding:2px 4px;margin:2px 0;font-size:8px;color:#aaa;line-height:1.5';
+    summary.className='sep-metrics';
+    summary.style.cssText='padding:2px 0;margin:4px 0;font-size:8px;color:#aaa';
     const bmSpan=document.createElement('span');
-    bmSpan.style.cssText=`color:${bmColor};font-weight:bold`;
+    bmSpan.style.cssText=`color:${bmColor};font-weight:bold;font-size:10px`;
     bmSpan.textContent=bmLabel;
     summary.appendChild(bmSpan);
-    summary.appendChild(document.createTextNode(` bimodality=${bm.toFixed(2)}`));
-    summary.appendChild(document.createElement('br'));
-    summary.appendChild(document.createTextNode(`concentration: ${c.pcs_50} PCs→50%, ${c.pcs_80}→80%, ${c.pcs_95}→95%`));
-    summary.appendChild(document.createElement('br'));
-    summary.appendChild(document.createTextNode(`explained variance: ${(r.explained_variance*100).toFixed(3)}%`));
+    summary.appendChild(document.createTextNode(` ${bm.toFixed(2)}`));
+    const concSpan=document.createElement('span');
+    concSpan.style.cssText='color:#777';
+    concSpan.textContent=`${c.pcs_50}→50%  ${c.pcs_80}→80%  ${c.pcs_95}→95%`;
+    summary.appendChild(concSpan);
+    const varSpan=document.createElement('span');
+    varSpan.style.cssText='color:#555';
+    varSpan.textContent=`var: ${(r.explained_variance*100).toFixed(3)}%`;
+    summary.appendChild(varSpan);
     list.appendChild(summary);
     // Best PC pair
     if(r.top_pcs.length>=2){
@@ -531,23 +539,29 @@ async function _updateSeparation(a,b){
         ` linear=${(nl.linear_acc*100).toFixed(0)}% knn=${(nl.knn_acc*100).toFixed(0)}% gap=${(nl.gap*100).toFixed(0)}%`));
     }).catch(()=>{nlDiv.textContent='linearity: failed';});
     // Top tokens per side
-    const mkTokList=(items,label,color)=>{
-      if(!items.length)return;
+    // Two-column layout for top tokens A and B
+    const tokCols=document.createElement('div');
+    tokCols.className='sep-cols';
+    const mkTokCol=(items,label,color,container)=>{
+      const col=document.createElement('div');
       const hdr=document.createElement('div');
-      hdr.style.cssText=`color:${color};font-size:7px;margin-top:4px`;
-      hdr.textContent=label;list.appendChild(hdr);
+      hdr.style.cssText=`color:${color};font-size:7px;margin-bottom:2px;font-weight:bold`;
+      hdr.textContent=label;col.appendChild(hdr);
       items.slice(0,5).forEach(t=>{
         const row=document.createElement('div');
-        row.style.cssText='padding:0 4px;color:#666;font-size:7px;cursor:pointer';
-        row.textContent=`#${t.idx} ${t.text}  ${t.script}  proj=${t.proj.toFixed(1)}`;
+        row.style.cssText='padding:1px 0;color:#666;font-size:7px;cursor:pointer;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+        row.textContent=`${t.text}  ${t.proj.toFixed(1)}`;
+        row.title=`#${t.idx} ${t.text} ${t.script} proj=${t.proj.toFixed(1)}`;
         row.addEventListener('click',()=>{pinnedToken=t.idx;updatePinMarkers();showPinDetail(pinnedToken);_onPinChange();_saveState();});
         row.addEventListener('mouseenter',()=>{row.style.color='#aaa';});
         row.addEventListener('mouseleave',()=>{row.style.color='#666';});
-        list.appendChild(row);
+        col.appendChild(row);
       });
+      container.appendChild(col);
     };
-    mkTokList(r.top_a,`Most ${r.token_a.text}-like:`,'#c64');
-    mkTokList(r.top_b,`Most ${r.token_b.text}-like:`,'#48a');
+    mkTokCol(r.top_a,`Most ${r.token_a.text}-like:`,`#c64`,tokCols);
+    mkTokCol(r.top_b,`Most ${r.token_b.text}-like:`,`#48a`,tokCols);
+    list.appendChild(tokCols);
     // Causal steer test button
     const steerBtn=document.createElement('button');
     steerBtn.style.cssText='margin:4px 0;padding:2px 6px;font-size:7px;background:#1a1a2a;border:1px solid #333;color:#88f;border-radius:2px;cursor:pointer';
