@@ -559,6 +559,56 @@ async function _updateSeparation(a,b){
     });
     list.appendChild(steerBtn);
     list.appendChild(steerResult);
+    // Circuit attribution (async, fire-and-forget)
+    const circDiv=document.createElement('div');
+    circDiv.style.cssText='font-size:7px;color:#555;margin:4px 0';
+    circDiv.textContent='tracing circuit...';
+    list.appendChild(circDiv);
+    api(`direction-circuit/${model}/${mode}?a=${a}&b=${b}`).then(circ=>{
+      if(_sepReqId!==reqId)return;
+      if(circ.error){circDiv.textContent='circuit: '+circ.error;return;}
+      circDiv.textContent='';
+      const hdr=document.createElement('div');
+      hdr.style.cssText='color:#777;font-size:7px;margin-bottom:2px';
+      hdr.textContent='Circuit (per-head \u2192 direction):';
+      circDiv.appendChild(hdr);
+      // Find peak layer (highest max-head attribution)
+      let peakLayer=0,peakVal=0;
+      circ.layers.forEach(ld=>{
+        const mx=Math.max(...ld.heads.map(h=>h.attrib));
+        if(mx>peakVal){peakVal=mx;peakLayer=ld.layer;}
+      });
+      const peakData=circ.layers.find(l=>l.layer===peakLayer);
+      if(!peakData)return;
+      const layerLabel=document.createElement('div');
+      layerLabel.style.cssText='color:#666;font-size:7px';
+      layerLabel.textContent=`L${peakLayer} (peak):`;
+      circDiv.appendChild(layerLabel);
+      // Bar chart of heads
+      const barContainer=document.createElement('div');
+      barContainer.style.cssText='display:flex;gap:1px;align-items:flex-end;height:30px;margin:2px 0';
+      const maxA=Math.max(...peakData.heads.map(h=>h.attrib));
+      peakData.heads.forEach(({head,attrib})=>{
+        const bar=document.createElement('div');
+        const pct=attrib/(maxA||1);
+        const hue=(head/circ.n_heads)*360;
+        bar.style.cssText=`flex:1;background:hsl(${hue},60%,${30+pct*30}%);height:${Math.max(1,pct*100)}%;border-radius:1px;cursor:pointer`;
+        bar.title=`Head ${head}: ${(attrib*100).toFixed(0)}%`;
+        barContainer.appendChild(bar);
+      });
+      circDiv.appendChild(barContainer);
+      // MLP bar
+      const mlpBar=document.createElement('div');
+      mlpBar.style.cssText='color:#555;font-size:7px';
+      mlpBar.textContent=`MLP: ${(peakData.mlp_attrib*100).toFixed(0)}%`;
+      circDiv.appendChild(mlpBar);
+      // Summary: how many layers, concentration
+      const nActive=circ.layers.filter(l=>l.heads.some(h=>h.attrib>0.5)).length;
+      const summaryDiv=document.createElement('div');
+      summaryDiv.style.cssText='color:#555;font-size:7px;margin-top:2px';
+      summaryDiv.textContent=`${nActive}/${circ.n_layers} layers with head attrib>50%`;
+      circDiv.appendChild(summaryDiv);
+    }).catch(()=>{circDiv.textContent='circuit: failed';});
   }catch(e){
     if(_sepReqId===reqId)distEl.textContent='error: '+e.message;
   }

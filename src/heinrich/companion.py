@@ -493,6 +493,103 @@ def _direction_depth(mri_path: str, a: int, b: int) -> dict:
     return {"layers": layers, "n_layers": n_layers}
 
 
+def _direction_circuit(mri_path: str, a: int, b: int) -> dict:
+    """Per-head and MLP write-attribution for the A-B concept direction.
+
+    For each layer, measures how much of the concept direction each
+    attention head's output subspace can reconstruct (via o_proj slices),
+    plus the MLP's contribution (via down_proj).
+
+    This is Sharkey et al. 2025 open problem 2.3: automatic circuit
+    discovery from concept directions.
+    """
+    mri_dir = Path(mri_path)
+    decomp = mri_dir / "decomp"
+    meta_path = mri_dir / "metadata.json"
+    decomp_meta_path = decomp / "meta.json"
+
+    if not meta_path.exists():
+        return {"error": "No metadata.json"}
+    if not decomp_meta_path.exists():
+        return {"error": "No decomp/meta.json"}
+
+    mri_meta = json.loads(meta_path.read_text())
+    decomp_meta = json.loads(decomp_meta_path.read_text())
+
+    model_info = mri_meta.get("model", {})
+    n_heads = model_info.get("n_heads")
+    hidden_size = model_info.get("hidden_size")
+    if not n_heads or not hidden_size:
+        return {"error": "metadata.json missing n_heads or hidden_size"}
+
+    head_dim = hidden_size // n_heads
+    n_layers = len(decomp_meta.get("layers", []))
+
+    layers_out = []
+    for li in range(n_layers):
+        scores = _get_scores_f32(mri_path, li)
+        if scores is None:
+            continue
+        N, K = scores.shape
+        if a >= N or b >= N:
+            continue
+
+        # Direction in PC space
+        diff = scores[a] - scores[b]
+        mag = float(np.linalg.norm(diff))
+        if mag < 1e-12:
+            continue
+        dir_pc = diff / mag
+
+        # Map to hidden space via PCA components
+        comp_path = decomp / f"L{li:02d}_components.npy"
+        if not comp_path.exists():
+            continue
+        components = np.load(str(comp_path))  # [K, hidden]
+        dir_hidden = components.T @ dir_pc[:components.shape[0]]
+        dir_norm = float(np.linalg.norm(dir_hidden))
+        if dir_norm < 1e-12:
+            continue
+        dir_hidden = dir_hidden / dir_norm
+
+        # Per-head attribution via o_proj
+        o_proj_path = mri_dir / "weights" / f"L{li:02d}" / "o_proj.npy"
+        heads_out = []
+        if o_proj_path.exists():
+            o_proj = np.load(str(o_proj_path))  # [hidden, hidden]
+            for h in range(n_heads):
+                W_h = o_proj[:, h * head_dim:(h + 1) * head_dim]  # [hidden, head_dim]
+                proj = W_h @ (W_h.T @ dir_hidden)
+                attrib = float(np.linalg.norm(proj))
+                heads_out.append({"head": h, "attrib": attrib})
+        else:
+            heads_out = [{"head": h, "attrib": 0.0} for h in range(n_heads)]
+
+        # MLP attribution via down_proj
+        mlp_attrib = 0.0
+        down_proj_path = mri_dir / "weights" / f"L{li:02d}" / "down_proj.npy"
+        if down_proj_path.exists():
+            down_proj = np.load(str(down_proj_path))  # [hidden, intermediate]
+            proj_mlp = down_proj @ (down_proj.T @ dir_hidden)
+            mlp_attrib = float(np.linalg.norm(proj_mlp))
+
+        # Normalize: scale so max(heads + mlp) = 1 for readability
+        all_attribs = [hd["attrib"] for hd in heads_out] + [mlp_attrib]
+        max_attrib = max(all_attribs) if all_attribs else 1.0
+        if max_attrib > 1e-12:
+            for hd in heads_out:
+                hd["attrib"] = hd["attrib"] / max_attrib
+            mlp_attrib = mlp_attrib / max_attrib
+
+        layers_out.append({
+            "layer": li,
+            "heads": heads_out,
+            "mlp_attrib": mlp_attrib,
+        })
+
+    return {"layers": layers_out, "n_heads": n_heads, "n_layers": n_layers}
+
+
 _steer_backend_cache = {}
 
 def _get_steer_backend(model_id: str):
@@ -1442,6 +1539,17 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 self._send_json(result)
             else:
                 self._send_json({"error": "Usage: /api/direction-depth/<model>/<mode>?a=N&b=N"})
+        elif path.startswith('/api/direction-circuit/'):
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                a = int(qs.get('a', ['0'])[0])
+                b = int(qs.get('b', ['0'])[0])
+                mri_path = self._mri_path(model, mode)
+                result = _direction_circuit(mri_path, a, b)
+                self._send_json(result)
+            else:
+                self._send_json({"error": "Usage: /api/direction-circuit/<model>/<mode>?a=N&b=N"})
         elif path == '/api/commands':
             self._send_json(_list_commands())
         elif path.startswith('/api/run/'):

@@ -138,3 +138,65 @@ def test_steer_test_returns_structure():
             assert result["steered"] == "The queen was beautiful"
             # Verify backend.generate was called twice (clean + steered)
             assert mock_backend.generate.call_count == 2
+
+
+def test_direction_circuit():
+    """Circuit discovery should return per-head attribution at each layer."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        n, k = 50, 20
+        hidden = 40
+        n_heads = 4
+        head_dim = hidden // n_heads
+
+        decomp = Path(tmpdir) / "decomp"
+        decomp.mkdir()
+        scores = np.random.randn(n, k).astype(np.float16)
+        np.save(str(decomp / "L00_scores.npy"), scores)
+        components = np.random.randn(k, hidden).astype(np.float32)
+        np.save(str(decomp / "L00_components.npy"), components)
+
+        weights = Path(tmpdir) / "weights" / "L00"
+        weights.mkdir(parents=True)
+        np.save(str(weights / "o_proj.npy"),
+                np.random.randn(hidden, hidden).astype(np.float32))
+        np.save(str(weights / "down_proj.npy"),
+                np.random.randn(hidden, 80).astype(np.float32))
+
+        tokens_path = Path(tmpdir) / "tokens.npz"
+        np.savez(tokens_path,
+                 token_texts=np.array([f"tok{i}" for i in range(n)]),
+                 scripts=np.array(["latin"] * n),
+                 token_ids=np.arange(n))
+
+        meta_path = Path(tmpdir) / "metadata.json"
+        meta_path.write_text(json.dumps({
+            "model": {"name": "test", "n_heads": n_heads,
+                      "hidden_size": hidden, "n_layers": 1},
+            "capture": {"mode": "raw"}
+        }))
+
+        decomp_meta = {"n_sample": n, "n_real_layers": 1,
+                       "layers": [{"layer": 0}]}
+        (decomp / "meta.json").write_text(json.dumps(decomp_meta))
+
+        from heinrich.companion import _direction_circuit
+        result = _direction_circuit(tmpdir, a=0, b=1)
+
+        assert "layers" in result
+        assert len(result["layers"]) == 1
+        assert result["n_heads"] == n_heads
+        assert result["n_layers"] == 1
+
+        layer_data = result["layers"][0]
+        assert len(layer_data["heads"]) == n_heads
+        assert "mlp_attrib" in layer_data
+
+        # All attributions should be normalized (max = 1.0)
+        all_attribs = [h["attrib"] for h in layer_data["heads"]]
+        all_attribs.append(layer_data["mlp_attrib"])
+        assert max(all_attribs) <= 1.0 + 1e-6
+        assert max(all_attribs) >= 1.0 - 1e-6  # at least one should be ~1.0
+
+        # Each head's attribution should be non-negative
+        for hd in layer_data["heads"]:
+            assert hd["attrib"] >= 0.0
