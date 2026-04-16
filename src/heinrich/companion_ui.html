@@ -530,6 +530,35 @@ async function _updateSeparation(a,b){
     };
     mkTokList(r.top_a,`Most ${r.token_a.text}-like:`,'#c64');
     mkTokList(r.top_b,`Most ${r.token_b.text}-like:`,'#48a');
+    // Causal steer test button
+    const steerBtn=document.createElement('button');
+    steerBtn.style.cssText='margin:4px 0;padding:2px 6px;font-size:7px;background:#1a1a2a;border:1px solid #333;color:#88f;border-radius:2px;cursor:pointer';
+    steerBtn.textContent='Test causality (needs model)';
+    const steerResult=document.createElement('div');
+    steerResult.style.cssText='font-size:7px;color:#666;margin:2px 0;white-space:pre-wrap';
+    steerBtn.addEventListener('click',async()=>{
+      steerBtn.disabled=true;steerBtn.textContent='steering...';
+      try{
+        const sr=await fetch('/api/direction-steer',{method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({model,mode,a,b,layer:cL,prompt:'Once upon a time',alpha:2.0,max_tokens:30})
+        }).then(r=>r.json());
+        if(sr.error){steerResult.textContent='error: '+sr.error;return;}
+        const causalColor=sr.causal?'#4f4':sr.changed?'#cc4':'#c44';
+        const causalLabel=sr.causal?'CAUSAL':sr.changed?'PARTIAL':'NOT CAUSAL';
+        steerResult.textContent='';
+        const cs=document.createElement('span');
+        cs.style.cssText='color:'+causalColor+';font-weight:bold';
+        cs.textContent=causalLabel;
+        steerResult.appendChild(cs);
+        const detail=document.createTextNode(
+          '\nclean:  '+sr.clean.substring(0,80)+'\n+steer: '+sr.steered_pos.substring(0,80)+'\n-steer: '+sr.steered_neg.substring(0,80));
+        steerResult.appendChild(detail);
+      }catch(e){steerResult.textContent='error: '+e.message;}
+      finally{steerBtn.disabled=false;steerBtn.textContent='Test causality (needs model)';}
+    });
+    list.appendChild(steerBtn);
+    list.appendChild(steerResult);
   }catch(e){
     if(_sepReqId===reqId)distEl.textContent='error: '+e.message;
   }
