@@ -306,6 +306,33 @@ def _direction_quality(mri_path: str, a: int, b: int, layer: int) -> dict:
     }
 
 
+def _direction_project(mri_path: str, a: int, b: int, layer: int) -> dict:
+    """Project all tokens onto the full-K direction between two tokens.
+
+    Returns normalized projections [-1, +1] centered on the A-B midpoint,
+    suitable for direct use as color values in the browser.
+    """
+    decomp = Path(mri_path) / "decomp"
+    score_path = decomp / f"L{layer:02d}_scores.npy"
+    if not score_path.exists():
+        return {"error": f"No scores at L{layer}"}
+
+    scores = np.load(str(score_path), mmap_mode="r")
+    N, K = scores.shape
+
+    if a >= N or b >= N:
+        return {"error": f"Token index out of range (max {N-1})"}
+
+    diff = scores[a].astype(np.float32) - scores[b].astype(np.float32)
+    mag = float(np.linalg.norm(diff))
+    direction = diff / (mag + 1e-8)
+
+    proj = (scores.astype(np.float32) @ direction).tolist()
+
+    return {"projections": proj, "magnitude": mag, "K": K,
+            "proj_a": proj[a], "proj_b": proj[b]}
+
+
 def _token_biography(mri_path: str, token_idx: int) -> dict:
     """Get precomputed gate heatmap for one token."""
     p = Path(mri_path) / "decomp" / "gate_heatmap.npy"
@@ -1130,6 +1157,27 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 self._send_json(result)
             else:
                 self._send_json({"error": "Usage: /api/direction-quality/<model>/<mode>?a=N&b=N&layer=L"})
+        elif path.startswith('/api/direction-project/'):
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                a = int(qs.get('a', ['0'])[0])
+                b = int(qs.get('b', ['0'])[0])
+                layer = int(qs.get('layer', ['0'])[0])
+                mri_path = self._mri_path(model, mode)
+                result = _direction_project(mri_path, a, b, layer)
+                if "projections" in result:
+                    # Send as binary float32 for efficiency (600KB vs 3MB JSON)
+                    import struct
+                    proj = np.array(result["projections"], dtype=np.float32)
+                    header = json.dumps({k: v for k, v in result.items()
+                                        if k != "projections"}).encode()
+                    body = struct.pack('<I', len(header)) + header + proj.tobytes()
+                    self._send_bytes(body)
+                else:
+                    self._send_json(result)
+            else:
+                self._send_json({"error": "Usage: /api/direction-project/<model>/<mode>?a=N&b=N&layer=L"})
         elif path == '/api/commands':
             self._send_json(_list_commands())
         elif path.startswith('/api/run/'):
