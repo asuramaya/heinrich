@@ -590,6 +590,86 @@ def _direction_circuit(mri_path: str, a: int, b: int) -> dict:
     return {"layers": layers_out, "n_heads": n_heads, "n_layers": n_layers}
 
 
+def _direction_weight_alignment(mri_path: str, a: int, b: int) -> dict:
+    """Compute how each weight matrix at each layer aligns with the concept direction in hidden space.
+
+    For each layer, maps the A-B concept direction from PC space into the
+    full hidden space, then measures each weight matrix's ability to access
+    that direction:  alignment = ||W @ (W^T @ dir)|| / ||dir||
+
+    This is Sharkey et al. 2025 open problem 2.1.1: bridging PCA-space
+    and weight-space representations.
+    """
+    mri_dir = Path(mri_path)
+    decomp = mri_dir / "decomp"
+    meta_path = mri_dir / "metadata.json"
+    decomp_meta_path = decomp / "meta.json"
+
+    if not meta_path.exists():
+        return {"error": "No metadata.json"}
+    if not decomp_meta_path.exists():
+        return {"error": "No decomp/meta.json"}
+
+    decomp_meta = json.loads(decomp_meta_path.read_text())
+    n_layers = len(decomp_meta.get("layers", []))
+
+    MATRICES = ["q_proj", "k_proj", "v_proj", "o_proj",
+                "gate_proj", "up_proj", "down_proj"]
+
+    layers_out = []
+    for li in range(n_layers):
+        scores = _get_scores_f32(mri_path, li)
+        if scores is None:
+            continue
+        N, K = scores.shape
+        if a >= N or b >= N:
+            continue
+
+        # Direction in PC space -> hidden space via PCA components
+        diff = scores[a] - scores[b]
+        mag = float(np.linalg.norm(diff))
+        if mag < 1e-12:
+            continue
+        dir_pc = diff / mag
+
+        comp_path = decomp / f"L{li:02d}_components.npy"
+        if not comp_path.exists():
+            continue
+        components = np.load(str(comp_path))  # [K, hidden]
+        dir_hidden = (components.T @ dir_pc[:components.shape[0]]).astype(np.float32)
+        dir_norm = float(np.linalg.norm(dir_hidden))
+        if dir_norm < 1e-12:
+            continue
+        dir_hidden = dir_hidden / dir_norm
+
+        weights_dir = mri_dir / "weights" / f"L{li:02d}"
+        matrices = {}
+        for mname in MATRICES:
+            wp = weights_dir / f"{mname}.npy"
+            if not wp.exists():
+                continue
+            W = np.load(str(wp), mmap_mode='r').astype(np.float32)
+            # W shape: [out_features, in_features].
+            # Alignment = how much of the direction W's column space can reconstruct.
+            # Case 1: in_features == hidden (e.g. q/k/v_proj: W projects FROM hidden)
+            #   → W^T @ dir lives in out-space, W @ (W^T @ dir) back in hidden.
+            # Case 2: out_features == hidden (e.g. down_proj: W projects TO hidden)
+            #   → same formula works: W^T @ dir goes to in-space, W @ that returns.
+            if W.shape[1] == len(dir_hidden):
+                proj = W @ (W.T @ dir_hidden)
+                alignment = float(np.linalg.norm(proj))
+            elif W.shape[0] == len(dir_hidden):
+                proj = W @ (W.T @ dir_hidden)
+                alignment = float(np.linalg.norm(proj))
+            else:
+                alignment = 0.0
+            matrices[mname] = alignment
+
+        layers_out.append({"layer": li, "matrices": matrices})
+
+    return {"layers": layers_out, "n_layers": n_layers, "matrix_names": MATRICES}
+
+
 def _auto_discover_directions(mri_path: str, layer: int, n_top: int = 20) -> dict:
     """Automated direction discovery: find bimodal PCA components.
 
@@ -1630,6 +1710,17 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 self._send_json(result)
             else:
                 self._send_json({"error": "Usage: /api/direction-discover/<model>/<mode>?layer=L&n=20"})
+        elif path.startswith('/api/direction-weights/'):
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                a = int(qs.get('a', ['0'])[0])
+                b = int(qs.get('b', ['1'])[0])
+                mri_path = self._mri_path(model, mode)
+                result = _direction_weight_alignment(mri_path, a, b)
+                self._send_json(result)
+            else:
+                self._send_json({"error": "Usage: /api/direction-weights/<model>/<mode>?a=N&b=N"})
         elif path == '/api/commands':
             self._send_json(_list_commands())
         elif path.startswith('/api/run/'):

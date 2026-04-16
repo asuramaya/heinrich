@@ -236,3 +236,61 @@ def test_auto_discover_directions():
         for d in result["discovered"]:
             assert len(d["top_pos"]) == 5
             assert len(d["top_neg"]) == 5
+
+
+def test_direction_weight_alignment():
+    """Weight alignment should return per-matrix alignment scores at each layer."""
+    with tempfile.TemporaryDirectory() as tmpdir:
+        n, k = 50, 20
+        hidden = 40
+
+        decomp = Path(tmpdir) / "decomp"
+        decomp.mkdir()
+        scores = np.random.randn(n, k).astype(np.float16)
+        np.save(str(decomp / "L00_scores.npy"), scores)
+        components = np.random.randn(k, hidden).astype(np.float32)
+        np.save(str(decomp / "L00_components.npy"), components)
+
+        weights = Path(tmpdir) / "weights" / "L00"
+        weights.mkdir(parents=True)
+        # q_proj, o_proj, gate_proj: [hidden, hidden] (in_features == hidden_size)
+        for mname in ["q_proj", "o_proj", "gate_proj"]:
+            np.save(str(weights / f"{mname}.npy"),
+                    np.random.randn(hidden, hidden).astype(np.float32))
+        # down_proj: [hidden, intermediate] — different shape
+        np.save(str(weights / "down_proj.npy"),
+                np.random.randn(hidden, 80).astype(np.float32))
+
+        tokens_path = Path(tmpdir) / "tokens.npz"
+        np.savez(tokens_path,
+                 token_texts=np.array([f"tok{i}" for i in range(n)]),
+                 scripts=np.array(["latin"] * n),
+                 token_ids=np.arange(n))
+
+        meta_path = Path(tmpdir) / "metadata.json"
+        meta_path.write_text(json.dumps({
+            "model": {"name": "test", "n_heads": 4,
+                      "hidden_size": hidden, "n_layers": 1},
+            "capture": {"mode": "raw"}
+        }))
+
+        (decomp / "meta.json").write_text(json.dumps({
+            "n_sample": n, "n_real_layers": 1,
+            "layers": [{"layer": 0}]
+        }))
+
+        from heinrich.companion import _direction_weight_alignment
+        result = _direction_weight_alignment(tmpdir, a=0, b=1)
+
+        assert "layers" in result
+        assert len(result["layers"]) == 1
+        assert result["n_layers"] == 1
+        assert "matrix_names" in result
+
+        m = result["layers"][0]["matrices"]
+        assert "q_proj" in m
+        assert "o_proj" in m
+        assert "gate_proj" in m
+        assert "down_proj" in m
+        # All alignments should be non-negative
+        assert all(v >= 0 for v in m.values())
