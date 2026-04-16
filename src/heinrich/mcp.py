@@ -733,6 +733,17 @@ TOOLS = {
             "format": {"type": "string", "description": "Capture format: png (screenshot) or gif (layer animation). Default: png."},
         },
     },
+    "heinrich_companion_direction": {
+        "description": "Full-dimensional direction analysis between two tokens. Returns magnitude, concentration, bimodality, nonlinearity, explained variance, and top tokens per side — all computed in the model's full hidden dimension. The companion viewer must be running.",
+        "parameters": {
+            "token_a": {"type": "integer", "description": "Token index A", "required": True},
+            "token_b": {"type": "integer", "description": "Token index B", "required": True},
+            "layer": {"type": "integer", "description": "Layer to analyze (default: 0)"},
+            "test_nonlinear": {"type": "boolean", "description": "Also run k-NN vs linear probe test (slower)"},
+            "model": {"type": "string", "description": "Model name (default: first available transformer)"},
+            "mode": {"type": "string", "description": "Capture mode: raw, naked, or template (default: raw)"},
+        },
+    },
 }
 
 
@@ -1032,6 +1043,8 @@ class ToolServer:
             return self._do_companion_show(arguments)
         if name == "heinrich_companion_capture":
             return self._do_companion_capture(arguments)
+        if name == "heinrich_companion_direction":
+            return self._do_companion_direction(arguments)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -1205,6 +1218,54 @@ class ToolServer:
         return {"path": result["path"], "size": result.get("size", 0),
                 "filename": result.get("filename", ""),
                 "hint": "Use Read tool on the path to view the captured image."}
+
+    def _do_companion_direction(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Full direction analysis via companion server."""
+        import urllib.request
+        port = args.get("port", 8377)
+        a = args["token_a"]
+        b = args["token_b"]
+        layer = args.get("layer", 0)
+        model = args.get("model", "")
+        mode = args.get("mode", "raw")
+
+        # If model not specified, get first available transformer from companion
+        if not model:
+            try:
+                resp = urllib.request.urlopen(
+                    f"http://localhost:{port}/api/models", timeout=5)
+                models = json.loads(resp.read())
+                transformers = [m for m in models
+                                if m.get("architecture") == "transformer"]
+                if transformers:
+                    model = transformers[0]["model"]
+                    mode = transformers[0]["mode"]
+                else:
+                    return {"error": "No transformer models found in companion"}
+            except Exception as e:
+                return {"error": f"Companion not reachable at localhost:{port}: {e}"}
+
+        # Fetch direction quality
+        url = (f"http://localhost:{port}/api/direction-quality/{model}/{mode}"
+               f"?a={a}&b={b}&layer={layer}")
+        try:
+            with urllib.request.urlopen(url, timeout=30) as resp:
+                result = json.loads(resp.read())
+        except Exception as e:
+            return {"error": f"Direction analysis failed: {e}"}
+
+        if args.get("test_nonlinear"):
+            nl_url = (f"http://localhost:{port}/api/direction-nonlinear/"
+                      f"{model}/{mode}?a={a}&b={b}&layer={layer}")
+            try:
+                with urllib.request.urlopen(nl_url, timeout=60) as resp:
+                    result["nonlinearity"] = json.loads(resp.read())
+            except Exception:
+                result["nonlinearity"] = {"error": "failed"}
+
+        result["hint"] = ("Use heinrich_companion_show to navigate the viewer "
+                          "to this direction.")
+        return result
 
     def _do_loop(self, args: dict[str, Any]) -> dict[str, Any]:
         import numpy as np

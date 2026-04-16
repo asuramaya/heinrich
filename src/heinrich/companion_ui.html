@@ -1891,65 +1891,50 @@ function buildRightColumn(){
 }
 
 // rv0: Direction Depth Profile — how two pinned tokens separate through layers
+// Uses full-K server data from /api/direction-depth/ via _dirDepthData
 // X = layer (emb→L0→...→LN→lmh), Y = projection onto direction, two lines + density
 function _buildRV0Variance(){
   const rv=rightViews[0];if(!rv||!_layerVar.length)return;
   _clearRV(rv);rv._rvSlices=[];rv.built=true;
   const rlbl=rv.el?.querySelector('.rlbl');
   // No direction active — blank viewport
-  if(pinnedToken<0||pinnedTokenB<0||!allL[0]){
+  if(pinnedToken<0||pinnedTokenB<0||!_dirDepthData||!_dirDepthData.layers||!_dirDepthData.layers.length){
     if(rlbl)rlbl.textContent='Direction Depth';
     rv.cam.position.set(0,0,2.5);rv.ctl.target.set(0,0,0);rv.ctl.update();
     return;
   }
-  if(rlbl)rlbl.textContent=`${texts[pinnedToken]||'A'} ↔ ${texts[pinnedTokenB]||'B'}`;
-  const a=pinnedToken,b=pinnedTokenB;
+  if(rlbl)rlbl.textContent=`${texts[pinnedToken]||'A'} \u2194 ${texts[pinnedTokenB]||'B'}`;
+  const dd=_dirDepthData;
   const seq=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
-  const K=Math.min(_blobScoreK,allL[0]?.[a]?.length||_blobScoreK);
-  // Compute direction at each layer and project both tokens + sample
-  const projA=[],projB=[],projSample=[];
-  const sampleStep=Math.max(1,Math.floor(nN/500));
+  const nSteps=seq.length;
+  // Map server layer indices to sequence positions
+  const layerMap={};dd.layers.forEach(d=>{layerMap[d.layer]=d;});
+  // Build projections from server data
+  const projA=[],projB=[];
   for(let si=0;si<seq.length;si++){
-    const l=seq[si];if(!allL[l])continue;
-    const sa=allL[l][a],sb=allL[l][b];if(!sa||!sb)continue;
-    // Direction at this layer
-    let norm2=0;const dir=new Float32Array(K);
-    for(let k=0;k<K;k++){dir[k]=(sa[k]||0)-(sb[k]||0);norm2+=dir[k]*dir[k];}
-    const norm=Math.sqrt(norm2)||1;
-    for(let k=0;k<K;k++)dir[k]/=norm;
-    let pa=0,pb=0;for(let k=0;k<K;k++){pa+=(sa[k]||0)*dir[k];pb+=(sb[k]||0)*dir[k];}
-    projA.push({si,l,v:pa});projB.push({si,l,v:pb});
-    // Sample projections for density
-    const samp=[];
-    for(let i=0;i<nN;i+=sampleStep){
-      const si2=allL[l][i];if(!si2)continue;
-      let p=0;for(let k=0;k<K;k++)p+=(si2[k]||0)*dir[k];samp.push(p);
-    }
-    projSample.push({si,l,samp});
+    const l=seq[si];const d=layerMap[l];if(!d)continue;
+    projA.push({si,l,v:d.proj_a});
+    projB.push({si,l,v:d.proj_b});
   }
-  // Normalize Y to [-1,1] across all projections
+  // Normalize Y to [-1,1] across all projections + percentiles
   let yMax=0;
   projA.forEach(p=>{yMax=Math.max(yMax,Math.abs(p.v));});
   projB.forEach(p=>{yMax=Math.max(yMax,Math.abs(p.v));});
-  projSample.forEach(({samp})=>samp.forEach(v=>{yMax=Math.max(yMax,Math.abs(v));}));
+  dd.layers.forEach(d=>{yMax=Math.max(yMax,Math.abs(d.p10),Math.abs(d.p90));});
   yMax=yMax||1;
-  const nSteps=seq.length;
-  // Draw sample density as faint band (10th/90th percentile) at each layer
+  // Draw sample density as faint band (p10/p90 from server) at each layer
   const bandPos=[];const bandCol=[];
-  projSample.forEach(({si,samp})=>{
-    if(!samp.length)return;
-    const sorted=samp.slice().sort((a,b)=>a-b);
-    const p10=sorted[Math.floor(sorted.length*0.1)]/yMax;
-    const p50=sorted[Math.floor(sorted.length*0.5)]/yMax;
-    const p90=sorted[Math.floor(sorted.length*0.9)]/yMax;
+  for(let si=0;si<seq.length;si++){
+    const l=seq[si];const d=layerMap[l];if(!d)continue;
     const x=(si/(nSteps-1||1))*2-1;
+    const p10=d.p10/yMax,p50=d.p50/yMax,p90=d.p90/yMax;
     // Vertical line from p10 to p90
     bandPos.push(x,p10,0, x,p90,0);
     bandCol.push(0.2,0.2,0.2, 0.2,0.2,0.2);
     // Tick at median
     bandPos.push(x-0.02,p50,0, x+0.02,p50,0);
     bandCol.push(0.3,0.3,0.3, 0.3,0.3,0.3);
-  });
+  }
   if(bandPos.length){
     const bg=new THREE.BufferGeometry();
     bg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(bandPos),3));
@@ -2247,90 +2232,91 @@ let _nfLastLayer=-1;
 function _nfSetLayer(l){if(l===_nfLastLayer)return;_nfLastLayer=l;_nfBuildDots();}
 
 // rv2: Superposition — tubes through depth for top PCs
-// Each top PC gets a tube from emb→lmh. Radius = alignment with pinned direction.
-// Fat tube = that PC carries the concept. Many medium tubes = superposed.
+// Uses full-K server data from _dirDepthData (pcs_50, top_pc, top_share per layer)
+// Each top PC gets a tube from emb→lmh. Height = top_share at that layer.
+// Concentration label shows pcs_50 (how many PCs carry 50% of the direction).
 function _buildRV2Attention(){
   const rv=rightViews[2];if(!rv)return;
   _clearRV(rv);rv._rvSlices=[];rv.built=true;
   const rlbl=rv.el?.querySelector('.rlbl');
-  if(pinnedToken<0||pinnedTokenB<0||!allL[0]){
+  if(pinnedToken<0||pinnedTokenB<0||!_dirDepthData||!_dirDepthData.layers||!_dirDepthData.layers.length){
     if(rlbl)rlbl.textContent='Superposition';return;
   }
   if(rlbl)rlbl.textContent='Superposition';
-  const a=pinnedToken,b=pinnedTokenB;
+  const dd=_dirDepthData;
   const seq=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
-  const K=Math.min(_blobScoreK,allL[0]?.[a]?.length||_blobScoreK);
   const nSteps=seq.length;
   const nTop=8;// track top 8 PCs
 
-  // Compute alignment at every layer for every PC
-  const alignGrid=[];// [si][k] = alignment
+  // Map server layer indices to sequence positions
+  const layerMap={};dd.layers.forEach(d=>{layerMap[d.layer]=d;});
+
+  // Collect all unique top_pc values across layers, pick the nTop most frequent
+  const pcFreq={};
+  dd.layers.forEach(d=>{pcFreq[d.top_pc]=(pcFreq[d.top_pc]||0)+1;});
+  // Also collect pcs_50 for concentration display
+  const pcEntries=Object.entries(pcFreq).map(([k,v])=>({k:parseInt(k),v}));
+  pcEntries.sort((a,b)=>b.v-a.v);
+  const tracked=pcEntries.slice(0,nTop).map(p=>p.k);
+
+  // Build alignment grid: for each sequence step, compute alignment per tracked PC
+  // Since server gives top_pc+top_share per layer, we use top_share when pc matches, else 0
+  // For a richer view, we estimate: if this layer's top_pc == tracked pc, alignment = top_share
+  // Otherwise alignment = (1 - top_share) / (pcs_50 - 1) as a rough estimate
+  const alignGrid=[];// [si] = {pc → alignment}
   for(let si=0;si<nSteps;si++){
-    const l=seq[si];const sa=allL[l]?.[a],sb=allL[l]?.[b];
-    if(!sa||!sb){alignGrid.push(null);continue;}
-    const diff=new Float32Array(K);let norm2=0;
-    for(let k=0;k<K;k++){diff[k]=(sa[k]||0)-(sb[k]||0);norm2+=diff[k]*diff[k];}
-    const norm=Math.sqrt(norm2)||1;
-    const al=new Float32Array(K);
-    for(let k=0;k<K;k++)al[k]=Math.abs(diff[k]/norm);
+    const l=seq[si];const d=layerMap[l];
+    if(!d){alignGrid.push(null);continue;}
+    const al={};
+    tracked.forEach(pc=>{
+      if(pc===d.top_pc)al[pc]=d.top_share;
+      else al[pc]=Math.max(0,(1-d.top_share)/(Math.max(d.pcs_50,2)-1)*0.3);// faint estimate
+    });
     alignGrid.push(al);
   }
 
-  // Find top PCs by peak alignment across all layers
-  const peakAlign=new Float32Array(K);
-  for(const al of alignGrid){if(!al)continue;for(let k=0;k<K;k++)if(al[k]>peakAlign[k])peakAlign[k]=al[k];}
-  const topPCs=[];for(let k=0;k<K;k++)topPCs.push({k,peak:peakAlign[k]});
-  topPCs.sort((a,b)=>b.peak-a.peak);
-  const tracked=topPCs.slice(0,nTop).map(p=>p.k);
+  // Estimate a K for hue assignment — use max top_pc seen
+  const maxPC=Math.max(1,...tracked);
 
   // Build lines + sized dots for each tracked PC through depth
-  // Line = path through layers. Dot size = alignment at that layer.
   tracked.forEach((pc,ti)=>{
-    const hue=pc/K;const color=new THREE.Color().setHSL(hue,0.7,0.5);
+    const hue=pc/(maxPC+1);const color=new THREE.Color().setHSL(hue,0.7,0.5);
     const x=(ti/(nTop-1||1))*1.6-0.8;
-    // Line through depth
-    const linePos=[];const lineCol=[];
-    // Dots at each layer
     const dotPos=[];const dotCol=[];const dotSizes=[];
     for(let si=0;si<nSteps;si++){
       const al=alignGrid[si];
-      const v=al?al[pc]:0;
+      const v=al?al[pc]||0:0;
       const z=(si/(nSteps-1||1))*2-1;
-      const y=v*1.5;// height = alignment
+      const y=v*1.5;
       dotPos.push(x,y,z);
       const bright=0.3+v*0.7;
       dotCol.push(color.r*bright,color.g*bright,color.b*bright);
-      dotSizes.push(Math.max(2,v*30));// size 2-30 px
-      if(si>0){linePos.push(linePos[linePos.length-3],linePos[linePos.length-2],linePos[linePos.length-1]);
-        linePos.push(x,y,z);lineCol.push(color.r*0.4,color.g*0.4,color.b*0.4,color.r*bright,color.g*bright,color.b*bright);}
-      linePos.push(x,y,z);// first vertex of next segment
+      dotSizes.push(Math.max(2,v*30));
     }
-    // Line
-    if(linePos.length>3){
-      // linePos has extra trailing vertex, trim to pairs
-      const lp2=[];const lc2=[];
-      for(let si=0;si<nSteps-1;si++){
-        const al0=alignGrid[si],al1=alignGrid[si+1];
-        const v0=al0?al0[pc]:0,v1=al1?al1[pc]:0;
-        const z0=(si/(nSteps-1||1))*2-1,z1=((si+1)/(nSteps-1||1))*2-1;
-        lp2.push(x,v0*1.5,z0, x,v1*1.5,z1);
-        const b0=0.3+v0*0.7,b1=0.3+v1*0.7;
-        lc2.push(color.r*b0,color.g*b0,color.b*b0, color.r*b1,color.g*b1,color.b*b1);
-      }
+    // Line segments between layers
+    const lp2=[];const lc2=[];
+    for(let si=0;si<nSteps-1;si++){
+      const al0=alignGrid[si],al1=alignGrid[si+1];
+      const v0=al0?al0[pc]||0:0,v1=al1?al1[pc]||0:0;
+      const z0=(si/(nSteps-1||1))*2-1,z1=((si+1)/(nSteps-1||1))*2-1;
+      lp2.push(x,v0*1.5,z0, x,v1*1.5,z1);
+      const b0=0.3+v0*0.7,b1=0.3+v1*0.7;
+      lc2.push(color.r*b0,color.g*b0,color.b*b0, color.r*b1,color.g*b1,color.b*b1);
+    }
+    if(lp2.length){
       const lg=new THREE.BufferGeometry();
       lg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(lp2),3));
       lg.setAttribute('color',new THREE.BufferAttribute(new Float32Array(lc2),3));
       const lm=new THREE.LineSegments(lg,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.6}));
       lm.frustumCulled=false;rv.sc.add(lm);
     }
-    // Dots — variable size per layer
+    // Dots
     const dg=new THREE.BufferGeometry();
     dg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(dotPos),3));
     dg.setAttribute('color',new THREE.BufferAttribute(new Float32Array(dotCol),3));
-    // Use single size (max) since PointsMaterial doesn't support per-vertex size
     const maxSize=Math.max(...dotSizes)*0.004;
-    const dm=new THREE.Points(dg,new THREE.PointsMaterial({size:Math.max(0.02,maxSize),vertexColors:true,transparent:true,opacity:0.8,sizeAttenuation:true,depthWrite:false}));
-    dm.frustumCulled=false;rv.sc.add(dm);
+    const dm2=new THREE.Points(dg,new THREE.PointsMaterial({size:Math.max(0.02,maxSize),vertexColors:true,transparent:true,opacity:0.8,sizeAttenuation:true,depthWrite:false}));
+    dm2.frustumCulled=false;rv.sc.add(dm2);
   });
 
   // Layer cursor
@@ -2342,7 +2328,7 @@ function _buildRV2Attention(){
   rv._dirCursor=curLine;rv._dirNSteps=nSteps;rv._dirSeq=seq;
 
   // Store data for interaction
-  rv._spTracked=tracked;rv._spAlignGrid=alignGrid;rv._spNSteps=nSteps;rv._spSeq=seq;rv._spNTop=nTop;rv._spK=K;
+  rv._spTracked=tracked;rv._spAlignGrid=alignGrid;rv._spNSteps=nSteps;rv._spSeq=seq;rv._spNTop=nTop;rv._spK=maxPC+1;
 
   rv.cam.position.set(0,0.8,2.5);rv.ctl.target.set(0,0,0);rv.ctl.update();
   _updateRVLayer();
@@ -2861,11 +2847,23 @@ function updateLeftViewports(){
 }
 // Rebuild right column neurons/attention when pins change
 let _pinChangeGen=0;
+let _dirDepthData=null;// cached direction-depth response {layers:[...], n_layers:N}
+async function _fetchDirDepth(){
+  if(pinnedToken<0||pinnedTokenB<0||!model||!mode){_dirDepthData=null;return null;}
+  try{
+    const d=await api(`direction-depth/${model}/${mode}?a=${pinnedToken}&b=${pinnedTokenB}`);
+    if(d&&d.layers)_dirDepthData=d;else _dirDepthData=null;
+  }catch(e){_dirDepthData=null;}
+  return _dirDepthData;
+}
 async function _onPinChange(){
   const gen=++_pinChangeGen;
   _nfUpdateActivations();// neuron field (async)
-  _buildRV0Variance();// direction depth profile
-  _buildRV2Attention();// interference map
+  // Fetch full-K direction depth from server, then build rv0+rv2
+  await _fetchDirDepth();
+  if(_pinChangeGen!==gen)return;// superseded
+  _buildRV0Variance();// direction depth profile (uses _dirDepthData)
+  _buildRV2Attention();// interference map (uses _dirDepthData)
   const tokA=pinnedToken,tokB=pinnedTokenB;// capture at call time
   await _pcsLoadFull(tokA,'A');
   if(_pinChangeGen!==gen)return;// superseded by newer pin change
