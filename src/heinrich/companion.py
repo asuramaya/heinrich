@@ -477,15 +477,17 @@ def _direction_depth(mri_path: str, a: int, b: int) -> dict:
         cumul = np.cumsum(diff2[order]) / (total_d2 + 1e-8)
         pcs_50 = int(np.searchsorted(cumul, 0.5)) + 1
 
-        # Top PC at this layer
-        top_pc = int(order[0])
-        top_share = float(diff2[order[0]] / (total_d2 + 1e-8))
+        # Top 8 PCs at this layer
+        top_n = min(8, len(order))
+        top_pcs = [{"pc": int(order[i]),
+                    "share": float(diff2[order[i]] / (total_d2 + 1e-8))}
+                   for i in range(top_n)]
 
         layers.append({
             "layer": li, "magnitude": mag,
             "proj_a": pa, "proj_b": pb,
             "p10": p10, "p50": p50, "p90": p90,
-            "pcs_50": pcs_50, "top_pc": top_pc, "top_share": top_share,
+            "pcs_50": pcs_50, "top_pcs": top_pcs,
         })
 
     return {"layers": layers, "n_layers": n_layers}

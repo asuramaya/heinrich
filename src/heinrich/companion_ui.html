@@ -2257,31 +2257,28 @@ function _buildRV2Attention(){
   // Map server layer indices to sequence positions
   const layerMap={};dd.layers.forEach(d=>{layerMap[d.layer]=d;});
 
-  // Collect all unique top_pc values across layers, pick the nTop most frequent
-  const pcFreq={};
-  dd.layers.forEach(d=>{pcFreq[d.top_pc]=(pcFreq[d.top_pc]||0)+1;});
-  // Also collect pcs_50 for concentration display
-  const pcEntries=Object.entries(pcFreq).map(([k,v])=>({k:parseInt(k),v}));
+  // Collect top PCs across all layers — each layer now has top_pcs[8]
+  // Pick the nTop most frequent PCs across all layers
+  const pcScore={};
+  dd.layers.forEach(d=>{
+    if(!d.top_pcs)return;
+    d.top_pcs.forEach(({pc,share})=>{pcScore[pc]=(pcScore[pc]||0)+share;});
+  });
+  const pcEntries=Object.entries(pcScore).map(([k,v])=>({k:parseInt(k),v}));
   pcEntries.sort((a,b)=>b.v-a.v);
   const tracked=pcEntries.slice(0,nTop).map(p=>p.k);
 
-  // Build alignment grid: for each sequence step, compute alignment per tracked PC
-  // Since server gives top_pc+top_share per layer, we use top_share when pc matches, else 0
-  // For a richer view, we estimate: if this layer's top_pc == tracked pc, alignment = top_share
-  // Otherwise alignment = (1 - top_share) / (pcs_50 - 1) as a rough estimate
-  const alignGrid=[];// [si] = {pc → alignment}
+  // Build alignment grid from server's top_pcs per layer
+  const alignGrid=[];
   for(let si=0;si<nSteps;si++){
     const l=seq[si];const d=layerMap[l];
-    if(!d){alignGrid.push(null);continue;}
+    if(!d||!d.top_pcs){alignGrid.push(null);continue;}
     const al={};
-    tracked.forEach(pc=>{
-      if(pc===d.top_pc)al[pc]=d.top_share;
-      else al[pc]=Math.max(0,(1-d.top_share)/(Math.max(d.pcs_50,2)-1)*0.3);// faint estimate
-    });
+    const shareMap={};d.top_pcs.forEach(({pc,share})=>{shareMap[pc]=share;});
+    tracked.forEach(pc=>{al[pc]=shareMap[pc]||0;});
     alignGrid.push(al);
   }
 
-  // Estimate a K for hue assignment — use max top_pc seen
   const maxPC=Math.max(1,...tracked);
 
   // Build lines + sized dots for each tracked PC through depth

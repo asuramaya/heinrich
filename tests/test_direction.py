@@ -105,7 +105,7 @@ def test_direction_depth_all_layers():
             assert "magnitude" in ld
             assert "proj_a" in ld
             assert "pcs_50" in ld
-            assert "top_pc" in ld
+            assert "top_pcs" in ld
 
 
 def test_steer_test_returns_structure():
