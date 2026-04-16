@@ -810,6 +810,82 @@ def _token_predicts(mri_path: str, token_idx: int, layer: int, top_k: int = 20) 
     }
 
 
+def _live_forward(mri_path: str, prompt: str, model_id: str = "") -> dict:
+    """Run a prompt through the live model, project residuals into MRI's PCA space.
+
+    Returns per-layer PCA scores for each token position in the prompt,
+    in the same format as the stored MRI scores. These can be compared
+    directly with the pre-captured vocabulary.
+    """
+    decomp = Path(mri_path) / "decomp"
+    meta_path = decomp / "meta.json"
+    if not meta_path.exists():
+        return {"error": "No decomposition metadata"}
+
+    meta = json.loads(meta_path.read_text())
+    n_layers = meta.get("n_real_layers", len(meta["layers"]))
+
+    # Get model ID from MRI metadata
+    if not model_id:
+        mri_meta = json.loads((Path(mri_path) / "metadata.json").read_text())
+        model_id = mri_meta["model"]["name"]
+
+    # Load model
+    try:
+        backend = _get_steer_backend(model_id)
+    except Exception as e:
+        return {"error": f"Cannot load model {model_id}: {e}"}
+
+    # Forward with residual capture at all layers
+    all_layers = list(range(n_layers))
+    try:
+        result = backend.forward(prompt, residual_layers=all_layers)
+    except Exception as e:
+        return {"error": f"Forward pass failed: {e}"}
+
+    # Get residuals
+    residuals = getattr(result, 'residuals', None)
+    if not residuals:
+        return {"error": "Backend did not return residuals. Check residual_layers support."}
+
+    # Project each layer's residual through stored PCA components
+    live_scores = {}
+    for layer in range(n_layers):
+        comp_path = decomp / f"L{layer:02d}_components.npy"
+        if not comp_path.exists() or layer not in residuals:
+            continue
+        components = np.load(str(comp_path))  # [K, hidden_dim]
+        residual = residuals[layer]  # [hidden_dim] (last position)
+        if residual.ndim == 1:
+            residual = residual.reshape(1, -1)
+        scores = (residual.astype(np.float32) @ components.T)  # [1, K] or [seq_len, K]
+        live_scores[layer] = scores.tolist()
+
+    # Tokenize the prompt for display
+    token_texts = []
+    if hasattr(backend, 'tokenizer'):
+        try:
+            ids = backend.tokenizer.encode(prompt)
+            token_texts = [backend.tokenizer.decode([tid]) for tid in ids]
+        except Exception:
+            token_texts = [prompt]
+
+    return {
+        "prompt": prompt,
+        "model_id": model_id,
+        "n_layers": n_layers,
+        "token_texts": token_texts,
+        "scores": live_scores,
+        "logits_top5": [
+            {"id": int(result.probs.argsort()[-1-i]),
+             "prob": float(result.probs[result.probs.argsort()[-1-i]])}
+            for i in range(min(5, len(result.probs)))
+        ],
+        "prediction": result.top_token,
+        "entropy": float(result.entropy),
+    }
+
+
 _steer_backend_cache = {}
 
 def _get_steer_backend(model_id: str):
@@ -1911,6 +1987,17 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 if ev:
                     ev.set()
             self._send_json({"ok": True})
+
+        elif path == '/api/live-forward':
+            prompt = args.get("prompt", "")
+            model_name = args.get("model", "")
+            mode_name = args.get("mode", "raw")
+            if not prompt:
+                self._send_json({"error": "prompt required"})
+                return
+            mri_path = self._mri_path(model_name or "qwen-0.5b", mode_name)
+            result = _live_forward(mri_path, prompt)
+            self._send_json(result)
 
         elif path == '/api/direction-steer':
             model_name = args.get("model", "")
