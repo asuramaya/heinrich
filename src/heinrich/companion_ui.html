@@ -107,8 +107,8 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   <div id="discoverResults" style="max-height:200px;overflow-y:auto;font-size:7px;color:#555;margin-top:2px"></div>
   <hr style="border:none;border-top:1px solid #1a1a1a;margin:4px 0">
   <div id="tokAB">
-    <div id="tokA"><div style="color:#555;font-size:7px;margin-bottom:2px">Token A (click)</div><div class="tn" id="taName" style="color:#FF6644">—</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarA" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="taMeta" style="font-size:8px">click a token to pin</div></div>
-    <div id="tokB"><div style="color:#555;font-size:7px;margin-bottom:2px">Token B (R-click)</div><div class="tn" id="tbName" style="color:#4477AA">—</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarB" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="tbMeta" style="font-size:8px">R-click for comparison</div></div>
+    <div id="tokA"><div style="color:#555;font-size:7px;margin-bottom:2px">Token A (click)</div><div class="tn" id="taName" style="color:#FF6644">—</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarA" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="taMeta" style="font-size:8px">click a token to pin</div><div id="predsA" style="font-size:7px;color:#555;margin-top:3px"></div></div>
+    <div id="tokB"><div style="color:#555;font-size:7px;margin-bottom:2px">Token B (R-click)</div><div class="tn" id="tbName" style="color:#4477AA">—</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarB" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="tbMeta" style="font-size:8px">R-click for comparison</div><div id="predsB" style="font-size:7px;color:#555;margin-top:3px"></div></div>
   </div>
   <div id="sepPanel" style="display:none;margin:6px 0"><div style="color:#555;font-size:7px;margin-bottom:2px">Max separation PCs <span id="sepDist" style="color:#888"></span></div><div id="sepList" style="font-size:8px"></div></div>
   <hr style="border:none;border-top:1px solid #1a1a1a;margin:6px 0">
@@ -447,15 +447,46 @@ function renderPCBar(idx,canvasId,rgb){
     if(Math.abs(pct-0.5)>0.3){ctx.fillStyle=`rgba(${rgb},0.8)`;ctx.fillText(v.toFixed(1),p*bw+1,isPos?midY-barH-1:midY+barH+5);}
   }
 }
+let _predsReqA=0,_predsReqB=0;
+function _fetchPredicts(tokIdx,containerId){
+  const el=document.getElementById(containerId);if(!el)return;
+  if(tokIdx<0||!model||!mode){el.textContent='';return;}
+  const isA=containerId==='predsA';
+  const reqId=isA?++_predsReqA:++_predsReqB;
+  el.textContent='predicts...';
+  api(`token-predicts/${model}/${mode}?token=${tokIdx}&layer=${cL}&k=8`).then(r=>{
+    if(isA?_predsReqA!==reqId:_predsReqB!==reqId)return;
+    if(r.error){el.textContent='';return;}
+    el.textContent='';
+    const hdr=document.createElement('span');
+    hdr.style.cssText='color:#555;font-size:7px';
+    hdr.textContent='predicts: ';
+    el.appendChild(hdr);
+    r.top_k.slice(0,6).forEach((p,i)=>{
+      if(i>0)el.appendChild(document.createTextNode(' '));
+      const span=document.createElement('span');
+      const pct=p.prob*100;
+      span.style.cssText=`color:${pct>10?'#aaa':pct>1?'#777':'#444'};cursor:pointer`;
+      span.textContent=`${p.text}`;
+      span.title=`${p.text} prob=${(pct).toFixed(1)}% logit=${p.logit.toFixed(0)}`;
+      span.addEventListener('click',()=>{
+        if(p.mri_idx>=0){pinnedToken=p.mri_idx;updatePinMarkers();showPinDetail(pinnedToken);_onPinChange();_saveState();}
+      });
+      el.appendChild(span);
+    });
+  }).catch(()=>{el.textContent='';});
+}
 function showPinDetail(idx){
   document.getElementById('taName').textContent=idx>=0?(texts[idx]||'?'):'—';
   document.getElementById('taName').style.color=idx>=0?(CLh[scripts[idx]]||'#aaa'):'#555';
   document.getElementById('taMeta').textContent=idx>=0?_tokInfo(idx):'click a token to pin';
   renderPCBar(idx,'pcBarA','200,80,50');
+  _fetchPredicts(idx,'predsA');
   document.getElementById('tbName').textContent=pinnedTokenB>=0?(texts[pinnedTokenB]||'?'):'—';
   document.getElementById('tbName').style.color=pinnedTokenB>=0?(CLh[scripts[pinnedTokenB]]||'#aaa'):'#555';
   document.getElementById('tbMeta').textContent=pinnedTokenB>=0?_tokInfo(pinnedTokenB):'shift+click for comparison';
   renderPCBar(pinnedTokenB,'pcBarB','60,100,180');
+  _fetchPredicts(pinnedTokenB,'predsB');
   _updateSeparation(idx,pinnedTokenB);
   _applyDirectionColors();
 }

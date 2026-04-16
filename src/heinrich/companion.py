@@ -739,6 +739,77 @@ def _auto_discover_directions(mri_path: str, layer: int, n_top: int = 20) -> dic
     return {"layer": int(layer), "discovered": discovered}
 
 
+def _token_predicts(mri_path: str, token_idx: int, layer: int, top_k: int = 20) -> dict:
+    """What does the model predict from this token at this layer?
+
+    Projects the token's exit state through lmhead to get the prediction
+    distribution. Returns top-K predicted tokens with logits.
+    This is the logit lens for a single token — answers "what does the
+    model know about this token at this depth?"
+    """
+    mri_dir = Path(mri_path)
+    exit_path = mri_dir / f"L{layer:02d}_exit.npy"
+    lmhead_path = mri_dir / "lmhead.npy"
+
+    if not exit_path.exists():
+        return {"error": f"No exit states at L{layer}"}
+    if not lmhead_path.exists():
+        return {"error": "No lmhead matrix"}
+
+    # Load exit state for this token
+    exits = np.load(str(exit_path), mmap_mode="r")
+    if token_idx >= exits.shape[0]:
+        return {"error": f"Token index {token_idx} out of range (max {exits.shape[0]-1})"}
+
+    exit_vec = exits[token_idx].astype(np.float32)
+
+    # Load lmhead (cached after first access)
+    cache_key = f"{mri_path}:lmhead"
+    if cache_key not in _score_cache:
+        _score_cache[cache_key] = np.load(str(lmhead_path)).astype(np.float32)
+    lmhead = _score_cache[cache_key]
+
+    # Project: logits = lmhead @ exit_vec
+    logits = lmhead @ exit_vec
+
+    # Softmax for probabilities (numerically stable)
+    logits_shifted = logits - logits.max()
+    probs = np.exp(logits_shifted)
+    probs = probs / probs.sum()
+
+    # Top-K
+    top_indices = np.argsort(logits)[-top_k:][::-1]
+
+    # Map vocab indices to token texts via token_ids
+    tok = dict(np.load(str(mri_dir / "tokens.npz"), allow_pickle=True))
+    texts = [str(t) for t in tok["token_texts"]]
+    token_ids = tok["token_ids"]
+    # Build reverse map: vocab_id → mri_index
+    vocab_to_mri = {}
+    for i, vid in enumerate(token_ids):
+        vocab_to_mri[int(vid)] = i
+
+    predictions = []
+    for vi in top_indices:
+        vi = int(vi)
+        mri_idx = vocab_to_mri.get(vi, -1)
+        text = texts[mri_idx] if mri_idx >= 0 else f"[vocab:{vi}]"
+        predictions.append({
+            "vocab_id": vi,
+            "mri_idx": mri_idx,
+            "text": text,
+            "logit": float(logits[vi]),
+            "prob": float(probs[vi]),
+        })
+
+    return {
+        "token_idx": token_idx,
+        "token_text": texts[token_idx] if token_idx < len(texts) else "?",
+        "layer": layer,
+        "top_k": predictions,
+    }
+
+
 _steer_backend_cache = {}
 
 def _get_steer_backend(model_id: str):
@@ -1721,6 +1792,19 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 self._send_json(result)
             else:
                 self._send_json({"error": "Usage: /api/direction-weights/<model>/<mode>?a=N&b=N"})
+        elif path.startswith('/api/token-predicts/'):
+            # /api/token-predicts/model/mode?token=N&layer=L&k=20
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model_name, mode_name = parts[3], parts[4]
+                token_idx = int(qs.get('token', ['0'])[0])
+                layer = int(qs.get('layer', ['0'])[0])
+                top_k = int(qs.get('k', ['20'])[0])
+                mri_path = self._mri_path(model_name, mode_name)
+                result = _token_predicts(mri_path, token_idx, layer, top_k)
+                self._send_json(result)
+            else:
+                self._send_json({"error": "Usage: /api/token-predicts/<model>/<mode>?token=N&layer=L"})
         elif path == '/api/commands':
             self._send_json(_list_commands())
         elif path.startswith('/api/run/'):
