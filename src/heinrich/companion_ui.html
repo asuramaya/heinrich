@@ -3260,19 +3260,55 @@ _brPanels.forEach((p,i)=>{p.el.addEventListener('pointerenter',()=>{_setCapTarge
 
 // Text overlay for captures
 function _drawOverlay(ctx,w,h,vi,layer){
-  ctx.font=`bold ${Math.round(h*0.025)}px monospace`;ctx.textBaseline='top';
-  const pad=Math.round(w*0.01);
-  // Top-left: model + layer
-  ctx.fillStyle='rgba(255,255,255,0.85)';
-  ctx.fillText(`${model} ${mode} L${String(layer).padStart(2,'0')}`,pad,pad);
-  // Top-right: PC axes
+  const fs=Math.round(h*0.025);const fsm=Math.round(h*0.018);
+  ctx.font=`bold ${fs}px monospace`;ctx.textBaseline='top';
+  const pad=Math.round(w*0.012);
+  // Semi-transparent background strips for readability
+  ctx.fillStyle='rgba(0,0,0,0.6)';
+  ctx.fillRect(0,0,w,fs*2.5);// top strip
+  // Top-left: model + mode + layer
+  ctx.fillStyle='rgba(255,255,255,0.9)';
+  const layerName=layer>=_nRealLayers?(layer===_nRealLayers?'emb':'lmh'):`L${String(layer).padStart(2,'0')}`;
+  ctx.fillText(`${model}  ${mode}  ${layerName}`,pad,pad);
+  // Top-right: PC axes or viewport label
   const v=typeof vi==='number'&&views[vi]?views[vi]:null;
-  if(v){const ax=`PC${v.pcX} × PC${v.pcY} × PC${v.pcZ}`;const m=ctx.measureText(ax);ctx.fillText(ax,w-m.width-pad,pad);}
-  // Bottom: pinned tokens
-  ctx.font=`${Math.round(h*0.02)}px monospace`;
-  let y=h-pad-Math.round(h*0.025);
-  if(pinnedTokenB>=0){ctx.fillStyle='#4477AA';ctx.fillText(`B: ${texts[pinnedTokenB]||'?'}  ${scripts[pinnedTokenB]}  #${pinnedTokenB}`,pad,y);y-=Math.round(h*0.028);}
-  if(pinnedToken>=0){ctx.fillStyle='#FF6644';ctx.fillText(`A: ${texts[pinnedToken]||'?'}  ${scripts[pinnedToken]}  #${pinnedToken}`,pad,y);}
+  if(v){
+    const ax=`PC${v.pcX} × PC${v.pcY} × PC${v.pcZ}`;
+    ctx.fillStyle='rgba(255,255,255,0.6)';
+    const m=ctx.measureText(ax);ctx.fillText(ax,w-m.width-pad,pad);
+  }else{
+    const label=_captureLabel(vi);
+    ctx.fillStyle='rgba(255,255,255,0.5)';
+    const m=ctx.measureText(label);ctx.fillText(label,w-m.width-pad,pad);
+  }
+  // Bottom section: pinned tokens + direction metrics
+  if(pinnedToken>=0||pinnedTokenB>=0){
+    const nLines=2+(pinnedTokenB>=0&&_dirColorActive?1:0);
+    const bh=fsm*(nLines+1)+pad*2;
+    ctx.fillStyle='rgba(0,0,0,0.6)';
+    ctx.fillRect(0,h-bh,w,bh);
+    ctx.font=`bold ${fsm}px monospace`;
+    let y=h-bh+pad;
+    if(pinnedToken>=0){
+      ctx.fillStyle='#FF6644';
+      ctx.fillText(`A: ${texts[pinnedToken]||'?'}  ${scripts[pinnedToken]}  #${pinnedToken}`,pad,y);
+      y+=fsm*1.2;
+    }
+    if(pinnedTokenB>=0){
+      ctx.fillStyle='#4477AA';
+      ctx.fillText(`B: ${texts[pinnedTokenB]||'?'}  ${scripts[pinnedTokenB]}  #${pinnedTokenB}`,pad,y);
+      y+=fsm*1.2;
+    }
+    // Direction metrics if available (from last separation panel update)
+    if(pinnedTokenB>=0&&_dirColorActive){
+      const sepDist=document.getElementById('sepDist');
+      if(sepDist&&sepDist.textContent){
+        ctx.fillStyle='rgba(255,255,255,0.5)';
+        ctx.font=`${Math.round(fsm*0.85)}px monospace`;
+        ctx.fillText(sepDist.textContent,pad,y);
+      }
+    }
+  }
 }
 
 function captureViewport(sc,cam,el,vi,scale){
@@ -3295,6 +3331,64 @@ function captureViewport(sc,cam,el,vi,scale){
     URL.revokeObjectURL(a.href);tmp.dispose();
     cam.aspect=el.clientWidth/el.clientHeight;cam.updateProjectionMatrix();
   });
+}
+
+// --- Composite capture: stitch multiple viewports into one informative image ---
+function _renderViewportToCanvas(sc,cam,el,vi,scale){
+  const w=el.clientWidth*scale,h=el.clientHeight*scale;
+  const tmp=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true,alpha:false});
+  tmp.setSize(w,h);
+  const bg=sc.background instanceof THREE.Color?sc.background:new THREE.Color(0x0a0a0a);
+  tmp.setClearColor(bg);tmp.clear();
+  cam.aspect=w/h;cam.updateProjectionMatrix();
+  tmp.render(sc,cam);
+  const cv=document.createElement('canvas');cv.width=w;cv.height=h;
+  const ctx=cv.getContext('2d');
+  ctx.drawImage(tmp.domElement,0,0);
+  _drawOverlay(ctx,w,h,vi,cL);
+  tmp.dispose();cam.aspect=el.clientWidth/el.clientHeight;cam.updateProjectionMatrix();
+  return cv;
+}
+function captureComposite(rid){
+  // 2x2: cloud A (top-left), trajectory A (bottom-left), direction depth (top-right), superposition (bottom-right)
+  const scale=2;
+  const panels=[];
+  // Cloud A
+  if(views[0])panels.push({cv:_renderViewportToCanvas(views[0].sc,views[0].cam,views[0].el,0,scale),label:'Cloud'});
+  // Trajectory A
+  if(views[3])panels.push({cv:_renderViewportToCanvas(views[3].sc,views[3].cam,views[3].el,3,scale),label:'Trajectory'});
+  // Direction Depth (rv0)
+  if(rightViews[0]?.built)panels.push({cv:_renderViewportToCanvas(rightViews[0].sc,rightViews[0].cam,rightViews[0].el,'r0',scale),label:'Depth'});
+  // Superposition (rv2)
+  if(rightViews[2]?.built)panels.push({cv:_renderViewportToCanvas(rightViews[2].sc,rightViews[2].cam,rightViews[2].el,'r2',scale),label:'Superposition'});
+  if(!panels.length)return;
+  // Arrange in 2x2 grid
+  const cols=2,rows=Math.ceil(panels.length/cols);
+  const pw=panels[0].cv.width,ph=panels[0].cv.height;
+  const gap=4;
+  const totalW=pw*cols+gap*(cols-1);
+  const totalH=ph*rows+gap*(rows-1);
+  const comp=document.createElement('canvas');comp.width=totalW;comp.height=totalH;
+  const ctx=comp.getContext('2d');
+  ctx.fillStyle='#0a0a0a';ctx.fillRect(0,0,totalW,totalH);
+  panels.forEach((p,i)=>{
+    const col=i%cols,row=Math.floor(i/cols);
+    ctx.drawImage(p.cv,col*(pw+gap),row*(ph+gap));
+  });
+  // Upload composite
+  if(rid){
+    comp.toBlob(blob=>{
+      const filename=`${model}_${mode}_L${String(cL).padStart(2,'0')}_composite.png`;
+      fetch('/api/capture-upload?request_id='+encodeURIComponent(rid)+'&filename='+encodeURIComponent(filename),
+        {method:'POST',body:blob});
+    },'image/png');
+  }else{
+    comp.toBlob(blob=>{
+      const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+      a.download=`${model}_${mode}_L${String(cL).padStart(2,'0')}_composite.png`;a.click();
+      URL.revokeObjectURL(a.href);
+    },'image/png');
+  }
 }
 
 // --- GIF encoder (inline, no dependencies) ---
@@ -3559,6 +3653,10 @@ async function _handleNavigate(msg){
 async function _handleCapture(msg){
   const rid=msg.request_id||'';
   const fmt=msg.format||'png';
+  // Composite capture: stitch cloud + trajectory + depth + superposition
+  if(msg.viewport==='composite'){
+    captureComposite(rid);return;
+  }
   const vi=_resolveViewport(msg.viewport);
   const target=_resolveCapTarget(vi);
   if(!target){
