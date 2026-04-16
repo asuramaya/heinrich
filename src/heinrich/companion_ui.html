@@ -63,9 +63,9 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   <div class="lvp" id="lv1"><div class="llbl" id="lv1i">Internals Δ</div><div class="cbtn" data-v="l1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="lvp" id="lv2"><div class="llbl" id="lv2i">Internals B</div><div class="cbtn" data-v="l2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div id="rightcol">
-    <div class="rvp" id="rv0"><div class="rlbl">Weights</div><div class="cbtn" data-v="r0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+    <div class="rvp" id="rv0"><div class="rlbl">Direction Depth</div><div class="cbtn" data-v="r0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
     <div class="rvp" id="rv1"><div class="rlbl">Neurons</div><div class="cbtn" data-v="r1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
-    <div class="rvp" id="rv2"><div class="rlbl">Attention</div><div class="cbtn" data-v="r2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+    <div class="rvp" id="rv2"><div class="rlbl">Interference</div><div class="cbtn" data-v="r2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   </div>
 </div>
 <div id="tokpanel">
@@ -99,6 +99,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   <div id="tokA"><div class="tn" id="taName" style="color:#FF6644">—</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarA" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="taMeta" style="font-size:8px">click a token to pin</div></div>
   <hr style="border:none;border-top:1px solid #1a1a1a;margin:6px 0">
   <div id="tokB"><div class="tn" id="tbName" style="color:#4477AA">—</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarB" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="tbMeta" style="font-size:8px">R-click for comparison</div></div>
+  <div id="sepPanel" style="display:none;margin:6px 0"><div style="color:#555;font-size:7px;margin-bottom:2px">Max separation PCs <span id="sepDist" style="color:#888"></span></div><div id="sepList" style="font-size:8px"></div></div>
   <hr style="border:none;border-top:1px solid #1a1a1a;margin:6px 0">
   <div id="attnPanel" style="display:none"><div style="color:#555;font-size:7px;margin-bottom:2px">Attention (Token A, current layer)</div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
 </div>
@@ -371,24 +372,29 @@ let _trajCache={}; // {idx: {total, maxDelta, maxL}}
 function _trajStats(idx){
   if(_trajCache[idx])return _trajCache[idx];
   let totalMove=0,maxDelta=0,maxL=0;
-  for(let l=1;l<nL;l++){let d=0;for(let p=0;p<Math.min(nK,6);p++)d+=(allL[l][idx][p]-allL[l-1][idx][p])**2;d=Math.sqrt(d);totalMove+=d;if(d>maxDelta){maxDelta=d;maxL=l;}}
+  for(let l=1;l<nL;l++){
+    const cur=allL[l]?.[idx],prev=allL[l-1]?.[idx];if(!cur||!prev)continue;
+    let d=0;for(let p=0;p<Math.min(nK,6);p++)d+=((cur[p]||0)-(prev[p]||0))**2;
+    d=Math.sqrt(d);totalMove+=d;if(d>maxDelta){maxDelta=d;maxL=l;}
+  }
   const r={total:totalMove,maxDelta,maxL};_trajCache[idx]=r;return r;
 }
-function _tokInfo(idx){if(idx<0)return'—';const S=allL[cL][idx];
+function _tokInfo(idx){if(idx<0)return'—';const S=allL[cL]?.[idx];
   let m=`${scripts[idx]}  #${idx}`;if(tokenIds[idx]!==undefined)m+=`  id:${tokenIds[idx]}`;
   m+=`  ${new TextEncoder().encode(texts[idx]||'').length}B`;
+  if(!S)return m;
   // Most extreme PCs (positive and negative)
   const pcs=[];for(let p=0;p<Math.min(nK,20);p++)pcs.push({p,v:S[p]||0});
   pcs.sort((a,b)=>Math.abs(b.v)-Math.abs(a.v));
   m+='\n';pcs.slice(0,4).forEach(({p,v})=>m+=`PC${p}:${v>0?'+':''}${v.toFixed(1)} `);
   const ts=_trajStats(idx);
-  m+=`\ntraj:${ts.total.toFixed(0)} maxΔ:L${ts.maxL}(${ts.maxDelta.toFixed(0)})`;
+  if(ts)m+=`\ntraj:${ts.total.toFixed(0)} maxΔ:L${ts.maxL}(${ts.maxDelta.toFixed(0)})`;
   return m;}
 
 // PC distribution bar chart — shows where this token sits relative to all tokens
 function renderPCBar(idx,canvasId,rgb){
   const cv=document.getElementById(canvasId);if(!cv)return;
-  if(idx<0||!allL[cL]){cv.style.display='none';return;}
+  if(idx<0||!allL[cL]?.[idx]){cv.style.display='none';return;}
   cv.style.display='block';
   const w=cv.parentElement.clientWidth||260,h=50;
   cv.width=w*2;cv.height=h*2;
@@ -401,7 +407,7 @@ function renderPCBar(idx,canvasId,rgb){
     const v=S[p]||0;
     // Find min/max from sample
     let mn=Infinity,mx=-Infinity;
-    for(let i=0;i<nN;i+=sampleStep){const sv=allL[cL][i][p]||0;if(sv<mn)mn=sv;if(sv>mx)mx=sv;}
+    for(let i=0;i<nN;i+=sampleStep){const si=allL[cL][i];if(!si)continue;const sv=si[p]||0;if(sv<mn)mn=sv;if(sv>mx)mx=sv;}
     const range=mx-mn||1;
     const pct=(v-mn)/range;// 0-1 percentile
     const barH=(h-12)*Math.abs(pct-0.5)*2;// taller = more extreme
@@ -429,6 +435,60 @@ function showPinDetail(idx){
   document.getElementById('tbName').style.color=pinnedTokenB>=0?(CLh[scripts[pinnedTokenB]]||'#aaa'):'#555';
   document.getElementById('tbMeta').textContent=pinnedTokenB>=0?_tokInfo(pinnedTokenB):'shift+click for comparison';
   renderPCBar(pinnedTokenB,'pcBarB','60,100,180');
+  _updateSeparation(idx,pinnedTokenB);
+  _applyDirectionColors();
+}
+function _updateSeparation(a,b){
+  const panel=document.getElementById('sepPanel');
+  if(a<0||b<0||!allL[cL]){panel.style.display='none';return;}
+  panel.style.display='block';
+  const sa=allL[cL][a],sb=allL[cL][b];
+  if(!sa||!sb){panel.style.display='none';return;}
+  // Per-PC absolute difference
+  const diffs=[];
+  const k=Math.min(sa.length,sb.length,_blobScoreK);
+  for(let p=0;p<k;p++)diffs.push({p,d:Math.abs((sa[p]||0)-(sb[p]||0))});
+  diffs.sort((a,b)=>b.d-a.d);
+  // Top PC pairs: pick the top-2 individual PCs, then top pair by L2
+  const topPCs=diffs.slice(0,10);
+  // Also find best PC pair (2D separation)
+  const top5=diffs.slice(0,6).map(d=>d.p);
+  let bestPair=null,bestDist=0;
+  for(let i=0;i<top5.length;i++)for(let j=i+1;j<top5.length;j++){
+    const dx=(sa[top5[i]]||0)-(sb[top5[i]]||0),dy=(sa[top5[j]]||0)-(sb[top5[j]]||0);
+    const d2=Math.sqrt(dx*dx+dy*dy);
+    if(d2>bestDist){bestDist=d2;bestPair=[top5[i],top5[j]];}
+  }
+  document.getElementById('sepDist').textContent=bestPair?`(L2=${bestDist.toFixed(1)})`:'';
+  const list=document.getElementById('sepList');list.textContent='';
+  // Best pair button
+  if(bestPair){
+    const btn=document.createElement('div');
+    btn.style.cssText='cursor:pointer;padding:2px 4px;margin:1px 0;border-radius:2px;background:#1a2a1a;color:#6c6';
+    btn.textContent=`★ PC${bestPair[0]} × PC${bestPair[1]}  Δ=${bestDist.toFixed(1)}`;
+    btn.addEventListener('click',()=>{_navToSepPCs(bestPair[0],bestPair[1]);});
+    list.appendChild(btn);
+  }
+  // Individual top PCs
+  topPCs.slice(0,5).forEach(({p,d})=>{
+    const row=document.createElement('div');
+    row.style.cssText='cursor:pointer;padding:1px 4px;margin:1px 0;border-radius:2px;color:#888';
+    row.textContent=`PC${p}: Δ=${d.toFixed(2)}  A=${(sa[p]||0).toFixed(1)} B=${(sb[p]||0).toFixed(1)}`;
+    row.addEventListener('mouseenter',()=>{row.style.background='#1a1a2a';});
+    row.addEventListener('mouseleave',()=>{row.style.background='';});
+    row.addEventListener('click',()=>{
+      const second=topPCs.find(x=>x.p!==p);
+      _navToSepPCs(p,second?second.p:0);
+    });
+    list.appendChild(row);
+  });
+}
+function _navToSepPCs(px,py){
+  const pz=0;// PC0 as depth
+  vpPairs[0]=[px,py];
+  _precomputeCloud(0);updateVP(0,px,py,pz,cL);
+  buildTraj(3,px,py);updateVP(3,px,py,pz,cL);
+  _markDirty();_saveState();
 }
 
 // Interaction — pixel-accurate raycasting
@@ -462,7 +522,7 @@ function _popupText(i,vi){
   if(S){const pcs=[];for(let p=0;p<Math.min(nK,20);p++)pcs.push({p,v:S[p]||0});pcs.sort((a,b)=>Math.abs(b.v)-Math.abs(a.v));m+=pcs.slice(0,5).map(({p,v})=>`PC${p}:${v>0?'+':''}${v.toFixed(1)}`).join(' ')+'\n';}
   // Trajectory stats (always, not just for traj viewports)
   const ts=_trajStats(i);
-  m+=`traj:${ts.total.toFixed(0)} maxΔ:L${ts.maxL}(${ts.maxDelta.toFixed(0)})`;
+  if(ts)m+=`traj:${ts.total.toFixed(0)} maxΔ:L${ts.maxL}(${ts.maxDelta.toFixed(0)})`;
   return m;}
 // Reference grids + axis lines
 views.forEach((v,vi)=>{
@@ -572,6 +632,76 @@ function _ensureColors(v){
     col[i*3]=((hex>>16)&0xFF)/255;col[i*3+1]=((hex>>8)&0xFF)/255;col[i*3+2]=(hex&0xFF)/255;
   }
   v.geo.setAttribute('color',new THREE.BufferAttribute(col,3));
+}
+// --- Direction projection coloring ---
+// When both tokens are pinned, compute direction between them and
+// recolor all tokens by their projection onto that direction.
+// Red = A-like, Blue = B-like, grey = orthogonal.
+let _dirColorActive=false;
+function _applyDirectionColors(){
+  if(pinnedToken<0||pinnedTokenB<0||!allL[cL]){
+    if(_dirColorActive){
+      _dirColorActive=false;
+      for(const v of views){
+        _ensureColors(v);
+        // Reset trajectory colors to script
+        if(v.trajMarker){const tc=v.trajMarker.geometry.attributes.color?.array;
+          if(tc){for(let i=0;i<nN;i++){const hex=CL[scripts[i]]||0xAAAAAA;tc[i*3]=((hex>>16)&0xFF)/255;tc[i*3+1]=((hex>>8)&0xFF)/255;tc[i*3+2]=(hex&0xFF)/255;}v.trajMarker.geometry.attributes.color.needsUpdate=true;}}
+        if(v.trajGroup&&v._trajTokenMap){const lc=v.trajGroup.geometry.attributes.color?.array;
+          if(lc){for(const{ti,start,count}of v._trajTokenMap){const hex=CL[scripts[ti]]||0xAAAAAA;const r=((hex>>16)&0xFF)/255,g=((hex>>8)&0xFF)/255,b=(hex&0xFF)/255;
+            for(let j=start;j<start+count;j++){lc[j*3]=r;lc[j*3+1]=g;lc[j*3+2]=b;}}v.trajGroup.geometry.attributes.color.needsUpdate=true;}}
+      }
+      _markDirty();
+    }
+    return;
+  }
+  const sa=allL[cL][pinnedToken],sb=allL[cL][pinnedTokenB];
+  if(!sa||!sb)return;
+  const K=Math.min(sa.length,sb.length,_blobScoreK);
+  // Direction vector: A - B
+  const dir=new Float32Array(K);
+  let norm2=0;
+  for(let k=0;k<K;k++){dir[k]=(sa[k]||0)-(sb[k]||0);norm2+=dir[k]*dir[k];}
+  const norm=Math.sqrt(norm2)||1;
+  for(let k=0;k<K;k++)dir[k]/=norm;
+  // Project every token onto direction
+  const proj=new Float32Array(nN);
+  let mn=Infinity,mx=-Infinity;
+  for(let i=0;i<nN;i++){
+    const si=allL[cL][i];if(!si){proj[i]=0;continue;}
+    let dot=0;for(let k=0;k<K;k++)dot+=(si[k]||0)*dir[k];
+    proj[i]=dot;if(dot<mn)mn=dot;if(dot>mx)mx=dot;
+  }
+  // Color: red(A-like) → grey(neutral) → blue(B-like)
+  // Map projection to [-1,1] centered at midpoint of A and B projections
+  const pa=proj[pinnedToken],pb=proj[pinnedTokenB];
+  const mid=(pa+pb)/2,span=Math.abs(pa-pb)/2||1;
+  // Compute RGB per token
+  const _dirR=new Float32Array(nN),_dirG=new Float32Array(nN),_dirB=new Float32Array(nN);
+  for(let i=0;i<nN;i++){
+    const t=Math.max(-1,Math.min(1,(proj[i]-mid)/span));
+    const at=Math.abs(t);
+    if(t>0){_dirR[i]=0.25+0.75*at;_dirG[i]=0.25*(1-at);_dirB[i]=0.15*(1-at);}
+    else{_dirR[i]=0.15*(1-at);_dirG[i]=0.25*(1-at);_dirB[i]=0.25+0.55*at;}
+  }
+  for(const v of views){
+    // Cloud points
+    const col=v.geo.attributes.color?.array;
+    if(col){for(let i=0;i<nN;i++){col[i*3]=_dirR[i];col[i*3+1]=_dirG[i];col[i*3+2]=_dirB[i];}v.geo.attributes.color.needsUpdate=true;}
+    // Trajectory marker dots
+    if(v.trajMarker){
+      const tc=v.trajMarker.geometry.attributes.color?.array;
+      if(tc){for(let i=0;i<nN;i++){tc[i*3]=_dirR[i];tc[i*3+1]=_dirG[i];tc[i*3+2]=_dirB[i];}v.trajMarker.geometry.attributes.color.needsUpdate=true;}
+    }
+    // Trajectory lines (sampled tokens)
+    if(v.trajGroup&&v._trajTokenMap){
+      const lc=v.trajGroup.geometry.attributes.color?.array;
+      if(lc){for(const{ti,start,count}of v._trajTokenMap){
+        for(let j=start;j<start+count;j++){lc[j*3]=_dirR[ti];lc[j*3+1]=_dirG[ti];lc[j*3+2]=_dirB[ti];}
+      }v.trajGroup.geometry.attributes.color.needsUpdate=true;}
+    }
+  }
+  _dirColorActive=true;_markDirty();
 }
 function _applyFilter(){
   if(!nN)return;
@@ -1580,15 +1710,16 @@ function renderNeuronChart(tok,canvasId,rgb){
   ctx.beginPath();
   for(let l=0;l<_nRealLayers;l++){const v=row[l]/mx;const x=l*bw+bw/2,y=h-v*(h-2);l===0?ctx.moveTo(x,y):ctx.lineTo(x,y);}
   ctx.strokeStyle=`rgba(${rgb},0.7)`;ctx.lineWidth=1;ctx.stroke();
-  // Current layer marker
-  const cx=cL*bw+bw/2;ctx.fillStyle=`rgba(${rgb},0.9)`;ctx.fillRect(cx-1,0,2,h);
+  // Current layer marker (clamp to real layers)
+  const clClamped=Math.min(cL,_nRealLayers-1);
+  const cx=clClamped*bw+bw/2;ctx.fillStyle=`rgba(${rgb},0.9)`;ctx.fillRect(cx-1,0,2,h);
   // Peak marker
   let peakL=0;for(let l=1;l<_nRealLayers;l++)if(row[l]>row[peakL])peakL=l;
   const px=peakL*bw+bw/2,py=h-(row[peakL]/mx)*(h-2);
   ctx.beginPath();ctx.arc(px,py,2,0,Math.PI*2);ctx.fillStyle=`rgb(${rgb})`;ctx.fill();
   // Label
   ctx.font='7px monospace';ctx.fillStyle=`rgba(${rgb},0.6)`;
-  ctx.fillText(`peak L${peakL}`,2,8);ctx.fillText(`${row[cL].toFixed(1)}`,w-30,8);
+  ctx.fillText(`peak L${peakL}`,2,8);ctx.fillText(`${(row[cL]||0).toFixed(1)}`,w-30,8);
 }
 // --- Attention heatmap (template mode) ---
 let _attnData=null,_attnToken=-1;
@@ -1689,31 +1820,98 @@ function buildRightColumn(){
   _buildRV2Attention();
 }
 
-// rv0: Variance spectrum — X=PC, Y=log(variance), Z=layer
+// rv0: Direction Depth Profile — how two pinned tokens separate through layers
+// X = layer (emb→L0→...→LN→lmh), Y = projection onto direction, two lines + density
 function _buildRV0Variance(){
   const rv=rightViews[0];if(!rv||!_layerVar.length)return;
-  _clearRV(rv);
-  const nPC=Math.min(nK,20);rv._rvSlices=[];
-  // Use log scale so small PCs are visible alongside dominant ones
-  const logV=(v)=>v>0?Math.log10(v*1000+1)/3:0;// maps 0.001->0.3, 0.1->0.7, 1.0->1.0
-  for(let l=0;l<_nRealLayers;l++){
-    const z=(l/(_nRealLayers-1))*2-1;
+  _clearRV(rv);rv._rvSlices=[];rv.built=true;
+  const rlbl=rv.el?.querySelector('.rlbl');
+  // No direction active — blank viewport
+  if(pinnedToken<0||pinnedTokenB<0||!allL[0]){
+    if(rlbl)rlbl.textContent='Direction Depth';
+    rv.cam.position.set(0,0,2.5);rv.ctl.target.set(0,0,0);rv.ctl.update();
+    return;
+  }
+  if(rlbl)rlbl.textContent=`${texts[pinnedToken]||'A'} ↔ ${texts[pinnedTokenB]||'B'}`;
+  const a=pinnedToken,b=pinnedTokenB;
+  const seq=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
+  const K=Math.min(_blobScoreK,allL[0]?.[a]?.length||_blobScoreK);
+  // Compute direction at each layer and project both tokens + sample
+  const projA=[],projB=[],projSample=[];
+  const sampleStep=Math.max(1,Math.floor(nN/500));
+  for(let si=0;si<seq.length;si++){
+    const l=seq[si];if(!allL[l])continue;
+    const sa=allL[l][a],sb=allL[l][b];if(!sa||!sb)continue;
+    // Direction at this layer
+    let norm2=0;const dir=new Float32Array(K);
+    for(let k=0;k<K;k++){dir[k]=(sa[k]||0)-(sb[k]||0);norm2+=dir[k]*dir[k];}
+    const norm=Math.sqrt(norm2)||1;
+    for(let k=0;k<K;k++)dir[k]/=norm;
+    let pa=0,pb=0;for(let k=0;k<K;k++){pa+=(sa[k]||0)*dir[k];pb+=(sb[k]||0)*dir[k];}
+    projA.push({si,l,v:pa});projB.push({si,l,v:pb});
+    // Sample projections for density
+    const samp=[];
+    for(let i=0;i<nN;i+=sampleStep){
+      const si2=allL[l][i];if(!si2)continue;
+      let p=0;for(let k=0;k<K;k++)p+=(si2[k]||0)*dir[k];samp.push(p);
+    }
+    projSample.push({si,l,samp});
+  }
+  // Normalize Y to [-1,1] across all projections
+  let yMax=0;
+  projA.forEach(p=>{yMax=Math.max(yMax,Math.abs(p.v));});
+  projB.forEach(p=>{yMax=Math.max(yMax,Math.abs(p.v));});
+  projSample.forEach(({samp})=>samp.forEach(v=>{yMax=Math.max(yMax,Math.abs(v));}));
+  yMax=yMax||1;
+  const nSteps=seq.length;
+  // Draw sample density as faint band (10th/90th percentile) at each layer
+  const bandPos=[];const bandCol=[];
+  projSample.forEach(({si,samp})=>{
+    if(!samp.length)return;
+    const sorted=samp.slice().sort((a,b)=>a-b);
+    const p10=sorted[Math.floor(sorted.length*0.1)]/yMax;
+    const p50=sorted[Math.floor(sorted.length*0.5)]/yMax;
+    const p90=sorted[Math.floor(sorted.length*0.9)]/yMax;
+    const x=(si/(nSteps-1||1))*2-1;
+    // Vertical line from p10 to p90
+    bandPos.push(x,p10,0, x,p90,0);
+    bandCol.push(0.2,0.2,0.2, 0.2,0.2,0.2);
+    // Tick at median
+    bandPos.push(x-0.02,p50,0, x+0.02,p50,0);
+    bandCol.push(0.3,0.3,0.3, 0.3,0.3,0.3);
+  });
+  if(bandPos.length){
+    const bg=new THREE.BufferGeometry();
+    bg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(bandPos),3));
+    bg.setAttribute('color',new THREE.BufferAttribute(new Float32Array(bandCol),3));
+    const bm=new THREE.LineSegments(bg,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.3}));
+    bm.frustumCulled=false;rv.sc.add(bm);
+  }
+  // Draw lines for token A (red) and B (blue)
+  function _drawLine(proj,r,g,b){
+    if(proj.length<2)return;
     const pos=[];const cols=[];
-    for(let pc=0;pc<nPC;pc++){
-      const v=_layerVar[l]?_layerVar[l][pc]||0:0;
-      const x=(pc/(nPC-1||1))*2-1;
-      const h=logV(v)*1.5;
-      pos.push(x,0,z, x,h,z);
-      const hue=pc/nPC;const c=new THREE.Color().setHSL(hue,0.8,0.5);
-      cols.push(c.r*0.3,c.g*0.3,c.b*0.3, c.r,c.g,c.b);// dark base, bright top
+    for(let i=0;i<proj.length-1;i++){
+      const x0=(proj[i].si/(nSteps-1||1))*2-1,y0=proj[i].v/yMax;
+      const x1=(proj[i+1].si/(nSteps-1||1))*2-1,y1=proj[i+1].v/yMax;
+      pos.push(x0,y0,0, x1,y1,0);cols.push(r,g,b, r,g,b);
     }
     const geo=new THREE.BufferGeometry();
     geo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
     geo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(cols),3));
-    const seg=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.15}));
-    seg.frustumCulled=false;rv.sc.add(seg);rv._rvSlices.push({mesh:seg,layer:l});
+    const line=new THREE.LineSegments(geo,new THREE.LineBasicMaterial({vertexColors:true,linewidth:2,transparent:true,opacity:0.9}));
+    line.frustumCulled=false;rv.sc.add(line);
   }
-  rv.cam.position.set(1.5,1.5,2);rv.ctl.target.set(0,0.5,0);rv.ctl.update();rv.built=true;
+  _drawLine(projA,1.0,0.4,0.25);// red
+  _drawLine(projB,0.27,0.47,0.67);// blue
+  // Single layer cursor — one bright vertical line, repositioned on layer change
+  const curGeo=new THREE.BufferGeometry();
+  curGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array([0,-1.2,0, 0,1.2,0]),3));
+  const curMat=new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0.6});
+  const curLine=new THREE.LineSegments(curGeo,curMat);
+  curLine.frustumCulled=false;rv.sc.add(curLine);
+  rv._dirCursor=curLine;rv._dirNSteps=nSteps;rv._dirSeq=seq;
+  rv.cam.position.set(0,0,2.5);rv.ctl.target.set(0,0,0);rv.ctl.update();
   _updateRVLayer();
 }
 
@@ -1978,13 +2176,188 @@ function _nfShowHover(neurons){
 let _nfLastLayer=-1;
 function _nfSetLayer(l){if(l===_nfLastLayer)return;_nfLastLayer=l;_nfBuildDots();}
 
-// rv2: Attention — per-head attention distribution at each layer
-// rv2: empty (PC Spectrum moved to br0bot)
+// rv2: Superposition — tubes through depth for top PCs
+// Each top PC gets a tube from emb→lmh. Radius = alignment with pinned direction.
+// Fat tube = that PC carries the concept. Many medium tubes = superposed.
 function _buildRV2Attention(){
   const rv=rightViews[2];if(!rv)return;
   _clearRV(rv);rv._rvSlices=[];rv.built=true;
-  const rlbl=rv.el?.querySelector('.rlbl');if(rlbl)rlbl.textContent='—';
+  const rlbl=rv.el?.querySelector('.rlbl');
+  if(pinnedToken<0||pinnedTokenB<0||!allL[0]){
+    if(rlbl)rlbl.textContent='Superposition';return;
+  }
+  if(rlbl)rlbl.textContent='Superposition';
+  const a=pinnedToken,b=pinnedTokenB;
+  const seq=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
+  const K=Math.min(_blobScoreK,allL[0]?.[a]?.length||_blobScoreK);
+  const nSteps=seq.length;
+  const nTop=8;// track top 8 PCs
+
+  // Compute alignment at every layer for every PC
+  const alignGrid=[];// [si][k] = alignment
+  for(let si=0;si<nSteps;si++){
+    const l=seq[si];const sa=allL[l]?.[a],sb=allL[l]?.[b];
+    if(!sa||!sb){alignGrid.push(null);continue;}
+    const diff=new Float32Array(K);let norm2=0;
+    for(let k=0;k<K;k++){diff[k]=(sa[k]||0)-(sb[k]||0);norm2+=diff[k]*diff[k];}
+    const norm=Math.sqrt(norm2)||1;
+    const al=new Float32Array(K);
+    for(let k=0;k<K;k++)al[k]=Math.abs(diff[k]/norm);
+    alignGrid.push(al);
+  }
+
+  // Find top PCs by peak alignment across all layers
+  const peakAlign=new Float32Array(K);
+  for(const al of alignGrid){if(!al)continue;for(let k=0;k<K;k++)if(al[k]>peakAlign[k])peakAlign[k]=al[k];}
+  const topPCs=[];for(let k=0;k<K;k++)topPCs.push({k,peak:peakAlign[k]});
+  topPCs.sort((a,b)=>b.peak-a.peak);
+  const tracked=topPCs.slice(0,nTop).map(p=>p.k);
+
+  // Build lines + sized dots for each tracked PC through depth
+  // Line = path through layers. Dot size = alignment at that layer.
+  tracked.forEach((pc,ti)=>{
+    const hue=pc/K;const color=new THREE.Color().setHSL(hue,0.7,0.5);
+    const x=(ti/(nTop-1||1))*1.6-0.8;
+    // Line through depth
+    const linePos=[];const lineCol=[];
+    // Dots at each layer
+    const dotPos=[];const dotCol=[];const dotSizes=[];
+    for(let si=0;si<nSteps;si++){
+      const al=alignGrid[si];
+      const v=al?al[pc]:0;
+      const z=(si/(nSteps-1||1))*2-1;
+      const y=v*1.5;// height = alignment
+      dotPos.push(x,y,z);
+      const bright=0.3+v*0.7;
+      dotCol.push(color.r*bright,color.g*bright,color.b*bright);
+      dotSizes.push(Math.max(2,v*30));// size 2-30 px
+      if(si>0){linePos.push(linePos[linePos.length-3],linePos[linePos.length-2],linePos[linePos.length-1]);
+        linePos.push(x,y,z);lineCol.push(color.r*0.4,color.g*0.4,color.b*0.4,color.r*bright,color.g*bright,color.b*bright);}
+      linePos.push(x,y,z);// first vertex of next segment
+    }
+    // Line
+    if(linePos.length>3){
+      // linePos has extra trailing vertex, trim to pairs
+      const lp2=[];const lc2=[];
+      for(let si=0;si<nSteps-1;si++){
+        const al0=alignGrid[si],al1=alignGrid[si+1];
+        const v0=al0?al0[pc]:0,v1=al1?al1[pc]:0;
+        const z0=(si/(nSteps-1||1))*2-1,z1=((si+1)/(nSteps-1||1))*2-1;
+        lp2.push(x,v0*1.5,z0, x,v1*1.5,z1);
+        const b0=0.3+v0*0.7,b1=0.3+v1*0.7;
+        lc2.push(color.r*b0,color.g*b0,color.b*b0, color.r*b1,color.g*b1,color.b*b1);
+      }
+      const lg=new THREE.BufferGeometry();
+      lg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(lp2),3));
+      lg.setAttribute('color',new THREE.BufferAttribute(new Float32Array(lc2),3));
+      const lm=new THREE.LineSegments(lg,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.6}));
+      lm.frustumCulled=false;rv.sc.add(lm);
+    }
+    // Dots — variable size per layer
+    const dg=new THREE.BufferGeometry();
+    dg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(dotPos),3));
+    dg.setAttribute('color',new THREE.BufferAttribute(new Float32Array(dotCol),3));
+    // Use single size (max) since PointsMaterial doesn't support per-vertex size
+    const maxSize=Math.max(...dotSizes)*0.004;
+    const dm=new THREE.Points(dg,new THREE.PointsMaterial({size:Math.max(0.02,maxSize),vertexColors:true,transparent:true,opacity:0.8,sizeAttenuation:true,depthWrite:false}));
+    dm.frustumCulled=false;rv.sc.add(dm);
+  });
+
+  // Layer cursor
+  const curGeo=new THREE.BufferGeometry();
+  curGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array([-1,0,0, 1,0,0]),3));
+  const curMat=new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0.4});
+  const curLine=new THREE.LineSegments(curGeo,curMat);
+  curLine.frustumCulled=false;rv.sc.add(curLine);
+  rv._dirCursor=curLine;rv._dirNSteps=nSteps;rv._dirSeq=seq;
+
+  // Store data for interaction
+  rv._spTracked=tracked;rv._spAlignGrid=alignGrid;rv._spNSteps=nSteps;rv._spSeq=seq;rv._spNTop=nTop;rv._spK=K;
+
+  rv.cam.position.set(0,0.8,2.5);rv.ctl.target.set(0,0,0);rv.ctl.update();
+  _updateRVLayer();
 }
+
+// --- Superposition viewport interaction ---
+let _spTooltip=null;
+function _spGetTooltip(){
+  if(!_spTooltip){
+    _spTooltip=document.createElement('div');
+    _spTooltip.style.cssText='position:fixed;background:rgba(10,10,10,0.95);color:#ccc;font:9px monospace;padding:4px 6px;border:1px solid #333;border-radius:3px;pointer-events:none;z-index:100;display:none;white-space:pre';
+    document.body.appendChild(_spTooltip);
+  }
+  return _spTooltip;
+}
+function _spHitTest(rv,e){
+  // Find which tracked PC and layer the pointer is near
+  if(!rv._spTracked)return null;
+  const rect=rv.el.getBoundingClientRect();
+  const mx=((e.clientX-rect.left)/rect.width)*2-1;
+  const my=-((e.clientY-rect.top)/rect.height)*2+1;
+  const ray=new THREE.Raycaster();
+  ray.setFromCamera(new THREE.Vector2(mx,my),rv.cam);
+  ray.params.Points.threshold=0.12;
+  // Test against all children that are Points
+  let bestDist=Infinity,bestPC=-1,bestSI=-1;
+  for(const child of rv.sc.children){
+    if(!(child instanceof THREE.Points))continue;
+    const hits=ray.intersectObject(child);
+    if(hits.length&&hits[0].distance<bestDist){
+      bestDist=hits[0].distance;
+      // Find which tracked PC this Points belongs to by matching X position
+      const px=hits[0].point.x;
+      const nTop=rv._spNTop;
+      let closestTI=0,closestDX=Infinity;
+      for(let ti=0;ti<nTop;ti++){
+        const tx=(ti/(nTop-1||1))*1.6-0.8;
+        if(Math.abs(px-tx)<closestDX){closestDX=Math.abs(px-tx);closestTI=ti;}
+      }
+      bestPC=closestTI;
+      // Find layer from Z position
+      const pz=hits[0].point.z;
+      const nSteps=rv._spNSteps;
+      bestSI=Math.round(((pz+1)/2)*(nSteps-1));
+      bestSI=Math.max(0,Math.min(nSteps-1,bestSI));
+    }
+  }
+  if(bestPC<0)return null;
+  return{ti:bestPC,si:bestSI,pc:rv._spTracked[bestPC]};
+}
+(function(){
+  const rv=rightViews[2];if(!rv)return;
+  let _hoverTI=-1;
+  rv.el.addEventListener('mousemove',e=>{
+    const hit=_spHitTest(rv,e);
+    const tip=_spGetTooltip();
+    if(!hit){tip.style.display='none';_hoverTI=-1;return;}
+    const al=rv._spAlignGrid[hit.si];
+    const v=al?al[hit.pc]:0;
+    const l=rv._spSeq[hit.si];
+    const layerName=l>=_nRealLayers?(l===_nRealLayers?'emb':'lmh'):`L${l}`;
+    tip.textContent=`PC${hit.pc}  ${layerName}\nalignment: ${(v*100).toFixed(1)}%`;
+    tip.style.left=(e.clientX+12)+'px';tip.style.top=(e.clientY-8)+'px';
+    tip.style.display='block';_hoverTI=hit.ti;
+    _markDirty();
+  });
+  rv.el.addEventListener('mouseleave',()=>{
+    _spGetTooltip().style.display='none';_hoverTI=-1;_markDirty();
+  });
+  rv.el.addEventListener('click',e=>{
+    const hit=_spHitTest(rv,e);if(!hit)return;
+    // Navigate cloud A to use this PC as X axis
+    const pc=hit.pc;
+    // Find second-best PC for Y axis
+    const tracked=rv._spTracked;
+    const pc2=tracked.find(p=>p!==pc)||0;
+    vpPairs[0]=[pc,pc2];
+    _precomputeCloud(0);updateVP(0,pc,pc2,0,cL);
+    buildTraj(3,pc,pc2);updateVP(3,pc,pc2,0,cL);
+    // Also navigate to the layer
+    const l=rv._spSeq[hit.si];
+    setLayer(l);
+    _markDirty();_saveState();
+  });
+})()
 
 // === PC Spectrum in br0bot ===
 // X = PC index, Y = score (signed), Z = layer (time)
@@ -2381,8 +2754,14 @@ function _updateRVLayer(){
     rv._rvSlices.forEach(({mesh,layer})=>{
       const d=Math.abs(layer-cL);
       mesh.material.opacity=d===0?0.9:d===1?0.4:d===2?0.2:d<=5?0.08:0.03;
-      mesh.visible=true;// show all layers — far ones very dim
+      mesh.visible=true;
     });
+    // Move direction depth cursor
+    if(rv._dirCursor&&rv._dirSeq){
+      const si=rv._dirSeq.indexOf(cL);
+      if(si>=0){const x=(si/((rv._dirNSteps-1)||1))*2-1;rv._dirCursor.position.x=x;rv._dirCursor.visible=true;}
+      else{rv._dirCursor.visible=false;}
+    }
   });
   _nfSetLayer(cL);// neuron field: update current slice
   _updateTrajDots();// trajectory: slide dot along path
@@ -2415,6 +2794,8 @@ let _pinChangeGen=0;
 async function _onPinChange(){
   const gen=++_pinChangeGen;
   _nfUpdateActivations();// neuron field (async)
+  _buildRV0Variance();// direction depth profile
+  _buildRV2Attention();// interference map
   const tokA=pinnedToken,tokB=pinnedTokenB;// capture at call time
   await _pcsLoadFull(tokA,'A');
   if(_pinChangeGen!==gen)return;// superseded by newer pin change
@@ -2900,7 +3281,204 @@ rightViews.forEach(v=>v.ctl.addEventListener('change',_markDirty));
   // FPS counter
   _frameCount++;const now=performance.now();if(now-_fpsTime>1000){const fps=Math.round(_frameCount*1000/(now-_fpsTime));const el=document.getElementById('fpsDisplay');if(el)el.textContent=fps+'fps';_frameCount=0;_fpsTime=now;}
 })();
-// WebSocket disabled — not needed for static data viewing
+// --- Long-poll command channel (replaces WebSocket) ---
+let _pollActive=true;
+async function _pollLoop(){
+  while(_pollActive){
+    try{
+      const r=await fetch('/api/poll?timeout=25');
+      const msg=await r.json();
+      if(msg.cmd==='none')continue;
+      if(msg.cmd==='navigate')await _handleNavigate(msg);
+      else if(msg.cmd==='capture')await _handleCapture(msg);
+    }catch(e){
+      await new Promise(r=>setTimeout(r,2000));// retry on network error
+    }
+  }
+}
+
+// --- Remote navigation handler ---
+async function _handleNavigate(msg){
+  // Set model/mode if specified and different
+  if(msg.model){
+    const sel=document.getElementById('sm');
+    if(sel&&msg.model!==model){sel.value=msg.model;}
+  }
+  if(msg.mode){
+    const sel=document.getElementById('smd');
+    if(sel&&msg.mode!==mode){sel.value=msg.mode;}
+  }
+  // Load model if changed
+  if((msg.model&&msg.model!==model)||(msg.mode&&msg.mode!==mode)){
+    await loadAll();
+  }
+  // Set layer
+  if(msg.layer!==undefined&&msg.layer!==null){
+    const l=Math.max(0,Math.min(parseInt(msg.layer),nL-1));
+    setLayer(l);
+  }
+  // Set PC axes on target viewport
+  if(msg.viewport!==undefined&&(msg.pc_x!==undefined||msg.pc_y!==undefined||msg.pc_z!==undefined)){
+    const vi=_resolveViewport(msg.viewport);
+    if(typeof vi==='number'&&views[vi]){
+      const v=views[vi];
+      const px=msg.pc_x!==undefined?parseInt(msg.pc_x):v.pcX;
+      const py=msg.pc_y!==undefined?parseInt(msg.pc_y):v.pcY;
+      const pz=msg.pc_z!==undefined?parseInt(msg.pc_z):v.pcZ;
+      vpPairs[vi<3?vi:vi-3]=[px,py];
+      _precomputeCloud(vi);
+      updateVP(vi,px,py,pz,cL);
+      if(vi<3){buildTraj(vi+3,px,py);updateVP(vi+3,px,py,pz,cL);}
+      _markDirty();
+    }
+  }
+  // Pin tokens
+  if(msg.pin_a!==undefined){
+    const a=parseInt(msg.pin_a);
+    if(a>=0&&a<nN){pinnedToken=a;loadAttnData(a);}
+    else if(a<0){pinnedToken=-1;}
+    updatePinMarkers();showPinDetail(pinnedToken);_onPinChange();
+  }
+  if(msg.pin_b!==undefined){
+    const b=parseInt(msg.pin_b);
+    if(b>=0&&b<nN){pinnedTokenB=b;}
+    else if(b<0){pinnedTokenB=-1;}
+    updatePinMarkers();showPinDetail(pinnedToken);_onPinChange();
+  }
+  // Camera preset
+  if(msg.camera&&msg.viewport!==undefined){
+    const vi=_resolveViewport(msg.viewport);
+    if(typeof vi==='number'&&views[vi]){
+      const v=views[vi];
+      const d=v.cam.position.length()||2.5;
+      if(msg.camera==='x'){v.cam.position.set(d,0,0);}
+      else if(msg.camera==='y'){v.cam.position.set(0,d,0);}
+      else if(msg.camera==='z'){v.cam.position.set(0,0,d);}
+      else if(msg.camera==='reset'){v.cam.position.set(0,0,2.5);}
+      v.ctl.target.set(0,0,0);v.ctl.update();_markDirty();
+    }
+  }
+  // Script filter
+  if(msg.scripts!==undefined){
+    _hiddenScripts.clear();
+    if(msg.scripts!=='all'){
+      const show=new Set(msg.scripts.split(',').map(s=>s.trim()));
+      const allScripts=new Set(scripts);
+      allScripts.forEach(s=>{if(!show.has(s))_hiddenScripts.add(s);});
+    }
+    _applyFilter();
+    document.querySelectorAll('.lg').forEach(el=>{
+      el.classList.toggle('off',_hiddenScripts.has(el.dataset.script));
+    });
+  }
+}
+
+// --- Remote capture handler ---
+async function _handleCapture(msg){
+  const rid=msg.request_id||'';
+  const fmt=msg.format||'png';
+  const vi=_resolveViewport(msg.viewport);
+  const target=_resolveCapTarget(vi);
+  if(!target){
+    fetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({request_id:rid,error:'unknown viewport: '+msg.viewport})});
+    return;
+  }
+  if(fmt==='gif'){
+    await _captureGifRemote(target.sc,target.cam,target.el,target.vi,rid);
+  }else{
+    _captureScreenshotRemote(target.sc,target.cam,target.el,target.vi,rid);
+  }
+}
+
+function _resolveViewport(vp){
+  if(vp===undefined||vp===null)return _capTarget?_capTarget.vi:0;
+  if(typeof vp==='number')return vp;
+  const s=String(vp);
+  if(/^\d+$/.test(s))return parseInt(s);
+  return s;// l0, r0, br0, pcs etc
+}
+function _resolveCapTarget(vi){
+  if(typeof vi==='number'&&views[vi])return{sc:views[vi].sc,cam:views[vi].cam,el:views[vi].el,vi};
+  if(vi==='pcs'&&_pcsSc&&_pcsCam&&_pcsEl)return{sc:_pcsSc,cam:_pcsCam,el:_pcsEl,vi:'pcs'};
+  const lm=String(vi).match(/^l(\d)/);
+  if(lm&&leftViews[+lm[1]]){const v=leftViews[+lm[1]];return{sc:v.sc,cam:v.cam,el:v.el,vi};}
+  const rm=String(vi).match(/^r(\d)/);
+  if(rm&&rightViews[+rm[1]]){const v=rightViews[+rm[1]];return{sc:v.sc,cam:v.cam,el:v.el,vi};}
+  if(vi==='br0'||vi==='br1'){const pi=vi==='br0'?0:1;if(_brPanels[pi])return{sc:brSc,cam:_brPanels[pi].cam,el:_brPanels[pi].el,vi};}
+  // Default to vp0
+  if(views[0])return{sc:views[0].sc,cam:views[0].cam,el:views[0].el,vi:0};
+  return null;
+}
+
+function _captureScreenshotRemote(sc,cam,el,vi,rid){
+  const scale=3;
+  const w=el.clientWidth*scale,h=el.clientHeight*scale;
+  const tmp=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true,alpha:false});
+  tmp.setSize(w,h);
+  const bg=sc.background instanceof THREE.Color?sc.background:new THREE.Color(0x0a0a0a);
+  tmp.setClearColor(bg);tmp.clear();
+  cam.aspect=w/h;cam.updateProjectionMatrix();
+  tmp.render(sc,cam);
+  const cv2=document.createElement('canvas');cv2.width=w;cv2.height=h;
+  const ctx=cv2.getContext('2d');
+  ctx.drawImage(tmp.domElement,0,0);
+  _drawOverlay(ctx,w,h,vi,cL);
+  cv2.toBlob(blob=>{
+    const reader=new FileReader();
+    reader.onload=()=>{
+      const b64=reader.result.split(',')[1];
+      fetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({request_id:rid,data:b64,filename:_captureFilename(vi,'png')})});
+    };
+    reader.readAsDataURL(blob);
+    tmp.dispose();
+    cam.aspect=el.clientWidth/el.clientHeight;cam.updateProjectionMatrix();
+  },'image/png');
+}
+
+async function _captureGifRemote(sc,cam,el,vi,rid){
+  if(_recording){fetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({request_id:rid,error:'already recording'})});return;}
+  _recording=true;
+  const startL=cL;
+  const wasPlay=play;play=true;// suppress heavy per-frame pin updates
+  try{
+    const scale=1,fps=8;
+    const w=el.clientWidth*scale,h=el.clientHeight*scale;
+    const tmp=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});
+    tmp.setSize(w,h);
+    const cv2=document.createElement('canvas');cv2.width=w;cv2.height=h;
+    const ctx=cv2.getContext('2d');
+    const gif=new GIFEnc(w,h);
+    const delay=Math.round(100/fps);
+    const seq=_layerSeq.length?_layerSeq:[...Array(_nRealLayers).keys()];
+    for(let si=0;si<seq.length;si++){
+      setLayer(seq[si],true);
+      cam.aspect=w/h;cam.updateProjectionMatrix();
+      tmp.render(sc,cam);
+      ctx.drawImage(tmp.domElement,0,0);
+      _drawOverlay(ctx,w,h,vi,seq[si]);
+      gif.addFrame(ctx.getImageData(0,0,w,h).data,delay);
+      await new Promise(r=>setTimeout(r,4));
+    }
+    const blob=gif.encode();
+    tmp.dispose();
+    cam.aspect=el.clientWidth/el.clientHeight;cam.updateProjectionMatrix();
+    // Upload binary directly — no base64
+    const filename=`${model}_${mode}_${_captureLabel(vi)}.gif`;
+    fetch('/api/capture-upload?request_id='+encodeURIComponent(rid)+'&filename='+encodeURIComponent(filename),
+      {method:'POST',body:blob});
+  }catch(e){
+    fetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({request_id:rid,error:e.message||'gif failed'})});
+  }finally{
+    play=wasPlay;setLayer(startL);_recording=false;
+  }
+}
+
+// Start polling after initial load completes
+setTimeout(_pollLoop,1000);
 </script>
 </body>
 </html>

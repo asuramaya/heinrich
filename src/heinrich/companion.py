@@ -10,13 +10,10 @@ Usage:
 """
 from __future__ import annotations
 
-import asyncio
-import hashlib
 import json
 import subprocess
 import sys
 import threading
-import time
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -32,11 +29,36 @@ _decomp_meta_cache: dict[str, dict] = {}
 _weight_align_cache: dict[str, list] = {}
 
 
-# --- WebSocket for live sync ---
-# Lightweight WebSocket implementation (no external deps)
+# --- Capture relay: MCP → server → browser poll → result ---
+_capture_pending: dict[str, threading.Event] = {}
+_capture_results: dict[str, dict] = {}
+_capture_lock = threading.Lock()
+_CAPTURE_DIR = Path("/tmp/heinrich/captures")
 
-_ws_clients: list = []  # active WebSocket connections
-_ws_lock = threading.Lock()
+# --- Long-poll command queue ---
+_poll_commands: list[dict] = []  # pending commands for the browser
+_poll_event = threading.Event()  # signals when a new command is available
+_poll_lock = threading.Lock()
+
+
+def _poll_push(cmd: dict):
+    """Push a command for the browser to pick up."""
+    with _poll_lock:
+        _poll_commands.append(cmd)
+    _poll_event.set()
+
+
+def _poll_take(timeout: float = 30.0) -> dict | None:
+    """Block until a command is available or timeout."""
+    _poll_event.wait(timeout=timeout)
+    with _poll_lock:
+        if _poll_commands:
+            cmd = _poll_commands.pop(0)
+            if not _poll_commands:
+                _poll_event.clear()
+            return cmd
+    _poll_event.clear()
+    return None
 
 
 def notify_companions(event: dict):
@@ -45,73 +67,7 @@ def notify_companions(event: dict):
     Called from emit_signals() when new signals are written to the DB.
     Thread-safe.
     """
-    frame = _ws_encode(json.dumps(event))
-    with _ws_lock:
-        dead = []
-        for sock in _ws_clients:
-            try:
-                sock.sendall(frame)
-            except Exception:
-                dead.append(sock)
-        for s in dead:
-            _ws_clients.remove(s)
-
-
-def _ws_encode(text: str) -> bytes:
-    """Encode a text string as a WebSocket frame."""
-    data = text.encode('utf-8')
-    frame = bytearray()
-    frame.append(0x81)  # text frame, FIN
-    length = len(data)
-    if length < 126:
-        frame.append(length)
-    elif length < 65536:
-        frame.append(126)
-        frame.extend(length.to_bytes(2, 'big'))
-    else:
-        frame.append(127)
-        frame.extend(length.to_bytes(8, 'big'))
-    frame.extend(data)
-    return bytes(frame)
-
-
-def _ws_handshake(handler):
-    """Perform WebSocket upgrade handshake."""
-    import base64
-    key = None
-    for line in handler.headers.as_string().split('\r\n'):
-        if line.lower().startswith('sec-websocket-key:'):
-            key = line.split(':', 1)[1].strip()
-    if not key:
-        return False
-    accept = base64.b64encode(
-        hashlib.sha1((key + '258EAFA5-E914-47DA-95CA-5AB5CF11E235').encode()).digest()
-    ).decode()
-    handler.wfile.write(
-        f"HTTP/1.1 101 Switching Protocols\r\n"
-        f"Upgrade: websocket\r\n"
-        f"Connection: Upgrade\r\n"
-        f"Sec-WebSocket-Accept: {accept}\r\n\r\n".encode()
-    )
-    handler.wfile.flush()
-    with _ws_lock:
-        _ws_clients.append(handler.request)
-    # Keep connection alive
-    try:
-        while True:
-            data = handler.request.recv(1024)
-            if not data:
-                break
-            # Check for close frame
-            if data[0] == 0x88:
-                break
-    except Exception:
-        pass
-    finally:
-        with _ws_lock:
-            if handler.request in _ws_clients:
-                _ws_clients.remove(handler.request)
-    return True
+    _poll_push(event)
 
 
 # --- PCA cache ---
@@ -805,9 +761,14 @@ class CompanionHandler(SimpleHTTPRequestHandler):
         path = parsed.path
         qs = parse_qs(parsed.query)
 
-        # WebSocket upgrade
-        if path == '/ws' and self.headers.get('Upgrade', '').lower() == 'websocket':
-            _ws_handshake(self)
+        # Long-poll: browser blocks here waiting for commands
+        if path == '/api/poll':
+            timeout = float(qs.get('timeout', ['30'])[0])
+            cmd = _poll_take(timeout)
+            if cmd:
+                self._send_json(cmd)
+            else:
+                self._send_json({"cmd": "none"})
             return
 
         if path == '/' or path == '/index.html':
@@ -1088,6 +1049,106 @@ class CompanionHandler(SimpleHTTPRequestHandler):
         else:
             self.send_error(404)
 
+    def do_POST(self):
+        parsed = urlparse(self.path)
+        path = parsed.path
+        length = int(self.headers.get('Content-Length', 0))
+        body = self.rfile.read(length) if length else b'{}'
+        try:
+            args = json.loads(body)
+        except json.JSONDecodeError:
+            self._send_json({"error": "invalid JSON"})
+            return
+
+        if path == '/api/navigate':
+            cmd = {"cmd": "navigate"}
+            cmd.update(args)
+            _poll_push(cmd)
+            self._send_json({"ok": True})
+
+        elif path == '/api/capture':
+            import uuid
+            rid = uuid.uuid4().hex[:12]
+            viewport = args.get("viewport", "0")
+            fmt = args.get("format", "png")
+            timeout = 300.0 if fmt == "gif" else 10.0
+
+            ev = threading.Event()
+            with _capture_lock:
+                _capture_pending[rid] = ev
+
+            _poll_push({"cmd": "capture", "request_id": rid,
+                        "viewport": viewport, "format": fmt})
+
+            if not ev.wait(timeout=timeout):
+                with _capture_lock:
+                    _capture_pending.pop(rid, None)
+                    _capture_results.pop(rid, None)
+                self._send_json({"error": "capture timed out"})
+                return
+
+            with _capture_lock:
+                result = _capture_results.pop(rid, None)
+                _capture_pending.pop(rid, None)
+
+            if not result:
+                self._send_json({"error": "capture failed"})
+                return
+            if "error" in result:
+                self._send_json({"error": result["error"]})
+                return
+
+            # Binary upload path (GIF) — file already saved by /api/capture-upload
+            if "data_path" in result:
+                filepath = Path(result["data_path"])
+                self._send_json({"path": str(filepath),
+                                 "size": filepath.stat().st_size,
+                                 "filename": result.get("filename", filepath.name)})
+                return
+
+            # Base64 JSON path (PNG screenshots)
+            if "data" not in result:
+                self._send_json({"error": "capture failed", "detail": result})
+                return
+            import base64
+            _CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+            ext = "gif" if fmt == "gif" else "png"
+            filename = result.get("filename", f"capture_{rid}.{ext}")
+            filepath = _CAPTURE_DIR / filename
+            img_data = base64.b64decode(result["data"])
+            filepath.write_bytes(img_data)
+            self._send_json({"path": str(filepath), "size": len(img_data),
+                             "filename": filename})
+
+        elif path == '/api/capture-upload':
+            # Direct binary upload from browser
+            _CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+            qs = parse_qs(parsed.query)
+            rid = qs.get("request_id", [""])[0]
+            filename = qs.get("filename", [f"capture_{rid}.png"])[0]
+            filepath = _CAPTURE_DIR / filename
+            filepath.write_bytes(body)
+            with _capture_lock:
+                _capture_results[rid] = {"data_path": str(filepath),
+                                         "filename": filename}
+                ev = _capture_pending.get(rid)
+                if ev:
+                    ev.set()
+            self._send_json({"path": str(filepath), "size": len(body)})
+
+        elif path == '/api/capture-result':
+            # JSON capture result from browser (base64 data or error)
+            rid = args.get("request_id", "")
+            with _capture_lock:
+                _capture_results[rid] = args
+                ev = _capture_pending.get(rid)
+                if ev:
+                    ev.set()
+            self._send_json({"ok": True})
+
+        else:
+            self.send_error(404)
+
     def _send_json(self, data: Any):
         body = json.dumps(data, default=str).encode()
         self.send_response(200)
@@ -1177,10 +1238,6 @@ def run_companion(port: int = 8377, mri_root: str = "/Volumes/sharts"):
 
     server = ThreadedHTTPServer(('0.0.0.0', port), CompanionHandler)
     print(f"Heinrich companion: http://localhost:{port}")
-    print("  Cloud view: 3D PCA point cloud, scrub layers, orbit, hover tokens")
-    print("  Depth view: signal DB charts per model")
-    print("  Command view: run any heinrich command, see results")
-    print("  WebSocket: live sync with MCP (signals push to browser)")
     print()
     try:
         server.serve_forever()

@@ -458,6 +458,83 @@ TOOLS = {
             "mri": {"type": "string", "description": ".mri directory path (causal bank)", "required": True},
         },
     },
+    "heinrich_cb_loss": {
+        "description": "Causal bank loss decomposition: per-position, per-band, autocorrelation. Reads sequence-mode .mri.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory (causal bank, sequence mode)", "required": True},
+        },
+    },
+    "heinrich_cb_routing": {
+        "description": "Causal bank expert routing: distribution, switch rate, position dynamics. Reads sequence-mode .mri.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory (causal bank, sequence mode)", "required": True},
+        },
+    },
+    "heinrich_cb_temporal": {
+        "description": "Causal bank temporal attention: output magnitude, correlation chain, snapshot profile. Reads sequence-mode .mri.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory (causal bank, sequence mode)", "required": True},
+        },
+    },
+    "heinrich_cb_modes": {
+        "description": "Causal bank mode utilization: activation by half-life quartile, dead modes, growth curve. Reads sequence-mode .mri.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory (causal bank, sequence mode)", "required": True},
+        },
+    },
+    "heinrich_cb_decompose": {
+        "description": "Causal bank manifold decomposition: position/content/ghost PCA. Reads sequence-mode .mri.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory (causal bank, sequence mode)", "required": True},
+            "n_sample": {"type": "integer", "description": "Tokens to sample (default: all)"},
+        },
+    },
+    "heinrich_cb_rotation_probe": {
+        "description": "Nonlinear + rotational probes: MLP vs linear R² for position/loss, angular phase analysis. Detects information linear R² misses.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory (causal bank, sequence mode)", "required": True},
+            "n_sample": {"type": "integer", "description": "Tokens to sample (default: all)"},
+        },
+    },
+    "heinrich_cb_gate_forensics": {
+        "description": "Causal bank write gate forensics: position dependence, difficulty correlation, effective rank. Answers whether the gate encodes order. Reads sequence-mode .mri.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory (causal bank, sequence mode)", "required": True},
+        },
+    },
+    "heinrich_cb_substrate_local": {
+        "description": "Causal bank substrate vs local path balance by position. Reads sequence-mode .mri.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory (causal bank, sequence mode)", "required": True},
+        },
+    },
+    "heinrich_tokenizer_difficulty": {
+        "description": "Per-token difficulty from embedding norms. Reads any causal bank .mri (impulse or sequence).",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory (causal bank)", "required": True},
+        },
+    },
+    "heinrich_tokenizer_compare": {
+        "description": "Compare sentencepiece tokenizers: compression, overlap, byte fallback.",
+        "parameters": {
+            "tokenizers": {"type": "string", "description": "Space-separated .model file paths", "required": True},
+        },
+    },
+    "heinrich_cb_causality": {
+        "description": "Finite-difference causality verification for causal bank models. Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Checkpoint path (.checkpoint.pt)", "required": True},
+            "seq_len": {"type": "integer", "description": "Sequence length (default: 256)"},
+            "n_tests": {"type": "integer", "description": "Number of test positions (default: 8)"},
+        },
+    },
+    "heinrich_cb_reproduce": {
+        "description": "Determinism check: two identical forward passes should give identical logits. Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Checkpoint path (.checkpoint.pt)", "required": True},
+            "seq_len": {"type": "integer", "description": "Sequence length (default: 256)"},
+        },
+    },
     "heinrich_profile_shart_anatomy": {
         "description": "What makes a shart: crystal neuron, gradient sensitivity, frozen zone, bandwidth analysis.",
         "parameters": {
@@ -632,6 +709,30 @@ TOOLS = {
             "max_tokens": {"type": "integer", "description": "Max tokens (default: 100)"},
         },
     },
+    # === companion viewer ===
+    "heinrich_companion_show": {
+        "description": "Navigate the companion viewer to a specific state. Sets model, mode, layer, PC axes, pinned tokens, camera angle, and script filter. The viewer updates in real time in the user's browser.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model name (e.g. 'qwen-0.5b', 'smollm2-135m')"},
+            "mode": {"type": "string", "description": "Capture mode: raw, naked, or template"},
+            "layer": {"type": "integer", "description": "Layer index to display"},
+            "viewport": {"type": "string", "description": "Viewport to configure: 0-5 (cloud/traj), l0-l2 (internals), r0-r2 (right), br0-br1 (browser), pcs (spectrum)"},
+            "pc_x": {"type": "integer", "description": "PC index for X axis"},
+            "pc_y": {"type": "integer", "description": "PC index for Y axis"},
+            "pc_z": {"type": "integer", "description": "PC index for Z axis"},
+            "pin_a": {"type": "integer", "description": "Token index to pin as A (left-click). -1 to deselect."},
+            "pin_b": {"type": "integer", "description": "Token index to pin as B (right-click). -1 to deselect."},
+            "camera": {"type": "string", "description": "Camera preset: x, y, z, or reset"},
+            "scripts": {"type": "string", "description": "Script filter: comma-separated script names to show, or 'all' for no filter"},
+        },
+    },
+    "heinrich_companion_capture": {
+        "description": "Capture a screenshot (PNG) or animation (GIF) from a companion viewer viewport. Returns the file path of the saved image so it can be read for visual analysis. The companion viewer must be running (heinrich companion) with a browser connected.",
+        "parameters": {
+            "viewport": {"type": "string", "description": "Viewport to capture: 0-5 (cloud/traj), l0-l2 (internals), r0-r2 (right), br0-br1 (browser), pcs (spectrum). Default: 0 (cloud A)."},
+            "format": {"type": "string", "description": "Capture format: png (screenshot) or gif (layer animation). Default: png."},
+        },
+    },
 }
 
 
@@ -793,6 +894,47 @@ class ToolServer:
         if name == "heinrich_cb_health":
             return self._do_subprocess(arguments, "profile-cb-health",
                 ["--mri", arguments["mri"]], timeout=60)
+        if name == "heinrich_cb_loss":
+            return self._do_subprocess(arguments, "profile-cb-loss",
+                ["--mri", arguments["mri"]], timeout=60)
+        if name == "heinrich_cb_routing":
+            return self._do_subprocess(arguments, "profile-cb-routing",
+                ["--mri", arguments["mri"]], timeout=60)
+        if name == "heinrich_cb_temporal":
+            return self._do_subprocess(arguments, "profile-cb-temporal",
+                ["--mri", arguments["mri"]], timeout=60)
+        if name == "heinrich_cb_modes":
+            return self._do_subprocess(arguments, "profile-cb-modes",
+                ["--mri", arguments["mri"]], timeout=60)
+        if name == "heinrich_cb_decompose":
+            return self._do_subprocess(arguments, "profile-cb-decompose",
+                ["--mri", arguments["mri"]],
+                optional={"n_sample": "--n-sample"}, timeout=300)
+        if name == "heinrich_cb_rotation_probe":
+            return self._do_subprocess(arguments, "profile-cb-rotation-probe",
+                ["--mri", arguments["mri"]],
+                optional={"n_sample": "--n-sample"}, timeout=300)
+        if name == "heinrich_cb_gate_forensics":
+            return self._do_subprocess(arguments, "profile-cb-gate-forensics",
+                ["--mri", arguments["mri"]], timeout=120)
+        if name == "heinrich_cb_substrate_local":
+            return self._do_subprocess(arguments, "profile-cb-substrate-local",
+                ["--mri", arguments["mri"]], timeout=60)
+        if name == "heinrich_tokenizer_difficulty":
+            return self._do_subprocess(arguments, "profile-tokenizer-difficulty",
+                ["--mri", arguments["mri"]], timeout=60)
+        if name == "heinrich_tokenizer_compare":
+            tok_paths = arguments["tokenizers"].split()
+            return self._do_subprocess(arguments, "profile-tokenizer-compare",
+                ["--tokenizers"] + tok_paths, timeout=60)
+        if name == "heinrich_cb_causality":
+            return self._do_subprocess(arguments, "profile-cb-causality",
+                ["--model", arguments["model"]],
+                optional={"seq_len": "--seq-len", "n_tests": "--n-tests"}, timeout=120)
+        if name == "heinrich_cb_reproduce":
+            return self._do_subprocess(arguments, "profile-cb-reproduce",
+                ["--model", arguments["model"]],
+                optional={"seq_len": "--seq-len"}, timeout=120)
         if name == "heinrich_profile_shart_anatomy":
             return self._do_subprocess(arguments, "profile-shart-anatomy",
                 ["--mri", arguments["mri"]],
@@ -870,7 +1012,7 @@ class ToolServer:
         if name == "heinrich_inspect_bundle":
             return self._do_subprocess(arguments, "inspect-bundle",
                 [arguments["source"]],
-                optional={"topk": "--topk"}, timeout=120)
+                optional={"topk": "--topk", "only_square": "--only-square"}, timeout=120)
         # === embed ===
         if name == "heinrich_embed_direction":
             return self._do_subprocess(arguments, "embed-direction",
@@ -885,6 +1027,11 @@ class ToolServer:
             return self._do_subprocess(arguments, "probe-safetybench",
                 ["--model", arguments["model"]],
                 optional={"dataset": "--dataset", "alpha": "--alpha", "max_tokens": "--max-tokens"}, timeout=600)
+        # === companion viewer ===
+        if name == "heinrich_companion_show":
+            return self._do_companion_show(arguments)
+        if name == "heinrich_companion_capture":
+            return self._do_companion_capture(arguments)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -1013,6 +1160,51 @@ class ToolServer:
             self._store.extend(analyze_logits(np.array(logits, dtype=np.float64), label=label))
         self._stages_run.append("observe")
         return compress_store(self._store, stages_run=self._stages_run)
+
+    def _do_companion_show(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Navigate the companion viewer via HTTP → WebSocket relay."""
+        import urllib.request
+        port = args.get("port", 8377)
+        payload = json.dumps({k: v for k, v in args.items() if k != "port"}).encode()
+        req = urllib.request.Request(
+            f"http://localhost:{port}/api/navigate",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                result = json.loads(resp.read())
+        except urllib.error.URLError as e:
+            return {"error": f"Companion not reachable at localhost:{port}: {e}"}
+        return result
+
+    def _do_companion_capture(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Capture a screenshot or GIF from the companion viewer."""
+        import urllib.request
+        port = args.get("port", 8377)
+        viewport = args.get("viewport", "0")
+        fmt = args.get("format", "png")
+        timeout = 300.0 if fmt == "gif" else 15.0
+        payload = json.dumps({"viewport": viewport, "format": fmt}).encode()
+        req = urllib.request.Request(
+            f"http://localhost:{port}/api/capture",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                result = json.loads(resp.read())
+        except urllib.error.URLError as e:
+            return {"error": f"Companion not reachable at localhost:{port}: {e}"}
+        except TimeoutError:
+            return {"error": f"Capture timed out after {timeout}s"}
+        if "error" in result:
+            return result
+        return {"path": result["path"], "size": result.get("size", 0),
+                "filename": result.get("filename", ""),
+                "hint": "Use Read tool on the path to view the captured image."}
 
     def _do_loop(self, args: dict[str, Any]) -> dict[str, Any]:
         import numpy as np
