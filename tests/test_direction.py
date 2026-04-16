@@ -200,3 +200,39 @@ def test_direction_circuit():
         # Each head's attribution should be non-negative
         for hd in layer_data["heads"]:
             assert hd["attrib"] >= 0.0
+
+
+def test_auto_discover_directions():
+    with tempfile.TemporaryDirectory() as tmpdir:
+        n, k = 200, 10
+        decomp = Path(tmpdir) / "decomp"
+        decomp.mkdir()
+        # Create scores where PC0 is bimodal (two clusters) and PC1 is unimodal
+        scores = np.random.randn(n, k).astype(np.float16)
+        scores[:n//2, 0] = -3 + np.random.randn(n//2).astype(np.float16) * 0.3
+        scores[n//2:, 0] = +3 + np.random.randn(n//2).astype(np.float16) * 0.3
+        np.save(str(decomp / "L00_scores.npy"), scores)
+        tokens_path = Path(tmpdir) / "tokens.npz"
+        np.savez(tokens_path,
+                 token_texts=np.array([f"tok{i}" for i in range(n)]),
+                 scripts=np.array(["latin"] * n),
+                 token_ids=np.arange(n))
+        meta = {"n_sample": n, "n_real_layers": 1,
+                "layers": [{"layer": 0}]}
+        (decomp / "meta.json").write_text(json.dumps(meta))
+        # Need variance data for variance_pct
+        variance = np.ones(k, dtype=np.float32)
+        variance[0] = 10.0  # PC0 has most variance
+        np.save(str(decomp / "L00_variance.npy"), variance)
+
+        from heinrich.companion import _auto_discover_directions
+        result = _auto_discover_directions(tmpdir, layer=0, n_top=5)
+        assert "discovered" in result
+        assert len(result["discovered"]) == 5
+        # PC0 should be the most bimodal (lowest bimodality score)
+        assert result["discovered"][0]["pc"] == 0
+        assert result["discovered"][0]["bimodality"] < 0.5
+        # Each entry should have top_pos and top_neg
+        for d in result["discovered"]:
+            assert len(d["top_pos"]) == 5
+            assert len(d["top_neg"]) == 5

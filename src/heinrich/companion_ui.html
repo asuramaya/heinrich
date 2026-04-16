@@ -94,6 +94,8 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   <div style="margin-bottom:4px"><span id="ht" style="font-weight:bold;font-size:10px"></span> <span id="hs" style="font-weight:bold;font-size:10px"></span><div style="color:#555;font-size:7px" id="hst"></div><span id="st" style="color:#444;font-size:7px"></span><div id="legend2" style="font-size:7px;color:#555;margin-top:2px"></div></div>
   <hr style="border:none;border-top:1px solid #1a1a1a;margin:4px 0">
   <div style="margin-bottom:4px"><input id="tsearch" type="text" placeholder="search tokens..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:8px;font-family:inherit;border-radius:2px"><div id="tsresults" style="max-height:80px;overflow-y:auto;font-size:8px;color:#555"></div></div>
+  <button id="discoverBtn" style="width:100%;background:#1a2a1a;border:1px solid #333;color:#6c6;padding:2px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer;margin-top:2px">Discover features</button>
+  <div id="discoverResults" style="max-height:200px;overflow-y:auto;font-size:7px;color:#555;margin-top:2px"></div>
   <hr style="border:none;border-top:1px solid #1a1a1a;margin:4px 0">
   <div class="th">Token A (click) · Token B (R-click)</div>
   <div id="tokA"><div class="tn" id="taName" style="color:#FF6644">—</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarA" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="taMeta" style="font-size:8px">click a token to pin</div></div>
@@ -3158,6 +3160,35 @@ async function init(){const models=await api('models');const sel=document.getEle
       if(!count){const d=document.createElement('div');d.textContent='no matches';frag.appendChild(d);}
       _tsResults.appendChild(frag);
     },150);
+  });
+  // --- Discover features button ---
+  const _discBtn=document.getElementById('discoverBtn');
+  const _discRes=document.getElementById('discoverResults');
+  _discBtn.addEventListener('click',async()=>{
+    _discBtn.disabled=true;_discBtn.textContent='discovering...';_discRes.textContent='';
+    try{
+      const r=await api(`direction-discover/${model}/${mode}?layer=${cL}&n=10`);
+      if(r.error){_discRes.textContent=r.error;return;}
+      r.discovered.forEach(d=>{
+        const row=document.createElement('div');
+        row.style.cssText='cursor:pointer;padding:2px 4px;margin:1px 0;border-radius:2px';
+        const bmColor=d.bimodality<0.3?'#4f4':d.bimodality<0.6?'#cc4':'#888';
+        const posText=d.top_pos.slice(0,3).map(t=>t.text).join(', ');
+        const negText=d.top_neg.slice(0,3).map(t=>t.text).join(', ');
+        row.textContent=`PC${d.pc} [${(d.bimodality*100).toFixed(0)}%] "${posText}" vs "${negText}"`;
+        row.style.color=bmColor;
+        row.addEventListener('mouseenter',()=>{row.style.background='#1a1a2a';});
+        row.addEventListener('mouseleave',()=>{row.style.background='';});
+        row.addEventListener('click',()=>{
+          pinnedToken=d.top_pos[0].idx;pinnedTokenB=d.top_neg[0].idx;
+          updatePinMarkers();showPinDetail(pinnedToken);
+          _updateBrowserOverlay();updateLeftViewports();
+          _onPinChange();_saveState();
+        });
+        _discRes.appendChild(row);
+      });
+    }catch(e){_discRes.textContent='error: '+e.message;}
+    finally{_discBtn.disabled=false;_discBtn.textContent='Discover features';}
   });
   loadAll();}
 init().catch(e=>{console.error('init failed:',e);document.getElementById('loading').style.display='none';document.getElementById('st').textContent='Error: '+e.message;});

@@ -590,6 +590,75 @@ def _direction_circuit(mri_path: str, a: int, b: int) -> dict:
     return {"layers": layers_out, "n_heads": n_heads, "n_layers": n_layers}
 
 
+def _auto_discover_directions(mri_path: str, layer: int, n_top: int = 20) -> dict:
+    """Automated direction discovery: find bimodal PCA components.
+
+    Each PC is already a direction in hidden space.  The scores column IS
+    the projection of all tokens onto that direction.  PCs with bimodal
+    score distributions correspond to real features the model uses ---
+    features humans haven't labeled.
+
+    Addresses open problem 3.5 (Microscope AI) from Sharkey et al. 2025.
+    """
+    scores = _get_scores_f32(mri_path, layer)
+    if scores is None:
+        return {"error": f"No scores at L{layer}"}
+    N, K = scores.shape
+
+    # Load token texts and scripts
+    tok_path = Path(mri_path) / "tokens.npz"
+    if not tok_path.exists():
+        return {"error": "No tokens.npz"}
+    tok = dict(np.load(str(tok_path), allow_pickle=True))
+    texts = [str(t) for t in tok["token_texts"]]
+    scripts_arr = [str(s) for s in tok["scripts"]]
+
+    # Load variance data for variance_pct
+    var_path = Path(mri_path) / "decomp" / f"L{layer:02d}_variance.npy"
+    if var_path.exists():
+        variance = np.load(str(var_path)).astype(np.float32)
+        total_var = float(variance.sum()) if variance.sum() > 0 else 1.0
+    else:
+        variance = None
+        total_var = 1.0
+
+    # Compute bimodality for each PC
+    pc_bimodality = []
+    for pc in range(K):
+        proj = scores[:, pc]
+        hist, _ = np.histogram(proj, bins=100)
+        mid = len(hist) // 2
+        left_peak = float(hist[:mid].max())
+        right_peak = float(hist[mid:].max())
+        valley = float(hist[max(0, mid - 5):mid + 5].min())
+        bimodal = valley / (min(left_peak, right_peak) + 1e-8)
+        pc_bimodality.append((pc, bimodal))
+
+    # Rank by bimodality (lowest = most bimodal = strongest features)
+    pc_bimodality.sort(key=lambda x: x[1])
+
+    # Build results for top-N
+    discovered = []
+    for pc, bimodal in pc_bimodality[:n_top]:
+        proj = scores[:, pc]
+        top_pos = np.argsort(proj)[-5:][::-1]
+        top_neg = np.argsort(proj)[:5]
+
+        var_pct = float(variance[pc] / total_var) if variance is not None and pc < len(variance) else 0.0
+
+        discovered.append({
+            "pc": int(pc),
+            "bimodality": float(bimodal),
+            "variance_pct": var_pct,
+            "top_pos": [{"idx": int(i), "text": texts[i], "script": scripts_arr[i],
+                         "proj": float(proj[i])} for i in top_pos],
+            "top_neg": [{"idx": int(i), "text": texts[i], "script": scripts_arr[i],
+                         "proj": float(proj[i])} for i in top_neg],
+        })
+
+    return {"layer": int(layer), "discovered": discovered}
+
+
 _steer_backend_cache = {}
 
 def _get_steer_backend(model_id: str):
@@ -1550,6 +1619,17 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 self._send_json(result)
             else:
                 self._send_json({"error": "Usage: /api/direction-circuit/<model>/<mode>?a=N&b=N"})
+        elif path.startswith('/api/direction-discover/'):
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                layer = int(qs.get('layer', ['0'])[0])
+                n = int(qs.get('n', ['20'])[0])
+                mri_path = self._mri_path(model, mode)
+                result = _auto_discover_directions(mri_path, layer, n_top=n)
+                self._send_json(result)
+            else:
+                self._send_json({"error": "Usage: /api/direction-discover/<model>/<mode>?layer=L&n=20"})
         elif path == '/api/commands':
             self._send_json(_list_commands())
         elif path.startswith('/api/run/'):
