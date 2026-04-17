@@ -309,14 +309,107 @@ def _direction_quality(mri_path: str, a: int, b: int, layer: int) -> dict:
     bimodal_ratio = valley / (min(left_peak, right_peak) + 1e-8)
 
     # Top tokens per side
-    top_a_idx = np.argsort(proj)[-10:][::-1]
-    top_b_idx = np.argsort(proj)[:10]
+    sorted_idx = np.argsort(proj)
+    top_a_idx = sorted_idx[-10:][::-1]
+    top_b_idx = sorted_idx[:10]
     top_a_list = [{"idx": int(i), "text": texts[i], "script": scripts_arr[i],
                    "proj": float(proj[i])} for i in top_a_idx]
     top_b_list = [{"idx": int(i), "text": texts[i], "script": scripts_arr[i],
                    "proj": float(proj[i])} for i in top_b_idx]
 
-    return {
+    # --- Anchor consistency check ---
+    # Find 3 tokens most similar to A (highest proj, excluding A) and
+    # 3 most similar to B (lowest proj, excluding B). For each of the 9
+    # alt pairs, recompute bimodality. High variance = anchor-dependent.
+    def _alt_bimodality(idx_a: int, idx_b: int) -> float:
+        alt_diff = scores[idx_a].astype(np.float32) - scores[idx_b].astype(np.float32)
+        alt_mag = float(np.linalg.norm(alt_diff))
+        alt_dir = alt_diff / (alt_mag + 1e-8)
+        alt_proj = scores @ alt_dir
+        h, _ = np.histogram(alt_proj, bins=100)
+        m = len(h) // 2
+        lp = float(h[:m].max())
+        rp = float(h[m:].max())
+        v = float(h[max(0, m - 5):m + 5].min())
+        return v / (min(lp, rp) + 1e-8)
+
+    # Top-3 A-like: highest projection, excluding A itself
+    alt_a_candidates = sorted_idx[::-1]  # descending
+    alt_a = [int(i) for i in alt_a_candidates if int(i) != a][:3]
+    # Top-3 B-like: lowest projection, excluding B itself
+    alt_b = [int(i) for i in sorted_idx if int(i) != b][:3]
+
+    alt_bimodalities = []
+    for aa in alt_a:
+        for bb in alt_b:
+            alt_bimodalities.append(_alt_bimodality(aa, bb))
+
+    if len(alt_bimodalities) > 0:
+        alt_mean = float(np.mean(alt_bimodalities))
+        alt_std = float(np.std(alt_bimodalities))
+        anchor_consistency = alt_std / (alt_mean + 1e-8)
+        # Check if any alt pair flips bimodal<->unimodal (threshold 0.5)
+        orig_is_bimodal = bimodal_ratio < 0.5
+        anchor_warning = any(
+            (br < 0.5) != orig_is_bimodal for br in alt_bimodalities
+        )
+    else:
+        anchor_consistency = 0.0
+        anchor_warning = False
+        alt_bimodalities = []
+
+    # --- Functional validation ---
+    # Check whether geometric proximity predicts functional behavior:
+    # do top A-like tokens actually predict token A through lmhead?
+    functional_hit_rate = None
+    functional_warning = None
+    try:
+        mri_dir = Path(mri_path)
+        exit_path = mri_dir / f"L{layer:02d}_exit.npy"
+        lmhead_path = mri_dir / "lmhead.npy"
+        tok_data = dict(np.load(str(mri_dir / "tokens.npz"), allow_pickle=True))
+        token_ids = tok_data["token_ids"]
+
+        if exit_path.exists() and lmhead_path.exists():
+            exits = np.load(str(exit_path), mmap_mode="r")
+            # Cache lmhead
+            lmhead_key = f"{mri_path}:lmhead"
+            if lmhead_key not in _score_cache:
+                _score_cache[lmhead_key] = np.load(
+                    str(lmhead_path)).astype(np.float32)
+            lmhead = _score_cache[lmhead_key]
+
+            vocab_a = int(token_ids[a])
+            vocab_b = int(token_ids[b])
+
+            hits = 0
+            checks = 0
+            # Top-5 A-like tokens
+            for idx in [int(i) for i in top_a_idx[:5]]:
+                if idx >= exits.shape[0]:
+                    continue
+                logits = lmhead @ exits[idx].astype(np.float32)
+                top50 = set(np.argsort(logits)[-50:].tolist())
+                if vocab_a in top50:
+                    hits += 1
+                checks += 1
+            # Top-5 B-like tokens
+            for idx in [int(i) for i in top_b_idx[:5]]:
+                if idx >= exits.shape[0]:
+                    continue
+                logits = lmhead @ exits[idx].astype(np.float32)
+                top50 = set(np.argsort(logits)[-50:].tolist())
+                if vocab_b in top50:
+                    hits += 1
+                checks += 1
+
+            if checks > 0:
+                functional_hit_rate = hits / checks
+                functional_warning = functional_hit_rate < 0.2
+    except Exception:
+        pass  # graceful degradation — files missing or shape mismatch
+
+    result = {
         "layer": layer, "K": K, "N": N,
         "token_a": {"idx": a, "text": texts[a], "script": scripts_arr[a]},
         "token_b": {"idx": b, "text": texts[b], "script": scripts_arr[b]},
@@ -327,7 +420,13 @@ def _direction_quality(mri_path: str, a: int, b: int, layer: int) -> dict:
         "bimodality": bimodal_ratio,
         "top_a": top_a_list,
         "top_b": top_b_list,
+        "anchor_consistency": anchor_consistency,
+        "anchor_warning": anchor_warning,
+        "alt_bimodalities": [float(b) for b in alt_bimodalities],
+        "functional_hit_rate": functional_hit_rate,
+        "functional_warning": functional_warning,
     }
+    return result
 
 
 def _direction_project(mri_path: str, a: int, b: int, layer: int) -> dict:
@@ -587,7 +686,104 @@ def _direction_circuit(mri_path: str, a: int, b: int) -> dict:
             "mlp_attrib": mlp_attrib,
         })
 
-    return {"layers": layers_out, "n_heads": n_heads, "n_layers": n_layers}
+    # --- Random baseline z-scores at peak layer ---
+    # Generate 50 random unit vectors, compute attributions at the layer
+    # with strongest head signal. Report z-scores to check if concept
+    # attribution exceeds chance.
+    peak_zscore = None
+    peak_layer = None
+    if layers_out:
+        # Find peak layer: layer with highest max-head attribution (pre-normalization
+        # values are gone, so re-derive from unnormalized pass at the best candidate).
+        # Use normalized values to identify the peak, then recompute raw attributions there.
+        best_li = max(layers_out, key=lambda ld: max(
+            h["attrib"] for h in ld["heads"]))
+        peak_layer = best_li["layer"]
+
+        # Recompute raw (unnormalized) attributions at peak layer
+        scores = _get_scores_f32(mri_path, peak_layer)
+        comp_path = decomp / f"L{peak_layer:02d}_components.npy"
+        o_proj_path = mri_dir / "weights" / f"L{peak_layer:02d}" / "o_proj.npy"
+        down_proj_path = mri_dir / "weights" / f"L{peak_layer:02d}" / "down_proj.npy"
+
+        if (scores is not None and comp_path.exists()):
+            diff = scores[a] - scores[b]
+            mag = float(np.linalg.norm(diff))
+            if mag > 1e-12:
+                dir_pc = diff / mag
+                components = np.load(str(comp_path))
+                dir_hidden = components.T @ dir_pc[:components.shape[0]]
+                dir_norm = float(np.linalg.norm(dir_hidden))
+                if dir_norm > 1e-12:
+                    dir_hidden = dir_hidden / dir_norm
+
+                    o_proj = np.load(str(o_proj_path)) if o_proj_path.exists() else None
+                    down_proj = np.load(str(down_proj_path)) if down_proj_path.exists() else None
+
+                    def _attribs_for_dir(d):
+                        """Compute raw head + MLP attributions for direction d."""
+                        h_out = []
+                        if o_proj is not None:
+                            for h in range(n_heads):
+                                W_h = o_proj[:, h * head_dim:(h + 1) * head_dim]
+                                p = W_h @ (W_h.T @ d)
+                                h_out.append(float(np.linalg.norm(p)))
+                        else:
+                            h_out = [0.0] * n_heads
+                        m_attr = 0.0
+                        if down_proj is not None:
+                            p = down_proj @ (down_proj.T @ d)
+                            m_attr = float(np.linalg.norm(p))
+                        return h_out, m_attr
+
+                    # Concept attributions (raw)
+                    concept_heads, concept_mlp = _attribs_for_dir(dir_hidden)
+
+                    # Random baseline: 50 random unit vectors
+                    rng = np.random.RandomState(42)
+                    n_random = 50
+                    random_heads = []
+                    random_mlps = []
+                    for _ in range(n_random):
+                        rv = rng.randn(hidden_size).astype(np.float32)
+                        rv = rv / (float(np.linalg.norm(rv)) + 1e-8)
+                        rh, rm = _attribs_for_dir(rv)
+                        random_heads.append(rh)
+                        random_mlps.append(rm)
+
+                    random_heads = np.array(random_heads)  # [50, n_heads]
+                    random_mlps = np.array(random_mlps)    # [50]
+
+                    head_mean = random_heads.mean(axis=0)
+                    head_std = random_heads.std(axis=0)
+                    mlp_mean = float(random_mlps.mean())
+                    mlp_std = float(random_mlps.std())
+
+                    head_zscores = []
+                    for h in range(n_heads):
+                        z = ((concept_heads[h] - head_mean[h])
+                             / (head_std[h] + 1e-8))
+                        head_zscores.append({
+                            "head": h,
+                            "attrib": concept_heads[h],
+                            "zscore": float(z),
+                        })
+
+                    mlp_z = (concept_mlp - mlp_mean) / (mlp_std + 1e-8)
+                    peak_zscore = {
+                        "heads": head_zscores,
+                        "mlp": {
+                            "attrib": concept_mlp,
+                            "zscore": float(mlp_z),
+                        },
+                    }
+
+    result = {"layers": layers_out, "n_heads": n_heads, "n_layers": n_layers}
+    if peak_layer is not None:
+        result["peak_layer"] = peak_layer
+    if peak_zscore is not None:
+        result["peak_zscore"] = peak_zscore
+    return result
 
 
 def _direction_weight_alignment(mri_path: str, a: int, b: int) -> dict:
