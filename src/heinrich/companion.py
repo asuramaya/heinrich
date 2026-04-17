@@ -308,6 +308,65 @@ def _direction_quality(mri_path: str, a: int, b: int, layer: int) -> dict:
     valley = float(hist[max(0, mid - 5):mid + 5].min())
     bimodal_ratio = valley / (min(left_peak, right_peak) + 1e-8)
 
+    # Random baseline: where does this bimodality sit among random pairs?
+    rng = np.random.RandomState(42)
+    n_random = 50
+    random_bms: list[float] = []
+    for _ in range(n_random):
+        ra, rb = rng.choice(N, 2, replace=False)
+        rd = scores[ra].astype(np.float32) - scores[rb].astype(np.float32)
+        rm = float(np.linalg.norm(rd))
+        if rm < 1e-8:
+            continue
+        rdir = rd / rm
+        rproj = scores @ rdir
+        rhist, _ = np.histogram(rproj, bins=100)
+        rmid = len(rhist) // 2
+        rlp = float(rhist[:rmid].max())
+        rrp = float(rhist[rmid:].max())
+        rval = float(rhist[max(0, rmid - 5):rmid + 5].min())
+        rbm = rval / (min(rlp, rrp) + 1e-8)
+        random_bms.append(rbm)
+
+    # Percentile: what fraction of random pairs have LOWER bimodality (= more bimodal)?
+    if random_bms:
+        random_bms_sorted = sorted(random_bms)
+        percentile = float(sum(1 for r in random_bms_sorted if r > bimodal_ratio)
+                           / len(random_bms_sorted) * 100)
+    else:
+        percentile = 50.0  # fallback if all random pairs degenerate
+
+    # All-layer bimodality sweep (mmap reads, no cache eviction)
+    import json as _json
+    decomp_meta_path = Path(mri_path) / "decomp" / "meta.json"
+    layer_bms: list[dict] = []
+    if decomp_meta_path.exists():
+        dm = _json.loads(decomp_meta_path.read_text())
+        for li_meta in dm.get("layers", []):
+            li = li_meta.get("layer", -1)
+            if li == layer:
+                layer_bms.append({"layer": li, "bimodality": bimodal_ratio})
+                continue
+            li_score_path = Path(mri_path) / "decomp" / f"L{li:02d}_scores.npy"
+            if not li_score_path.exists():
+                continue
+            li_scores = np.load(str(li_score_path), mmap_mode='r')
+            if a >= li_scores.shape[0]:
+                continue
+            li_diff = li_scores[a].astype(np.float32) - li_scores[b].astype(np.float32)
+            li_mag = float(np.linalg.norm(li_diff))
+            if li_mag < 1e-8:
+                continue
+            li_dir = li_diff / li_mag
+            li_proj = li_scores @ li_dir
+            li_hist, _ = np.histogram(li_proj, bins=100)
+            li_mid = len(li_hist) // 2
+            li_lp = float(li_hist[:li_mid].max())
+            li_rp = float(li_hist[li_mid:].max())
+            li_val = float(li_hist[max(0, li_mid - 5):li_mid + 5].min())
+            li_bm = li_val / (min(li_lp, li_rp) + 1e-8)
+            layer_bms.append({"layer": li, "bimodality": li_bm})
+
     # Top tokens per side
     sorted_idx = np.argsort(proj)
     top_a_idx = sorted_idx[-10:][::-1]
@@ -425,6 +484,10 @@ def _direction_quality(mri_path: str, a: int, b: int, layer: int) -> dict:
         "alt_bimodalities": [float(b) for b in alt_bimodalities],
         "functional_hit_rate": functional_hit_rate,
         "functional_warning": functional_warning,
+        "random_baseline_percentile": percentile,
+        "layer_bimodalities": layer_bms,
+        "best_layer": min(layer_bms, key=lambda x: x["bimodality"])["layer"] if layer_bms else layer,
+        "worst_layer": max(layer_bms, key=lambda x: x["bimodality"])["layer"] if layer_bms else layer,
     }
     return result
 

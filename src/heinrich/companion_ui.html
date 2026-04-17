@@ -521,6 +521,37 @@ async function _updateSeparation(a,b){
     bmSpan.textContent=bmLabel;
     summary.appendChild(bmSpan);
     summary.appendChild(document.createTextNode(` ${bm.toFixed(2)}`));
+    // Random baseline percentile
+    const pctile=r.random_baseline_percentile;
+    if(pctile!==undefined&&pctile!==null){
+      const pctSpan=document.createElement('span');
+      pctSpan.style.cssText='color:#888;font-size:8px;margin-left:4px';
+      pctSpan.textContent=`(top ${pctile.toFixed(0)}% vs random)`;
+      if(pctile<10)pctSpan.style.color='#4f4';// genuinely rare
+      else if(pctile<30)pctSpan.style.color='#cc4';// borderline
+      else pctSpan.style.color='#f44';// not rare — could be noise
+      summary.appendChild(pctSpan);
+    }
+    // Layer stability
+    if(r.layer_bimodalities&&r.layer_bimodalities.length>1){
+      const bms=r.layer_bimodalities.map(l=>l.bimodality);
+      const minBm=Math.min(...bms);
+      const maxBm=Math.max(...bms);
+      const range=maxBm-minBm;
+      const stabSpan=document.createElement('span');
+      stabSpan.style.cssText='color:#666;font-size:8px';
+      stabSpan.textContent=` range:${minBm.toFixed(2)}-${maxBm.toFixed(2)}`;
+      if(range>0.4)stabSpan.style.color='#f44';// unstable across layers
+      summary.appendChild(stabSpan);
+      // Show best layer if different from current
+      if(r.best_layer!==undefined&&r.best_layer!==cL){
+        const bestSpan=document.createElement('span');
+        bestSpan.style.cssText='color:#555;font-size:7px;margin-left:4px;cursor:pointer';
+        bestSpan.textContent=`best:L${r.best_layer}`;
+        bestSpan.addEventListener('click',()=>{setLayer(r.best_layer);});
+        summary.appendChild(bestSpan);
+      }
+    }
     const concSpan=document.createElement('span');
     concSpan.style.cssText='color:#777';
     concSpan.textContent=`${c.pcs_50}→50%  ${c.pcs_80}→80%  ${c.pcs_95}→95%`;
@@ -552,6 +583,18 @@ async function _updateSeparation(a,b){
       });
       list.appendChild(row);
     });
+    // Functional validation warning
+    if(r.functional_warning){
+      const funcWarn=document.createElement('div');
+      funcWarn.style.cssText='color:#f44;font-size:8px;font-weight:bold;margin:2px 0;padding:2px 4px;background:#1a0a0a;border-radius:2px';
+      funcWarn.textContent='\u26A0 GEOMETRIC ONLY \u2014 top tokens do not predict anchors';
+      list.appendChild(funcWarn);
+    }else if(r.functional_hit_rate!==null&&r.functional_hit_rate!==undefined){
+      const funcOk=document.createElement('div');
+      funcOk.style.cssText='color:#4f4;font-size:7px;margin:2px 0';
+      funcOk.textContent=`\u2713 functional: ${(r.functional_hit_rate*100).toFixed(0)}% of top tokens predict anchors`;
+      list.appendChild(funcOk);
+    }
     // Nonlinearity test (async, updates panel when done)
     const nlDiv=document.createElement('div');
     nlDiv.style.cssText='padding:2px 4px;margin:2px 0;font-size:8px;color:#555';
