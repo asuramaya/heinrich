@@ -280,6 +280,16 @@ def build_parser() -> argparse.ArgumentParser:
     p_mrifixups.add_argument("--min-fix-level", type=int, default=None,
                               help="Minimum required fix_level (default: current)")
 
+    p_mrirecap = sub.add_parser("mri-recapture",
+                                 help="Re-run stale MRIs using provenance in their metadata.json")
+    p_mrirecap.add_argument("--dir", default="/Volumes/sharts", help="MRI directory to scan")
+    p_mrirecap.add_argument("--min-fix-level", type=int, default=None,
+                             help="Minimum required fix_level (default: current)")
+    p_mrirecap.add_argument("--execute", action="store_true",
+                             help="Actually run captures (default: dry-run plan)")
+    p_mrirecap.add_argument("--only", nargs="*", default=None,
+                             help="Only recapture MRIs whose name contains one of these substrings")
+
     p_mriscan = sub.add_parser("mri-scan", help="Full MRI workup: capture all modes, health check, layer deltas, logit lens, PCA depth")
     p_mriscan.add_argument("--model", required=True, help="Model ID or checkpoint path")
     p_mriscan.add_argument("--output", "-o", required=True, help="Model output directory (e.g. /Volumes/sharts/qwen-0.5b)")
@@ -354,14 +364,21 @@ def build_parser() -> argparse.ArgumentParser:
     p_cb_rot.add_argument("--checkpoint", required=True, help="Checkpoint .pt file (not MRI)")
 
     p_cb_add = sub.add_parser("profile-cb-additivity",
-                              help="Check whether combined mutation bpb matches solo-mutation additive prediction")
+                              help="Check whether a combined mutation's measurements match the solo-mutation additive prediction (bpb and/or geometry metrics)")
     p_cb_add.add_argument("--baseline", required=True, help="Baseline MRI (no mutations)")
     p_cb_add.add_argument("--mutations", nargs="+", required=True,
                           help="One solo-mutation MRI per axis being combined")
     p_cb_add.add_argument("--combination", required=True,
                           help="MRI with all mutations applied simultaneously")
     p_cb_add.add_argument("--noise-floor", type=float, default=0.004,
-                          help="bpb noise floor beyond which gap is flagged (default 0.004)")
+                          help="bpb noise floor (default 0.004; session-11 3-seed spread)")
+    p_cb_add.add_argument("--metrics", nargs="+", default=["bpb"],
+                          choices=["bpb", "eff_dim", "pos_r2", "cont_r2", "active_frac"],
+                          help="Metrics to check additivity on (default: bpb)")
+    p_cb_add.add_argument("--eff-dim-floor", type=float, default=2.0)
+    p_cb_add.add_argument("--pos-r2-floor", type=float, default=0.005)
+    p_cb_add.add_argument("--cont-r2-floor", type=float, default=0.010)
+    p_cb_add.add_argument("--active-frac-floor", type=float, default=0.010)
 
     p_cb_traj = sub.add_parser("profile-cb-trajectory", help="Trajectory analysis across multiple checkpoints: EffDim, R², mode utilization derivatives")
     p_cb_traj.add_argument("--mris", nargs="+", required=True, help="Ordered MRI paths (by training step)")
@@ -742,6 +759,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_mri_status(args)
     elif args.command == "mri-check-fixups":
         _cmd_mri_check_fixups(args)
+    elif args.command == "mri-recapture":
+        _cmd_mri_recapture(args)
     elif args.command == "mri-scan":
         _cmd_mri_scan(args)
     elif args.command == "mri-health":
@@ -1978,6 +1997,213 @@ def _cmd_mri_check_fixups(args: argparse.Namespace) -> None:
             print(f"    ... and {len(stale) - 30} more")
 
 
+def _resolve_recapture_source(mri_dir, md):
+    """Given an MRI dir + its metadata, return (model_path, result_json,
+    reason_or_None). Uses metadata.provenance first; falls back to naming
+    convention for legacy MRIs without model_path. Only resolves the simple
+    case — if the convention doesn't match a file on disk, returns
+    (None, None, <reason>) rather than guessing.
+    """
+    from pathlib import Path as _P
+    prov = md.get("provenance") or {}
+    model_path = prov.get("model_path")
+    result_json = prov.get("result_json")
+    if model_path and _P(model_path).exists():
+        return model_path, result_json, None
+    # Legacy fallback: <mri_dir>/<base>.{seq.mri,mri} → <mri_dir>/<base>.checkpoint.pt
+    name = mri_dir.name
+    for suffix in (".seq.mri", ".mri"):
+        if name.endswith(suffix):
+            base = name[: -len(suffix)]
+            break
+    else:
+        return None, None, f"unknown MRI suffix: {name}"
+    guess = mri_dir.parent / f"{base}.checkpoint.pt"
+    if guess.exists():
+        # Probe for sibling result json (same-base or parent-run)
+        rj_guess = mri_dir.parent / f"{base}.json"
+        return str(guess), (str(rj_guess) if rj_guess.exists() else None), None
+    # Step-checkpoint convention: `{run}-step{N}k.seq.mri` came from
+    # `{run}-{totalk}k_step{N000}.checkpoint.pt` (session 11 naming). The
+    # training run writes one JSON per run (`{run}-{totalk}k.json`).
+    import re as _re
+    step_match = _re.match(r"^(?P<run>.+)-step(?P<k>\d+)k$", base)
+    if step_match:
+        run = step_match.group("run")
+        steps = int(step_match.group("k")) * 1000
+        # Try each `{run}-{M}k.checkpoint.pt` whose _step{steps} file exists.
+        for parent in mri_dir.parent.glob(f"{run}-*k.checkpoint.pt"):
+            totalk_match = _re.match(
+                rf"^{_re.escape(run)}-(?P<M>\d+)k\.checkpoint\.pt$",
+                parent.name,
+            )
+            if not totalk_match:
+                continue
+            step_ckpt = parent.with_name(
+                f"{run}-{totalk_match.group('M')}k_step{steps}.checkpoint.pt"
+            )
+            if step_ckpt.exists():
+                # Path.with_suffix only swaps the last suffix (.pt→.json); we
+                # need to strip the full `.checkpoint.pt` tail and re-suffix.
+                rj = parent.with_name(parent.name.removesuffix(".checkpoint.pt") + ".json")
+                return str(step_ckpt), (str(rj) if rj.exists() else None), None
+    return None, None, f"no model_path in metadata; {guess.name} not found"
+
+
+def _cmd_mri_recapture(args) -> None:
+    """Re-run stale MRIs using metadata.provenance."""
+    import json
+    import subprocess
+    import shutil
+    from pathlib import Path
+    from .profile.mri import MRI_FIX_LEVEL
+
+    min_fix = args.min_fix_level if args.min_fix_level is not None else MRI_FIX_LEVEL
+    root = Path(args.dir).expanduser()
+    if not root.exists():
+        print(f"Error: directory {root} does not exist")
+        return
+
+    mris = sorted(set(root.rglob("*.mri")) | set(root.rglob("*.seq.mri")))
+    if not mris:
+        print(f"No .mri or .seq.mri directories found under {root}")
+        return
+
+    # Build plan
+    plan = []  # list of dicts: {mri, mode, cmd, reason}
+    skipped = []  # list of (mri, reason)
+    for mri_dir in mris:
+        if args.only and not any(s in mri_dir.name for s in args.only):
+            continue
+        meta_path = mri_dir / "metadata.json"
+        if not meta_path.exists():
+            continue
+        try:
+            md = json.loads(meta_path.read_text())
+        except (json.JSONDecodeError, OSError) as e:
+            skipped.append((mri_dir, f"unreadable metadata: {e}"))
+            continue
+        fix_level = md.get("fix_level")
+        if fix_level is not None and fix_level >= min_fix:
+            continue  # current, skip
+
+        arch = md.get("architecture")
+        mode = (md.get("capture") or {}).get("mode")
+        if arch != "causal_bank":
+            skipped.append((mri_dir, f"unsupported architecture: {arch}"))
+            continue
+        if mode not in ("raw", "naked", "sequence"):
+            skipped.append((mri_dir, f"unsupported mode: {mode}"))
+            continue
+
+        model_path, result_json, why = _resolve_recapture_source(mri_dir, md)
+        if model_path is None:
+            skipped.append((mri_dir, why))
+            continue
+
+        cmd = ["heinrich", "mri",
+               "--model", model_path,
+               "--mode", mode,
+               "--output", str(mri_dir)]
+        if result_json:
+            cmd += ["--result-json", result_json]
+        if mode == "sequence":
+            val_data = (md.get("provenance") or {}).get("val_data")
+            if not val_data or not Path(val_data).exists():
+                skipped.append((mri_dir, f"sequence mode needs val_data; "
+                                           f"recorded={val_data!r}"))
+                continue
+            # Byte-level model with non-byte val_data is a known session-11
+            # failure mode: stale metadata points at fineweb_val_000000.bin
+            # (sp-tokenized, vocab 1024/8192), which pre-fix heinrich silently
+            # mangled via the byte-shard format bug. After the fix, byte models
+            # reject it with IndexError. Prefer the _bytes.bin sibling when
+            # we can prove the checkpoint is byte-level.
+            if result_json and Path(result_json).exists():
+                try:
+                    rj = json.loads(Path(result_json).read_text())
+                    tok = ((rj.get("dataset") or rj.get("config", {}).get("dataset") or {})
+                           .get("tokenizer"))
+                    if tok == "bytes" and "_bytes" not in Path(val_data).stem:
+                        alt = Path(val_data).with_name(
+                            Path(val_data).stem + "_bytes" + Path(val_data).suffix)
+                        if alt.exists():
+                            val_data = str(alt)
+                except (json.JSONDecodeError, OSError):
+                    pass
+            cmd += ["--data", val_data]
+            cap = md.get("capture") or {}
+            if cap.get("n_seqs"):
+                cmd += ["--n-seqs", str(cap["n_seqs"])]
+            if cap.get("seq_len"):
+                cmd += ["--seq-len", str(cap["seq_len"])]
+        plan.append({
+            "mri": mri_dir,
+            "mode": mode,
+            "cmd": cmd,
+            "fix_level": fix_level,
+        })
+
+    print(f"\n=== MRI recapture plan: {root} ===")
+    print(f"  Minimum required fix_level: {min_fix}")
+    print(f"  To recapture: {len(plan)}")
+    print(f"  Skipped: {len(skipped)}")
+    print(f"  Mode: {'execute' if args.execute else 'dry-run (use --execute to run)'}")
+
+    if skipped:
+        print(f"\n  Skipped (cannot resolve source):")
+        for mri_dir, reason in skipped[:20]:
+            rel = mri_dir.relative_to(root) if root in mri_dir.parents else mri_dir
+            print(f"    {rel}  — {reason}")
+        if len(skipped) > 20:
+            print(f"    ... and {len(skipped) - 20} more")
+
+    if not plan:
+        return
+
+    print(f"\n  Planned captures:")
+    for item in plan[:20]:
+        rel = item["mri"].relative_to(root) if root in item["mri"].parents else item["mri"]
+        print(f"    {rel}  mode={item['mode']}  fix_level={item['fix_level']}")
+    if len(plan) > 20:
+        print(f"    ... and {len(plan) - 20} more")
+
+    if not args.execute:
+        print(f"\n  Dry-run: no changes made. Re-run with --execute to capture.")
+        return
+
+    # Execute: move old MRI to .bak-stale, run, if success rm .bak-stale else
+    # restore.
+    ok, failed = [], []
+    for i, item in enumerate(plan, 1):
+        mri_dir = item["mri"]
+        bak = mri_dir.with_suffix(mri_dir.suffix + ".bak-stale")
+        print(f"\n[{i}/{len(plan)}] recapture {mri_dir.name}")
+        if bak.exists():
+            shutil.rmtree(bak)
+        mri_dir.rename(bak)
+        try:
+            rc = subprocess.call(item["cmd"])
+        except OSError as e:
+            rc = -1
+            print(f"  subprocess failed: {e}")
+        if rc == 0 and (mri_dir / "metadata.json").exists():
+            shutil.rmtree(bak)
+            ok.append(mri_dir)
+        else:
+            # Restore backup so we don't lose the original
+            if mri_dir.exists():
+                shutil.rmtree(mri_dir)
+            bak.rename(mri_dir)
+            failed.append((mri_dir, rc))
+
+    print(f"\n=== Recapture done: {len(ok)} ok, {len(failed)} failed ===")
+    if failed:
+        for mri_dir, rc in failed:
+            rel = mri_dir.relative_to(root) if root in mri_dir.parents else mri_dir
+            print(f"  ! {rel}  rc={rc}")
+
+
 def _cmd_mri_status(args: argparse.Namespace) -> None:
     """Show all MRIs: complete, incomplete, running."""
     import json
@@ -2808,13 +3034,23 @@ def _cmd_cb_omega_forensics(args: argparse.Namespace) -> None:
 
 
 def _cmd_cb_additivity(args: argparse.Namespace) -> None:
-    """Verify the additivity law: bpb(A+B+...) ≈ bpb(baseline) + Σ Δ(Mᵢ)."""
+    """Verify the additivity law on bpb and/or geometry metrics:
+    metric(A+B+...) ≈ metric(baseline) + Σ Δ(Mᵢ)."""
     from .profile.compare import causal_bank_additivity
 
+    noise_floors = {
+        "bpb":         args.noise_floor,
+        "eff_dim":     args.eff_dim_floor,
+        "pos_r2":      args.pos_r2_floor,
+        "cont_r2":     args.cont_r2_floor,
+        "active_frac": args.active_frac_floor,
+    }
     try:
         result = causal_bank_additivity(
             args.baseline, args.mutations, args.combination,
             noise_floor=args.noise_floor,
+            metrics=tuple(args.metrics),
+            noise_floors=noise_floors,
         )
     except ValueError as e:
         print(f"Error: {e}")
@@ -2822,18 +3058,27 @@ def _cmd_cb_additivity(args: argparse.Namespace) -> None:
 
     def _fmt(r):
         print(f"\n=== CB Additivity Check ===\n")
-        b = r['baseline']
-        print(f"  Baseline: {b['bpb']:.4f} bpb  ({b['mri'].split('/')[-1]})")
-        print(f"  Solo mutations:")
+        print(f"  Baseline:   {r['baseline']['mri'].split('/')[-1]}")
         for m in r['mutations']:
-            print(f"    {m['mri'].split('/')[-1]:50s} "
-                  f"bpb={m['bpb']:>7.4f}  Δ={m['delta_vs_baseline']:+.4f}")
-        print(f"\n  Predicted (additive):  {r['predicted_bpb']:.4f} bpb")
-        print(f"  Actual (combination):  {r['actual_bpb']:.4f} bpb")
-        print(f"  Gap:                   {r['gap']:+.4f} bpb "
-              f"(noise floor ±{r['noise_floor']})")
-        tag = "⚠ NON-ADDITIVE" if r['is_non_additive'] else "✓ additive"
-        print(f"\n  Verdict: {tag} — {r['verdict']}")
+            print(f"  Mutation:   {m['mri'].split('/')[-1]}")
+        print(f"  Combination: {r['combination']['mri'].split('/')[-1]}\n")
+
+        for metric in r['metrics']:
+            info = r['per_metric'][metric]
+            tag = "⚠ NON-ADDITIVE" if info['is_non_additive'] else "✓ additive"
+            # Choose precision per metric: bpb/R² → 4dp; eff_dim → 1dp
+            fmt = ".1f" if metric == "eff_dim" else ".4f"
+            deltas = "  ".join(
+                f"Δ{i+1}={format(m.get(f'delta_{metric}', 0), '+'+fmt)}"
+                for i, m in enumerate(r['mutations'])
+            )
+            print(f"  [{metric}] baseline={format(info['baseline'], fmt)}  "
+                  f"{deltas}")
+            print(f"    predicted={format(info['predicted'], fmt)}  "
+                  f"actual={format(info['actual'], fmt)}  "
+                  f"gap={format(info['gap'], '+'+fmt)}  "
+                  f"(floor ±{info['noise_floor']})")
+            print(f"    {tag} — {info['verdict']}\n")
     _json_or(args, result, _fmt)
 
 

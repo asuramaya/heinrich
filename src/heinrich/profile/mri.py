@@ -50,6 +50,40 @@ def _is_mlx_backend(backend) -> bool:
     return type(backend).__name__ == 'MLXBackend'
 
 
+def _git_sha(repo_path: str | Path | None) -> str | None:
+    """Short git SHA of a repo, or None if unavailable. Used in MRI metadata
+    so a capture can be traced to the exact heinrich + decepticons versions
+    that produced it."""
+    if repo_path is None:
+        return None
+    import subprocess
+    try:
+        out = subprocess.check_output(
+            ["git", "rev-parse", "--short=12", "HEAD"],
+            cwd=str(repo_path), stderr=subprocess.DEVNULL, timeout=2,
+        )
+        return out.decode().strip() or None
+    except (subprocess.CalledProcessError, subprocess.TimeoutExpired,
+            FileNotFoundError, OSError):
+        return None
+
+
+def _tool_fingerprint() -> dict:
+    """Git SHAs of heinrich + decepticons at capture time."""
+    from pathlib import Path as _P
+    heinrich_root = _P(__file__).resolve().parents[3]  # src/heinrich/profile/mri.py -> repo
+    decepticon_root = None
+    try:
+        import decepticons  # type: ignore
+        decepticon_root = _P(decepticons.__file__).resolve().parents[2]
+    except ImportError:
+        pass
+    return {
+        "heinrich_sha": _git_sha(heinrich_root),
+        "decepticons_sha": _git_sha(decepticon_root),
+    }
+
+
 def _find_layer_file(mri_dir: Path, layer: int, name: str) -> Path | None:
     """Find a per-layer .npy file in nested or flat layout.
 
@@ -437,8 +471,16 @@ def _capture_mri_causal_bank(backend, *, mode="raw", n_index=None,
     print(f"MRI capture (causal_bank, {mode}): {n_tokens} tokens, "
           f"{n_modes} modes, {n_experts} experts, {n_bands} bands")
 
+    # Probe first forward to discover actual substrate width. Adaptive-substrate
+    # models can return `_last_features = concat(substrate_modes, x_embed)` whose
+    # trailing axis is n_modes + embed_dim rather than n_modes. Sequence mode
+    # does the same probe; keeping the two allocations consistent.
+    probe_tid = sample[0][0]
+    probe_result = backend.forward_captured(np.array([[probe_tid]]))
+    substrate_dim = probe_result['substrate_states'].shape[-1]
+
     # Allocate
-    substrate_states = np.zeros((n_tokens, n_modes), dtype=np.float16)
+    substrate_states = np.zeros((n_tokens, substrate_dim), dtype=np.float16)
     embeddings = np.zeros((n_tokens, embed_dim), dtype=np.float16)
     route_weights = np.zeros((n_tokens, n_experts), dtype=np.float16) if n_experts > 1 else None
 
@@ -494,7 +536,7 @@ def _capture_mri_causal_bank(backend, *, mode="raw", n_index=None,
             "embed_dim": embed_dim,
             "vocab_size": vocab_size,
             "n_layers": 1,
-            "hidden_size": n_modes,
+            "hidden_size": substrate_dim,
         },
         "capture": {
             "mode": mode,
@@ -503,6 +545,10 @@ def _capture_mri_causal_bank(backend, *, mode="raw", n_index=None,
         "provenance": {
             "seed": seed,
             "n_index": n_index,
+            "model_path": getattr(backend, "checkpoint_path", None),
+            "result_json": getattr(backend, "result_json", None),
+            "tokenizer_path": getattr(backend, "tokenizer_path", None),
+            "tool_fingerprint": _tool_fingerprint(),
         },
     }
 
@@ -748,6 +794,10 @@ def _capture_mri_causal_bank_sequence(
         "provenance": {
             "seed": seed,
             "val_data": val_data,
+            "model_path": getattr(backend, "checkpoint_path", None),
+            "result_json": getattr(backend, "result_json", None),
+            "tokenizer_path": getattr(backend, "tokenizer_path", None),
+            "tool_fingerprint": _tool_fingerprint(),
         },
     }
 

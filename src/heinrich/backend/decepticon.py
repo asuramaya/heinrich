@@ -175,6 +175,11 @@ class DecepticonBackend:
         )
         cfg = self.model.config
         self.tokenizer = self.model.tokenizer
+        # Source provenance — read by MRI writer so captures self-describe
+        # their source and can be re-run by mri-recapture.
+        self.checkpoint_path = checkpoint_path
+        self.result_json = result_json
+        self.tokenizer_path = tokenizer_path
 
         self.config = DecepticonConfig(
             model_type="causal_bank",

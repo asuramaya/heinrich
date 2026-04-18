@@ -4956,67 +4956,173 @@ def causal_bank_omega_forensics(checkpoint_path: str) -> dict:
     }
 
 
+def _cb_additivity_metrics(mri_path: str) -> dict:
+    """Compute the metrics an additivity check runs over for one MRI.
+
+    Returns bpb plus the substrate-geometry metrics used by
+    `causal_bank_trajectory` (EffDim, PosR², ConR², active_frac). Sequence-mode
+    MRIs only — impulse-mode captures have no position axis or loss stream.
+
+    Kept in one place so the bpb-only `causal_bank_additivity` tool and any
+    trajectory-level analysis stay in agreement on how each metric is computed.
+    """
+    from .mri import load_mri
+
+    # bpb from loss.npy (sequence mode) via the existing loss loader
+    loss_res = causal_bank_loss(mri_path)
+    if "error" in loss_res:
+        raise ValueError(f"failed to load {mri_path}: {loss_res['error']}")
+    bpb = float(loss_res["overall_bpb"])
+
+    mri = load_mri(mri_path)
+    sub = mri['substrate_states'].astype(np.float32)
+    loss = mri.get('loss')
+
+    if sub.ndim == 3:
+        n_seqs, seq_len = sub.shape[:2]
+        flat_sub = sub.reshape(-1, sub.shape[-1])
+        flat_pos = np.tile(np.arange(seq_len, dtype=np.float32), n_seqs)
+    else:
+        flat_sub = sub
+        flat_pos = np.arange(flat_sub.shape[0], dtype=np.float32)
+
+    sub_c = flat_sub - flat_sub.mean(axis=0)
+    _, S, _ = np.linalg.svd(sub_c[:5000], full_matrices=False)
+    var_exp = (S ** 2) / (S ** 2).sum()
+    eff_dim = float(np.exp(-(var_exp * np.log(var_exp + 1e-10)).sum()))
+
+    pos_r2 = _ridge_r2(sub_c, flat_pos, n_train_frac=0.5)
+
+    cont_r2 = 0.0
+    if loss is not None:
+        flat_loss = loss.reshape(-1)
+        n_use = min(len(sub_c), len(flat_loss))
+        valid = ~np.isnan(flat_loss[:n_use])
+        if valid.sum() > 100:
+            cont_r2 = _ridge_r2(sub_c[:n_use][valid], flat_loss[:n_use][valid],
+                                n_train_frac=0.5)
+
+    mode_var = flat_sub.var(axis=0)
+    active_frac = float((mode_var > mode_var.mean() * 0.01).mean())
+
+    return {
+        "bpb": bpb,
+        "eff_dim": eff_dim,
+        "pos_r2": pos_r2,
+        "cont_r2": cont_r2,
+        "active_frac": active_frac,
+    }
+
+
+# Per-metric noise floors for the additivity tool. The bpb floor is the
+# empirically-calibrated session-11 3-seed spread (0.0022 bpb rounded up).
+# The rest are best-guess defaults from observed session-11 seed spreads —
+# callers with better calibration should override via the CLI flag.
+_CB_METRIC_NOISE_FLOORS = {
+    "bpb":         0.004,
+    "eff_dim":     2.0,
+    "pos_r2":      0.005,
+    "cont_r2":     0.010,
+    "active_frac": 0.010,
+}
+
+
 def causal_bank_additivity(baseline_mri: str,
                             mutation_mris: list[str],
                             combination_mri: str,
-                            *, noise_floor: float = 0.004) -> dict:
-    """Check whether a combined mutation's bpb matches the additive-law prediction.
+                            *, noise_floor: float = 0.004,
+                            metrics: tuple[str, ...] | None = None,
+                            noise_floors: dict[str, float] | None = None) -> dict:
+    """Check whether a combined mutation's measurements match the additive-law
+    prediction on one or more metrics.
 
     The session-11 empirical finding: mutation effects on bpb compose additively
     within ~0.004 bpb (init-noise floor). Given solo measurements of mutations
-    A, B, C and a combined A+B+C run, we can predict the combination's bpb as:
+    A, B, C and a combined A+B+C run, we can predict the combination as:
 
-        predicted(A+B+C) = bpb(baseline) + Σ (bpb(M) - bpb(baseline))
+        predicted(A+B+C) = baseline + Σ (M_i - baseline)
 
-    Deviation from additivity beyond the noise floor flags either:
-    - a genuinely non-additive interaction (worth investigating)
-    - init-signature divergence between runs (see session-11 Q7)
-    - a measurement error in one of the inputs
+    and compare against the measured value. Deviation beyond the noise floor
+    flags either a genuinely non-additive interaction, init-signature divergence
+    between runs, or a measurement error. This is what rules out (and, more
+    usefully, confirms) mechanism interference across the mutation space.
 
-    Returns predicted vs actual, the gap, and a verdict.
+    By default only bpb is checked (`metrics=None` → bpb only, preserving the
+    original behavior). Pass `metrics=("bpb", "eff_dim", "pos_r2", "cont_r2",
+    "active_frac")` to extend the check — EffDim / PosR² / ConR² often disagree
+    with bpb on whether a combination is truly additive (same bpb, different
+    internal geometry → geometry-non-additive but bpb-additive). Per-metric
+    noise floors are defaulted from session-11 seed spreads (see
+    `_CB_METRIC_NOISE_FLOORS`) and overridable via `noise_floors=`.
     """
-    def _bpb(mri_path: str) -> float:
-        res = causal_bank_loss(mri_path)
-        if "error" in res:
-            raise ValueError(f"failed to load {mri_path}: {res['error']}")
-        return float(res["overall_bpb"])
+    if metrics is None:
+        metrics = ("bpb",)
+    floors = dict(_CB_METRIC_NOISE_FLOORS)
+    if noise_floor != 0.004:  # legacy: explicit bpb override via positional
+        floors["bpb"] = noise_floor
+    if noise_floors:
+        floors.update(noise_floors)
 
-    base_bpb = _bpb(baseline_mri)
+    # Compute all metrics for every MRI once. bpb-only callers still pay for
+    # a single SVD per MRI; acceptable (the MRIs are already loaded).
+    def _metrics_for(mri: str) -> dict:
+        return _cb_additivity_metrics(mri)
+
+    base = _metrics_for(baseline_mri)
+    mutations_metrics = [_metrics_for(m) for m in mutation_mris]
+    comb = _metrics_for(combination_mri)
+
+    # Per-metric additivity check
+    per_metric = {}
+    for metric in metrics:
+        floor = floors.get(metric, _CB_METRIC_NOISE_FLOORS.get(metric, 0.01))
+        total_delta = sum(mm[metric] - base[metric] for mm in mutations_metrics)
+        predicted = base[metric] + total_delta
+        actual = comb[metric]
+        gap = actual - predicted
+        gap_abs = abs(gap)
+        if gap_abs <= floor:
+            verdict = "additive"
+        elif gap < 0:
+            verdict = "sub-additive (combination beats sum — possible synergy)"
+        else:
+            verdict = "super-additive (combination worse than sum — possible conflict)"
+        per_metric[metric] = {
+            "baseline":       round(base[metric],           6),
+            "predicted":      round(predicted,              6),
+            "actual":         round(actual,                 6),
+            "gap":            round(gap,                    6),
+            "noise_floor":    floor,
+            "verdict":        verdict,
+            "is_non_additive": gap_abs > floor,
+        }
+
+    # Solo-mutation deltas for every metric, for reporting.
     mutation_data = []
-    total_delta = 0.0
-    for mri in mutation_mris:
-        m_bpb = _bpb(mri)
-        delta = m_bpb - base_bpb
-        mutation_data.append({
-            "mri": mri,
-            "bpb": round(m_bpb, 4),
-            "delta_vs_baseline": round(delta, 4),
-        })
-        total_delta += delta
+    for mri, mm in zip(mutation_mris, mutations_metrics):
+        row = {"mri": mri}
+        for metric in metrics:
+            row[metric] = round(mm[metric], 6)
+            row[f"delta_{metric}"] = round(mm[metric] - base[metric], 6)
+        mutation_data.append(row)
 
-    predicted = base_bpb + total_delta
-    actual = _bpb(combination_mri)
-    gap = actual - predicted
-    gap_abs = abs(gap)
-
-    if gap_abs <= noise_floor:
-        verdict = "additive"
-    elif gap < 0:
-        verdict = "sub-additive (combination beats sum — possible synergy)"
-    else:
-        verdict = "super-additive (combination worse than sum — possible conflict)"
-
-    return {
-        "baseline": {"mri": baseline_mri, "bpb": round(base_bpb, 4)},
+    # Back-compat: preserve the top-level bpb-only fields used by existing
+    # callers and the original CLI formatter.
+    result = {
+        "baseline": {"mri": baseline_mri, "bpb": round(base["bpb"], 4)},
         "mutations": mutation_data,
-        "combination": {"mri": combination_mri, "bpb": round(actual, 4)},
-        "predicted_bpb": round(predicted, 4),
-        "actual_bpb": round(actual, 4),
-        "gap": round(gap, 4),
-        "noise_floor": noise_floor,
-        "verdict": verdict,
-        "is_non_additive": gap_abs > noise_floor,
+        "combination": {"mri": combination_mri, "bpb": round(comb["bpb"], 4)},
+        "metrics": list(metrics),
+        "per_metric": per_metric,
+        # Bpb-specific legacy fields
+        "predicted_bpb":   per_metric.get("bpb", {}).get("predicted"),
+        "actual_bpb":      per_metric.get("bpb", {}).get("actual"),
+        "gap":             per_metric.get("bpb", {}).get("gap"),
+        "noise_floor":     per_metric.get("bpb", {}).get("noise_floor", noise_floor),
+        "verdict":         per_metric.get("bpb", {}).get("verdict", "n/a"),
+        "is_non_additive": per_metric.get("bpb", {}).get("is_non_additive", False),
     }
+    return result
 
 
 def causal_bank_rotation_forensics(checkpoint_path: str) -> dict:
