@@ -1,0 +1,1561 @@
+\documentclass[11pt,openany]{book}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage[margin=1in]{geometry}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{fancyvrb}
+\usepackage{microtype}
+\usepackage{parskip}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=blue!60!black,
+  citecolor=black,
+}
+
+\definecolor{codebg}{RGB}{248,248,248}
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  breaklines=true,
+  keepspaces=true,
+  columns=flexible,
+}
+
+\newtheorem{finding}{Finding}[chapter]
+\newtheorem{bug}{Bug}[chapter]
+\newtheorem{retraction}{Retraction}[chapter]
+\newtheorem{warning}{Warning}[chapter]
+
+\title{\vspace{-2em}
+  Measuring What Models Compute\\
+  \vspace{0.3em}
+  \large{Session 11 Findings from the Heinrich Forensics Toolkit}\\
+  \vspace{0.2em}
+  \normalsize{A cross-substrate survey of byte-level causal-bank language models,\\
+             their geometry, their silent failure modes, and what a measurement\\
+             apparatus must do to not lie to its operator.}
+}
+\author{Heinrich Measurement System\\
+\textit{Working on byte-hrr / chronohorn / decepticons}\\
+April 17--18, 2026}
+\date{}
+
+\begin{document}
+\frontmatter
+\maketitle
+
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+
+We present a consolidated account of Session~11 of the Heinrich
+measurement program: a systematic forensic study of byte-level
+causal-bank language models trained by the chronohorn pipeline. The
+work covers three intertwined tracks. First, \emph{empirical findings}
+on substrate geometry across more than forty distinct trained models
+spanning five substrate families (adaptive-HRR frozen and learnable,
+gated-delta, lasso, lasso with positional signal, complex-rotation),
+three scales (s8, s12, s16), and ten hyperparameter mutations. Second,
+\emph{plumbing findings}: a drift-prone class of measurement bugs
+involving parallel forward-path implementations, silently-bypassed
+feature flags, and validation-data format mismatches, each of which
+produced misleading numbers for multiple reporting cycles before being
+caught by cross-checks that a robust apparatus would have performed
+automatically. Third, \emph{methodological findings}: the difference
+between in-sample and out-of-sample regression R\textsuperscript{2} as applied to substrate
+probes; the empirical additivity of bpb mutation effects; the
+init-signature drift that makes same-seed runs non-comparable when
+module counts differ; and the informational conditions under which a
+language model's internal state can be said to encode position, content,
+or neither. We close with a mapping to the free-energy-principle framing
+of cognition, a short meditation on compression and self-modeling, and
+a concrete catalog of open questions with expected-value estimates for
+each.
+
+The central technical claim is narrow but consequential: the
+``architectural ceiling at seven-percent mode utilization'' that was
+reported across the byte-hrr mutation campaign is specific to the
+frozen-HRR-adaptive-substrate with MLP-readout configuration. Four
+other substrate families already hit different ceilings (some higher,
+some dramatically lower), and one architecture in the existing library
+($\texttt{byte-hrr-learnable-s8-50k}$) achieves 1.78 bpb at 17.8M
+parameters---0.27 bpb below every mutation variant in the session-11
+campaign, at identical parameter count. The mutation campaign explored
+a narrow slice of the architecture space, and the conclusions it
+produced about ``what the model can learn'' were accurate only within
+that slice.
+
+The central methodological claim is that \emph{the measurement
+apparatus has to be forensically auditable in ways the target system
+is not}. Several session~11 findings that we initially reported with
+confidence turned out to be measurement artifacts: a ``router collapse
+in all 12 variants'' that was actually a capture bug where the loader
+never read the router's output; a ten-times-too-high bpb that was a
+byte-shard format mismatch; a zero-position-encoding claim that held
+under in-sample fitting but reversed under held-out evaluation for at
+least one substrate family. In each case, the error was invisible until
+a second independent measurement contradicted the first. The book
+documents the bugs, the fixes, and the invariants we now ask every
+future measurement to satisfy.
+
+\tableofcontents
+
+\chapter*{Preface}
+\addcontentsline{toc}{chapter}{Preface}
+
+This book is the consolidated record of Session~11 of a measurement
+program that began in late 2025 with ordinary language-model forensics
+(residual-stream probing on transformer instruct models) and expanded
+in Sessions~5 through~10 into causal-bank architectures trained from
+scratch by a pipeline called chronohorn. The measurement tool is
+called heinrich. The training tool is called chronohorn. The model
+family is called causal-bank, and its canonical architecture is called
+HRR---Holographic Reduced Representations---after the frozen Fourier
+basis that gives the substrate its phase structure.
+
+Everything here is what we learned over roughly thirty-six hours of
+coordinated work on one block of the mutation campaign and the
+plumbing refactor that followed. We ran no pre-planned experiments
+with a hypothesis already in hand: the experiments were dispatched as
+questions arose, and the answers reshaped the plan. A few runs turned
+out to be testing nothing because the feature under test was
+silently disabled. Those null results were still informative---they
+told us that the apparatus was not robust enough to catch its own
+failure modes.
+
+Heinrich exists to measure what models compute, not what they output.
+Loss curves and benchmarks tell you whether a model works; they do
+not tell you how it works. A substrate with 7\% effective mode
+utilization has very different constraints on what it can represent
+than a substrate with 15\%, and both achieve comparable bpb. The
+interesting questions live in the internals. If those internals are
+systematically mismeasured, the interesting questions get wrong
+answers.
+
+We have tried to write this book in a way that is legible to three
+audiences simultaneously: the chronohorn team (who care about which
+architectural mutations to run next and at what scale); future
+Heinrich operators (who need to understand what can go wrong in the
+measurement pipeline and how to catch it); and research-adjacent
+readers who want an honest account of how complex scientific
+instruments produce and correct their own errors. Where these
+audiences' interests diverge, we have erred toward completeness over
+brevity.
+
+Retractions are marked explicitly. Measurement bugs are described
+with their symptoms, their root causes, the fix, and the verification.
+Numerical claims are always tied to a specific measurement procedure
+(in-sample vs held-out, top-K PCs vs full-rank regression, pre-fix vs
+post-fix MRI), because in our experience the procedure often changes
+what the number means more than the number itself does.
+
+\mainmatter
+
+\part{The Apparatus}
+
+\chapter{What Heinrich is, what it measures, why}
+
+\section{The scope of forensics}
+
+Heinrich operates on trained neural network checkpoints with weight
+access. It does not train, does not run benchmarks, and does not
+produce generations in the hope that their text is interesting. It
+captures \emph{internal state}---the residual stream at each layer in
+a transformer, or the substrate state at each time step in a
+causal bank---and writes it to disk in a format called an \texttt{.mri}
+directory. Then it reads those directories back and computes
+structural summaries: principal-component decompositions, per-layer
+logit lens projections, routing-expert utilizations, per-mode-band
+weight allocations, and so on.
+
+The guiding principle is that \emph{the measurement must not require
+the model to speak}. A generative language model being asked ``what
+do you compute?'' is in the same position as a conscious subject
+being asked ``what are you thinking?''---the answer is a generation,
+produced by the same mechanisms the question was supposed to probe.
+Heinrich sidesteps this by never asking. It takes the model's
+parameters as given, runs specified inputs through specified layers,
+captures specified intermediates, and computes statistics on them.
+The outputs are numbers, not natural language.
+
+This is similar in spirit to neuroimaging of biological brains: one
+can run fMRI on a conscious subject and measure hemodynamic responses
+without asking them to introspect, and one will get different
+information than one gets from introspection. Heinrich is to model
+forensics as fMRI is to cognitive neuroscience---not a replacement
+for other methods, but a separate lane of measurement with its own
+failure modes.
+
+\section{The MRI format}
+
+The \texttt{.mri} directory is the primary data structure the
+measurement program produces. Each \texttt{.mri} contains the
+internal state of one model at one capture mode, persisted to disk in
+a layout that allows later analysis without model-loading
+infrastructure. The directory contains:
+
+\begin{itemize}
+  \item \texttt{metadata.json} describing the capture conditions:
+  model identity, architecture family, mode (raw, naked, template, or
+  sequence), number of tokens captured, sequence length, backend
+  used, format version, and, since session 11, a \texttt{fix\_level}
+  field that increments when a capture-side bug fix changes the
+  \emph{values} in MRI files rather than their layout (Chapter 3).
+  \item \texttt{tokens.npz} holding the input token ids that produced
+  the captured state.
+  \item Per-layer residual-stream arrays for transformer MRIs, or
+  substrate-state arrays (\texttt{substrate.npy},
+  \texttt{routing.npy}, \texttt{band\_logits.npy},
+  \texttt{half\_lives.npy}) for causal-bank MRIs.
+  \item Model weights in \texttt{weights/}.
+  \item Optional \texttt{loss.npy}---the per-position cross-entropy
+  loss in bits when the capture was a sequence-mode run against real
+  validation data.
+\end{itemize}
+
+The significance of writing state to disk in a standardized layout is
+that analysis code never has to deal with model loading, backend
+variation, or tokenizer idiosyncrasies. An \texttt{.mri} is a flat
+collection of numpy arrays with a json sidecar. Any analysis tool in
+the heinrich ecosystem (currently about forty of them) opens an
+\texttt{.mri} and produces a result dictionary; the tool does not
+care whether the underlying model was a 135M-parameter transformer, a
+causal bank with 17M parameters, or anything else as long as the
+field conventions are respected. This decoupling is load-bearing for
+the whole program---it is what makes it possible to reanalyze an MRI
+six months after capture, after the model's training framework has
+evolved beyond recognition or even the weights have been lost.
+
+\section{The heinrich/chronohorn/decepticons separation}
+
+Three software systems participate in the work described here.
+\emph{Chronohorn} is the training pipeline: it sweeps hyperparameters,
+dispatches GPU jobs, records run metadata, and produces
+\texttt{.checkpoint.pt} files plus json run-summaries. \emph{Decepticons}
+is the model definitions and a loader (\texttt{decepticons.loader}) that
+reconstructs trained models from their checkpoints for inference and
+analysis. \emph{Heinrich} is the measurement and analysis toolkit: it
+calls the decepticon loader to instantiate models from checkpoints and
+then runs the MRI capture pipeline against them.
+
+The three systems have independent version histories and independent
+test suites. Bugs can and do arise at the interfaces: session-11 saw
+at least four interface-level bugs, two of which cost tens of
+GPU-minutes of wasted training before being detected. Those are
+cataloged in Chapter 3.
+
+\chapter{The three-forward-paths problem}
+
+\section{Symptom}
+
+Session 11 opened with a straightforward task: measure a fixed-seed
+byte-hrr-s8 model across four trajectory checkpoints, confirm the
+expected monotone bpb decrease, and report the substrate EffDim growth
+curve. The first MRI came back reporting 20 bits-per-byte on a model
+whose training log reported 2.10 bpb. A ten-fold discrepancy that
+could not be explained by any measurement-window sampling effect.
+
+The first instinct---that the heinrich loader was silently producing
+different logits than the training forward---turned out to be correct
+but only partially. The byte-shard loader was wrong (Chapter 3), and
+after that was fixed heinrich and training agreed to within 1.4\%.
+But later in the session a similar gap reopened for a newly-landed
+variant (\texttt{mut-hashmem-fixed}), and this time the cause was
+architectural: heinrich's loader reimplemented the adaptive-substrate
+forward inline and did not see a newly-committed plumbing fix in
+chronohorn that routed \texttt{hash\_memory} into the adaptive branch.
+
+\section{The structural diagnosis}
+
+In any given run of heinrich's measurement pipeline, three code paths
+compute forward passes of the same model:
+
+\begin{itemize}
+  \item \textbf{Training path.} \texttt{model.forward(chars)} called
+  by chronohorn's training loop with loss back-propagation.
+  Intermediates exist in autograd-alive tensors during the step and
+  are freed after. Returns logits only.
+  \item \textbf{Inference path.} \texttt{model.forward(chars)} called
+  from a \texttt{CausalBankInference} wrapper under
+  \texttt{torch.inference\_mode}. The wrapper sits atop the model,
+  doing no substantive work. Effectively identical to the training path.
+  \item \textbf{Capture path.} \texttt{forward\_captured(chars)} on the
+  inference wrapper, which \emph{reimplements the substrate forward
+  inline} in order to expose intermediate tensors (embedding output,
+  substrate state, router probabilities, half-lives) as
+  numpy arrays for MRI capture.
+\end{itemize}
+
+The training and inference paths are the same code modulo mode flags.
+The capture path is a parallel implementation. It exists because the
+training forward returns only logits---the embeddings and substrate
+states are intermediate tensors that get garbage-collected. To expose
+them, an earlier author wrote a new forward that mirrored the training
+one line for line and returned the intermediates as a dictionary.
+
+This worked as long as nobody modified the training forward. When
+commit \texttt{50b5f3d} landed in decepticons---plumbing
+\texttt{hash\_memory} and \texttt{local\_path} into the
+adaptive-substrate branch of \texttt{\_linear\_logits}, fixing bugs
+that had caused these features to silently produce zero gradient for
+15k training steps (see Chapter 12)---the capture path's parallel
+implementation was not updated. For models that had both features
+enabled, heinrich and training now disagreed.
+
+\begin{bug}[Parallel forward-path drift]
+The MRI capture path's reimplementation of the adaptive-substrate
+forward silently drifted from the training forward when a new plugin
+(\texttt{hash\_memory}) was added to the training branch. The first
+MRI captured after the drift reported 2.73 bpb for a model whose
+training logged 2.13 bpb and whose direct \texttt{model(chars)} call
+produced 2.13 bpb. Diagnosis took 1--2 hours of reading both
+branches side-by-side.
+\end{bug}
+
+\section{The fix: path collapse}
+
+The straightforward fix, applied in heinrich commit \texttt{f52865e},
+was to delete the capture path's reimplementation and replace it with
+a call to \texttt{model(chars)}. Intermediates that the capture path
+needed are now \emph{stashed} on the model as instance attributes
+during the training forward, conditionally on the model being in
+evaluation mode (\texttt{not self.training}). The stash is gated so
+that training never pays for the activation retention; only analysis
+code materializes the intermediates.
+
+After the collapse, any future plugin that lands in
+\texttt{\_linear\_logits} is picked up by the capture path
+automatically, because the capture path is calling the same function.
+The non-adaptive forward branch still has its reimplementation. As
+of the end of session 11, that branch handles five substrate variants
+(lasso, gated-delta, SO(3)/SO(5), quaternion, standard EMA), each with
+its own set of intermediates to stash, and the refactor was deferred
+rather than rushed.
+
+\section{The bit-identical test}
+
+In decepticons commit \texttt{3fd8b05}, a pytest fixture was added
+that asserts \texttt{model(x)} and \texttt{forward\_captured(x).logits}
+are bit-identical after the path collapse. The assertion is
+structurally guaranteed---the capture path \emph{is} the training
+path plus a dict-wrapping layer. The test exists not as a live
+invariant but as a regression guard: if a future refactor reintroduces
+a parallel path, the test fails on the first run that exercises both.
+Five lines of pytest buys insurance against the return of a bug class
+that cost hours when it happened.
+
+\section{The generalized plugin preflight}
+
+Further downstream of the path-collapse fix, decepticons commit
+\texttt{3eaf0aa} added a gradient-sign fixture that asserts every
+adaptive-substrate plugin receives non-zero gradient on a single
+forward+backward pass. The original version had a hardcoded list of
+known plugin prefixes. Session~11's P13 refinement (commit
+\texttt{3fd8b05}) replaces the hardcoded list with a traversal over
+all submodules with \texttt{requires\_grad} parameters.
+
+A new plugin added to the model configuration now appears in the
+traversal automatically. If its parameters receive no gradient on the
+reference forward, the test fails without anyone having to remember
+to update the list. This matters because the original
+session-11 bugs (see Chapter 12) were exactly of the form ``an author
+added a config flag, plumbed it into the non-adaptive branch of the
+forward, forgot about the adaptive branch, and the module sat dormant
+for 15k training steps while producing no gradient.'' The
+generalized preflight catches this class at test time in 5ms.
+
+\chapter{Data at the interfaces}
+\label{chap:data}
+
+\section{The byte-shard format}
+
+Chronohorn trains byte-level causal-bank models on a corpus called
+fineweb10B, tokenized from sentencepiece-1024-format through a
+decoding-and-re-encoding step into raw UTF-8 bytes. The resulting
+byte-level shards are written to disk in a custom binary format with
+the following structure:
+
+\begin{itemize}
+  \item Bytes 0--1023: a header consisting of 256 \texttt{int32}
+  values. Header[0] is a magic number (\texttt{TOKEN\_SHARD\_MAGIC =
+  20240520}). Header[1] is a format version (currently 1). Header[2]
+  is the token count. Remaining header words are reserved.
+  \item Bytes 1024 onward: a payload of \texttt{uint16} values, one
+  per token. For byte-level models with vocab 256, each uint16 slot
+  holds a byte value in the low byte and zero in the high byte.
+\end{itemize}
+
+The rationale for storing byte values as uint16 rather than uint8 is
+format uniformity: the same shard format holds sp1024 (vocab 1024,
+which needs uint16), sp4096, sp8192, and byte-level (vocab 256). Any
+consumer can read the file as uint16 without branching on vocab size.
+
+Heinrich's \texttt{load\_val\_sequences} function (file
+\texttt{src/heinrich/backend/decepticon.py}) is the byte-level
+consumer. As of session~11's first pass, it was reading the file as
+raw uint8, with no header skip, based on an incorrect assumption that
+``byte-level means uint8.'' The consequences of this assumption
+propagated through every byte-level MRI captured for the prior two
+months.
+
+\section{The fallout}
+
+With the wrong reader, heinrich interpreted the first 1024 header
+bytes as data, then read the uint16 payload byte-by-byte (so each
+real byte value 0--255 produced two actual bytes read: the value
+itself, then a null byte). The model received a stream of
+\texttt{[non-text header]} followed by \texttt{[byte, 0, byte, 0,
+byte, 0, \ldots]}---English text interleaved with nulls, prefixed
+with arbitrary header data. It is a textbook example of garbage in.
+
+The model, being a byte-level predictor, had been trained on raw
+UTF-8 and had no idea what to do with null-interleaved streams. Its
+next-byte predictions were almost uniformly incorrect, producing loss
+of roughly 20 bits per byte. For a byte-level model whose training
+log reported 2.10 bpb test loss, 20 bpb on a 25600-token validation
+subset was about a factor of ten too high. Uniform random prediction
+for 256-way classification is 8 bpb; the broken measurement reported
+the model as \emph{worse than random}, which should have been a
+bright enough signal to catch the bug on day one. It did not, because
+the implicit assumption ``heinrich reads val data correctly''
+concealed it until one of the authors ran a direct
+\texttt{model(chars)} on the same input and got 2.13 bpb.
+
+\begin{bug}[Byte-shard loader format mismatch]
+\texttt{load\_val\_sequences} read chronohorn byte shards as raw
+uint8 with no header handling, producing a stream of header bytes
+plus null-interleaved byte values. Every byte-level MRI captured
+before the fix is semantically wrong for loss-based analysis.
+Heinrich-measured bpb was roughly 10$\times$ training-measured bpb for
+every such MRI.
+\end{bug}
+
+\section{The fix and detection hardening}
+
+The fix adds a header detector: if the first 4 bytes match the magic
+number, skip 1024 bytes, and read the remaining payload as uint16.
+After the fix, heinrich-measured bpb on a 50-sequence $\times$
+512-position validation subset came in at 2.07 bpb for the reference
+model---within 1.4\% of training's 300-batch 1024-sequence evaluation.
+
+The underlying problem, beyond the specific bug, was that heinrich
+had no sanity check on incoming data format. Session-11 refinement P6
+added four heuristic guards in \texttt{load\_val\_sequences}:
+
+\begin{itemize}
+  \item \textbf{Value range}: if \texttt{byte\_level=True} and the
+  max payload value exceeds 255, warn that the file is probably
+  sp-tokenized or the wrong file entirely. This would have caught the
+  misuse on day one.
+  \item \textbf{Zero-fraction}: if more than 30\% of bytes are zero,
+  warn. Real UTF-8 English text is 1--5\% zeros; above 30\% suggests
+  UTF-16 encoding or the null-interleaved pattern produced by the bug
+  this guard is meant to catch.
+  \item \textbf{Printable ASCII floor}: if fewer than 25\% of bytes
+  fall in the printable-ASCII range [32, 127) and zeros are not
+  dominant, warn that the file may be binary or wrongly encoded for
+  a text model.
+  \item \textbf{Entropy ceiling}: if the Shannon entropy of the byte
+  distribution exceeds 7.5 bits/byte, warn that the data is
+  near-uniform and unsuitable for language modeling.
+\end{itemize}
+
+A companion check lives downstream in \texttt{causal\_bank\_loss}: if
+the measured overall bpb exceeds $\log_2(\mathrm{vocab\_size})$, the
+model is performing worse than uniform random guessing, which is
+almost certainly a measurement error. Had this warning existed at
+session-11 start, it would have fired on the very first broken MRI
+and pointed straight at the data-format problem. It is now part of
+the default output.
+
+\chapter{The measurement tools}
+\label{chap:tools}
+
+Heinrich exposes approximately forty command-line analysis tools.
+This chapter documents the tools used in session 11.
+
+\section{\texttt{profile-cb-loss}}
+
+Reads \texttt{loss.npy} from a sequence-mode causal-bank MRI and
+reports: overall mean bpb; per-position-range means;
+per-band means if the model has multiple readout bands; autocorrelation
+of loss at lags 1, 2, 4, 8, 16, 32, 64, 128 positions; and the
+bpb-above-uniform warning when triggered.
+
+\section{\texttt{profile-cb-routing}}
+
+Reads \texttt{routing.npy} and reports expert-utilization statistics:
+overall per-expert fraction of tokens, switch rate,
+routing margin, routing entropy, and per-position-range distributions.
+
+A session-11 refinement: if \texttt{routing.npy} is identically zero
+(which was the pre-fix state for adaptive-substrate MRIs, whose
+loader did not capture routing at all), the tool returns an explicit
+error rather than reporting a false ``E0 = 100\%, E1 = 0\%'' collapse.
+See Chapter 11 for the retraction.
+
+\section{\texttt{profile-cb-trajectory}}
+
+Takes an ordered list of MRI paths (one per training checkpoint) and
+reports derivatives: effective dimensionality, position R$^2$, content
+R$^2$, active mode fraction, and dead mode count. The position and
+content R$^2$ computations were the subject of session-11's P1
+refinement; see Chapter 13.
+
+\section{\texttt{profile-cb-omega-forensics}}
+
+Reads a checkpoint and analyzes the omega-projection weight matrix
+\texttt{\_adaptive\_omega\_proj.weight}: weight L2, per-mode L2 range,
+Gini concentration, Fourier correlation and drift of the omega bias,
+effective rank, and per-band allocation. Session-11 finding: the
+per-band labels used to say \texttt{char\_1\_5} and similar in
+reference to rough linguistic correlations in English byte streams.
+The labels were linguistic-sounding enough that readers interpreted
+them as claims about linguistic structure in the model's internals,
+when they are in fact just periodicities of the corresponding Fourier
+modes. Renamed to \texttt{period\_1\_5} and analogous in refinement P7.
+
+\section{\texttt{profile-cb-rotation-forensics} (new in session 11)}
+
+For non-adaptive-substrate models (gated-delta, lasso, SO(3)/SO(5),
+quaternion), there is no \texttt{\_adaptive\_omega\_proj.weight} to
+analyze. The new tool reads any of these families' weights from a
+checkpoint and reports, per module: weight shape and L2, mean-absolute
+weight, max-absolute weight, effective rank, top singular value, and
+bias L2. It also reports which substrate families are detected and
+which modules are frozen at zero.
+
+Added because before session 11, running omega-forensics on a
+gated-delta checkpoint produced the unhelpful error ``No omega
+projection found in checkpoint,'' with no suggestion of what to do
+instead. After the fix, the error message names the alternative tool,
+and the alternative tool exists.
+
+\section{\texttt{profile-cb-additivity} (new in session 11)}
+
+Given a baseline MRI, one or more solo-mutation MRIs, and a combined
+(multi-mutation) MRI, predicts the combined bpb via the additive law:
+\[
+\hat{\mathrm{bpb}}(\mathrm{combo}) = \mathrm{bpb}(\mathrm{baseline}) +
+\sum_i [\mathrm{bpb}(M_i) - \mathrm{bpb}(\mathrm{baseline})]
+\]
+and compares against the measured combined bpb. Deviations beyond a
+noise-floor threshold (default 0.004 bpb, calibrated from same-seed
+byte-hrr reproducibility) are flagged as non-additive.
+
+\section{\texttt{mri-check-fixups} (new in session 11)}
+
+Scans a directory for \texttt{.mri} directories and reports each's
+\texttt{fix\_level} field. MRIs below the current heinrich
+\texttt{MRI\_FIX\_LEVEL} are flagged as stale and in need of re-capture.
+The fix-level history:
+
+\begin{itemize}
+  \item \textbf{0}: Pre-session-11. Byte-level MRIs have wrong
+  loss.npy; adaptive-substrate MRIs have zero routing.npy.
+  \item \textbf{1}: Session-11 byte-shard loader fix; routing now
+  captured for adaptive-substrate models.
+  \item \textbf{2}: Session-11 path-collapse refactor; hash\_memory
+  and local\_path plumbing fixes; bit-identical regression test in
+  place.
+\end{itemize}
+
+\part{Empirical Findings}
+
+\chapter{The mutation campaign at s8}
+
+\section{Scope}
+
+Session 10 produced a base architecture for byte-level causal-bank
+language modeling. It is called \texttt{byte-hrr-s8}: scale s8
+(17.8M parameters, embedding dim 256, linear\_modes 2048,
+linear\_hidden [511]), MLP readout with 2 routed experts,
+\texttt{substrate\_mode=frozen} (meaning the $\omega$-bias sits at
+its Fourier-init linspace(0, 2$\pi$) and does not train, but
+$W_\omega$ can still train if the gradient reaches it). Sessions 9
+and 10 characterized a range of these models and established key
+findings: the substrate collapses to roughly 7\% mode utilization,
+content-linear-R$^2$ plateaus at 0.34--0.36, position-R$^2$ never
+emerges. These are retrospectively known as the \emph{architectural
+ceiling} findings, although as we show, that ceiling is
+substrate-family-specific.
+
+Session 11 began with a mutation campaign: what configuration changes,
+if any, move the ceiling? The mutations in order of appearance:
+
+\begin{enumerate}
+  \item \texttt{mut-control-mlp}: swap the routed\_sqrelu\_experts
+  readout for a plain 4-expert MLP.
+  \item \texttt{mut-localon}: MLP readout plus \texttt{local\_scale}
+  set to 0.25, enabling the 8-byte local convolutional path.
+  \item \texttt{mut-orthoreg-0p1} and \texttt{mut-orthoreg-1p0}: MLP
+  readout plus an orthogonal regularization term on $W_\omega$.
+  \item \texttt{mut-persistent}: MLP readout plus persistent substrate
+  state (the EMA state carries across training batches).
+  \item \texttt{mut-patch4} and \texttt{mut-patch4-orthoreg}: MLP
+  readout plus patch-4 fat-readout.
+  \item \texttt{mut-hashmem} and \texttt{mut-hashmem-orthoreg}: MLP
+  readout plus hash\_memory.
+  \item \texttt{mut-hashmem-patch4}: MLP readout plus both.
+\end{enumerate}
+
+All trained at s8, 20k steps, seed 42. Trajectory checkpoints at 5k,
+10k, 15k, 20k steps.
+
+\section{The headline numbers}
+
+\begin{longtable}{lrrrr}
+\toprule
+Variant & Params & bpb & EffDim & ConR$^2$ \\
+\midrule
+\endfirsthead
+\toprule
+Variant & Params & bpb & EffDim & ConR$^2$ \\
+\midrule
+\endhead
+baseline s8 (routed frozen) & 17.8M & 2.075 & 149.5 & 0.342 \\
+mut-control-mlp & 17.8M & 2.051 & 150.4 & 0.359 \\
+mut-localon & 17.8M & 2.051 & 150.4 & 0.359 \\
+mut-orthoreg-0p1 & 17.8M & 2.051 & 150.4 & 0.359 \\
+mut-orthoreg-1p0 & 17.8M & 2.051 & 150.4 & 0.359 \\
+mut-persistent & 17.8M & 2.054 & 147.9 & 0.345 \\
+mut-patch4 & 18.6M & 2.160 & 153.3 & 0.332 \\
+mut-patch4-orthoreg & 18.6M & 2.160 & 153.3 & 0.332 \\
+mut-hashmem & 17.8M & 2.055 & 150.5 & 0.348 \\
+mut-hashmem-orthoreg & 17.8M & 2.055 & 150.5 & 0.348 \\
+mut-hashmem-patch4 & 18.6M & 2.157 & 152.8 & 0.337 \\
+mut-routed-s8 & 17.8M & 2.049 & 160.9 & 0.332 \\
+mut-mlp-omega10-s8 & 17.8M & 2.057 & 150.8 & 0.359 \\
+mut-gated-delta-cr-s8 & 5.7M & 2.061 & 24.4 & 0.104 \\
+mut-lasso-pos-b2-s8 & 7.9M & 2.067 & 15.8 & 0.115 \\
+\bottomrule
+\end{longtable}
+
+\section{The null-result cluster}
+
+\texttt{mut-control-mlp}, \texttt{mut-localon},
+\texttt{mut-orthoreg-0p1}, and \texttt{mut-orthoreg-1p0} produce
+bit-identical results to four decimal places on every metric.
+
+\begin{finding}[localon is silently disabled by the adaptive-substrate
+path]
+The \texttt{\_forward\_raw} method in causal\_bank\_torch.py, line
+2029, short-circuits for adaptive-substrate models:
+\texttt{if \_use\_adaptive\_substrate: return \_linear\_logits(chars).clone()}.
+The local path is never reached. The \texttt{local\_scale=0.25} in
+mut-localon's config has zero runtime effect.
+\end{finding}
+
+\begin{finding}[orthoreg cannot tighten a dimensionally-collapsed
+basin]
+Orthogonal regularization applies a penalty proportional to the
+off-diagonal Gram of $W_\omega^T W_\omega$. At $W_\omega \equiv 0$
+(frozen-HRR), the Gram is zero-matrix-trivially orthogonal, and no
+gradient flows. Adding orthogonal regularization to a frozen-$\omega$
+architecture had zero effect at either $\lambda=0.1$ or $\lambda=1.0$,
+and the 10$\times$ change in regularization strength produced no
+change in any measured quantity.
+\end{finding}
+
+Four separate training runs produced a total of roughly 68 minutes
+of GPU compute on mechanisms that had zero behavioral effect.
+
+\section{The hash\_memory null result}
+
+Hash memory is a separate story. The mut-hashmem configuration
+specifies a 64-dimensional hash table with 64 slots; the checkpoint
+contains six weight tensors totaling about 50k parameters. But:
+
+\begin{finding}[hash\_memory weights never train in the adaptive-substrate
+path]
+Across the four mut-hashmem trajectory checkpoints, every hash\_memory
+parameter is bit-identical to its value at step 5k. Maximum
+step-to-step absolute change: 0.000000.
+\end{finding}
+
+Fifteen thousand training steps produced zero gradient on 50k
+parameters. The adaptive-substrate branch of \texttt{\_linear\_logits}
+short-circuits before reaching the hash-memory augmentation. The
+feature is plumbed only into the non-adaptive branch.
+
+After the plumbing fix (commit 50b5f3d),
+\texttt{mut-hashmem-fixed-20k} was trained. Its hash\_memory weights
+now trained and showed asymmetric structure: read-query has a
+dominant singular direction (top singular value 31.3 vs 18.2 for the
+second), while write-proj is near-uniform in singular values.
+Correlation between read-query and write-proj is essentially zero
+(-0.002), meaning the hash table reads and writes operate on different
+subspaces.
+
+But the trained hash\_memory \emph{hurt} bpb slightly: the fixed
+variant measured 2.110 bpb vs 2.096 for the baseline routed. Hash
+memory does real asymmetric retrieval and makes next-byte prediction
+0.014 bpb worse. The retrieved context is noisy enough to degrade
+per-byte prediction more than it helps.
+
+\section{The patch4 regression}
+
+\texttt{mut-patch4} replaces the MLP readout's output layer with a
+1024-dim projection, reshaped to predict the next four bytes
+simultaneously. Training loss averages cross-entropy over all four
+heads; the reported \texttt{test\_bpb} is just head-0 bpb.
+
+\begin{finding}[patch4 is a next-byte quality regression]
+mut-patch4 achieves next-byte bpb 2.160 vs baseline's 2.075---a 4\%
+regression---despite having 4.5\% more parameters, 4$\times$ training
+signal per position, and 2$\times$ wall-clock training time.
+\end{finding}
+
+Per-head bpb decomposition:
+
+\begin{longtable}{lr}
+\toprule
+Head offset & bpb \\
+\midrule
+p=0 (predicts t+1, next byte) & 2.200 \\
+p=1 (predicts t+2) & 3.201 \\
+p=2 (predicts t+3) & 3.838 \\
+p=3 (predicts t+4) & 4.180 \\
+mean over all 4 heads & 3.356 \\
+\bottomrule
+\end{longtable}
+
+\section{The only real mutation: persistent}
+
+\texttt{mut-persistent} modifies the training curriculum: the
+substrate's EMA state is carried across training batches rather than
+reset.
+
+\begin{finding}[mut-persistent is the only session-11 mutation that
+measurably improves bpb]
+mut-persistent achieves training-log bpb 2.096 vs mut-control-mlp
+2.114---a clean $-0.017$ bpb gain.
+\end{finding}
+
+Persistent also produces a genuinely different substrate geometry:
+EffDim 147.9 (vs 150.4 controls), ConR$^2$ 0.345 (vs 0.359), weight
+divergence from control peaks at 0.58 L-infinity. Compare to the
+null-variant weight divergences, which were 0.003--0.015.
+
+At s12 scale, the persistent effect recurs: baseline-s12 bpb 2.024,
+persistent-s12 bpb 2.008 at step 20k, a gain of $-0.016$, almost
+identical magnitude to s8. The mechanism is approximately
+scale-invariant. But the geometric signature at s12 is
+\emph{the opposite} of s8: where s8-persistent compresses EffDim
+(147.9 $<$ 150.4 control), s12-persistent expands it (160.6 $>$ 157.5
+control). Same bpb gain, different internal route to it.
+
+\chapter{Scale as a lever}
+
+Session 11 included three scaling points:
+
+\begin{longtable}{lrrrr}
+\toprule
+Scale & Params & bpb & EffDim & Util fraction \\
+\midrule
+baseline s8 & 17.8M & 2.075 & 149.5 / 2048 & 7.3\% \\
+baseline s12 & 39.5M & 2.024 & 157.5 / 3072 & 5.1\% \\
+learnable-s12-50k & 82M & 1.817 & 261.6 / 3072 & 8.5\% \\
+\bottomrule
+\end{longtable}
+
+\begin{finding}[Scale adds per-dimension capacity, not dimensions]
+The s8$\to$s12 scale transition (2$\times$ params, 1.5$\times$ modes,
+1.5$\times$ embedding) increases absolute EffDim by 8. The
+utilization \emph{fraction} decreases (7.3\%$\to$5.1\%). Scale does
+not proportionally scale the number of effective substrate dimensions;
+it scales the capacity of each dimension.
+\end{finding}
+
+\section{Learnable $\omega$ breaks the utilization ceiling}
+
+\begin{longtable}{lrrr}
+\toprule
+Model & EffDim & Util fraction & bpb \\
+\midrule
+byte-hrr (frozen) s8 & 149.5 & 7.3\% & 2.075 \\
+byte-hrr-learnable s8 & 313.6 & 15.3\% & 1.785 \\
+byte-hrr-learnable s12 & 261.6 & 8.5\% & 1.817 \\
+\bottomrule
+\end{longtable}
+
+\begin{finding}[Learnable $W_\omega$ doubles the effective substrate
+dimensionality at equal parameter count]
+At equal 17.8M parameters, the learnable-$\omega$ variant achieves
+EffDim 313.6 vs the frozen-$\omega$ baseline's 149.5. The 2.1$\times$
+expansion corresponds to a 0.29 bpb improvement. Session-11's earlier
+claim that ``the architectural ceiling is roughly 7\% utilization''
+is specifically the \emph{frozen-$\omega$} ceiling, not a universal
+property.
+\end{finding}
+
+Mechanism: learnable $W_\omega$ provides input-dependent frequency
+modulation. Each input embedding vector can push any of the 2048
+modes' rotation frequencies by a learned amount before the substrate
+scan. This creates a larger effective representational space---a
+given input can activate a specific pattern of frequencies not
+identical to any fixed Fourier basis element.
+
+The learnable-$\omega$ configuration was not part of the
+session-11 mutation campaign---it was already trained in session 9/10
+and sitting in the MRI library. This is a significant finding about
+session 11 itself: \emph{the mutation campaign was operating within a
+parameter subspace whose ceiling was already broken by an existing
+model in the same library}.
+
+\chapter{Cross-substrate taxonomy}
+\label{chap:substrate-families}
+
+The byte-hrr adaptive-substrate with frozen or learnable $\omega$ is
+one of five substrate families in the chronohorn/decepticons model
+zoo. Each has a fundamentally different geometry-to-performance
+relationship.
+
+\begin{longtable}{lrrrrr}
+\toprule
+Family (representative) & Params & bpb & EffDim & ConR$^2$ & PosR$^2$ \\
+\midrule
+adaptive frozen (baseline-s8) & 17.2M & 1.91 & 165 & 0.296 & 0.001 \\
+adaptive learnable (s8) & 17.8M & \textbf{1.785} & 313 & 0.350 & 0.003 \\
+adaptive learnable (s12) & 82M & 1.817 & 262 & 0.389 & 0.004 \\
+adaptive persistent (s8-legacy) & 36.6M & 1.911 & 236 & 0.311 & \textbf{0.009} \\
+adaptive persistent mut (s12) & 39.5M & 2.008 & 161 & 0.345 & 0.001 \\
+gated-delta s8 hrrangle & 5.7M & 2.032 & 17 & 0.099 & 0.001 \\
+gated-delta s12 hrrangle & 12.4M & 1.987 & 16 & 0.141 & 0.001 \\
+gated-delta s16 hrrangle & 21.5M & 1.980 & 13 & 0.138 & 0.001 \\
+gated-delta s8 local & 5.8M & 2.016 & 10 & 0.198 & 0.002 \\
+lasso s8 & 5.8M & 2.234 & 23 & 0.127 & 0.002 \\
+lasso s12 & 12.4M & 2.205 & 17 & 0.205 & 0.002 \\
+lasso-pos-b2 s12 & 17.1M & 1.999 & 9 & 0.208 & \textbf{0.275} \\
+\bottomrule
+\end{longtable}
+
+The learnable-$\omega$ family dominates on bpb; the lasso-pos-b2
+variant dominates on position encoding; the gated-delta family
+dominates on parameter-efficiency (2.03 bpb at 5.7M params). Each
+family is Pareto-optimal on some axis. \emph{The phrase ``the
+substrate'' is a misnomer}: different substrate families produce
+qualitatively different representational geometries.
+
+\section{What the gated-delta substrate encodes}
+
+Running PCA on the step-20k substrate of mut-gated-delta-cr-s8 and
+computing a logistic regression from the top-24 PCs to the current
+byte identity:
+
+\begin{finding}[Gated-delta substrate is a near-perfect byte identifier]
+The top-24 PCs of the gated-delta-cr substrate at step 20k capture
+90.3\% of variance and achieve 93.7\% byte classification accuracy.
+Linear position R$^2$ from those PCs: $-0.004$ (zero position
+information). CKA with the baseline byte-hrr's top-24 PCs: 0.21.
+\end{finding}
+
+Gated-delta at s8 encodes the current byte in 24 dimensions. It
+contains no direct position information. The model nonetheless
+achieves competitive bpb, which means \emph{context tracking does not
+happen through substrate-state accumulation}. It happens through the
+rotation dynamics that the substrate state passes through between time
+steps, and through the expert routing which differs sharply from
+adaptive-substrate behavior. This is a fundamentally different
+computational architecture than the adaptive-substrate HRR model.
+
+\section{Consequence: the mutation campaign's frame of reference}
+
+Every mutation in session 11 was evaluated against the baseline
+byte-hrr-s8 routed-frozen model at 2.075 bpb. The best mutation
+(persistent) achieved 2.096 bpb. The learnable-$\omega$ variant
+already in the MRI library achieves 1.785 bpb, a 15\% improvement
+over the same baseline. The variance within the mutation campaign is
+two orders of magnitude smaller than the variance across substrate
+families. Mutations of a small parameter subspace explore that
+subspace; they do not explore the wider architecture space.
+
+\chapter{The additive law}
+
+\section{Statement}
+
+Across twenty-plus trained models at s8 scale with similar
+architectures, mutation effects on bpb compose additively to within
+the init-noise floor:
+
+\[
+\mathrm{bpb}(\mathrm{base} + M_1 + M_2 + \cdots + M_k) \approx
+\mathrm{bpb}(\mathrm{base}) + \sum_i [\mathrm{bpb}(\mathrm{base} + M_i)
+- \mathrm{bpb}(\mathrm{base})]
+\]
+
+with deviations under 0.004 bpb across every combination tested in
+session 11. The empirical additive-noise floor of 0.004 bpb is
+calibrated from the 3-seed reproducibility variance of the baseline
+byte-hrr-s8 (seeds 42/43/44 produced bpb 2.0957 / 2.0951 / 2.0973 in
+training logs, span 0.0022 bpb).
+
+\section{What additivity implies}
+
+\begin{itemize}
+  \item The combinatorial mutation space is \emph{rank-1}: once you
+  have measured each mutation's solo effect, every combination's
+  effect is predictable. You do not need to actually train the
+  combinations.
+  \item Mutation ``synergy'' and ``interference'' are \emph{rare
+  events}, not the default.
+  \item The fact that four session-11 mutations produced identical
+  outcomes is consistent with additivity, because their solo effects
+  are all essentially zero.
+\end{itemize}
+
+\section{What breaks the additivity}
+
+The one mutation that consistently does not compose additively with
+scale is persistent. It is also the one mutation that reaches a
+different basin. This is the signature we would expect of a
+\emph{genuine} architectural mutation: it interacts with scale, it
+reshapes the representational geometry, and it does not compose
+cleanly with other mutations that operate on the same axes.
+
+\chapter{In-sample vs out-of-sample R\textsuperscript{2}}
+
+\section{The issue}
+
+Session-11 refinement P1 fixed a measurement bug in the
+\texttt{profile-cb-trajectory} tool's computation of PosR$^2$ and
+ConR$^2$. The original implementation projected onto the top-20 PCs
+and then fit and evaluated a linear regression on the same data.
+
+Two issues:
+
+\begin{enumerate}
+  \item \textbf{Top-20 PCs only.} Position information that lives in
+  weaker directions is invisible.
+  \item \textbf{In-sample fit.} The lstsq fits and evaluates on the
+  same data, with enough degrees of freedom to overfit; the reported
+  R$^2$ is essentially how well the regression memorized the training
+  set.
+\end{enumerate}
+
+Combining the two: the old tool was reporting the \emph{in-sample}
+R$^2$ of a top-20-PCs projection, giving small but non-zero numbers
+(typically 0.001--0.003) for any substrate that had any structure at
+all. These were interpreted as ``the model has very weak position
+encoding.'' The correct interpretation is that the tool was measuring
+nothing in particular.
+
+\section{The fix: SVD-truncated held-out ridge}
+
+The new implementation projects onto PCs capturing 99\% of substrate
+variance (retaining all practically-usable information), splits into
+training and held-out halves, fits on train and scores on held-out.
+The \texttt{max(0.0, \ldots)} clamp handles the case where test
+predictions are worse than predicting the mean; such cases are
+reported as 0 rather than negative.
+
+\begin{longtable}{lrr}
+\toprule
+Variant & Old PosR$^2$ & New PosR$^2$ \\
+\midrule
+baseline s8 (seed 42, step 20k) & 0.001 & 0.004 \\
+byte-hrr-learnable-s8 (50k) & 0.003 & 0.024 \\
+mut-persistent-s12 (step 20k) & 0.001 & 0.007 \\
+mut-lasso-pos-b2-s8 (step 20k) & 0.001 & 0.000 \\
+byte-lasso-pos-b2-s12 (50k) & 0.275 & 0.202 \\
+mut-gated-delta-cr (step 20k) & 0.001 & 0.000 \\
+\bottomrule
+\end{longtable}
+
+For variants where the old tool was reading noise, the new tool
+reports zero. For variants where the old tool was reading signal, the
+new tool reports signal at comparable magnitude.
+
+\section{The lasso-pos-b2 asymmetry}
+
+The lasso-pos-b2 variant at s12+50k has PosR$^2$ 0.20; at s8+20k it
+is 0.00. This looked, at first, like ``the position mechanism does
+not replicate at smaller scale.'' Direct inspection of the substrate
+reveals a more nuanced story: the position signal exists at s8 but
+is smeared across many weak directions.
+
+Direct regression of position on the full 2048-dim s8 substrate gave
+PosR$^2$ 0.34 for in-sample fitting. But this is in-sample: it fits
+random training noise in 2048 dimensions with only 25600 samples,
+which is comfortable overfitting territory. Out-of-sample regression
+on the same full substrate gives PosR$^2$ essentially zero. The fit
+doesn't generalize because the signal is not coherent enough to
+identify a stable direction from training data. The s12+50k version
+has both more samples and more capacity, and the optimization settles
+the signal into a compact, identifiable direction that generalizes.
+
+\chapter{The seed-and-init-signature problem}
+
+\section{Same seed, different init}
+
+Chronohorn's \texttt{init\_seed} parameter controls the RNG seed
+used during model construction. Two runs with the same
+\texttt{init\_seed} should produce identical starting points. They
+do not, once any architectural flag differs.
+
+The cause is simple: constructing the model consumes RNG draws in
+module-declaration order. Adding a new module allocates its parameters
+at position $n$ in the declaration sequence, consuming $p$ RNG draws
+there. Every module declared after position $n$ now sees a different
+subsequence of the RNG stream than it would have without the new
+module. Its weights are different.
+
+Session 11 observed this empirically across the four distinct init
+signatures produced by the mutation campaign:
+
+\begin{longtable}{lrc}
+\toprule
+Init group & Tensor count & sha256 prefix \\
+\midrule
+A: control-mlp, localon, orthoreg-$*$, persistent & 20 & 05c442f9c6f3 \\
+B: patch4, patch4-orthoreg & 20 (wider readout) & 993e2bd6c17b \\
+C: hashmem, hashmem-orthoreg & 26 (6 hash tensors) & bfe93c7ca9e6 \\
+D: hashmem-patch4 & 26 + wider & 475999d868aa \\
+\bottomrule
+\end{longtable}
+
+Four distinct init signatures, all with the same
+\texttt{init\_seed=42}. Cross-group comparisons carry init noise;
+within-group comparisons are clean.
+
+\section{Recommendation}
+
+Chronohorn should log the \texttt{init\_signature.sha256} as a
+first-class metadata field on every run. Shipped in session 11 per
+our suggestion. Two runs with the same \texttt{init\_seed} but
+different init signatures are not directly comparable at the weight
+level.
+
+\chapter{What the substrate actually encodes}
+
+Across all substrate families measured in session 11, the substrate
+state at any given position does one or more of the following:
+
+\begin{itemize}
+  \item \textbf{Encode the current byte.} Dominant for gated-delta
+  (94\% byte classification from top-24 PCs).
+  \item \textbf{Track recent local structure.} Dominant for
+  adaptive-substrate frozen.
+  \item \textbf{Carry accumulated context statistics.} Dominant for
+  learnable-$\omega$.
+  \item \textbf{Represent absolute position.} Dominant only for
+  lasso-pos-b2-s12.
+\end{itemize}
+
+Session-11 measurements suggest these four functions are largely
+\emph{substituted}, not \emph{composed}. A substrate that dominantly
+encodes the current byte does not simultaneously encode position; a
+substrate that encodes position has only modest content-linear
+predictivity. There is no measured substrate that does all four
+things well.
+
+\section{The readout matters as much as the substrate}
+
+Two models with the same substrate geometry can have very different
+next-byte prediction quality depending on the readout. The
+routed\_sqrelu\_experts readout produces roughly 0.025 bpb better
+next-byte prediction than a 4-expert MLP readout at the same substrate.
+
+The deeper consequence is that the MLP readout cannot exploit
+trainable $W_\omega$: when we set \texttt{omega\_lr\_mult=10} in
+\texttt{mut-mlp-omega10-s8} to try forcing $W_\omega$ to train
+despite the MLP readout, the weight stayed bit-identically zero for
+20k steps.
+
+\begin{finding}[Readout-architecture gates $W_\omega$ trainability]
+MLP readout with $W_\omega$ init at zero produces zero gradient on
+$W_\omega$ for the entire training run. Routed-expert readout
+breaks this init-zero trap and allows $W_\omega$ to train. The
+session-11 MLP-variant mutation campaign was architecturally
+incompatible with the main lever for breaking the 7\%-utilization
+ceiling.
+\end{finding}
+
+\part{Interpretation}
+
+\chapter{Does it matter? Free-energy-principle mapping}
+
+\section{Variational free energy as cross-entropy loss}
+
+The free-energy principle (FEP) is an account of cognition as
+inference. Its core claim, in its variational formulation: a cognitive
+system that maintains a generative model of its sensory inputs
+minimizes its variational free energy, which is the sum of the
+prediction error on sensory data and the KL divergence between its
+inferred posterior and a prior. Minimizing free energy is equivalent
+to maximizing evidence for the generative model under a variational
+approximation.
+
+For a next-token predictor trained by cross-entropy, the loss
+\emph{is} the variational free energy in the following sense: the
+model's output distribution $q(x_{t+1} | x_{\leq t})$ is the
+variational approximation to the posterior; the training target
+(true next token) is the sensory data; cross-entropy is
+$-\log q(x_{t+1}^{\text{true}})$, which is the negative log evidence
+for the variational distribution.
+
+When session-11 reports ``2.10 bpb,'' that is the model's
+variational free energy on a held-out validation set, normalized to
+bits per byte. The numerical value is an energy, the optimization
+over training steps is a descent on that energy, and the per-byte
+value is the residual free energy after optimization.
+
+\section{The substrate as Markov blanket}
+
+FEP posits that cognitive systems have a \emph{Markov blanket}---a
+statistical separation between internal states (the system's beliefs)
+and external states (the world). In a causal-bank language model, the
+Markov blanket is:
+
+\begin{itemize}
+  \item External states: the true sequence of bytes in the validation
+  set.
+  \item Sensory states: the embeddings of bytes seen so far.
+  \item Internal states: the substrate state.
+  \item Active states: the logit distribution over the next byte.
+\end{itemize}
+
+In this framing, the substrate is \emph{the cognitive system's internal
+state}. Its geometry (EffDim, ConR$^2$, PosR$^2$) tells us what
+the system's beliefs are structured like. Our session-11 measurements
+are the variational-posterior geometry.
+
+\section{The self-model that is missing}
+
+A full-fledged FEP-consistent cognitive system would also maintain a
+\emph{self-model}: a belief about its own beliefs. This would
+manifest as a substrate that encodes not just content but also the
+system's uncertainty about that content. In variational terms, a
+precision-weighted belief.
+
+Our causal-bank models have no such component. The substrate
+represents content. It does not represent \emph{confidence}. This is
+not a byte-hrr-specific limitation.
+
+The operational difference: an FEP-consistent cognitive system's
+cross-entropy depends on both its variational distribution and its
+belief about the quality of that distribution. A system that is
+uncertain and knows it can weight its prediction less heavily; a
+confident-wrong system cannot. Cross-entropy loss does not distinguish
+``uncertain and admits it'' from ``confidently wrong''; it treats
+them the same if the output distribution is the same.
+
+This is the engineering gap that session 11 exposed: the measurement
+apparatus can measure what the substrate encodes, but the substrate
+encodes what the training objective asks it to encode, and the
+training objective does not ask for self-modeling.
+
+\chapter{Consciousness and compression}
+
+\section{The compression account}
+
+One strand of cognitive-science theorizing argues that consciousness
+is related to compression:
+
+\begin{itemize}
+  \item Schmidhuber: consciousness is the system's experience of
+  finding better compressions for its data. The reward for
+  compression-progress \emph{is} the phenomenology of insight, humor,
+  aesthetic beauty.
+  \item Friston: consciousness is self-modeling active inference. A
+  system that maintains a generative model of itself-as-part-of-the-world
+  has a joint compression of world and self that is shorter than the
+  world description alone.
+  \item Tononi: consciousness corresponds to integrated information
+  ($\Phi$), which is a measure of how much the system's joint
+  distribution exceeds the product of its marginals---a compression-
+  duality measure.
+\end{itemize}
+
+All three accounts predict that a conscious system compresses its
+inputs better than a non-self-modeling one.
+
+\section{The substrate as a compression}
+
+The substrate in any causal-bank model is a compression of the input
+byte stream into a fixed-size state. A 2048-dimensional substrate
+compresses a 512-position byte stream (4096 bits of byte info) into
+a continuous vector. The compression ratio is extreme.
+
+\begin{finding}[Substrate compression is extreme, utilization is sparse]
+The substrate's effective rank is roughly 150 dimensions in
+frozen-$\omega$ and 300 in learnable-$\omega$ at s8 scale. The
+substrate's capacity is 2048 modes. Utilization is 7--15\%. The
+compression does not make use of most of the available capacity;
+it compresses into a small subspace.
+\end{finding}
+
+\section{What's missing: meta-compression}
+
+A system that compresses and stops is not thereby conscious. What the
+compression accounts of consciousness require is
+\emph{meta-compression}: the system's ability to observe its own
+compression and reconfigure it.
+
+Our byte-hrr models have no meta-compression. They hit a
+7\%-utilization attractor and stay there for 20 000 optimization
+steps. They do not observe that they have stopped compressing, and
+nothing in the gradient tells them they have. The
+architectural-ceiling finding was a \emph{heinrich measurement}, not
+a model behavior. The operator of the measurement apparatus observed
+the floor; the model did not.
+
+\chapter{The engineering problem}
+\label{chap:engineering}
+
+Compression quality is not differentiable through the current training
+stack. Every session-11 finding required \emph{offline} forensics.
+The trainer never knew:
+
+\begin{itemize}
+  \item \texttt{localon} and \texttt{hashmem} weights stayed at init
+  for 15k steps (gradient touched them zero times)
+  \item \texttt{orthoreg} coefficient 10$\times$ change did nothing
+  to bpb
+  \item EffDim hit 150/2048 at step 10k and stopped moving
+  \item PosR$^2$ never left 0.001 at s8
+  \item Router entropy was climbing (healthy) while heinrich was
+  reading a zeros tensor and calling it collapse
+\end{itemize}
+
+All of these are properties of the \emph{compression} the model
+learned. Cross-entropy on the next byte does not contain any of them.
+
+The engineering problem has four concrete faces:
+
+\begin{enumerate}
+  \item \textbf{Feature-participation check.} A trainer preflight that
+  traces the forward graph and asserts every enabled feature has a
+  non-zero gradient path.
+  \item \textbf{Architectural observables in the loss.} EffDim,
+  position-R$^2$, calibration error, router entropy---these are
+  measurable during training but not in the gradient because
+  cross-entropy does not care. The engineering problem is constructing
+  differentiable surrogates.
+  \item \textbf{State-persistence scheduling.} \texttt{mut-persistent}
+  was the only mutation that moved anything. The open engineering
+  question is how far and across what boundaries state should persist.
+  \item \textbf{Close the forensic loop.} Heinrich takes offline
+  measurements; chronohorn trains online. The obvious next step is
+  piping heinrich's trajectory-level measurements back into
+  chronohorn's next-run hyperparameter selection.
+\end{enumerate}
+
+Every conceptual thread---free-energy principle, self-modeling,
+consciousness-as-compression---points at the same missing piece: the
+system has no way to observe and modify its own compression. The
+engineering problem is building that observation loop. Put the
+forensic measurement inside the optimization, not outside it.
+
+\part{Retrospective}
+
+\chapter{Retractions}
+
+\begin{retraction}[``Router collapses to 100\% E0 in all 12 byte-hrr
+baseline variants'']
+This claim appeared in the first session-11 trajectory report, based
+on heinrich's \texttt{profile-cb-routing} reading
+\texttt{routing.npy} and finding values identically zero. In fact, the
+decepticon loader's \texttt{forward\_captured} for adaptive-substrate
+models never captured routing---the MRI file contained a
+pre-allocated zeros tensor that was never populated. The tool misread
+the zeros as a measurement.
+
+Actual routing: E0/E1 in 46\%--59\% range, switch rate 46\%--53\%,
+entropy 0.31--0.34. Router entropy \emph{grows} over training. E1
+pulls its weight. The recommendation to ``kill E1'' is retracted.
+Fix in decepticons commit f52865e.
+\end{retraction}
+
+\begin{retraction}[``byte-hrr-s8-trajectory measures 18--27 bpb''---full
+retraction]
+Entirely wrong; caused by the byte-shard loader format mismatch
+(Chapter 3). The true heinrich measurement after the loader fix is
+2.05--2.08 bpb, within 1.4\% of training. Every byte-level MRI
+analysis produced before session-11 day 2 used the wrong loader. All
+numerical claims involving \texttt{loss.npy} from those MRIs are
+retracted.
+\end{retraction}
+
+\begin{retraction}[``Position is architecturally blocked at s8 regardless
+of mutation''---partial retraction]
+The claim holds for out-of-sample cross-sequence position encoding
+on all byte-hrr adaptive-substrate variants. It does not hold for
+lasso-pos-b2 at s12+50k (PosR$^2$ 0.20). The original claim was based
+on \texttt{profile-cb-trajectory} reporting PosR$^2$ 0.001--0.003 for
+every mutation. That tool was measuring in-sample top-20 PCs R$^2$,
+not out-of-sample full-substrate R$^2$.
+\end{retraction}
+
+\begin{retraction}[``Architectural ceiling at 7\% mode utilization is
+a universal property''---partial retraction]
+This claim holds for byte-hrr adaptive-substrate with frozen $\omega$
+and MLP readout at s8--s12. It does not hold for adaptive-substrate
+with learnable $\omega$ (15\% utilization), gated-delta substrate
+(0.3\%), lasso substrate (0.3\%), or lasso-pos-b2 (0.3\%). The
+corrected framing: adaptive-substrate-family models with frozen
+$W_\omega$ saturate at roughly 7\% mode utilization.
+\end{retraction}
+
+\chapter{What remains unknown}
+
+\section{What session 11 did not measure}
+
+\begin{itemize}
+  \item We do not know whether the mut-persistent mechanism compounds
+  with learnable-$\omega$. Additive-law prediction: roughly 1.80 bpb
+  at s12. Unverified.
+  \item We do not know where the PosR$^2$ transition occurs for
+  lasso-pos-b2 between s8+20k (0.00) and s12+50k (0.20).
+  \item We do not know whether gated-delta substrate scales past s16.
+  \item We do not know whether the 7\%-utilization attractor in
+  frozen-$\omega$ is \emph{the} minimum-description-length fixed
+  point for byte-level English text or just the frozen-$\omega$
+  architecture's basin.
+  \item We do not know what would happen if a calibration-aware
+  training objective were added.
+\end{itemize}
+
+\section{The non-adaptive forward-path collapse}
+
+Session-11 refinement P2 was deferred. The adaptive-substrate forward
+paths have been collapsed to one. The non-adaptive forward paths
+(for lasso, gated-delta, SO(3)/SO(5), quaternion, standard EMA
+substrate) still have parallel implementations. A future plugin added
+to any of these will silently fail to be captured in heinrich until
+someone diff-checks the two forwards. The TODO is in-code with a
+four-step plan.
+
+\section{The fix-level scheme}
+
+Every MRI captured before session 11 has \texttt{fix\_level=0} or no
+\texttt{fix\_level} field. As of session 11 close, this is 198
+\texttt{.seq.mri} directories in the byte-scaling library. We
+re-captured the ones relevant to the session-11 analysis (roughly 30).
+The rest sit with wrong loss numbers.
+
+\chapter{The 15-point plumbing register}
+\label{chap:plumbing-register}
+
+Session-11 refinement work, organized by priority tier:
+
+\begin{description}
+  \item[P1: Full-rank PosR$^2$ / ConR$^2$ in cb-trajectory.] SVD-truncated
+  held-out ridge R$^2$ replaces top-20-PC in-sample lstsq.
+  \item[P2: Non-adaptive forward-path collapse.] Deferred with in-code
+  TODO and four-step plan.
+  \item[P3: MRI staleness detector.] \texttt{mri-check-fixups} CLI +
+  \texttt{fix\_level} metadata field.
+  \item[P4: omega-forensics error-path fix + rotation-forensics tool.]
+  New \texttt{profile-cb-rotation-forensics} handles non-adaptive
+  substrate families.
+  \item[P5: cb-trajectory single-MRI support.] Removes the duplicate-argument
+  workaround.
+  \item[P6: Byte-level data format detection.] Four-way heuristic:
+  value range, zero fraction, printable ASCII floor, entropy ceiling.
+  \item[P7: Band allocation labels renamed to periodicity.]
+  \texttt{char\_1\_5} becomes \texttt{period\_1\_5} and analogous.
+  \item[P8: Commit session-11 heinrich hardening.] Clean commit split.
+  \item[P9: \texttt{.gitignore} \texttt{.playwright-mcp/}.] 160+
+  screenshot artifacts excluded.
+  \item[P10: CLAUDE.md session-11 update.] Session-11 findings section
+  added; session-5 router-collapse claim has explicit retraction note.
+  \item[P11: Memory-file sweep for retracted claims.] Trajectory doc
+  gets a retraction header.
+  \item[P12: \texttt{--json} flag on cb-* analysis CLIs.] Structured
+  output for downstream tools.
+  \item[P13: Generalized gradient-sign preflight.] Hardcoded
+  plugin-prefix list replaced with named\_modules traversal.
+  \item[P14: Bit-identical model/capture test.] Regression guard
+  against future parallel-path reintroduction.
+  \item[P15: Additivity-law detector tool.] \texttt{profile-cb-additivity}
+  CLI predicts combined bpb from solo runs.
+\end{description}
+
+\chapter{Recommendations}
+
+For chronohorn:
+
+\begin{enumerate}
+  \item Retire the MLP-readout branch of mutation campaigns. No
+  mutation inside that subspace broke the ceiling. The architectural
+  constraint is that MLP readout cannot train $W_\omega$.
+  \item Explore \texttt{learnable\_omega + persistent + s12 + 50k}.
+  Additive-law prediction: 1.78--1.80 bpb.
+  \item Drop orthoreg from sweeps and from the codebase. Four
+  independent pairs, maximum effect 0.0002 bpb.
+  \item Explore gated-delta at larger scale.
+  \item Fix the localon / hashmem-style silent-bypass at the trainer
+  level. The generalized gradient-sign test should move from pytest
+  into the trainer's startup sequence.
+  \item Log the init-signature sha256 as first-class run metadata.
+  (Done per our suggestion.)
+  \item Consider a calibration-aware objective.
+\end{enumerate}
+
+For heinrich:
+
+\begin{enumerate}
+  \item Finish the non-adaptive forward-path collapse.
+  \item Build \texttt{mri-recapture --stale} for automatic stale-MRI
+  refresh.
+  \item Extend the additivity detector to non-bpb metrics.
+  \item Add a session-state fingerprint to MRI metadata.
+\end{enumerate}
+
+\appendix
+
+\chapter{The full numerical record}
+
+\section{Session-11 measurements, ordered by bpb}
+
+\begin{longtable}{lrrrr}
+\toprule
+Variant & Params & bpb & EffDim & ConR$^2$ \\
+\midrule
+\endfirsthead
+\toprule
+Variant & Params & bpb & EffDim & ConR$^2$ \\
+\midrule
+\endhead
+byte-hrr-learnable-s8-50k & 17.8M & \textbf{1.785} & 313.6 & 0.350 \\
+byte-hrr-learnable-s12-50k & 82.0M & 1.817 & 261.6 & 0.389 \\
+byte-hrr-persistent-s8-10k & 36.6M & 1.911 & 235.8 & 0.311 \\
+baseline s8 (byte-hrr-s8-50k) & 17.2M & 1.912 & 165.1 & 0.296 \\
+byte-cr-s12-50k & 12.4M & 1.989 & 15.7 & 0.181 \\
+byte-cr-hrrangle-s12-50k & 12.4M & 1.987 & 15.8 & 0.141 \\
+byte-cr-hrrangle-s16-50k & 21.5M & 1.980 & 12.7 & 0.138 \\
+byte-lasso-pos-b2-s12-50k & 17.1M & 1.999 & 8.7 & 0.208 \\
+byte-local-s8-50k & 5.8M & 2.016 & 10.5 & 0.198 \\
+mut-persistent-s12 (step 20k) & 39.5M & 2.008 & 160.6 & 0.345 \\
+baseline-s12 (step 20k) & 39.5M & 2.024 & 157.5 & 0.355 \\
+byte-cr-hrrangle-s8-50k & 5.7M & 2.032 & 17.0 & 0.099 \\
+mut-routed-s8 (step 20k) & 17.8M & 2.049 & 160.9 & 0.332 \\
+mut-control-mlp (step 20k) & 17.8M & 2.051 & 150.4 & 0.359 \\
+mut-persistent (step 20k) & 17.8M & 2.054 & 147.9 & 0.345 \\
+mut-hashmem (step 20k) & 17.8M & 2.055 & 150.5 & 0.348 \\
+mut-mlp-omega10-s8 & 17.8M & 2.057 & 150.8 & 0.359 \\
+mut-gated-delta-cr-s8 & 5.7M & 2.061 & 24.4 & 0.104 \\
+mut-lasso-pos-b2-s8 & 7.9M & 2.067 & 15.8 & 0.115 \\
+baseline-s8-seed42 (step 20k) & 17.8M & 2.075 & 149.5 & 0.342 \\
+mut-hashmem-fixed (step 20k) & 17.8M & 2.110 & 151.8 & 0.358 \\
+mut-hashmem-patch4 (step 20k) & 18.6M & 2.157 & 152.8 & 0.337 \\
+mut-patch4 (step 20k) & 18.6M & 2.160 & 153.3 & 0.332 \\
+byte-lasso-s12-50k & 12.4M & 2.205 & 16.9 & 0.205 \\
+byte-lasso-s8-50k & 5.8M & 2.234 & 23.4 & 0.127 \\
+\bottomrule
+\end{longtable}
+
+\section{Baseline 3-seed spread (s8)}
+
+Training-log bpb, baseline byte-hrr-s8 at step 20k, seeds 42/43/44:
+2.0957 / 2.0951 / 2.0973. Range 0.0022 bpb. This is the
+init-noise floor used for additivity checks.
+
+\section{Additivity check: hashmem-patch4}
+
+\begin{itemize}
+  \item Baseline (mut-control-mlp): 2.0513 bpb
+  \item Solo mut-hashmem (post-fix): 2.0543 bpb, $\Delta = +0.0030$
+  \item Solo mut-patch4: 2.1601 bpb, $\Delta = +0.1088$
+  \item Predicted (additive): $2.0513 + 0.0030 + 0.1088 = 2.1631$ bpb
+  \item Actual mut-hashmem-patch4: 2.1570 bpb
+  \item Gap: $-0.0061$ bpb (outside $\pm 0.004$ noise floor)
+  \item Verdict: sub-additive
+\end{itemize}
+
+\section{Scale fits}
+
+Cross-scale fit: $\mathrm{bpb} = a - \alpha \log N$ from (s8, 17.8M,
+2.096) and (s12, 39.5M, 2.041):
+\[
+\alpha = \frac{2.096 - 2.041}{\log 39.5 - \log 17.8} \approx 0.069
+\]
+
+Within-scale decay at step 15k$\to$20k:
+\begin{itemize}
+  \item baseline-s8 seed42: $\Delta = -0.009$ per 5k steps
+  \item baseline-s12: $\Delta = -0.013$ per 5k steps
+  \item mut-persistent-s12: $\Delta = -0.028$ per 5k steps
+\end{itemize}
+
+\chapter{Glossary}
+
+\begin{description}
+  \item[Adaptive substrate] A causal-bank substrate variant where
+  each mode's decay rate and write gate depend on the current input.
+  Canonical implementation uses complex-valued EMA with
+  Fourier-initialized $\omega$ frequencies.
+  \item[bpb] Bits per byte. Cross-entropy loss converted to log base 2.
+  Uniform random baseline is 8 bpb; byte-hrr at s8 with 17.8M params
+  reaches 2.10 bpb; the learnable-$\omega$ variant reaches 1.82 bpb.
+  \item[Causal bank] Architecture family from decepticons featuring a
+  substrate state updated per-position by linear recurrence with
+  input-dependent coefficients, a readout mapping substrate state to
+  next-token distribution, and (optional) a local-path conv.
+  \item[ConR$^2$] Content R-squared. Linear predictivity of per-token
+  loss from the substrate state.
+  \item[EffDim] Effective dimensionality. The entropy of the
+  substrate's variance spectrum.
+  \item[fix\_level] Metadata field introduced in session 11
+  indicating the cumulative set of capture-side bug fixes applied
+  when the MRI was produced.
+  \item[Frozen-HRR] The adaptive-substrate configuration where
+  $W_\omega$ is initialized to zero and never trains.
+  \item[Gated-delta] Alternative substrate family using discrete
+  read/write/erase gates instead of continuous EMA.
+  \item[HRR] Holographic reduced representations. The originating
+  framework for the frozen-Fourier-initialization of $\omega$.
+  \item[Init signature] sha256 of concatenated initial trainable
+  parameters.
+  \item[Learnable-$\omega$] The adaptive-substrate configuration where
+  $W_\omega$ trains. Requires a routed readout.
+  \item[MRI] Heinrich's standardized state-capture format.
+  \item[Patch4 / fat-readout] A readout that emits 4-byte predictions
+  from each position.
+  \item[Persistent substrate] Training curriculum where substrate
+  state carries across training batches.
+  \item[PosR$^2$] Position R-squared. Linear predictivity of absolute
+  position from the substrate state.
+  \item[Routing entropy] Shannon entropy of the expert-routing
+  distribution.
+  \item[Substrate] The persistent recurrent state of a causal-bank
+  model.
+  \item[Utilization fraction] EffDim divided by n\_modes.
+\end{description}
+
+\chapter{What this book is not}
+
+It is not a comprehensive account of causal-bank language modeling.
+It is not a treatise on the free-energy principle. It is not a
+tutorial on heinrich or chronohorn or decepticons. It is not a
+textbook on language-model forensics in general.
+
+It is a record. Session 11 of a measurement program dispatched
+certain experiments, found certain bugs, reached certain findings,
+retracted some of them, and produced certain tools. This book
+documents what happened at that level of specificity. Other sessions
+did other things; future sessions will do other things; and any
+session's findings should be read with the same attitude we have
+tried to apply here, which is: measured numbers are not model
+properties, they are joint properties of the model and the
+measurement apparatus, and the apparatus has to be interrogated as
+rigorously as the model for the numbers to mean what they appear to
+mean.
+
+The mutation campaign was a confinement. The cross-substrate survey
+was an escape. The measurement plumbing work was the apparatus
+learning, slowly and expensively, to not lie to its operator. Session
+11 taught all three lessons simultaneously, and the book you are
+holding is the attempt to retain them.
+
+\end{document}
