@@ -32,6 +32,18 @@ import numpy as np
 
 MRI_VERSION = "0.7"
 
+# Fix-level cumulative tag: increment when a capture-side bug fix changes the
+# *values* in MRI files (not just their layout). Downstream tools can flag any
+# MRI below the current fix level as needing re-capture. The version field
+# covers layout/format evolution; fix_level covers semantic correctness of the
+# contents.
+#
+# Fix-level history:
+#   0 — pre-session-11 (before byte-shard loader / routing-capture / plumbing fixes)
+#   1 — session 11 loader + routing fixes (heinrich f-series)
+#   2 — session 11 path collapse + gradient-sign (decepticons f52865e + 3eaf0aa)
+MRI_FIX_LEVEL = 2
+
 
 def _is_mlx_backend(backend) -> bool:
     """Check if backend uses MLX (vs PyTorch/HF)."""
@@ -469,6 +481,7 @@ def _capture_mri_causal_bank(backend, *, mode="raw", n_index=None,
     elapsed = time.time() - t0
     metadata = {
         "version": MRI_VERSION,
+        "fix_level": MRI_FIX_LEVEL,
         "type": "mri",
         "architecture": "causal_bank",
         "generated_at": time.time(),
@@ -540,20 +553,29 @@ def _capture_mri_causal_bank(backend, *, mode="raw", n_index=None,
 def _capture_mri_causal_bank_sequence(
     backend, *, val_data: str, n_seqs: int = 50, seq_len: int = 512,
     seed: int = 42, output: str | None = None, byte_level: bool = False,
+    warmup_bytes: int = 0,
 ) -> dict:
     """Sequence-mode MRI for causal bank: per-position internals on real sequences.
 
     Unlike impulse mode (single token from zero state), this captures substrate
     accumulation, routing dynamics, and loss decomposition across full sequences.
+
+    warmup_bytes: if > 0, prepend this many bytes of context before each capture
+    sequence. The model processes [warmup | capture] as one sequence but only the
+    capture window is stored. This measures substrate behavior with warm state
+    vs the default cold-start capture.
     """
     from ..backend.decepticon import load_val_sequences
 
     cfg = backend.config
     t0 = time.time()
 
-    seqs = load_val_sequences(val_data, seq_len=seq_len, n_seqs=n_seqs, seed=seed,
+    total_len = seq_len + warmup_bytes
+    seqs = load_val_sequences(val_data, seq_len=total_len, n_seqs=n_seqs, seed=seed,
                               byte_level=byte_level)
     actual_seqs = seqs.shape[0]
+    if warmup_bytes > 0:
+        print(f"  Warm-state capture: {warmup_bytes} warmup bytes + {seq_len} capture bytes")
     n_modes = cfg.n_modes
     n_experts = cfg.n_experts
     n_bands = cfg.n_bands
@@ -575,8 +597,13 @@ def _capture_mri_causal_bank_sequence(
     embedding_all = np.zeros((actual_seqs, seq_len, embed_dim), dtype=np.float16)
     loss_all = np.full((actual_seqs, seq_len), np.nan, dtype=np.float32)
 
+    # Only allocate routing if the model actually returns route_weights on its
+    # forward — otherwise we'd save a zeros tensor that downstream tools
+    # misread as "100% E0 collapse" (see docs/session11_trajectory_3seed.md).
+    _probe_rw = probe_result.get('route_weights')
+    _probe_has_routing = _probe_rw is not None and np.asarray(_probe_rw).size > 0
     routing_all = (np.zeros((actual_seqs, seq_len, n_experts), dtype=np.float16)
-                   if n_experts > 1 else None)
+                   if n_experts > 1 and _probe_has_routing else None)
     band_loss_all = (np.full((actual_seqs, seq_len, n_bands), np.nan, dtype=np.float32)
                      if n_bands > 1 else None)
     local_norm_all = None
@@ -611,66 +638,72 @@ def _capture_mri_causal_bank_sequence(
                          if has_magnitude_norm else None)
 
     for i in range(actual_seqs):
-        seq = seqs[i:i+1]  # [1, seq_len]
+        seq = seqs[i:i+1]  # [1, total_len] (includes warmup if any)
         result = backend.forward_captured(seq)
 
-        substrate_all[i] = result['substrate_states'][0].astype(np.float16)
-        embedding_all[i] = result['embedding'][0].astype(np.float16)
+        # Slice off warmup prefix — only store the capture window
+        w = warmup_bytes
+        substrate_all[i] = result['substrate_states'][0, w:].astype(np.float16)
+        embedding_all[i] = result['embedding'][0, w:].astype(np.float16)
 
         # Cross-entropy at each position (predict next token), in bits
-        logits = result['logits'][0].astype(np.float64)  # [seq_len, vocab]
-        targets = seq[0, 1:]  # [seq_len - 1]
-        # Stable log-softmax: x - max(x) - log(sum(exp(x - max(x))))
+        # Compute on full sequence, then slice to capture window
+        logits = result['logits'][0].astype(np.float64)  # [total_len, vocab]
+        targets = seq[0, 1:]  # [total_len - 1]
         max_logits = logits[:-1].max(axis=-1, keepdims=True)
         log_probs = logits[:-1] - max_logits - np.log(np.exp(logits[:-1] - max_logits).sum(axis=-1, keepdims=True))
         ce = -log_probs[np.arange(len(targets)), targets]
-        loss_all[i, 1:] = (ce / np.log(2)).astype(np.float32)  # bits
+        full_loss = (ce / np.log(2)).astype(np.float32)
+        # Slice: position w corresponds to capture position 0, loss at capture pos k
+        # uses target at pos w+k, stored in full_loss[w+k-1]
+        loss_all[i, 1:] = full_loss[w:w + seq_len - 1]
 
-        # Routing
+        # Routing — slice to capture window
         if routing_all is not None and result.get('route_weights') is not None:
             rw = result['route_weights']
             if rw.ndim == 2:
-                routing_all[i] = rw[:seq_len].astype(np.float16)
+                routing_all[i] = rw[w:w + seq_len].astype(np.float16)
             elif rw.ndim == 3:
-                routing_all[i] = rw[0].astype(np.float16)
+                routing_all[i] = rw[0, w:w + seq_len].astype(np.float16)
 
-        # Band loss
+        # Band loss — slice to capture window
         if band_loss_all is not None and result.get('band_logits') is not None:
             for b, bl in enumerate(result['band_logits']):
                 bl_0 = bl[0].astype(np.float64)
                 bl_max = bl_0[:-1].max(axis=-1, keepdims=True)
                 bl_lp = bl_0[:-1] - bl_max - np.log(np.exp(bl_0[:-1] - bl_max).sum(axis=-1, keepdims=True))
                 bl_ce = -bl_lp[np.arange(len(targets)), targets]
-                band_loss_all[i, 1:, b] = (bl_ce / np.log(2)).astype(np.float32)
+                bl_full = (bl_ce / np.log(2)).astype(np.float32)
+                band_loss_all[i, 1:, b] = bl_full[w:w + seq_len - 1]
 
-        # Local path norm
+        # Local path norm — slice
         if result.get('local_logits') is not None:
             if local_norm_all is None:
                 local_norm_all = np.zeros((actual_seqs, seq_len), dtype=np.float32)
-            local_norm_all[i] = np.linalg.norm(result['local_logits'][0], axis=-1).astype(np.float32)
+            local_norm_all[i] = np.linalg.norm(result['local_logits'][0, w:w + seq_len], axis=-1).astype(np.float32)
 
-        # Temporal attention
+        # Temporal attention — slice
         if has_temporal and result.get('temporal_attn_weights') is not None:
-            tw = result['temporal_attn_weights'][0]  # [heads, seq, M]
-            temporal_weights_all[i] = tw.mean(axis=0)[:, :n_snapshots].astype(np.float16)
+            tw = result['temporal_attn_weights'][0]
+            temporal_weights_all[i] = tw.mean(axis=0)[w:w + seq_len, :n_snapshots].astype(np.float16)
         if has_temporal and result.get('temporal_attn_output') is not None:
-            temporal_output_all[i] = result['temporal_attn_output'][0].astype(np.float16)
+            temporal_output_all[i] = result['temporal_attn_output'][0, w:w + seq_len].astype(np.float16)
 
-        # Gated delta gates
+        # Gated delta gates — slice
         if gated_delta_write_all is not None and result.get('gated_delta_write') is not None:
-            gated_delta_write_all[i] = result['gated_delta_write'][0].astype(np.float16)
+            gated_delta_write_all[i] = result['gated_delta_write'][0, w:w + seq_len].astype(np.float16)
         if gated_delta_retain_all is not None and result.get('gated_delta_retain') is not None:
-            gated_delta_retain_all[i] = result['gated_delta_retain'][0].astype(np.float16)
+            gated_delta_retain_all[i] = result['gated_delta_retain'][0, w:w + seq_len].astype(np.float16)
         if gated_delta_erase_all is not None and result.get('gated_delta_erase') is not None:
-            gated_delta_erase_all[i] = result['gated_delta_erase'][0].astype(np.float16)
+            gated_delta_erase_all[i] = result['gated_delta_erase'][0, w:w + seq_len].astype(np.float16)
 
-        # Substrate transforms
+        # Substrate transforms — slice
         if overwrite_gate_all is not None and result.get('overwrite_gate_values') is not None:
-            overwrite_gate_all[i] = result['overwrite_gate_values'][0].astype(np.float16)
+            overwrite_gate_all[i] = result['overwrite_gate_values'][0, w:w + seq_len].astype(np.float16)
         if mode_selector_all is not None and result.get('mode_selector_mask') is not None:
-            mode_selector_all[i] = result['mode_selector_mask'][0].astype(np.float16)
+            mode_selector_all[i] = result['mode_selector_mask'][0, w:w + seq_len].astype(np.float16)
         if magnitude_norm_all is not None and result.get('magnitude_before_norm') is not None:
-            magnitude_norm_all[i] = result['magnitude_before_norm'][0, :, 0].astype(np.float32)
+            magnitude_norm_all[i] = result['magnitude_before_norm'][0, w:w + seq_len, 0].astype(np.float32)
 
         elapsed = time.time() - t0
         rate = (i + 1) / max(elapsed, 0.01)
@@ -681,6 +714,7 @@ def _capture_mri_causal_bank_sequence(
 
     metadata = {
         "version": MRI_VERSION,
+        "fix_level": MRI_FIX_LEVEL,
         "type": "mri",
         "architecture": "causal_bank",
         "generated_at": time.time(),
@@ -700,6 +734,7 @@ def _capture_mri_causal_bank_sequence(
             "n_seqs": actual_seqs,
             "seq_len": seq_len,
             "n_tokens": actual_seqs * seq_len,
+            "warmup_bytes": warmup_bytes,
             "has_temporal": has_temporal,
             "has_routing": routing_all is not None,
             "has_band_loss": band_loss_all is not None,
@@ -809,7 +844,8 @@ def capture_mri(
                 n_seqs=kwargs.get('n_seqs', 50),
                 seq_len=kwargs.get('seq_len', 512),
                 seed=seed, output=output,
-                byte_level=kwargs.get('byte_level', False))
+                byte_level=kwargs.get('byte_level', False),
+                warmup_bytes=kwargs.get('warmup_bytes', 0))
         return _capture_mri_causal_bank(backend, mode=mode, n_index=n_index,
                                          seed=seed, output=output)
 
@@ -1262,6 +1298,7 @@ def capture_mri(
     # === Metadata ===
     metadata = {
         "version": MRI_VERSION,
+        "fix_level": MRI_FIX_LEVEL,
         "type": "mri",
         "generated_at": time.time(),
         "elapsed_s": round(elapsed),

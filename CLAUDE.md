@@ -322,7 +322,7 @@ All prompts loaded into the DB via `require_prompts()`. No hardcoded prompt bank
 - **The 88.4% is language sub-families.** PCA anatomy across 7 models shows the unnamed displacement variance is script-level separation, sub-language axes (Romance, Germanic, Vietnamese, Japanese), code vs natural language, and register/formality. Safety appears only as trace loading on PCs primarily about tech vs legal vocabulary.
 - **Dominant PCA axis reflects training data.** Phi-3: Cyrillic=56% of PC1. Qwen: CJK is home. Mistral: English is home. RLHF makes displacement MORE multi-dimensional (Qwen 3B base: 1 PC@50%, instruct: 7 PCs@50%).
 - **L2 crystallization (raw mode).** Single tokens crystallize to 1 dimension (98.6% PC1) by L2 and stay frozen for 18 layers. The crystal axis is CONTENT vs STRUCTURE, not language. Template mode prevents crystallization — context keeps representation multi-dimensional at every layer.
-- **Causal bank expert routing collapses.** In the O(n) model (cb-s8-experts-50k), one expert gets 99.87% of tokens. The winner specializes on byte-band modes (half-life 1.5-3.0). Balance loss produces redundancy (4 copies) not specialization.
+- **Causal bank expert routing collapses.** In the O(n) model (cb-s8-experts-50k), one expert gets 99.87% of tokens. The winner specializes on byte-band modes (half-life 1.5-3.0). Balance loss produces redundancy (4 copies) not specialization. **⚠ Session 11 partial retraction:** this number was from the same routing-capture bug that produced false "100% E0" readings across 12 byte-hrr variants until commit f52865e fixed the adaptive_substrate loader. The specific `cb-s8-experts-50k` model may or may not actually collapse; re-MRI that checkpoint with the fixed loader to confirm. Session 11 measurements on byte-hrr variants show E0/E1 routing at 46%–59% with entropy 0.31–0.34 — healthy, not collapsed.
 - **Decepticon backend.** Heinrich can now MRI causal bank checkpoints via `decepticons.loader`. Same .mri format, architecture field distinguishes transformer from causal_bank. `heinrich mri --model path.checkpoint.pt` auto-detects.
 
 ## The .mri format
@@ -476,3 +476,102 @@ Row 3: lv0 (flower A)| lv1 (flower Δ)| lv2 (flower B)| PC spectrum         |
 **Configurable:**
 - `run_companion(port=8377, mri_root="/Volumes/sharts")` — MRI data directory.
 - Neuron cache bounded to 2000 entries with 25% eviction.
+
+## Session 11 findings (April 2026)
+
+### Falsification hardening
+
+- **Random baseline percentile everywhere.** `_direction_depth` and
+  `_auto_discover_directions` now return `random_baseline_percentile` alongside
+  bimodality. Single-helper `_random_bimodality_baseline` keeps the three
+  direction endpoints consistent.
+- **Functional validation in discovery.** `_auto_discover_directions` now
+  returns `functional_hit_rate` and `functional_warning` per discovered PC,
+  so the UI tags directions that are geometric-only (do not route through
+  lmhead) with `⚠NF`.
+- **Crystal suppression in discovery.** The auto-discover path filters
+  `|z|>6` outlier tokens before computing per-PC bimodality, reported as
+  `outliers_excluded` / `n_population`. Raw-mode 뀔 no longer hijacks every
+  discovered direction.
+- **Debounced `_updateSeparation`.** Layer scrubbing no longer floods the
+  server with full-K analysis calls — 180ms settle window collapses rapid
+  arrow-key playback into one request.
+- **MLP attribution z-score display.** `direction-circuit` UI now shows
+  `MLP z=X.Y (strong/weak/noise)` instead of the always-100% self-normalized
+  raw attribution. Head bars also scale to |z| and color by significance.
+
+### The crystal: 뀔 (Qwen-0.5B, raw/naked mode)
+
+Investigation `docs/session11-crystal-investigation.md`. Summary:
+
+- **뀔 is vocab 144928** (96th percentile of Qwen's vocabulary, Korean
+  single-syllable BPE token, 3 UTF-8 bytes).
+- **The crystal is an absence, not an amplification.** Korean neighbors
+  (씌, 킵, 뜯…) blow up to residual norm ~1000 at L3 via shared MLP neurons
+  2247 + 3016. 뀔 bypasses that circuit, stays at norm ~21, ends up alone
+  in a unique region of latent space.
+- **PC163 at L10 is the "isolated weird-unicode" axis.** 뀔 loads 3.5× more
+  than the next-most-extreme token (` ucwords`, `;;;;;;`, `)NULL`, `^^^^`).
+- **Lmhead self-loops.** When 뀔 is the only input, the top-1 prediction
+  is 뀔 itself (logit 1192). Training data almost certainly contained
+  repetitive 뀔 sequences.
+- **Template mode kills the crystal** (z=2.5 vs z=82.5 raw/naked). Context
+  reroutes the token through normal processing; the self-loop never fires.
+- **Implication:** raw/naked crystals are fingerprints of training-corpus
+  anomalies, not features of how the model normally computes. Always
+  exclude high-|z| outliers before PCA-based feature discovery in raw mode,
+  and prefer template mode for concept claims.
+
+### Other fixes
+
+- **Direction colors reset on model/mode switch.** In-flight projection
+  responses from the prior model are superseded via request-id bump.
+- **Direction-weight-alignment wired into flowers.** When both pins are
+  active, flower petals and legend values show concept-direction alignment
+  per matrix instead of PC-axis alignment. Cache key includes pin identity
+  so toggling pins triggers a rebuild.
+- **Robust trajectory normalization.** Cloud and trajectory now scale by
+  the 99.5th percentile of |score| per axis, and clamp render coordinates
+  to [−1.5, 1.5]. Extreme outliers (crystal included) no longer crush the
+  rest of the cloud to near-zero or send line segments off-screen.
+- **rv0 signed-log Y.** Direction-depth profile uses `asinh(y/median)` so
+  early-layer micro-divergences and late-layer blowups are both visible.
+- **rv2 fixed-size dots.** Screen-space dots stay visible at baseline
+  alignment (sizeAttenuation off).
+- **Score cache byte-budgeted.** 2 GB LRU, evicts other-MRI entries first
+  on model switch. Replaces the 3-layer fixed count.
+- **Composite capture robust.** Errors and empty-panel cases notify the
+  server via `/api/capture-result` instead of hanging the request.
+- **`/api/chat` endpoint.** Browser chat messages now queue in a bounded
+  inbox drained by `chat_drain()`; replies delivered via `/api/chat-poll`
+  long-poll using `chat_reply(text)`. Replaces the silent dead-letter path
+  through `/api/navigate`.
+- **API timeout.** 20 s default on `api()` fetches. "predicts…" and similar
+  placeholder UI states no longer stick forever on slow/missing files.
+- **GIF `_recording` flag.** Wrapped in try/finally with a 10-minute
+  staleness escape hatch, so a crash mid-record doesn't permanently lock
+  future recordings.
+- **Small-viewport overlay.** Fonts clamp to [10, 28]px and shrink until
+  left+right labels fit within width; no more clipped text on rv0/rv1/rv2.
+- **Token search shows direction side.** When direction coloring is active,
+  each search result tags the token with A/B side and projection magnitude.
+
+## Session 11 findings (April 2026)
+
+- **Routing capture bug fixed.** `decepticons/loader.py` adaptive_substrate branch never captured route_weights; pre-allocated zeros were misread as "100% E0 collapse." Actual routing on baseline byte-hrr seed42/43/44 at step 20k: E0/E1 in 46%–59% range, switch rate 46%–53%, entropy 0.31–0.34. Router entropy *grows* over training. Fix: commit f52865e in decepticons.
+- **Byte shard loader fixed.** Chronohorn byte shards store bytes as uint16 after a 1024-byte header; the loader was reading raw uint8 and mis-measuring loss by ~10×. Fix in `src/heinrich/backend/decepticon.py`.
+- **Three forward paths collapsed to one.** `_linear_logits` adaptive branch stashes `_last_x_embed` and `_last_features` in eval mode; loader reads them instead of reimplementing the forward. Zero drift surface for adaptive-substrate plug-ins.
+- **Additive-law for bpb mutations.** Across 20+ byte-hrr variants, mutation effects on bpb compose additively to within 0.004 bpb. Combined mutation bpb is predictable from solo measurements. Non-additive flags genuine interaction.
+- **Architecture-family ceilings differ.** Adaptive-frozen-HRR substrate saturates at 7% mode utilization (~150 effective dims / 2048). Adaptive-learnable-W_ω: 15%. Gated-delta: 0.3% (12–17 effective dims). Lasso+pos+b2: 0.3% with position-dominated encoding. The "architectural ceiling" reported for mut-family variants is specifically the frozen-MLP ceiling, not a universal property.
+- **MLP readout cannot exploit W_ω unfreeze.** At omega_lr_mult=10, W_ω remains bit-identically zero for 20k steps. Routed_sqrelu_experts readout is required to break the init-zero gradient trap.
+- **Learnable-ω at s8 beats every mut variant.** `byte-hrr-learnable-s8-50k` achieves 1.78 bpb at 17.8M params vs best-mut 2.05 bpb at same params (−0.27 bpb). Session-9/10 conditions (routed + W_ω trained) at s8 scale already outperform everything the mut campaign produced.
+
+## Session 11 tooling additions
+
+- `profile-cb-rotation-forensics` — for non-adaptive substrates (gated_delta, lasso, SO(N)). Reports per-module trained/frozen status, rotation-proj effective rank, gate L2 statistics.
+- `profile-cb-additivity` — given a baseline + solo-mutation MRIs + combined-mutation MRI, predicts the combination's bpb via the additive law and flags deviations beyond the init-noise floor (0.004 bpb).
+- `mri-check-fixups` — scans a directory of MRIs and flags any with `fix_level < MRI_FIX_LEVEL`, indicating they were captured before recent bug fixes and need re-capture.
+- `--json` flag on `profile-cb-loss` / `profile-cb-routing` / `profile-cb-trajectory` / `profile-cb-rotation-forensics` / `profile-cb-additivity` for structured output to downstream tools.
+- `MRI_FIX_LEVEL` metadata field added to every new capture. Increment when a capture-side bug fix changes the *values* in MRI files. History: 0 = pre-session-11; 1 = loader + routing fixes; 2 = path-collapse + gradient-sign preflight.
+- `_ridge_r2` helper: SVD-truncated held-out R² for PosR²/ConR² in `profile-cb-trajectory`. Previous top-20-PC in-sample R² was hiding weak-direction position signal AND inflating scores with fit noise.
+- Band labels in `profile-cb-omega-forensics` renamed `char_1_5` → `period_1_5` (and analogous): bands are periodicities, not linguistic units.

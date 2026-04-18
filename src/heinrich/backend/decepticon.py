@@ -15,6 +15,15 @@ from pathlib import Path
 import numpy as np
 
 
+# Chronohorn shard format (see chronohorn/data/build_byte_shards.py):
+# First 256 int32 = 1024 bytes of header.
+# If header[0] == TOKEN_SHARD_MAGIC, header[2] gives token count.
+# Payload is uint16 regardless of vocab (sp tokens or bytes stored in uint16 slots).
+_SHARD_MAGIC = 20240520
+_SHARD_VERSION = 1
+_SHARD_HEADER_BYTES = 256 * 4  # 256 int32
+
+
 def load_val_sequences(
     path: str,
     *,
@@ -27,15 +36,81 @@ def load_val_sequences(
 
     Takes non-overlapping random slices from the token stream.
     Returns fewer sequences if data is too short.
-    For byte_level=True, reads uint8 (raw bytes) instead of uint16 (sp tokens).
+
+    Chronohorn shards store tokens as uint16 after a 1024-byte header,
+    regardless of vocab size — byte-level shards hold byte values (0-255)
+    in uint16 slots. If `byte_level=True` and a shard header is present,
+    the header is skipped and payload is still read as uint16.
     """
-    dtype = np.uint8 if byte_level else np.uint16
-    tokens = np.fromfile(path, dtype=dtype).astype(np.int64)
+    raw = np.fromfile(path, dtype=np.uint8)
+    has_header = False
+    token_count = None
+    if raw.size >= _SHARD_HEADER_BYTES:
+        header = raw[:_SHARD_HEADER_BYTES].view(np.int32)
+        if int(header[0]) == _SHARD_MAGIC and int(header[1]) == _SHARD_VERSION:
+            has_header = True
+            token_count = int(header[2])
+
+    if has_header:
+        payload = raw[_SHARD_HEADER_BYTES:].view(np.uint16)
+        if token_count is not None and token_count <= len(payload):
+            payload = payload[:token_count]
+        tokens = payload.astype(np.int64)
+    elif byte_level:
+        # Legacy raw-bytes file: each uint8 is one byte token.
+        tokens = raw.astype(np.int64)
+    else:
+        tokens = raw.view(np.uint16).astype(np.int64)
+
     n_total = len(tokens)
     max_seqs = n_total // seq_len
     actual_seqs = min(n_seqs, max_seqs)
     if actual_seqs == 0:
         raise ValueError(f"Val data too short: {n_total} tokens < seq_len {seq_len}")
+
+    if byte_level:
+        # Guard against value-range mismatch.
+        sample = tokens[:min(n_total, 10_000_000)]
+        warnings_issued = []
+
+        if sample.max() > 255:
+            warnings_issued.append(
+                f"payload max value is {int(sample.max())} > 255 — file is "
+                f"likely sp-tokenized, not byte-level")
+
+        # UTF-16LE detection: English ASCII text in UTF-16LE has ~50% zero
+        # bytes (the high byte of each ASCII character). Real UTF-8 text has
+        # ~1–5% zero bytes. Flag zero-fraction > 30% as suspicious.
+        zero_frac = float((sample == 0).mean())
+        if zero_frac > 0.30:
+            warnings_issued.append(
+                f"{zero_frac:.1%} of bytes are zero — file may be UTF-16 or "
+                f"padded; byte-level models expect UTF-8")
+
+        # Printable-ASCII floor: real English byte streams are ~60–95% printable
+        # ASCII (bytes 32–126). < 25% printable suggests binary or wrong encoding.
+        printable_frac = float(((sample >= 32) & (sample < 127)).mean())
+        if sample.max() <= 255 and printable_frac < 0.25 and zero_frac < 0.30:
+            warnings_issued.append(
+                f"only {printable_frac:.1%} printable ASCII — file may be "
+                f"binary or non-text; expected ~60% for English web data")
+
+        # Entropy check: uniform-random bytes give ~8 bits/byte. English text
+        # gives ~4–5 bits/byte. Flag > 7.5 as likely random or encrypted data.
+        hist = np.bincount(sample.astype(np.int64) & 0xFF, minlength=256).astype(np.float64)
+        hist = hist[hist > 0] / hist.sum()
+        ent = float(-(hist * np.log2(hist)).sum())
+        if ent > 7.5 and sample.max() <= 255:
+            warnings_issued.append(
+                f"byte entropy {ent:.2f} bits/byte is near-uniform — data "
+                f"may be random or encrypted, not natural language")
+
+        if warnings_issued:
+            import warnings
+            msg = f"load_val_sequences(byte_level=True) on {path}: " + \
+                  "; ".join(warnings_issued) + \
+                  ". Consider fetching a verified byte shard."
+            warnings.warn(msg, stacklevel=2)
 
     rng = np.random.RandomState(seed)
     all_starts = np.arange(max_seqs) * seq_len

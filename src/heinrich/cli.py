@@ -156,6 +156,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_comp = sub.add_parser("companion", aliases=["viz"], help="Live 3D MRI viewer (http://localhost:8377)")
     p_comp.add_argument("--port", type=int, default=8377, help="Port (default: 8377)")
 
+    # Crystal inspector — finds single-token crystals in raw-mode MRIs.
+    p_crystal = sub.add_parser("crystal-inspect",
+        help="Scan an MRI for raw-mode crystals (isolated high-|z| tokens) per layer")
+    p_crystal.add_argument("--mri", required=True, help="Path to .mri directory")
+    p_crystal.add_argument("--layer", type=int, default=None, help="Layer to scan (default: all real layers)")
+    p_crystal.add_argument("--z-threshold", type=float, default=6.0,
+        help="|z| cutoff on any PC (default: 6)")
+    p_crystal.add_argument("--top", type=int, default=20, help="Top-N crystals to report (default: 20)")
+
     p_vizdeprecated = sub.add_parser("viz-legacy", help="[deprecated] Old DB-based visualizer")
     p_vizdeprecated.add_argument("--port", type=int, default=8378, help="Port (default: 8378)")
     p_vizdeprecated.add_argument("--db", default=None, help="Database path")
@@ -265,6 +274,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_mristatus = sub.add_parser("mri-status", help="Show all MRIs: what's complete, what's missing, what's running")
     p_mristatus.add_argument("--dir", default="/Volumes/sharts", help="MRI directory (default: /Volumes/sharts)")
 
+    p_mrifixups = sub.add_parser("mri-check-fixups",
+                                  help="Scan a directory for MRIs with stale fix_level (captured before recent bug fixes)")
+    p_mrifixups.add_argument("--dir", default="/Volumes/sharts", help="MRI directory to scan")
+    p_mrifixups.add_argument("--min-fix-level", type=int, default=None,
+                              help="Minimum required fix_level (default: current)")
+
     p_mriscan = sub.add_parser("mri-scan", help="Full MRI workup: capture all modes, health check, layer deltas, logit lens, PCA depth")
     p_mriscan.add_argument("--model", required=True, help="Model ID or checkpoint path")
     p_mriscan.add_argument("--output", "-o", required=True, help="Model output directory (e.g. /Volumes/sharts/qwen-0.5b)")
@@ -330,6 +345,30 @@ def build_parser() -> argparse.ArgumentParser:
     p_cb_decompose = sub.add_parser("profile-cb-decompose", help="Causal bank manifold decomposition: position/content/ghost")
     p_cb_decompose.add_argument("--mri", required=True, help=".mri directory (causal bank, sequence mode)")
     p_cb_decompose.add_argument("--n-sample", type=int, default=None, help="Tokens to sample (default: all)")
+
+    p_cb_omega = sub.add_parser("profile-cb-omega-forensics", help="Omega projection forensics: band allocation, Fourier survival, weight rank")
+    p_cb_omega.add_argument("--checkpoint", required=True, help="Checkpoint .pt file (not MRI)")
+
+    p_cb_rot = sub.add_parser("profile-cb-rotation-forensics",
+                              help="Rotation/gate forensics for non-adaptive substrates (gated_delta, lasso, SO(3)/SO(5))")
+    p_cb_rot.add_argument("--checkpoint", required=True, help="Checkpoint .pt file (not MRI)")
+
+    p_cb_add = sub.add_parser("profile-cb-additivity",
+                              help="Check whether combined mutation bpb matches solo-mutation additive prediction")
+    p_cb_add.add_argument("--baseline", required=True, help="Baseline MRI (no mutations)")
+    p_cb_add.add_argument("--mutations", nargs="+", required=True,
+                          help="One solo-mutation MRI per axis being combined")
+    p_cb_add.add_argument("--combination", required=True,
+                          help="MRI with all mutations applied simultaneously")
+    p_cb_add.add_argument("--noise-floor", type=float, default=0.004,
+                          help="bpb noise floor beyond which gap is flagged (default 0.004)")
+
+    p_cb_traj = sub.add_parser("profile-cb-trajectory", help="Trajectory analysis across multiple checkpoints: EffDim, R², mode utilization derivatives")
+    p_cb_traj.add_argument("--mris", nargs="+", required=True, help="Ordered MRI paths (by training step)")
+
+    p_cb_invert = sub.add_parser("profile-cb-invertibility", help="How far back can the substrate reconstruct past bytes?")
+    p_cb_invert.add_argument("--mri", required=True, help=".mri directory (sequence mode)")
+    p_cb_invert.add_argument("--max-lookback", type=int, default=512, help="Maximum lookback distance")
 
     p_cb_rot = sub.add_parser("profile-cb-rotation-probe", help="Nonlinear + rotational information probes: MLP vs linear, angular decomposition")
     p_cb_rot.add_argument("--mri", required=True, help=".mri directory (causal bank, sequence mode)")
@@ -447,6 +486,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_mri.add_argument("--n-seqs", type=int, default=50, help="Number of sequences for sequence mode (default: 50)")
     p_mri.add_argument("--seq-len", type=int, default=512, help="Sequence length for sequence mode (default: 512)")
     p_mri.add_argument("--byte-level", action="store_true", help="Read val data as uint8 bytes (for byte-level models)")
+    p_mri.add_argument("--warmup", type=int, default=0, help="Warmup bytes before capture window (warm-state MRI)")
 
     p_capture = sub.add_parser("total-capture", help="[legacy] Use 'mri' instead. Capture every token, every layer.")
     p_capture.add_argument("--model", required=True, help="Model ID")
@@ -623,6 +663,8 @@ def main(argv: list[str] | None = None) -> None:
     elif args.command in ("companion", "viz"):
         from .companion import run_companion
         run_companion(port=args.port)
+    elif args.command == "crystal-inspect":
+        _cmd_crystal_inspect(args)
     elif args.command == "viz-legacy":
         from .viz import run_server
         run_server(port=args.port, db_path=args.db)
@@ -698,6 +740,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_mri_verify(args)
     elif args.command == "mri-status":
         _cmd_mri_status(args)
+    elif args.command == "mri-check-fixups":
+        _cmd_mri_check_fixups(args)
     elif args.command == "mri-scan":
         _cmd_mri_scan(args)
     elif args.command == "mri-health":
@@ -728,6 +772,16 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_cb_modes(args)
     elif args.command == "profile-cb-decompose":
         _cmd_cb_decompose(args)
+    elif args.command == "profile-cb-omega-forensics":
+        _cmd_cb_omega_forensics(args)
+    elif args.command == "profile-cb-rotation-forensics":
+        _cmd_cb_rotation_forensics(args)
+    elif args.command == "profile-cb-additivity":
+        _cmd_cb_additivity(args)
+    elif args.command == "profile-cb-trajectory":
+        _cmd_cb_trajectory(args)
+    elif args.command == "profile-cb-invertibility":
+        _cmd_cb_invertibility(args)
     elif args.command == "profile-cb-rotation-probe":
         _cmd_cb_rotation_probe(args)
     elif args.command == "profile-cb-gate-forensics":
@@ -928,6 +982,60 @@ def _cmd_loop(args: argparse.Namespace) -> None:
     store = loop.run({"environment": env, "model_label": args.label, "next_action": 1})
     output = compress_store(store, stages_run=loop.stages_run)
     print(json.dumps(output, indent=2))
+
+
+def _cmd_crystal_inspect(args: argparse.Namespace) -> None:
+    """Scan an MRI for isolated-high-|z| tokens ("crystals") per layer."""
+    import json
+    from pathlib import Path
+    import numpy as np
+
+    mri_dir = Path(args.mri)
+    decomp = mri_dir / "decomp"
+    meta_path = decomp / "meta.json"
+    if not meta_path.exists():
+        raise SystemExit(f"No decomp at {decomp}")
+
+    meta = json.loads(meta_path.read_text())
+    n_layers = meta.get("n_real_layers", len(meta.get("layers", [])))
+
+    tokens_path = mri_dir / "tokens.npz"
+    if not tokens_path.exists():
+        raise SystemExit(f"No tokens.npz at {mri_dir}")
+    # Safe load: vocab_ids only (int array, no object decode).
+    from heinrich.companion import _load_token_ids
+    token_ids = _load_token_ids(str(mri_dir))
+    texts = None  # text decoding not available here; use vocab_id → tokenizer separately
+
+    layers = [args.layer] if args.layer is not None else list(range(n_layers))
+    thresh = float(args.z_threshold)
+    print(f"# Crystal scan: {mri_dir.name}  |z|>{thresh}  layers={layers[0]}..{layers[-1]}")
+    print(f"{'layer':>6} {'n_crystals':>12} {'tok_idx':>10} {'vocab_id':>10} {'max_z':>8}")
+    print("-" * 60)
+
+    for li in layers:
+        sp = decomp / f"L{li:02d}_scores.npy"
+        if not sp.exists():
+            continue
+        scores = np.load(str(sp)).astype(np.float32)
+        raw_std = scores.std(axis=0)
+        std_floor = float(np.percentile(raw_std[raw_std > 0], 5)) if np.any(raw_std > 0) else 1e-8
+        std = np.maximum(raw_std, std_floor) + 1e-8
+        z_all = np.abs(scores.astype(np.float32)) / std[None, :]
+        max_z = z_all.max(axis=1)
+        outlier = max_z > thresh
+        n_out = int(outlier.sum())
+        if n_out == 0:
+            print(f"{li:>6} {0:>12} {'—':>10} {'':>10} {'':>8}")
+            continue
+        idx_sorted = np.argsort(max_z)[::-1][:args.top]
+        for rank, ti in enumerate(idx_sorted):
+            if max_z[ti] <= thresh:
+                break
+            vocab = int(token_ids[ti]) if token_ids is not None and ti < len(token_ids) else -1
+            head_col = f"{li:>6}" if rank == 0 else " " * 6
+            count_col = f"{n_out:>12}" if rank == 0 else " " * 12
+            print(f"{head_col} {count_col} {int(ti):>10} {vocab:>10} {max_z[ti]:>8.1f}")
 
 
 def _cmd_audit(args: argparse.Namespace) -> None:
@@ -1342,6 +1450,8 @@ def _cmd_mri(args: argparse.Namespace) -> None:
         extra['seq_len'] = args.seq_len
     if getattr(args, 'byte_level', False):
         extra['byte_level'] = True
+    if getattr(args, 'warmup', 0) > 0:
+        extra['warmup_bytes'] = args.warmup
     result = capture_mri(backend, mode=args.mode, n_index=args.n_index,
                           output=args.output, db_path=getattr(args, 'db', None),
                           **extra)
@@ -1812,6 +1922,60 @@ def _cmd_mri_verify(args: argparse.Namespace) -> None:
             print(f"PASS: {meta.get('capture', {}).get('n_tokens', '?')} tokens captured successfully")
     except Exception as e:
         print(f"FAIL: Capture error: {e}")
+
+
+def _cmd_mri_check_fixups(args: argparse.Namespace) -> None:
+    """Scan MRIs in a directory and flag any with stale fix_level."""
+    import json
+    from pathlib import Path
+    from .profile.mri import MRI_FIX_LEVEL
+
+    min_fix = args.min_fix_level if args.min_fix_level is not None else MRI_FIX_LEVEL
+    root = Path(args.dir).expanduser()
+    if not root.exists():
+        print(f"Error: directory {root} does not exist")
+        return
+
+    mris = sorted(set(root.rglob("*.mri")) | set(root.rglob("*.seq.mri")))
+    if not mris:
+        print(f"No .mri or .seq.mri directories found under {root}")
+        return
+
+    stale = []
+    current = []
+    unknown = []
+    for mri_dir in mris:
+        meta_path = mri_dir / "metadata.json"
+        if not meta_path.exists():
+            continue
+        try:
+            md = json.loads(meta_path.read_text())
+        except Exception:
+            unknown.append((mri_dir, "unreadable metadata"))
+            continue
+        fix_level = md.get("fix_level")
+        if fix_level is None:
+            stale.append((mri_dir, "no fix_level (pre-versioning)"))
+        elif fix_level < min_fix:
+            stale.append((mri_dir, f"fix_level={fix_level} < {min_fix}"))
+        else:
+            current.append(mri_dir)
+
+    print(f"\n=== MRI fix-level check: {root} ===")
+    print(f"  Minimum required fix_level: {min_fix} (heinrich current)")
+    print(f"  Total MRIs: {len(mris)}")
+    print(f"  Current: {len(current)}")
+    print(f"  Stale (need recapture): {len(stale)}")
+    if unknown:
+        print(f"  Unreadable: {len(unknown)}")
+
+    if stale:
+        print(f"\n  Stale MRIs:")
+        for mri_dir, reason in stale[:30]:
+            rel = mri_dir.relative_to(root) if root in mri_dir.parents else mri_dir
+            print(f"    {rel}  ({reason})")
+        if len(stale) > 30:
+            print(f"    ... and {len(stale) - 30} more")
 
 
 def _cmd_mri_status(args: argparse.Namespace) -> None:
@@ -2475,26 +2639,30 @@ def _cmd_cb_loss(args: argparse.Namespace) -> None:
 
     result = causal_bank_loss(args.mri)
     if "error" in result:
-        print(f"Error: {result['error']}")
+        if getattr(args, 'json_output', False):
+            json.dump(result, sys.stdout, default=str); print()
+        else:
+            print(f"Error: {result['error']}")
         return
 
-    print(f"\n=== CB Loss: {result['model']} — "
-          f"{result['n_seqs']} seqs x {result['seq_len']} positions ===\n")
-    print(f"  Overall: {result['overall_bpb']:.4f} bpb\n")
-
-    print(f"  {'Position':>12} {'Mean bpb':>10} {'Std':>8}")
-    for r in result['by_position']:
-        print(f"  {r['range']:>12} {r['mean_bpb']:>10.4f} {r['std_bpb']:>8.4f}")
-
-    if result['by_band']:
-        print(f"\n  Per-band loss:")
-        for b in result['by_band']:
-            print(f"    Band {b['band']}: {b['mean_bpb']:.4f} bpb")
-
-    if result['autocorrelation']:
-        print(f"\n  Loss autocorrelation:")
-        for a in result['autocorrelation']:
-            print(f"    lag {a['lag']:>3}: r={a['r']:.4f}")
+    def _fmt(r):
+        print(f"\n=== CB Loss: {r['model']} — "
+              f"{r['n_seqs']} seqs x {r['seq_len']} positions ===\n")
+        print(f"  Overall: {r['overall_bpb']:.4f} bpb\n")
+        if r.get("warning"):
+            print(f"  ⚠  WARNING: {r['warning']}\n")
+        print(f"  {'Position':>12} {'Mean bpb':>10} {'Std':>8}")
+        for p in r['by_position']:
+            print(f"  {p['range']:>12} {p['mean_bpb']:>10.4f} {p['std_bpb']:>8.4f}")
+        if r['by_band']:
+            print(f"\n  Per-band loss:")
+            for b in r['by_band']:
+                print(f"    Band {b['band']}: {b['mean_bpb']:.4f} bpb")
+        if r['autocorrelation']:
+            print(f"\n  Loss autocorrelation:")
+            for a in r['autocorrelation']:
+                print(f"    lag {a['lag']:>3}: r={a['r']:.4f}")
+    _json_or(args, result, _fmt)
 
 
 def _cmd_cb_routing(args: argparse.Namespace) -> None:
@@ -2503,25 +2671,28 @@ def _cmd_cb_routing(args: argparse.Namespace) -> None:
 
     result = causal_bank_routing(args.mri)
     if "error" in result:
-        print(f"Error: {result['error']}")
+        if getattr(args, 'json_output', False):
+            json.dump(result, sys.stdout, default=str); print()
+        else:
+            print(f"Error: {result['error']}")
         return
 
-    print(f"\n=== CB Routing: {result['model']} — "
-          f"{result['n_experts']} experts, {result['n_seqs']} seqs ===\n")
-    print(f"  Switch rate: {result['switch_rate']:.2f}%")
-    print(f"  Routing margin: {result['routing_margin']:.4f}")
-    print(f"  Routing entropy: {result['routing_entropy']:.4f}\n")
-
-    print(f"  Overall distribution:")
-    for d in result['overall_distribution']:
-        bar = '#' * int(d['pct'] / 2)
-        print(f"    E{d['expert']}: {d['pct']:>5.1f}% {bar}")
-
-    if result['by_position']:
-        print(f"\n  {'Position':>12} {'Switch%':>8}  Distribution")
-        for p in result['by_position']:
-            dist_str = ' '.join(f'{v:.0f}%' for v in p['distribution'])
-            print(f"  {p['range']:>12} {p['switch_rate']:>7.1f}%  {dist_str}")
+    def _fmt(r):
+        print(f"\n=== CB Routing: {r['model']} — "
+              f"{r['n_experts']} experts, {r['n_seqs']} seqs ===\n")
+        print(f"  Switch rate: {r['switch_rate']:.2f}%")
+        print(f"  Routing margin: {r['routing_margin']:.4f}")
+        print(f"  Routing entropy: {r['routing_entropy']:.4f}\n")
+        print(f"  Overall distribution:")
+        for d in r['overall_distribution']:
+            bar = '#' * int(d['pct'] / 2)
+            print(f"    E{d['expert']}: {d['pct']:>5.1f}% {bar}")
+        if r['by_position']:
+            print(f"\n  {'Position':>12} {'Switch%':>8}  Distribution")
+            for p in r['by_position']:
+                dist_str = ' '.join(f'{v:.0f}%' for v in p['distribution'])
+                print(f"  {p['range']:>12} {p['switch_rate']:>7.1f}%  {dist_str}")
+    _json_or(args, result, _fmt)
 
 
 def _cmd_cb_temporal(args: argparse.Namespace) -> None:
@@ -2609,6 +2780,129 @@ def _cmd_cb_decompose(args: argparse.Namespace) -> None:
     for i in range(min(10, len(result['top_variance_pct']))):
         print(f"  {i+1:>4} {result['top_variance_pct'][i]:>5.1f}% "
               f"{result['pc_position_r'][i]:>7.3f} {result['pc_loss_r'][i]:>7.3f}")
+
+
+def _cmd_cb_omega_forensics(args: argparse.Namespace) -> None:
+    """Omega projection weight forensics."""
+    from .profile.compare import causal_bank_omega_forensics
+
+    result = causal_bank_omega_forensics(args.checkpoint)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Omega Forensics: {result['n_modes']} modes x {result['n_input']} input ===\n")
+    print(f"  Weight L2: {result['weight_l2']}")
+    print(f"  Per-mode L2 range: {result['per_mode_l2_range']}")
+    print(f"  Gini concentration: {result['gini_concentration']}")
+    if result['fourier_corr'] is not None:
+        print(f"  Fourier correlation: {result['fourier_corr']}")
+        print(f"  Fourier drift: {result['fourier_drift']}")
+    print(f"  Weight eff rank: {result['weight_eff_rank']} (50%={result['rank_for_50_pct']}, 90%={result['rank_for_90_pct']})")
+
+    print(f"\n  Band allocation:")
+    for name, info in result['band_allocation'].items():
+        pct = info['frac_total'] * 100
+        bar = '#' * int(pct / 2)
+        print(f"    {name:>20}: {pct:>5.1f}% ({info['n_modes']} modes, L2={info['mean_l2']:.3f}) {bar}")
+
+
+def _cmd_cb_additivity(args: argparse.Namespace) -> None:
+    """Verify the additivity law: bpb(A+B+...) ≈ bpb(baseline) + Σ Δ(Mᵢ)."""
+    from .profile.compare import causal_bank_additivity
+
+    try:
+        result = causal_bank_additivity(
+            args.baseline, args.mutations, args.combination,
+            noise_floor=args.noise_floor,
+        )
+    except ValueError as e:
+        print(f"Error: {e}")
+        return
+
+    def _fmt(r):
+        print(f"\n=== CB Additivity Check ===\n")
+        b = r['baseline']
+        print(f"  Baseline: {b['bpb']:.4f} bpb  ({b['mri'].split('/')[-1]})")
+        print(f"  Solo mutations:")
+        for m in r['mutations']:
+            print(f"    {m['mri'].split('/')[-1]:50s} "
+                  f"bpb={m['bpb']:>7.4f}  Δ={m['delta_vs_baseline']:+.4f}")
+        print(f"\n  Predicted (additive):  {r['predicted_bpb']:.4f} bpb")
+        print(f"  Actual (combination):  {r['actual_bpb']:.4f} bpb")
+        print(f"  Gap:                   {r['gap']:+.4f} bpb "
+              f"(noise floor ±{r['noise_floor']})")
+        tag = "⚠ NON-ADDITIVE" if r['is_non_additive'] else "✓ additive"
+        print(f"\n  Verdict: {tag} — {r['verdict']}")
+    _json_or(args, result, _fmt)
+
+
+def _cmd_cb_rotation_forensics(args: argparse.Namespace) -> None:
+    """Rotation / gate-weight forensics for non-adaptive substrates."""
+    from .profile.compare import causal_bank_rotation_forensics
+
+    result = causal_bank_rotation_forensics(args.checkpoint)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    fams = ", ".join(result["substrate_families"])
+    print(f"\n=== CB Rotation Forensics ({fams}) — {result['n_modules_total']} modules ===\n")
+    print(f"  Trained (non-zero weight): {result['n_modules_trained']}")
+    print(f"  Frozen at zero (untrained): {result['n_modules_frozen_at_zero']}")
+    if result['frozen_modules']:
+        print(f"  ⚠ Frozen modules: {', '.join(result['frozen_modules'])}")
+
+    print(f"\n  {'Module':>42} {'shape':>14} {'L2':>8} {'bias L2':>8} {'eff rank':>9} {'top SV':>8}")
+    for mod, info in result['modules'].items():
+        shape = 'x'.join(str(s) for s in info.get('weight_shape', ()))
+        print(f"  {mod:>42} {shape:>14} "
+              f"{info.get('weight_l2', 0):>8.3f} "
+              f"{info.get('bias_l2', 0):>8.3f} "
+              f"{info.get('effective_rank', 0):>9.2f} "
+              f"{info.get('top_sv', 0):>8.3f}")
+
+
+def _cmd_cb_trajectory(args: argparse.Namespace) -> None:
+    """Trajectory analysis across checkpoints."""
+    from .profile.compare import causal_bank_trajectory
+
+    result = causal_bank_trajectory(args.mris)
+
+    def _fmt(r):
+        print(f"\n=== Trajectory: {r['n_checkpoints']} checkpoints ===\n")
+        print(f"  EffDim trend: {r['eff_dim_trend']}\n")
+        print(f"  {'Checkpoint':>40} {'EffDim':>8} {'PosR²':>8} {'ConR²':>8} {'Active':>8} {'Dead':>6}")
+        for p in r['points']:
+            name = p['path'].split('/')[-1] if '/' in p['path'] else p['path']
+            print(f"  {name:>40} {p['eff_dim']:>8.1f} {p['pos_r2']:>8.4f} {p['cont_r2']:>8.4f} "
+                  f"{p['active_frac']:>8.4f} {p['dead_modes']:>6}")
+        if r['derivatives']:
+            print(f"\n  Derivatives:")
+            for d in r['derivatives']:
+                print(f"    dEffDim={d['d_eff_dim']:+.1f}  dPosR²={d['d_pos_r2']:+.6f}  "
+                      f"dConR²={d['d_cont_r2']:+.4f}  dActive={d['d_active_frac']:+.4f}")
+    _json_or(args, result, _fmt)
+
+
+def _cmd_cb_invertibility(args: argparse.Namespace) -> None:
+    """Substrate invertibility — how far back can it reconstruct?"""
+    from .profile.compare import causal_bank_invertibility
+
+    result = causal_bank_invertibility(args.mri, max_lookback=args.max_lookback)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    print(f"\n=== Invertibility: {result['model']} — {result['n_modes']} modes ===\n")
+    print(f"  Memory type: {result['memory_type']}")
+    print(f"  Memory horizon: {result['memory_horizon']} positions")
+    print(f"  Peak R²: {result['peak_r2']:.4f}  Plateau R²: {result['plateau_r2']:.4f}\n")
+
+    print(f"  {'Lookback':>10} {'R²':>8} {'Acc':>8}")
+    for lb in result['lookbacks']:
+        bar = '#' * int(max(0, lb['r2']) * 40)
+        print(f"  T-{lb['lookback']:>7} {lb['r2']:>8.4f} {lb['accuracy']:>8.4f} {bar}")
 
 
 def _cmd_cb_rotation_probe(args: argparse.Namespace) -> None:

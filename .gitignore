@@ -51,3 +51,9 @@ security/
 # Local MCP config (contains absolute paths)
 .mcp.json
 .serena/
+
+# Playwright MCP screenshots and page snapshots
+.playwright-mcp/
+
+# Verification PNGs from companion QA
+verify_*.png

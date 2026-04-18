@@ -4270,7 +4270,21 @@ def causal_bank_loss(mri_path: str, *, _mri=None) -> dict:
         r = float(np.corrcoef(a[mask], b_arr[mask])[0, 1])
         autocorr.append({"lag": lag, "r": round(r, 4)})
 
-    return {
+    # Sanity check: if loss exceeds the uniform-baseline for the vocab,
+    # the model is confidently wrong — most often a val/model data mismatch.
+    vocab = int(meta['model'].get('vocab_size', 0))
+    warning = None
+    if vocab > 1:
+        uniform_bpb = float(np.log2(vocab))
+        if overall_bpb > uniform_bpb:
+            warning = (
+                f"overall bpb {overall_bpb:.2f} exceeds uniform baseline "
+                f"log2(vocab={vocab})={uniform_bpb:.2f}. Model is worse than "
+                f"random — check that the val data matches the model "
+                f"(byte-level model needs byte val, not sp-tokenized val)."
+            )
+
+    out = {
         "model": meta['model'].get('name', '?'),
         "n_seqs": n_seqs,
         "seq_len": seq_len,
@@ -4279,6 +4293,9 @@ def causal_bank_loss(mri_path: str, *, _mri=None) -> dict:
         "by_band": by_band,
         "autocorrelation": autocorr,
     }
+    if warning is not None:
+        out["warning"] = warning
+    return out
 
 
 def causal_bank_routing(mri_path: str, *, _mri=None) -> dict:
@@ -4296,6 +4313,17 @@ def causal_bank_routing(mri_path: str, *, _mri=None) -> dict:
 
     routing = mri['routing'].astype(np.float32)  # [n_seqs, seq_len, n_experts]
     n_seqs, seq_len, n_experts = routing.shape
+
+    # Guard against stale/empty routing arrays (e.g. adaptive_substrate MRIs
+    # captured before the loader knew how to read the router). An array that
+    # is identically zero is not a "100% E0 collapse" signal — it's an
+    # uncaptured tensor. Re-capture with a fixed loader to get real routing.
+    if float(routing.max()) == 0.0 and float(routing.min()) == 0.0:
+        return {
+            "error": "routing.npy is all zeros — routing was not captured for "
+                     "this MRI (likely an adaptive_substrate model captured "
+                     "before loader was fixed). Re-capture to measure."
+        }
 
     winners = np.argmax(routing, axis=-1)
     overall_dist = []
@@ -4816,6 +4844,507 @@ def tokenizer_difficulty(mri_path: str, *, _mri=None) -> dict:
         "near_duplicates": n_near_dup,
         "embed_norm_range": [round(float(embed_norm.min()), 4),
                              round(float(embed_norm.max()), 4)],
+    }
+
+
+def causal_bank_omega_forensics(checkpoint_path: str) -> dict:
+    """Forensic analysis of the omega projection weights from a checkpoint.
+
+    No model loading needed — reads weights directly from the state dict.
+    Reports: per-band L2 allocation, Fourier basis survival, weight rank,
+    and per-mode frequency warping structure.
+    """
+    import torch
+
+    sd = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+    if any(k.startswith('_orig_mod.') for k in sd):
+        sd = {k.removeprefix('_orig_mod.'): v for k, v in sd.items()}
+
+    # Find omega bias and weight
+    omega_bias = omega_weight = None
+    for k in sd:
+        if 'omega' in k and 'bias' in k:
+            omega_bias = sd[k].numpy()
+        if 'omega' in k and 'weight' in k:
+            omega_weight = sd[k].numpy().astype(np.float32)
+
+    if omega_weight is None:
+        # Detect alternative substrate mechanisms and point the user to the
+        # right analysis rather than silently failing.
+        gated_delta_keys = [k for k in sd if '_gated_delta' in k]
+        lasso_keys = [k for k in sd if '_lasso' in k]
+        so_keys = [k for k in sd if '_so5' in k or '_quat' in k]
+        hints = []
+        if gated_delta_keys:
+            hints.append("gated_delta substrate — use profile-cb-rotation-forensics")
+        if lasso_keys:
+            hints.append("lasso_rotation substrate — use profile-cb-rotation-forensics")
+        if so_keys:
+            hints.append("SO(3)/SO(5) rotation substrate — use profile-cb-rotation-forensics")
+        hint = "; ".join(hints) if hints else ("checkpoint appears to use a substrate "
+                                               "without an omega projection")
+        return {
+            "error": f"No _adaptive_omega_proj.weight found. {hint}.",
+            "detected_substrate_keys": (gated_delta_keys + lasso_keys + so_keys)[:6],
+        }
+
+    n_modes, n_in = omega_weight.shape
+
+    # --- Per-mode L2 (how much each mode's frequency gets modulated) ---
+    per_mode_l2 = np.linalg.norm(omega_weight, axis=1)
+
+    # --- Frequency band allocation ---
+    freqs = np.arange(n_modes)
+    periods = n_modes / (freqs + 1)
+
+    # Bands are *periodicities* (positions per period), not linguistic units.
+    # They happen to correlate with char/word/phrase frequencies in English
+    # byte streams, but the labels describe the frequency structure of the
+    # input data, not the model's encoding. Previous names (char_1_5 etc.)
+    # were misleading — readers assumed "characters" meant linguistic chars.
+    bands = [
+        ("period_1_5", 1, 5),        # fast oscillation (formerly char_1_5)
+        ("period_5_30", 5, 30),      # medium oscillation (formerly word_5_30)
+        ("period_30_100", 30, 100),  # slower (formerly phrase_30_100)
+        ("period_100_500", 100, 500),  # slow (formerly sentence_100_500)
+        ("period_500_plus", 500, n_modes + 1),  # very slow (formerly paragraph)
+    ]
+    band_alloc = {}
+    total_l2 = float(per_mode_l2.sum())
+    for name, lo, hi in bands:
+        mask = (periods >= lo) & (periods < hi)
+        if mask.any():
+            band_alloc[name] = {
+                "n_modes": int(mask.sum()),
+                "mean_l2": round(float(per_mode_l2[mask].mean()), 4),
+                "frac_total": round(float(per_mode_l2[mask].sum()) / (total_l2 + 1e-10), 4),
+            }
+
+    # --- Fourier basis survival ---
+    fourier_corr = None
+    fourier_drift = None
+    if omega_bias is not None:
+        fourier = np.linspace(0, 2 * np.pi, len(omega_bias))
+        fourier_corr = round(float(np.corrcoef(omega_bias, fourier)[0, 1]), 6)
+        fourier_drift = round(float(np.abs(omega_bias - fourier).mean()), 4)
+
+    # --- Weight matrix rank (effective dimensionality of modulation) ---
+    _, S, _ = np.linalg.svd(omega_weight, full_matrices=False)
+    sv_norm = S / (S.sum() + 1e-10)
+    weight_eff_rank = float(np.exp(-(sv_norm * np.log(sv_norm + 1e-10)).sum()))
+    sv_cum = np.cumsum(sv_norm)
+    rank_50 = int(np.searchsorted(sv_cum, 0.5)) + 1
+    rank_90 = int(np.searchsorted(sv_cum, 0.9)) + 1
+
+    # --- Concentration metric ---
+    gini = float(np.abs(np.subtract.outer(per_mode_l2, per_mode_l2)).mean()
+                 / (2 * per_mode_l2.mean() + 1e-10))
+
+    return {
+        "n_modes": n_modes,
+        "n_input": n_in,
+        "weight_l2": round(float(np.linalg.norm(omega_weight)), 4),
+        "per_mode_l2_range": [round(float(per_mode_l2.min()), 4),
+                              round(float(per_mode_l2.max()), 4)],
+        "band_allocation": band_alloc,
+        "fourier_corr": fourier_corr,
+        "fourier_drift": fourier_drift,
+        "weight_eff_rank": round(weight_eff_rank, 1),
+        "rank_for_50_pct": rank_50,
+        "rank_for_90_pct": rank_90,
+        "gini_concentration": round(gini, 4),
+    }
+
+
+def causal_bank_additivity(baseline_mri: str,
+                            mutation_mris: list[str],
+                            combination_mri: str,
+                            *, noise_floor: float = 0.004) -> dict:
+    """Check whether a combined mutation's bpb matches the additive-law prediction.
+
+    The session-11 empirical finding: mutation effects on bpb compose additively
+    within ~0.004 bpb (init-noise floor). Given solo measurements of mutations
+    A, B, C and a combined A+B+C run, we can predict the combination's bpb as:
+
+        predicted(A+B+C) = bpb(baseline) + Σ (bpb(M) - bpb(baseline))
+
+    Deviation from additivity beyond the noise floor flags either:
+    - a genuinely non-additive interaction (worth investigating)
+    - init-signature divergence between runs (see session-11 Q7)
+    - a measurement error in one of the inputs
+
+    Returns predicted vs actual, the gap, and a verdict.
+    """
+    def _bpb(mri_path: str) -> float:
+        res = causal_bank_loss(mri_path)
+        if "error" in res:
+            raise ValueError(f"failed to load {mri_path}: {res['error']}")
+        return float(res["overall_bpb"])
+
+    base_bpb = _bpb(baseline_mri)
+    mutation_data = []
+    total_delta = 0.0
+    for mri in mutation_mris:
+        m_bpb = _bpb(mri)
+        delta = m_bpb - base_bpb
+        mutation_data.append({
+            "mri": mri,
+            "bpb": round(m_bpb, 4),
+            "delta_vs_baseline": round(delta, 4),
+        })
+        total_delta += delta
+
+    predicted = base_bpb + total_delta
+    actual = _bpb(combination_mri)
+    gap = actual - predicted
+    gap_abs = abs(gap)
+
+    if gap_abs <= noise_floor:
+        verdict = "additive"
+    elif gap < 0:
+        verdict = "sub-additive (combination beats sum — possible synergy)"
+    else:
+        verdict = "super-additive (combination worse than sum — possible conflict)"
+
+    return {
+        "baseline": {"mri": baseline_mri, "bpb": round(base_bpb, 4)},
+        "mutations": mutation_data,
+        "combination": {"mri": combination_mri, "bpb": round(actual, 4)},
+        "predicted_bpb": round(predicted, 4),
+        "actual_bpb": round(actual, 4),
+        "gap": round(gap, 4),
+        "noise_floor": noise_floor,
+        "verdict": verdict,
+        "is_non_additive": gap_abs > noise_floor,
+    }
+
+
+def causal_bank_rotation_forensics(checkpoint_path: str) -> dict:
+    """Forensic analysis of rotation/gate weights for non-adaptive substrates.
+
+    Companion to causal_bank_omega_forensics. Handles gated_delta, lasso,
+    SO(3)/SO(5), and quaternion substrates by reading their rotation-proj
+    and gate weights directly from the state dict.
+
+    Reports per-module L2 magnitudes, effective rank of rotation projections,
+    and whether weights are trained (non-zero) or frozen (zero).
+    """
+    import torch
+
+    sd = torch.load(checkpoint_path, map_location='cpu', weights_only=True)
+    if any(k.startswith('_orig_mod.') for k in sd):
+        sd = {k.removeprefix('_orig_mod.'): v for k, v in sd.items()}
+
+    # Identify substrate family by which weight families are present.
+    family_prefixes = {
+        "gated_delta": "_gated_delta_",
+        "lasso": "_lasso_",
+        "so5": "_so5_",
+        "quaternion": "_quat_",
+        "rotation_generic": "_gated_delta_rotation_proj",
+    }
+    families_present = []
+    for fam, prefix in family_prefixes.items():
+        if any(k.startswith(prefix) for k in sd):
+            families_present.append(fam)
+
+    if not families_present:
+        return {"error": "No recognized rotation/gate weights found. "
+                         "Is this a rotation-based substrate checkpoint?"}
+
+    modules = {}
+    for k, v in sd.items():
+        # Group by module path (everything before `.weight`/`.bias`)
+        if not (k.endswith('.weight') or k.endswith('.bias')):
+            continue
+        mod = k.rsplit('.', 1)[0]
+        if not any(mod.startswith(family_prefixes[f]) for f in families_present):
+            continue
+        t = v.float()
+        rec = modules.setdefault(mod, {})
+        if k.endswith('.weight'):
+            rec['weight_shape'] = tuple(t.shape)
+            rec['weight_l2'] = round(float(t.norm()), 4)
+            rec['weight_mean_abs'] = round(float(t.abs().mean()), 6)
+            rec['weight_max_abs'] = round(float(t.abs().max()), 6)
+            if t.dim() == 2 and min(t.shape) > 1:
+                S = np.linalg.svd(t.numpy().astype(np.float32),
+                                  compute_uv=False, full_matrices=False)
+                if S.sum() > 1e-10:
+                    sv_norm = S / S.sum()
+                    eff_rank = float(np.exp(-(sv_norm *
+                                              np.log(sv_norm + 1e-12)).sum()))
+                    rec['effective_rank'] = round(eff_rank, 2)
+                    rec['top_sv'] = round(float(S[0]), 3)
+                    rec['sv_tail_to_top_ratio'] = round(
+                        float(S[-1] / (S[0] + 1e-10)), 4)
+        else:
+            rec['bias_l2'] = round(float(t.norm()), 4)
+
+    # Flag frozen-at-zero modules (probably untrained)
+    frozen = [m for m, r in modules.items()
+              if r.get('weight_l2', 1.0) < 1e-6]
+    trained = [m for m, r in modules.items()
+               if r.get('weight_l2', 0.0) >= 1e-6]
+
+    return {
+        "substrate_families": families_present,
+        "modules": modules,
+        "n_modules_total": len(modules),
+        "n_modules_trained": len(trained),
+        "n_modules_frozen_at_zero": len(frozen),
+        "frozen_modules": frozen,
+    }
+
+
+def _ridge_r2(X: np.ndarray, y: np.ndarray, *, n_train_frac: float = 0.5,
+              var_cap: float = 0.99) -> float:
+    """Held-out R² for y ~ X via SVD-truncated regression.
+
+    Projects features onto PCs capturing `var_cap` fraction of variance
+    (typically 99%), then runs unregularized regression on the projection.
+    This is equivalent to a hard-threshold ridge and avoids both:
+    - top-K PC under-projection, which hides weak-direction signal
+    - full-rank overfitting, which makes held-out R² negative at n_dim ≈ n_samples
+
+    Split is contiguous by first-half / second-half of rows. For substrate
+    analysis pass rows in sequence-major order; positions 0..T-1 appear on
+    both sides (fine — we want same-position generalization).
+    """
+    X = X.astype(np.float32, copy=False)
+    y = np.asarray(y, dtype=np.float32)
+    n = X.shape[0]
+    n_train = int(n * n_train_frac)
+    if n_train < 30 or n - n_train < 30:
+        return 0.0
+    X_tr = X[:n_train]
+    y_tr = y[:n_train]
+    X_te = X[n_train:]
+    y_te = y[n_train:]
+    # Training-mean centering only (no test-set leakage).
+    x_mean = X_tr.mean(axis=0)
+    y_mean = float(y_tr.mean())
+    Xc_tr = X_tr - x_mean
+    # Sample SVD on a bounded subset for large n_train (10k rows is enough
+    # to estimate the principal axes). Project full train onto the axes.
+    svd_rows = min(10000, n_train)
+    _, S, Vt = np.linalg.svd(Xc_tr[:svd_rows], full_matrices=False)
+    cum = np.cumsum(S ** 2) / ((S ** 2).sum() + 1e-12)
+    k = int(np.searchsorted(cum, var_cap)) + 1
+    # Safety cap so we never solve a regression larger than n_train / 4 — keeps
+    # held-out R² well-posed even when 99% variance lands on many weak dirs.
+    k = min(k, max(20, n_train // 4))
+    Pk = Vt[:k]
+    scores_tr = Xc_tr @ Pk.T
+    X_tr_aug = np.hstack([scores_tr, np.ones((n_train, 1), dtype=np.float32)])
+    # Simple lstsq — well-posed now that features are k ≪ n_train.
+    coef, _, _, _ = np.linalg.lstsq(X_tr_aug, y_tr - y_mean, rcond=None)
+    scores_te = (X_te - x_mean) @ Pk.T
+    X_te_aug = np.hstack([scores_te,
+                          np.ones((X_te.shape[0], 1), dtype=np.float32)])
+    pred = X_te_aug @ coef + y_mean
+    ss_res = float(((y_te - pred) ** 2).sum())
+    ss_tot = float(((y_te - y_te.mean()) ** 2).sum())
+    if ss_tot <= 1e-10:
+        return 0.0
+    return max(0.0, float(1.0 - ss_res / ss_tot))
+
+
+def causal_bank_trajectory(mri_paths: list[str]) -> dict:
+    """Forensic trajectory analysis across multiple checkpoints from the same run.
+
+    Takes ordered MRI paths (by training step) and reports derivatives:
+    - EffDim trajectory: growing, flat, or regressing?
+    - Content R² trajectory: saturating?
+    - Position R² trajectory: emerging?
+    - Mode utilization trajectory: expanding or collapsing?
+
+    Use with checkpoints saved at regular intervals (e.g., every 5k steps).
+    """
+    from .mri import load_mri
+
+    points = []
+    for path in mri_paths:
+        mri = load_mri(path)
+        meta = mri['metadata']
+        sub = mri['substrate_states'].astype(np.float32)
+        loss = mri.get('loss')
+
+        if sub.ndim == 3:
+            flat_sub = sub.reshape(-1, sub.shape[-1])
+        else:
+            flat_sub = sub
+
+        n_total, n_dim = flat_sub.shape
+
+        # EffDim
+        sub_c = flat_sub - flat_sub.mean(axis=0)
+        _, S, _ = np.linalg.svd(sub_c[:5000], full_matrices=False)
+        var_exp = (S ** 2) / (S ** 2).sum()
+        eff_dim = float(np.exp(-(var_exp * np.log(var_exp + 1e-10)).sum()))
+
+        # Position R² (ridge regression, held-out split).
+        # Previous version regressed against the top-20 PCs — position signal
+        # that lives in weaker directions was invisible (session-11 Q4:
+        # lasso-pos-b2-s8 had full-substrate PosR² 0.34 but top-20-PC PosR²
+        # 0.001). Ridge over the full substrate captures weak-but-real
+        # position directions without overfitting at n_dim ≈ n_samples.
+        # Held-out split reports out-of-sample R².
+        if sub.ndim == 3:
+            n_seqs, seq_len = sub.shape[:2]
+            flat_pos = np.tile(np.arange(seq_len, dtype=np.float32), n_seqs)
+        else:
+            flat_pos = np.arange(n_total, dtype=np.float32)
+        pos_r2 = _ridge_r2(sub_c, flat_pos, n_train_frac=0.5)
+
+        # Content R² — held-out ridge over full substrate, same method as PosR².
+        cont_r2 = 0.0
+        if loss is not None:
+            flat_loss = loss.reshape(-1)
+            n_use = min(len(sub_c), len(flat_loss))
+            valid = ~np.isnan(flat_loss[:n_use])
+            if valid.sum() > 100:
+                cont_r2 = _ridge_r2(sub_c[:n_use][valid], flat_loss[:n_use][valid],
+                                    n_train_frac=0.5)
+
+        # Mode utilization (fraction of modes with >1% of mean variance)
+        mode_var = flat_sub.var(axis=0)
+        active_frac = float((mode_var > mode_var.mean() * 0.01).mean())
+
+        # Dead modes
+        dead = int((mode_var < mode_var.mean() * 0.001).sum())
+
+        points.append({
+            "path": path,
+            "eff_dim": round(eff_dim, 1),
+            "pos_r2": round(pos_r2, 6),
+            "cont_r2": round(cont_r2, 4),
+            "active_frac": round(active_frac, 4),
+            "dead_modes": dead,
+            "n_dim": n_dim,
+        })
+
+    # Compute derivatives between consecutive points
+    derivatives = []
+    for i in range(1, len(points)):
+        prev, curr = points[i-1], points[i]
+        derivatives.append({
+            "from": prev["path"],
+            "to": curr["path"],
+            "d_eff_dim": round(curr["eff_dim"] - prev["eff_dim"], 1),
+            "d_pos_r2": round(curr["pos_r2"] - prev["pos_r2"], 6),
+            "d_cont_r2": round(curr["cont_r2"] - prev["cont_r2"], 4),
+            "d_active_frac": round(curr["active_frac"] - prev["active_frac"], 4),
+        })
+
+    # Trend detection
+    if len(points) >= 3:
+        eff_dims = [p["eff_dim"] for p in points]
+        trend = "growing" if eff_dims[-1] > eff_dims[0] * 1.05 else \
+                "regressing" if eff_dims[-1] < eff_dims[0] * 0.95 else "flat"
+    elif len(points) == 1:
+        trend = "single_point"
+    else:
+        trend = "insufficient_data"
+
+    return {
+        "n_checkpoints": len(points),
+        "points": points,
+        "derivatives": derivatives,
+        "eff_dim_trend": trend,
+    }
+
+
+def causal_bank_invertibility(mri_path: str, *, max_lookback: int = 512,
+                               _mri=None) -> dict:
+    """How far back can the substrate reconstruct past bytes?
+
+    Tests reconstruction R² at increasing lookback distances.
+    Separates fast decay (recent memory) from plateau (long-range statistics).
+    Reports the effective memory horizon and the information type at each scale.
+    """
+    from .mri import load_mri
+
+    mri = _mri or load_mri(mri_path)
+    meta = mri['metadata']
+    if meta.get('architecture') != 'causal_bank':
+        return {"error": "Not a causal bank MRI"}
+    if meta.get('capture', {}).get('mode') != 'sequence':
+        return {"error": "Requires sequence-mode MRI"}
+
+    sub = mri['substrate_states'].astype(np.float32)
+    tokens = mri['token_ids']
+    if sub.ndim == 3:
+        flat_sub = sub.reshape(-1, sub.shape[-1])
+        flat_tok = tokens.reshape(-1)
+        seq_len = sub.shape[1]
+    else:
+        flat_sub = sub
+        flat_tok = tokens
+        seq_len = len(tokens)
+
+    n_total, hdim = flat_sub.shape
+    probe_dim = min(200, hdim)
+
+    from numpy.linalg import lstsq
+
+    lookbacks = []
+    lb = 1
+    while lb <= min(max_lookback, seq_len - 1):
+        X = flat_sub[lb:]
+        y = flat_tok[:-lb].astype(np.float32)
+
+        n = len(X)
+        split = int(n * 0.8)
+        X_tr, X_te = X[:split, :probe_dim], X[split:, :probe_dim]
+        y_tr, y_te = y[:split], y[split:]
+
+        ones_tr = np.ones((len(X_tr), 1), dtype=np.float32)
+        ones_te = np.ones((len(X_te), 1), dtype=np.float32)
+        Xt = np.hstack([X_tr, ones_tr])
+        coef, _, _, _ = lstsq(Xt, y_tr, rcond=None)
+        pred = np.hstack([X_te, ones_te]) @ coef
+
+        ss_res = ((y_te - pred) ** 2).sum()
+        ss_tot = ((y_te - y_te.mean()) ** 2).sum()
+        r2 = float(1.0 - ss_res / (ss_tot + 1e-10))
+
+        pred_class = np.clip(np.round(pred), 0, 255).astype(int)
+        acc = float((pred_class == y_te.astype(int)).mean())
+
+        lookbacks.append({
+            "lookback": lb,
+            "r2": round(r2, 4),
+            "accuracy": round(acc, 4),
+        })
+
+        # Adaptive stepping: 1,2,4,8,16,32,64,128,256,512
+        lb = lb * 2
+
+    # Find transition point: where does R² plateau?
+    r2_vals = [lb["r2"] for lb in lookbacks]
+    plateau_r2 = float(np.median(r2_vals[len(r2_vals)//2:]))  # median of second half
+    peak_r2 = float(max(r2_vals))
+
+    # Memory horizon: lookback where R² drops to within 10% of plateau
+    threshold = plateau_r2 + (peak_r2 - plateau_r2) * 0.1
+    horizon = lookbacks[-1]["lookback"]
+    for lb_entry in lookbacks:
+        if lb_entry["r2"] <= threshold:
+            horizon = lb_entry["lookback"]
+            break
+
+    return {
+        "model": meta['model'].get('name', '?'),
+        "n_modes": hdim,
+        "seq_len": seq_len,
+        "lookbacks": lookbacks,
+        "peak_r2": round(peak_r2, 4),
+        "plateau_r2": round(plateau_r2, 4),
+        "memory_horizon": horizon,
+        "memory_type": "eidetic" if plateau_r2 > 0.8 else
+                       "statistical" if plateau_r2 > 0.3 else
+                       "fading" if plateau_r2 > 0.1 else "none",
     }
 
 
