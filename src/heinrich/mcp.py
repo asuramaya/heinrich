@@ -343,6 +343,22 @@ TOOLS = {
             "output": {"type": "string", "description": "Output .sht.npz path"},
         },
     },
+    "heinrich_audit_direction": {
+        "description": "Run the 5-test falsification pipeline on a mean-diff direction at a given layer. Tests: in-domain classification, bootstrap stability, permutation null, cross-dataset transfer, vocab projection. Returns verdict: robust_feature / partial / falsified.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID (MLX loadable)", "required": True},
+            "datasets": {"type": "array", "description": "CSV paths. First is train-on; rest are transfer targets. Each CSV needs columns 'statement' and 'label' (0 or 1).", "required": True},
+            "layer": {"type": "integer", "description": "Layer index to capture residual at", "required": True},
+            "n_per_class": {"type": "integer", "description": "Statements per class per dataset (default 80)"},
+            "train_frac": {"type": "number", "description": "Train split fraction (default 0.8)"},
+            "seed": {"type": "integer", "description": "RNG seed (default 42)"},
+            "n_bootstrap": {"type": "integer", "description": "Bootstrap resamples (default 50)"},
+            "n_permutation": {"type": "integer", "description": "Permutations for null (default 200)"},
+            "truth_tokens": {"type": "string", "description": "Comma-separated expected-truth single-tokens"},
+            "false_tokens": {"type": "string", "description": "Comma-separated expected-false single-tokens"},
+            "output": {"type": "string", "description": "Output JSON path"},
+        },
+    },
     "heinrich_total_capture": {
         "description": "[Legacy — use heinrich_mri instead] Total residual capture.",
         "parameters": {
@@ -744,6 +760,89 @@ TOOLS = {
             "mode": {"type": "string", "description": "Capture mode: raw, naked, or template (default: raw)"},
         },
     },
+    "heinrich_residual_trajectory": {
+        "description": "Capture the residual at one layer at every generated position for one prompt: prompt-end, +1, +2, ..., +N. Plumbing for 'does belief emerge during generation?' experiments. Returns residuals as a [n+1, hidden] array plus the generated token texts so you can correlate position → meaning. For group comparisons, run this across many prompts and extract direction = mean(pos_residuals[t]) − mean(neg_residuals[t]) at each position.",
+        "parameters": {
+            "model": {"type": "string", "description": "MRI directory name.", "required": True},
+            "mode": {"type": "string", "description": "raw / naked / template."},
+            "prompt": {"type": "string", "description": "Prompt to forward + generate from.", "required": True},
+            "layer": {"type": "integer", "description": "Layer at which to capture residuals.", "required": True},
+            "n_generated": {"type": "integer", "description": "Number of generated tokens (default 10)."},
+            "model_id": {"type": "string", "description": "HF model id override (auto-inferred from MRI if possible)."},
+            "port": {"type": "integer", "description": "Companion server port (default 8377)."},
+        },
+    },
+    "heinrich_replicate_probe": {
+        "description": "Apply the 5-test falsification pipeline to a claimed LLM concept probe. Runs the full: (1) bootstrap anchor stability, (2) random-direction null baseline, (3) within-group control with signal:noise ratio, (4) vocab projection sanity vs expected tokens, and returns a verdict ∈ {robust_feature, partial, falsified}. This is the standard way to adjudicate whether a paper's claimed direction/probe is real or a narrative. See papers/lie-detection/ATTACK_PLAN.md.",
+        "parameters": {
+            "model": {"type": "string", "description": "MRI directory name.", "required": True},
+            "mode": {"type": "string", "description": "raw / naked / template."},
+            "layer": {"type": "integer", "description": "Layer to probe.", "required": True},
+            "pos_prompts": {"type": "array", "description": "Positive-class prompts (≥6).", "required": True},
+            "neg_prompts": {"type": "array", "description": "Negative-class prompts (≥6).", "required": True},
+            "expected_tokens_pos": {"type": "array", "description": "Expected top-pos vocab tokens (for Test 4 vocab-sanity check). E.g. for truth direction: ['true','yes','correct','actually']."},
+            "expected_tokens_neg": {"type": "array", "description": "Expected top-neg vocab tokens."},
+            "model_id": {"type": "string", "description": "HF model id override."},
+            "n_random_null": {"type": "integer", "description": "Number of random unit vectors for null baseline (default 100)."},
+            "position": {"type": "integer", "description": "Residual capture position: 0=prompt-end, k=after k generated tokens. Default 0."},
+            "port": {"type": "integer", "description": "Companion port (default 8377)."},
+        },
+    },
+    "heinrich_behavioral_direction": {
+        "description": "Extract a direction from contrastive prompt lists (not token pairs). Runs the model on each prompt, captures last-token residual at the target layer, returns direction = mean(pos) − mean(neg) plus Cohen's d, bootstrap cosine stability, and MRI vocab projection. Foundation for comparing heinrich probes against actual model behavior. Requires the model to be loadable (HF id auto-detected from MRI metadata, override via model_id).",
+        "parameters": {
+            "model": {"type": "string", "description": "MRI directory name (used for vocab labels and component projection).", "required": True},
+            "mode": {"type": "string", "description": "raw / naked / template."},
+            "layer": {"type": "integer", "description": "Layer at which to capture residuals.", "required": True},
+            "pos_prompts": {"type": "array", "description": "Positive-class prompts (at least 3).", "required": True},
+            "neg_prompts": {"type": "array", "description": "Negative-class prompts (at least 3).", "required": True},
+            "model_id": {"type": "string", "description": "HF model id override (e.g. 'Qwen/Qwen2-0.5B-Instruct'). Optional if MRI metadata has it."},
+            "port": {"type": "integer", "description": "Companion server port (default 8377)."},
+        },
+    },
+    "heinrich_direction_bootstrap": {
+        "description": "Bootstrap stability + random-direction null baseline for a direction at one layer. Returns verdict in {robust_feature, anchor_sensitive, not_distinguishable_from_noise} plus cosine/bimodality percentile summaries. Anchor-sensitive means the direction flips when you resample from the same neighborhood — it's an artifact of which tokens you pinned. Not-distinguishable-from-noise means the bimodality you see is within the 100-random-unit-vector null distribution.",
+        "parameters": {
+            "token_a": {"type": "integer", "description": "Token index A", "required": True},
+            "token_b": {"type": "integer", "description": "Token index B", "required": True},
+            "layer": {"type": "integer", "description": "Layer to analyze", "required": True},
+            "model": {"type": "string", "description": "Model (MRI directory name).", "required": True},
+            "mode": {"type": "string", "description": "raw/naked/template", "required": True},
+            "n_boot": {"type": "integer", "description": "Bootstrap resamples (default 100)."},
+            "n_random": {"type": "integer", "description": "Random unit null count (default 100)."},
+            "neighborhood": {"type": "integer", "description": "Top-N tokens near each anchor to sample from (default 20)."},
+            "port": {"type": "integer", "description": "Companion server port (default 8377)."},
+        },
+    },
+    "heinrich_companion_direction_cross": {
+        "description": "Compare the same concept direction between two MRI captures (cross-model or cross-mode). Each model has its own tokenizer — supply one (a, b) token-index pair per model, ideally matching by text. Returns per-model depth profile (magnitude/bimodality per layer + best_layer) normalized on layer fraction so differently-sized models can be overlaid.",
+        "parameters": {
+            "model_a": {"type": "string", "description": "First MRI directory name.", "required": True},
+            "mode_a": {"type": "string", "description": "Mode for model A: raw/naked/template.", "required": True},
+            "a_a": {"type": "integer", "description": "Token A index in model A.", "required": True},
+            "b_a": {"type": "integer", "description": "Token B index in model A.", "required": True},
+            "model_b": {"type": "string", "description": "Second MRI directory name.", "required": True},
+            "mode_b": {"type": "string", "description": "Mode for model B.", "required": True},
+            "a_b": {"type": "integer", "description": "Token A index in model B (tokenizer differs; ideally same text).", "required": True},
+            "b_b": {"type": "integer", "description": "Token B index in model B.", "required": True},
+            "port": {"type": "integer", "description": "Companion server port (default: 8377)."},
+        },
+    },
+    "heinrich_chat_drain": {
+        "description": "Pull pending chat messages from the browser companion viewer. The browser posts messages via its chat UI (see /api/chat); this returns and clears the queue. Each message has request_id, message, optional pinnedA/pinnedB context. Reply using heinrich_chat_reply with the same request_id. Pass timeout>0 to long-poll — waits up to that many seconds for a new message instead of returning empty immediately.",
+        "parameters": {
+            "port": {"type": "integer", "description": "Companion server port (default: 8377)"},
+            "timeout": {"type": "number", "description": "Long-poll seconds (default: 0 = return immediately). Max 60."},
+        },
+    },
+    "heinrich_chat_reply": {
+        "description": "Send a reply to a browser chat message. The browser long-polls /api/chat-poll and displays the reply. Use the request_id from heinrich_chat_drain to thread the reply to the right message.",
+        "parameters": {
+            "reply": {"type": "string", "description": "Reply text to show in the browser chat.", "required": True},
+            "request_id": {"type": "string", "description": "request_id from the drained message (optional — blank reply goes to next polling client)."},
+            "port": {"type": "integer", "description": "Companion server port (default: 8377)"},
+        },
+    },
 }
 
 
@@ -856,6 +955,8 @@ class ToolServer:
             return self._do_shrt_profile(arguments)
         if name == "heinrich_sht_profile":
             return self._do_sht_profile(arguments)
+        if name == "heinrich_audit_direction":
+            return self._do_audit_direction(arguments)
         if name == "heinrich_total_capture":
             return self._do_total_capture(arguments)
         if name == "heinrich_mri":
@@ -1045,6 +1146,20 @@ class ToolServer:
             return self._do_companion_capture(arguments)
         if name == "heinrich_companion_direction":
             return self._do_companion_direction(arguments)
+        if name == "heinrich_companion_direction_cross":
+            return self._do_companion_direction_cross(arguments)
+        if name == "heinrich_direction_bootstrap":
+            return self._do_direction_bootstrap(arguments)
+        if name == "heinrich_behavioral_direction":
+            return self._do_behavioral_direction(arguments)
+        if name == "heinrich_replicate_probe":
+            return self._do_replicate_probe(arguments)
+        if name == "heinrich_residual_trajectory":
+            return self._do_residual_trajectory(arguments)
+        if name == "heinrich_chat_drain":
+            return self._do_chat_drain(arguments)
+        if name == "heinrich_chat_reply":
+            return self._do_chat_reply(arguments)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -1266,6 +1381,157 @@ class ToolServer:
         result["hint"] = ("Use heinrich_companion_show to navigate the viewer "
                           "to this direction.")
         return result
+
+    def _do_residual_trajectory(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Per-position residual trajectory via companion server."""
+        import urllib.request
+        port = args.get("port", 8377)
+        payload = json.dumps({
+            "model": args["model"],
+            "mode": args.get("mode", "raw"),
+            "prompt": args["prompt"],
+            "layer": args["layer"],
+            "n_generated": args.get("n_generated", 10),
+            "model_id": args.get("model_id", ""),
+        }).encode()
+        req = urllib.request.Request(
+            f"http://localhost:{port}/api/residual-trajectory",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=600) as resp:
+                return json.loads(resp.read())
+        except urllib.error.URLError as e:
+            return {"error": f"Companion not reachable at localhost:{port}: {e}"}
+
+    def _do_replicate_probe(self, args: dict[str, Any]) -> dict[str, Any]:
+        """5-test falsification pipeline for a probe claim via companion server."""
+        import urllib.request
+        port = args.get("port", 8377)
+        payload = json.dumps({
+            "model": args["model"],
+            "mode": args.get("mode", "raw"),
+            "layer": args["layer"],
+            "pos_prompts": args["pos_prompts"],
+            "neg_prompts": args["neg_prompts"],
+            "expected_tokens_pos": args.get("expected_tokens_pos"),
+            "expected_tokens_neg": args.get("expected_tokens_neg"),
+            "model_id": args.get("model_id", ""),
+            "n_random_null": args.get("n_random_null", 100),
+            "position": args.get("position", 0),
+        }).encode()
+        req = urllib.request.Request(
+            f"http://localhost:{port}/api/replicate-probe",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=1200) as resp:
+                return json.loads(resp.read())
+        except urllib.error.URLError as e:
+            return {"error": f"Companion not reachable at localhost:{port}: {e}"}
+
+    def _do_behavioral_direction(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Contrastive-prompt behavioral direction via companion server."""
+        import urllib.request
+        port = args.get("port", 8377)
+        payload = json.dumps({
+            "model": args["model"],
+            "mode": args.get("mode", "raw"),
+            "layer": args["layer"],
+            "pos_prompts": args["pos_prompts"],
+            "neg_prompts": args["neg_prompts"],
+            "model_id": args.get("model_id", ""),
+        }).encode()
+        req = urllib.request.Request(
+            f"http://localhost:{port}/api/behavioral-direction",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=600) as resp:
+                return json.loads(resp.read())
+        except urllib.error.URLError as e:
+            return {"error": f"Companion not reachable at localhost:{port}: {e}"}
+
+    def _do_direction_bootstrap(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Bootstrap + null-baseline analysis via companion server."""
+        import urllib.parse
+        import urllib.request
+        port = args.get("port", 8377)
+        params = urllib.parse.urlencode({
+            "a": args["token_a"], "b": args["token_b"], "layer": args["layer"],
+            **{k: args[k] for k in ("n_boot", "n_random", "neighborhood") if k in args},
+        })
+        url = (f"http://localhost:{port}/api/direction-bootstrap/"
+               f"{args['model']}/{args['mode']}?{params}")
+        try:
+            with urllib.request.urlopen(url, timeout=60) as resp:
+                return json.loads(resp.read())
+        except urllib.error.URLError as e:
+            return {"error": f"Companion not reachable at localhost:{port}: {e}"}
+
+    def _do_companion_direction_cross(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Cross-model direction comparison via companion server."""
+        import urllib.parse
+        import urllib.request
+        port = args.get("port", 8377)
+        params = urllib.parse.urlencode({
+            k: args[k] for k in (
+                "model_a", "mode_a", "a_a", "b_a",
+                "model_b", "mode_b", "a_b", "b_b",
+            )
+        })
+        url = f"http://localhost:{port}/api/direction-cross?{params}"
+        try:
+            with urllib.request.urlopen(url, timeout=120) as resp:
+                return json.loads(resp.read())
+        except urllib.error.URLError as e:
+            return {"error": f"Companion not reachable at localhost:{port}: {e}"}
+
+    def _do_chat_drain(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Drain pending browser → MCP messages from the companion chat inbox.
+
+        Pass timeout>0 to long-poll — server-side `/api/chat-drain?timeout=N`
+        waits on `_chat_inbox_event` and wakes instantly on first message.
+        """
+        import urllib.request
+        port = args.get("port", 8377)
+        timeout = float(args.get("timeout", 0) or 0)
+        url = f"http://localhost:{port}/api/chat-drain"
+        if timeout > 0:
+            url += f"?timeout={timeout}"
+        # Client-side HTTP timeout is server wait + 10s slack
+        http_timeout = max(10.0, timeout + 10.0)
+        try:
+            with urllib.request.urlopen(url, timeout=http_timeout) as resp:
+                return json.loads(resp.read())
+        except urllib.error.URLError as e:
+            return {"error": f"Companion not reachable at localhost:{port}: {e}"}
+
+    def _do_chat_reply(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Post an MCP → browser reply to the companion chat outbox."""
+        import urllib.request
+        port = args.get("port", 8377)
+        payload = json.dumps({
+            "reply": args["reply"],
+            "request_id": args.get("request_id", ""),
+        }).encode()
+        req = urllib.request.Request(
+            f"http://localhost:{port}/api/chat-reply",
+            data=payload,
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=10) as resp:
+                return json.loads(resp.read())
+        except urllib.error.URLError as e:
+            return {"error": f"Companion not reachable at localhost:{port}: {e}"}
 
     def _do_loop(self, args: dict[str, Any]) -> dict[str, Any]:
         import numpy as np
@@ -2409,6 +2675,38 @@ class ToolServer:
         meta = json.loads(str(d['metadata'][0]))
         meta["output"] = output
         return meta
+
+    def _do_audit_direction(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Run the 5-test audit on a mean-diff direction. Subprocess-isolated."""
+        import subprocess, sys, tempfile, os
+        model = args["model"]
+        datasets = args["datasets"]
+        if not isinstance(datasets, list) or len(datasets) < 1:
+            return {"error": "datasets must be a non-empty list of CSV paths"}
+        layer = int(args["layer"])
+        # JSON output is written by the CLI; we pass a temp path, then read + return.
+        output = args.get("output")
+        if not output:
+            fd, output = tempfile.mkstemp(prefix="audit_direction_", suffix=".json")
+            os.close(fd)
+
+        cmd = [sys.executable, "-m", "heinrich.cli", "audit-direction",
+               "--model", model, "--layer", str(layer),
+               "--output", output, "--datasets", *datasets]
+        for k in ("n_per_class", "train_frac", "seed", "n_bootstrap", "n_permutation"):
+            if k in args and args[k] is not None:
+                cmd.extend([f"--{k.replace('_','-')}", str(args[k])])
+        if args.get("truth_tokens"):
+            cmd.extend(["--truth-tokens", args["truth_tokens"]])
+        if args.get("false_tokens"):
+            cmd.extend(["--false-tokens", args["false_tokens"]])
+
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=3600)
+        if result.returncode != 0:
+            return {"error": result.stderr, "stdout": result.stdout}
+
+        with open(output) as f:
+            return json.load(f)
 
     def _do_total_capture(self, args: dict[str, Any]) -> dict[str, Any]:
         """Total residual capture. Subprocess-isolated."""

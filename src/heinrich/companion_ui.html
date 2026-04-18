@@ -52,6 +52,14 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #detail .tok{font-size:13px;font-weight:bold;color:#fff;margin-bottom:2px;word-break:break-all}
 #detail .meta{color:#888;font-size:9px;white-space:pre;line-height:1.5}
 .lg{display:inline-flex;align-items:center;gap:3px;margin-right:6px;cursor:pointer;user-select:none}.lg:hover{opacity:0.8}.lg.off{opacity:0.25}.ld{width:4px;height:4px;border-radius:50%;flex-shrink:0}
+.dcs{color:#88a;font-size:7px;margin:2px 0;padding:2px 6px;border:1px dashed #334;border-radius:3px;background:rgba(40,40,70,0.25)}
+.dcs.ready{color:#6c6;border-color:#343;background:rgba(40,70,40,0.2)}
+.dcs.ready::before{content:'● '}
+.mode-badge{display:inline-block;font-size:8px;padding:1px 5px;border-radius:2px;margin-left:6px;vertical-align:middle;font-weight:bold;letter-spacing:0.5px}
+.mode-badge.pc{background:#334;color:#aac;border:1px solid #445}
+.mode-badge.dir{background:#542;color:#fc8;border:1px solid #864;box-shadow:0 0 4px rgba(255,170,100,0.3)}
+.wl-legend.dir-active{outline:1px dashed rgba(255,170,100,0.3);outline-offset:1px}
+.rlbl-mode{float:right;font-size:9px;color:#b8a45a;background:#2a2410;border:1px solid #5a4e20;border-radius:2px;padding:0 4px;margin-left:4px;font-family:monospace;font-weight:bold}
 </style>
 </head>
 <body>
@@ -110,7 +118,8 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
     <div id="tokA"><div style="color:#555;font-size:7px;margin-bottom:2px">Token A (click)</div><div class="tn" id="taName" style="color:#FF6644">—</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarA" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="taMeta" style="font-size:8px">click a token to pin</div><div id="predsA" style="font-size:7px;color:#555;margin-top:3px"></div></div>
     <div id="tokB"><div style="color:#555;font-size:7px;margin-bottom:2px">Token B (R-click)</div><div class="tn" id="tbName" style="color:#4477AA">—</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarB" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="tbMeta" style="font-size:8px">R-click for comparison</div><div id="predsB" style="font-size:7px;color:#555;margin-top:3px"></div></div>
   </div>
-  <div id="sepPanel" style="display:none;margin:6px 0"><div style="color:#555;font-size:7px;margin-bottom:2px">Max separation PCs <span id="sepDist" style="color:#888"></span></div><div id="sepList" style="font-size:8px"></div></div>
+  <div id="dirColorStatus" class="dcs" style="display:none">projecting direction…</div>
+  <div id="sepPanel" style="display:none;margin:6px 0;cursor:pointer" title="Hover to load direction-quality analysis"><div style="color:#555;font-size:7px;margin-bottom:2px">Max separation PCs <span id="sepDist" style="color:#888"></span></div><div id="sepList" style="font-size:8px"></div></div>
   <hr style="border:none;border-top:1px solid #1a1a1a;margin:6px 0">
   <div id="attnPanel" style="display:none"><div style="color:#555;font-size:7px;margin-bottom:2px">Attention (Token A, current layer)</div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
   <div id="tokChat" class="collapsed">
@@ -123,7 +132,48 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
       <input id="chatInput" type="text" placeholder="ask about this direction...">
     </div>
   </div>
+  <div id="tokCross" class="collapsed" style="margin-top:4px">
+    <div style="display:flex;align-items:center;cursor:pointer" id="crossToggle">
+      <span style="color:#555;font-size:7px;flex:1">Cross-Model Compare</span>
+      <span id="crossArrow" style="color:#444;font-size:10px">&#9654;</span>
+    </div>
+    <div id="crossBody">
+      <div style="display:flex;gap:3px;margin-top:4px;align-items:center">
+        <select id="crossModel" style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"></select>
+        <select id="crossMode" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"><option>raw</option><option>naked</option><option>template</option></select>
+        <button id="crossRun" style="background:#1a1a1a;border:1px solid #333;color:#6c6;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">Run</button>
+      </div>
+      <div id="crossStatus" style="color:#555;font-size:7px;margin-top:3px">pin A and B; pick a second model; Run</div>
+      <div id="crossResult" style="font-size:7px;color:#888;margin-top:4px"></div>
+    </div>
+  </div>
+  <div id="tokLive" class="collapsed" style="margin-top:4px">
+    <div style="display:flex;align-items:center;cursor:pointer" id="liveToggle">
+      <span style="color:#555;font-size:7px;flex:1">Live Forward</span>
+      <span id="liveArrow" style="color:#444;font-size:10px">&#9654;</span>
+    </div>
+    <div id="liveBody">
+      <input id="liveModelId" type="text" placeholder="HF model id (optional, e.g. HuggingFaceTB/SmolLM2-135M)" style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:7px;font-family:inherit;border-radius:2px;margin-top:4px">
+      <input id="liveInput" type="text" placeholder="type a prompt, Enter to run..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:8px;font-family:inherit;border-radius:2px;margin-top:4px">
+      <div id="liveStatus" style="color:#555;font-size:7px;margin-top:3px">set HF id above; model load on first run ~5-30s</div>
+      <div id="liveResult" style="font-size:7px;color:#888;margin-top:4px"></div>
+    </div>
+  </div>
 </div>
+<style>
+  #tokLive.collapsed #liveBody{display:none !important}
+  #tokLive #liveBody{display:block}
+  #tokCross.collapsed #crossBody{display:none !important}
+  #tokCross #crossBody{display:block}
+  #crossResult .cm-row{display:flex;gap:6px;padding:2px 4px;margin:1px 0;border-radius:2px;background:#1a1a2a}
+  #crossResult .cm-lbl{color:#aaa;width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #crossResult .cm-stat{color:#6c8;font-family:monospace}
+  #crossResult .cm-dim{color:#666;font-family:monospace}
+  #liveResult .lk{color:#6c8;font-weight:bold;font-size:10px}
+  #liveResult .lent{color:#888;margin-left:6px}
+  #liveResult .lt{color:#aaa;display:inline-block;margin-right:4px;font-family:monospace;background:#1a1a1a;padding:0 3px;border-radius:2px}
+  #liveResult .lp{color:#666;font-size:6px}
+</style>
 <div id="detail"><div class="tok" id="tt"></div><div class="meta" id="tm"></div></div>
 <div id="loading" style="position:fixed;top:0;left:0;right:0;bottom:0;background:#0a0a0a;display:flex;align-items:center;justify-content:center;z-index:100;color:#555;font-size:13px;font-family:inherit">Loading...</div>
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
@@ -136,7 +186,15 @@ let allL=[],dm=null,cL=0,play=false;
 const vpPairs=[[0,1],[0,2],[2,3]];// [pairA, delta(pcA0×pcB0), pairB]
 let model='',mode='',scripts=[],texts=[],nN=0,nK=0,nL=0,_layerVar=[],_blobScoreK=0;
 const _hiddenScripts=new Set();// scripts toggled off by legend clicks
-const api=p=>fetch('/api/'+p).then(r=>r.json());
+// 20s timeout prevents UI state like "predicts..." from sticking forever on
+// slow/missing server resources. Callers already handle rejected promises.
+const api=(p,timeoutMs=20000)=>{
+  const ctrl=new AbortController();
+  const t=setTimeout(()=>ctrl.abort(),timeoutMs);
+  return fetch('/api/'+p,{signal:ctrl.signal})
+    .then(r=>r.json())
+    .finally(()=>clearTimeout(t));
+};
 function f16(h){const s=(h>>15)&1,e=(h>>10)&0x1f,m=h&0x3ff;if(e===0)return m===0?0:(s?-1:1)*2**-14*(m/1024);if(e===31)return m?NaN:(s?-Infinity:Infinity);return(s?-1:1)*2**(e-15)*(1+m/1024);}
 
 const NV=6,NC=3,_DPR=Math.min(devicePixelRatio,1.5);// 0=cloudA,1=deltaCloud,2=cloudB,3=trajA,4=deltaTraj,5=trajB
@@ -225,6 +283,71 @@ function _getScoreColumn(l,pc){
   return null;// caller handles missing data
 }
 
+// Robust per-axis scale: blends literal max with 99.5% of a random
+// sample. Handles three regimes:
+//   1. Dense distribution (normal case): scale = pct, typical tokens land in [-1, 1].
+//   2. Dense + one huge outlier: pct tracks typical range, literal max >> pct;
+//      geometric-mean blend keeps both on-screen.
+//   3. Sparse (mostly zeros + rare outlier): pct degenerates to ~0; we must
+//      use the literal max directly, scaled so the outlier lands at y=4
+//      (not clamped at 1.75) and remains visible.
+function _robustColMax(col,percentile=99.5){
+  if(!col||!col.length)return 1;
+  const n=col.length;
+  // Pass 1: literal max via single scan — this never misses an outlier.
+  let trueMax=0;
+  for(let i=0;i<n;i++){const v=Math.abs(col[i]);if(v>trueMax)trueMax=v;}
+  if(trueMax<1e-6)return 1;// all-zero column: return neutral 1 (no data)
+  // Pass 2: 99.5% of a random 2000-sample for percentile robustness.
+  const target=2000;
+  let sample;
+  if(n<=target){
+    sample=new Float32Array(n);
+    for(let i=0;i<n;i++)sample[i]=Math.abs(col[i]);
+  }else{
+    sample=new Float32Array(target);
+    for(let i=0;i<target;i++)sample[i]=Math.abs(col[(Math.random()*n)|0]);
+  }
+  sample.sort();
+  const idx=Math.min(sample.length-1,Math.floor(sample.length*percentile/100));
+  const pct=sample[idx]||0;
+  // Sparse-outlier case: percentile is ~0 because most samples are near zero.
+  // Use trueMax directly, divided so the outlier maps to y~4 (inside the
+  // clamp range, still visible, not overwhelming the [-1, 1] region).
+  if(pct<trueMax*1e-3)return trueMax/4;
+  // Heavy outlier + dense distribution: geometric mean keeps both visible.
+  const ratio=trueMax/pct;
+  if(ratio>100)return Math.sqrt(pct*trueMax);
+  // Normal dense case: percentile is the scale.
+  return pct;
+}
+// Default clamp = 1.75 (1.3× the 99.5th pct used by _robustColMax).
+// For very small residual ranges the clamp rarely kicks in because
+// _robustColMax floors at 1. Callers can override with an explicit bound —
+// buildTraj passes a per-viewport bound derived from the post-normalized
+// 99.95th percentile so outlier crystals stay visible at 2-3× while normal
+// tokens still fill [-1, 1].
+function _clampTraj(v,b){const B=b||1.75;return v>B?B:(v<-B?-B:v);}
+
+// Per-column clamp bound: computed from the column's post-normalized
+// distribution. Caller passes the pre-normalized column; we compute the
+// 99.95th percentile of |col/scale| and return 1.3× that, bounded to
+// [1.5, 3.0] so the clamp neither kills normal tokens nor lets pathological
+// outliers warp the camera.
+function _clampBoundFor(col,scale){
+  if(!col||!col.length||!scale)return 1.75;
+  const n=col.length;
+  const target=1000;
+  const sample=new Float32Array(Math.min(target,n));
+  const step=n>target?((Math.random()*n)|0):0;
+  if(n<=target)for(let i=0;i<n;i++)sample[i]=Math.abs(col[i]/scale);
+  else for(let i=0;i<target;i++)sample[i]=Math.abs(col[(Math.random()*n)|0]/scale);
+  sample.sort();
+  const idx=Math.min(sample.length-1,Math.floor(sample.length*0.9995));
+  const pct=sample[idx]||1;
+  return Math.max(1.5,Math.min(3.0,pct*1.3));
+}
+
 async function _loadPCFull(pc){
   if(_pcFull.has(pc))return;// already cached — no nK limit
   const resp=await fetch(`/api/pc-full/${model}/${mode}?pc=${pc}`);
@@ -286,36 +409,59 @@ function _precomputeCloud(vi){
   for(let l=0;l<nL;l++){
     // Bulk column access: one typed array per PC per layer (zero-copy from _pcFull)
     const colX=_getScoreColumn(l,pcX),colY=_getScoreColumn(l,pcY),colZ=_getScoreColumn(l,pcZ);
-    let mxX=0,mxY=0,mxZ=0;
+    // Robust percentile scale — extreme outliers don't dominate
+    let mxX=1,mxY=1,mxZ=1;
     if(colX&&colY&&colZ){
-      for(let i=0;i<nN;i++){const ax=Math.abs(colX[i]),ay=Math.abs(colY[i]),az=Math.abs(colZ[i]);if(ax>mxX)mxX=ax;if(ay>mxY)mxY=ay;if(az>mxZ)mxZ=az;}
+      mxX=_robustColMax(colX);mxY=_robustColMax(colY);mxZ=_robustColMax(colZ);
     }else{
-      for(let i=0;i<nN;i++){mxX=Math.max(mxX,Math.abs(_getScore(l,i,pcX)));mxY=Math.max(mxY,Math.abs(_getScore(l,i,pcY)));mxZ=Math.max(mxZ,Math.abs(_getScore(l,i,pcZ)));}
+      // Fallback: build synthetic column from row-major blob (rare path)
+      const sx=new Float32Array(nN),sy=new Float32Array(nN),sz=new Float32Array(nN);
+      for(let i=0;i<nN;i++){sx[i]=_getScore(l,i,pcX);sy[i]=_getScore(l,i,pcY);sz[i]=_getScore(l,i,pcZ);}
+      mxX=_robustColMax(sx);mxY=_robustColMax(sy);mxZ=_robustColMax(sz);
     }
-    mxX=mxX||1;mxY=mxY||1;mxZ=mxZ||1;v._layerMx[l]=[mxX,mxY,mxZ];
+    v._layerMx[l]=[mxX,mxY,mxZ];
+    // Per-axis dynamic clamp bound: 1.3× the 99.95th percentile of post-normalized
+    // |values|, clipped to [1.5, 3.0]. Outlier-heavy columns get 2-3× headroom so
+    // crystal tokens stay on-screen without squashing typical tokens.
+    const bX=colX?_clampBoundFor(colX,mxX):1.75;
+    const bY=colY?_clampBoundFor(colY,mxY):1.75;
+    const bZ=colZ?_clampBoundFor(colZ,mxZ):1.75;
+    v._clampBounds=v._clampBounds||[];v._clampBounds[l]=[bX,bY,bZ];
     if(!v._cloudBufs[l]||v._cloudBufs[l].length!==nN*3)v._cloudBufs[l]=new Float32Array(nN*3);
     const buf=v._cloudBufs[l];
     if(colX&&colY&&colZ){
       const imxX=1/mxX,imxY=1/mxY,imxZ=1/mxZ;
-      for(let i=0;i<nN;i++){buf[i*3]=colX[i]*imxX;buf[i*3+1]=colY[i]*imxY;buf[i*3+2]=colZ[i]*imxZ;}
+      for(let i=0;i<nN;i++){
+        buf[i*3]=_clampTraj(colX[i]*imxX,bX);
+        buf[i*3+1]=_clampTraj(colY[i]*imxY,bY);
+        buf[i*3+2]=_clampTraj(colZ[i]*imxZ,bZ);
+      }
     }else{
-      for(let i=0;i<nN;i++){buf[i*3]=_getScore(l,i,pcX)/mxX;buf[i*3+1]=_getScore(l,i,pcY)/mxY;buf[i*3+2]=_getScore(l,i,pcZ)/mxZ;}
+      for(let i=0;i<nN;i++){
+        buf[i*3]=_clampTraj(_getScore(l,i,pcX)/mxX,bX);
+        buf[i*3+1]=_clampTraj(_getScore(l,i,pcY)/mxY,bY);
+        buf[i*3+2]=_clampTraj(_getScore(l,i,pcZ)/mxZ,bZ);
+      }
     }
   }
 }
 function _precomputeTraj(vi){
   const v=views[vi];const{pcX,pcY}=v;const tlMx=v._trajLayerMx;
   if(!v._trajBufs||v._trajBufs.length!==nL)v._trajBufs=new Array(nL);
+  v._trajClampBounds=v._trajClampBounds||[];
   for(let l=0;l<nL;l++){
     const z=_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1;const lm=tlMx?tlMx[l]:[1,1];
     if(!v._trajBufs[l]||v._trajBufs[l].length!==nN*3)v._trajBufs[l]=new Float32Array(nN*3);
     const buf=v._trajBufs[l];
     const colX=_getScoreColumn(l,pcX),colY=_getScoreColumn(l,pcY);
+    const bX=colX?_clampBoundFor(colX,lm[0]):1.75;
+    const bY=colY?_clampBoundFor(colY,lm[1]):1.75;
+    v._trajClampBounds[l]=[bX,bY];
     if(colX&&colY){
       const imx=1/lm[0],imy=1/lm[1];
-      for(let i=0;i<nN;i++){buf[i*3]=colX[i]*imx;buf[i*3+1]=colY[i]*imy;buf[i*3+2]=z;}
+      for(let i=0;i<nN;i++){buf[i*3]=_clampTraj(colX[i]*imx,bX);buf[i*3+1]=_clampTraj(colY[i]*imy,bY);buf[i*3+2]=z;}
     }else{
-      for(let i=0;i<nN;i++){buf[i*3]=_getScore(l,i,pcX)/lm[0];buf[i*3+1]=_getScore(l,i,pcY)/lm[1];buf[i*3+2]=z;}
+      for(let i=0;i<nN;i++){buf[i*3]=_clampTraj(_getScore(l,i,pcX)/lm[0],bX);buf[i*3+1]=_clampTraj(_getScore(l,i,pcY)/lm[1],bY);buf[i*3+2]=z;}
     }
   }
 }
@@ -325,7 +471,7 @@ function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
   const seq=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
   const n=seq.length;let buf=line.geometry.attributes.position?.array;
   if(!buf||buf.length!==n*3){line.geometry.dispose();const a=new Float32Array(n*3);line.geometry=new THREE.BufferGeometry();line.geometry.setAttribute('position',new THREE.BufferAttribute(a,3));buf=a;}
-  if(vi<NC){for(let si=0;si<n;si++){const l=seq[si];const lm=v._layerMx?v._layerMx[l]:null;const mxX=lm?lm[0]:1,mxY=lm?lm[1]:1,mxZ=lm?lm[2]:1;buf[si*3]=_getScore(l,idx,v.pcX)/mxX;buf[si*3+1]=_getScore(l,idx,v.pcY)/mxY;buf[si*3+2]=_getScore(l,idx,v.pcZ)/mxZ;}}else{const tlMx=v._trajLayerMx;for(let si=0;si<n;si++){const l=seq[si];const lm=tlMx?tlMx[l]:[1,1];buf[si*3]=_getScore(l,idx,v.pcX)/lm[0];buf[si*3+1]=_getScore(l,idx,v.pcY)/lm[1];buf[si*3+2]=_layerZ[l]!==undefined?_layerZ[l]:(si/(n-1))*2-1;}}
+  if(vi<NC){for(let si=0;si<n;si++){const l=seq[si];const lm=v._layerMx?v._layerMx[l]:null;const mxX=lm?lm[0]:1,mxY=lm?lm[1]:1,mxZ=lm?lm[2]:1;const cb=v._clampBounds?v._clampBounds[l]:null;const bX=cb?cb[0]:1.75,bY=cb?cb[1]:1.75,bZ=cb?cb[2]:1.75;buf[si*3]=_clampTraj(_getScore(l,idx,v.pcX)/mxX,bX);buf[si*3+1]=_clampTraj(_getScore(l,idx,v.pcY)/mxY,bY);buf[si*3+2]=_clampTraj(_getScore(l,idx,v.pcZ)/mxZ,bZ);}}else{const tlMx=v._trajLayerMx;for(let si=0;si<n;si++){const l=seq[si];const lm=tlMx?tlMx[l]:[1,1];const cb=v._trajClampBounds?v._trajClampBounds[l]:null;const bX=cb?cb[0]:1.75,bY=cb?cb[1]:1.75;buf[si*3]=_clampTraj(_getScore(l,idx,v.pcX)/lm[0],bX);buf[si*3+1]=_clampTraj(_getScore(l,idx,v.pcY)/lm[1],bY);buf[si*3+2]=_layerZ[l]!==undefined?_layerZ[l]:(si/(n-1))*2-1;}}
   line.geometry.attributes.position.needsUpdate=true;line.visible=true;}
 let _lastDimState=-1;
 function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC)v.mtl.opacity=dim?0.35:0.85;if(vi>=NC&&v.trajGroup){const baseOp=dim?0.08:0.15;v.trajGroup.children.forEach(c=>{if(c.material)c.material.opacity=baseOp;});if(v.trajMarker)v.trajMarker.material.opacity=dim?0.35:0.9;}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible){m.material.opacity=0.95;m.material.size=dim?0.08:0.06;}});}
@@ -456,12 +602,19 @@ function _fetchPredicts(tokIdx,containerId){
   el.textContent='predicts...';
   api(`token-predicts/${model}/${mode}?token=${tokIdx}&layer=${cL}&k=8`).then(r=>{
     if(isA?_predsReqA!==reqId:_predsReqB!==reqId)return;
-    if(r.error){el.textContent='';return;}
+    if(!r||r.error||!Array.isArray(r.top_k)){el.textContent='';return;}
     el.textContent='';
     const hdr=document.createElement('span');
     hdr.style.cssText='color:#555;font-size:7px';
     hdr.textContent='predicts: ';
     el.appendChild(hdr);
+    if(!r.top_k.length){
+      const empty=document.createElement('span');
+      empty.style.cssText='color:#555;font-size:7px;font-style:italic';
+      empty.textContent='no predictions';
+      el.appendChild(empty);
+      return;
+    }
     r.top_k.slice(0,6).forEach((p,i)=>{
       if(i>0)el.appendChild(document.createTextNode(' '));
       const span=document.createElement('span');
@@ -477,34 +630,77 @@ function _fetchPredicts(tokIdx,containerId){
   }).catch(()=>{el.textContent='';});
 }
 function showPinDetail(idx){
+  // Synchronous UI updates only. The fetch-heavy work (predicts,
+  // separation analysis, direction coloring) is consolidated into
+  // _onPinChange's debounced run so rapid pinA+pinB sequences don't
+  // fire the whole cascade twice.
   document.getElementById('taName').textContent=idx>=0?(texts[idx]||'?'):'—';
   document.getElementById('taName').style.color=idx>=0?(CLh[scripts[idx]]||'#aaa'):'#555';
   document.getElementById('taMeta').textContent=idx>=0?_tokInfo(idx):'click a token to pin';
   renderPCBar(idx,'pcBarA','200,80,50');
-  _fetchPredicts(idx,'predsA');
   document.getElementById('tbName').textContent=pinnedTokenB>=0?(texts[pinnedTokenB]||'?'):'—';
   document.getElementById('tbName').style.color=pinnedTokenB>=0?(CLh[scripts[pinnedTokenB]]||'#aaa'):'#555';
   document.getElementById('tbMeta').textContent=pinnedTokenB>=0?_tokInfo(pinnedTokenB):'shift+click for comparison';
   renderPCBar(pinnedTokenB,'pcBarB','60,100,180');
-  _fetchPredicts(pinnedTokenB,'predsB');
-  _updateSeparation(idx,pinnedTokenB);
-  _applyDirectionColors();
 }
 let _sepReqId=0;
-async function _updateSeparation(a,b){
+let _sepDebounceTimer=null;
+function _updateSeparation(a,b){
+  // Debounce: during rapid layer changes (arrow-key scrubbing, playback),
+  // delay the full-K server call until the user settles on a layer.
+  if(_sepDebounceTimer){clearTimeout(_sepDebounceTimer);_sepDebounceTimer=null;}
   const panel=document.getElementById('sepPanel');
   if(a<0||b<0||!model||!mode||!nN){panel.style.display='none';return;}
   if(document.getElementById('loading')?.style.display==='flex'){panel.style.display='none';return;}
   if(cL>=_nRealLayers){panel.style.display='none';return;}// no decomp at emb/lmh
   panel.style.display='block';
-  const list=document.getElementById('sepList');
   const distEl=document.getElementById('sepDist');
   distEl.textContent='computing...';
+  _sepDebounceTimer=setTimeout(()=>_updateSeparationNow(a,b),180);
+}
+// Hover-triggered sep analysis — keeps the 1-4s direction-quality fetch
+// out of the pin-change critical path. Delayed 400ms so drive-by mouse
+// crossings don't fire the expensive fetch; cancelled on mouseleave.
+(function(){
+  const panel=document.getElementById('sepPanel');if(!panel)return;
+  let hoverTimer=null;
+  panel.addEventListener('mouseenter',()=>{
+    const stale=panel.dataset.stale;if(!stale)return;
+    if(hoverTimer)clearTimeout(hoverTimer);
+    hoverTimer=setTimeout(()=>{
+      hoverTimer=null;
+      const [a,b]=stale.split(':').map(Number);
+      if(a>=0&&b>=0){
+        _updateSeparation(a,b);
+        panel.dataset.stale='';
+      }
+    },400);
+  });
+  panel.addEventListener('mouseleave',()=>{
+    if(hoverTimer){clearTimeout(hoverTimer);hoverTimer=null;}
+    // Also abort any in-flight fetch if the user leaves mid-request.
+    if(_sepAbort){_sepAbort.abort();_sepAbort=null;}
+    if(_sepDebounceTimer){clearTimeout(_sepDebounceTimer);_sepDebounceTimer=null;}
+  });
+})();
+let _sepAbort=null;
+async function _updateSeparationNow(a,b){
+  const panel=document.getElementById('sepPanel');
+  if(a<0||b<0||!model||!mode||!nN){panel.style.display='none';return;}
+  if(cL>=_nRealLayers){panel.style.display='none';return;}
+  panel.style.display='block';
+  const list=document.getElementById('sepList');
+  const distEl=document.getElementById('sepDist');
   list.textContent='';
-  // Full-K server-side analysis
+  // Abort any prior quality fetch — otherwise stale requests keep churning
+  // the server and contend with the next pin change's critical path.
+  if(_sepAbort)_sepAbort.abort();
+  _sepAbort=new AbortController();
+  const signal=_sepAbort.signal;
   const reqId=++_sepReqId;
   try{
-    const r=await api(`direction-quality/${model}/${mode}?a=${a}&b=${b}&layer=${cL}`);
+    const resp=await fetch(`/api/direction-quality/${model}/${mode}?a=${a}&b=${b}&layer=${cL}`,{signal});
+    const r=await resp.json();
     if(_sepReqId!==reqId)return;// superseded
     if(r.error){distEl.textContent=r.error;return;}
     const c=r.concentration;
@@ -543,11 +739,19 @@ async function _updateSeparation(a,b){
       stabSpan.textContent=` range:${minBm.toFixed(2)}-${maxBm.toFixed(2)}`;
       if(range>0.4)stabSpan.style.color='#f44';// unstable across layers
       summary.appendChild(stabSpan);
-      // Show best layer if different from current
+      // Show best layer if different from current.
+      // #18 — "best_layer" is only meaningful when that layer's bimodality is
+      // lower than the random baseline. Otherwise the label implies a signal
+      // that isn't there. Grey it out and extend the tooltip.
       if(r.best_layer!==undefined&&r.best_layer!==cL){
         const bestSpan=document.createElement('span');
-        bestSpan.style.cssText='color:#555;font-size:7px;margin-left:4px;cursor:pointer';
+        const bestBm=(r.layer_bimodalities||[]).find(lb=>lb.layer===r.best_layer)?.bimodality;
+        const bmPass=(bestBm!==undefined&&bestBm<minBm+1e-9&&minBm<0.5);
+        bestSpan.style.cssText='color:'+(bmPass?'#6c6':'#555')+';font-size:7px;margin-left:4px;cursor:pointer';
         bestSpan.textContent=`best:L${r.best_layer}`;
+        bestSpan.title=bmPass
+          ?'Most bimodal layer. Click to jump.'
+          :'Most bimodal across layers, but weak — may be layer instability, not a real signal.';
         bestSpan.addEventListener('click',()=>{setLayer(r.best_layer);});
         summary.appendChild(bestSpan);
       }
@@ -684,29 +888,48 @@ async function _updateSeparation(a,b){
         const mx=Math.max(...ld.heads.map(h=>h.attrib));
         if(mx>peakVal){peakVal=mx;peakLayer=ld.layer;}
       });
+      // Prefer server-chosen peak_layer (where z-scores are computed)
+      if(circ.peak_layer!==undefined)peakLayer=circ.peak_layer;
       const peakData=circ.layers.find(l=>l.layer===peakLayer);
       if(!peakData)return;
+      const pz=circ.peak_zscore||null;// {heads:[{head,attrib,zscore}], mlp:{attrib,zscore}}
+      const headZ={};(pz?.heads||[]).forEach(h=>{headZ[h.head]=h.zscore;});
+      const mlpZ=pz?.mlp?.zscore;
       const layerLabel=document.createElement('div');
       layerLabel.style.cssText='color:#666;font-size:7px';
       layerLabel.textContent=`L${peakLayer} (peak):`;
       circDiv.appendChild(layerLabel);
-      // Bar chart of heads
+      // Bar chart of heads — HEIGHT scales to z-score when available
+      // (raw attribution is self-normalized to 1 per layer, which hides rank).
       const barContainer=document.createElement('div');
       barContainer.style.cssText='display:flex;gap:1px;align-items:flex-end;height:30px;margin:2px 0';
+      const maxZ=Math.max(1,...Object.values(headZ).map(z=>Math.abs(z||0)));
       const maxA=Math.max(...peakData.heads.map(h=>h.attrib));
       peakData.heads.forEach(({head,attrib})=>{
         const bar=document.createElement('div');
-        const pct=attrib/(maxA||1);
+        const z=headZ[head];
+        // If z available, height = |z|/maxZ (saturates at max). Otherwise fall back to attrib.
+        const pct=(z!==undefined)?Math.min(1,Math.abs(z)/maxZ):attrib/(maxA||1);
         const hue=(head/circ.n_heads)*360;
-        bar.style.cssText=`flex:1;background:hsl(${hue},60%,${30+pct*30}%);height:${Math.max(1,pct*100)}%;border-radius:1px;cursor:pointer`;
-        bar.title=`Head ${head}: ${(attrib*100).toFixed(0)}%`;
+        // Color: green if z>3 (significant), yellow if 1-3, dim if <1
+        const lit=(z!==undefined&&Math.abs(z)>3)?50:(z!==undefined&&Math.abs(z)>1)?35:20;
+        bar.style.cssText=`flex:1;background:hsl(${hue},60%,${lit}%);height:${Math.max(1,pct*100)}%;border-radius:1px;cursor:pointer`;
+        bar.title=z!==undefined?`Head ${head}: z=${z.toFixed(1)} attrib=${(attrib*100).toFixed(0)}%`:`Head ${head}: ${(attrib*100).toFixed(0)}%`;
         barContainer.appendChild(bar);
       });
       circDiv.appendChild(barContainer);
-      // MLP bar
+      // MLP row: z-score is the signal. Raw attrib is ~1 always (self-normalized).
       const mlpBar=document.createElement('div');
-      mlpBar.style.cssText='color:#555;font-size:7px';
-      mlpBar.textContent=`MLP: ${(peakData.mlp_attrib*100).toFixed(0)}%`;
+      mlpBar.style.cssText='font-size:7px';
+      if(mlpZ!==undefined&&mlpZ!==null){
+        const col=Math.abs(mlpZ)>5?'#4f4':Math.abs(mlpZ)>2?'#cc4':'#f44';
+        const verdict=Math.abs(mlpZ)>5?'strong':Math.abs(mlpZ)>2?'weak':'noise';
+        mlpBar.style.color=col;
+        mlpBar.textContent=`MLP z=${mlpZ.toFixed(1)} (${verdict}) — raw attrib ${(peakData.mlp_attrib*100).toFixed(0)}% self-normalized`;
+      }else{
+        mlpBar.style.color='#555';
+        mlpBar.textContent=`MLP: ${(peakData.mlp_attrib*100).toFixed(0)}% (z unavailable)`;
+      }
       circDiv.appendChild(mlpBar);
       // Summary: how many layers, concentration
       const nActive=circ.layers.filter(l=>l.heads.some(h=>h.attrib>0.5)).length;
@@ -875,6 +1098,7 @@ function _ensureColors(v){
 // Red = A-like, Blue = B-like, grey = orthogonal.
 let _dirColorActive=false;
 let _dirColorReqId=0;
+let _dirProjLast=null,_dirProjMid=0,_dirProjSpan=1;
 function _colorFromProj(proj){
   // Percentile normalization + apply to all viewports
   const step=Math.max(1,Math.floor(nN/5000));
@@ -883,6 +1107,7 @@ function _colorFromProj(proj){
   const p10=samp[Math.floor(samp.length*0.1)];
   const p90=samp[Math.floor(samp.length*0.9)];
   const mid=(p10+p90)/2,span=(p90-p10)/2||1;
+  _dirProjLast=proj;_dirProjMid=mid;_dirProjSpan=span;
   const _dirR=new Float32Array(nN),_dirG=new Float32Array(nN),_dirB=new Float32Array(nN);
   for(let i=0;i<nN;i++){
     const t=Math.max(-1,Math.min(1,(proj[i]-mid)/span));
@@ -924,8 +1149,15 @@ async function _applyDirectionColors(){
   if(cL>=_nRealLayers)return;// emb/lmh pseudo-layers have no decomp scores
   const _a=pinnedToken,_b=pinnedTokenB,_layer=cL;
   const reqId=++_dirColorReqId;
+  // #32 — abort previous in-flight projection on new pin/layer, and add a
+  // client-side timeout so the indicator can't wedge if the server stalls.
+  if(window._dirColorAbort)window._dirColorAbort.abort();
+  const ctrl=new AbortController();window._dirColorAbort=ctrl;
+  const tid=setTimeout(()=>ctrl.abort(),20000);
+  const _dcs=document.getElementById('dirColorStatus');
+  if(_dcs)_dcs.style.display='block';
   try{
-    const resp=await fetch(`/api/direction-project/${model}/${mode}?a=${_a}&b=${_b}&layer=${_layer}`);
+    const resp=await fetch(`/api/direction-project/${model}/${mode}?a=${_a}&b=${_b}&layer=${_layer}`,{signal:ctrl.signal});
     if(_dirColorReqId!==reqId)return;
     const buf=await resp.arrayBuffer();
     const dv=new DataView(buf);
@@ -935,6 +1167,11 @@ async function _applyDirectionColors(){
     if(proj.length!==nN)return;
     _colorFromProj(proj);
   }catch(e){/* silently fail — 50-PC coloring remains as fallback */}
+  finally{
+    clearTimeout(tid);
+    // Hide indicator only if this is still the latest request (avoid flicker on rapid pin changes)
+    if(_dirColorReqId===reqId&&_dcs)_dcs.style.display='none';
+  }
 }
 function _applyFilter(){
   if(!nN)return;
@@ -997,14 +1234,18 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
   // Dispose old
   if(v.trajGroup){v.sc.remove(v.trajGroup);v.trajGroup.geometry?.dispose();v.trajGroup.material?.dispose();v.trajGroup=null;}
   if(v.trajMarker){v.trajMarker.geometry.dispose();v.trajMarker.material.dispose();v.sc.remove(v.trajMarker);}
-  // Compute per-layer normalization using bulk columns
+  // Robust per-layer scale — outliers don't crush the cloud into near-zero
   const _tlMx=new Array(nL);
   for(let l=0;l<nL;l++){
     const cx=_getScoreColumn(l,pcX),cy=_getScoreColumn(l,pcY);
-    let mxX=0,mxY=0;
-    if(cx&&cy){for(let i=0;i<nN;i++){const ax=Math.abs(cx[i]),ay=Math.abs(cy[i]);if(ax>mxX)mxX=ax;if(ay>mxY)mxY=ay;}}
-    else{for(let i=0;i<nN;i++){mxX=Math.max(mxX,Math.abs(_getScore(l,i,pcX)));mxY=Math.max(mxY,Math.abs(_getScore(l,i,pcY)));}}
-    mxX=mxX||1;mxY=mxY||1;_tlMx[l]=[mxX,mxY];
+    let mxX=1,mxY=1;
+    if(cx&&cy){mxX=_robustColMax(cx);mxY=_robustColMax(cy);}
+    else{
+      const sx=new Float32Array(nN),sy=new Float32Array(nN);
+      for(let i=0;i<nN;i++){sx[i]=_getScore(l,i,pcX);sy[i]=_getScore(l,i,pcY);}
+      mxX=_robustColMax(sx);mxY=_robustColMax(sy);
+    }
+    _tlMx[l]=[mxX,mxY];
   }
   v._trajLayerMx=_tlMx;v._trajScaleXY=[1,1];v._trajScale=1;
   // Merged LineSegments: sample tokens, all layer transitions in one geometry
@@ -1028,9 +1269,13 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
       const l0=_trajSeq[si],l1=_trajSeq[si+1];
       const z0=_layerZ[l0]!==undefined?_layerZ[l0]:(l0/(nL-1))*2-1;
       const z1=_layerZ[l1]!==undefined?_layerZ[l1]:(l1/(nL-1))*2-1;
-      tPos[vi2*3]=_getScore(l0,ii,pcX)/_tlMx[l0][0];tPos[vi2*3+1]=_getScore(l0,ii,pcY)/_tlMx[l0][1];tPos[vi2*3+2]=z0;
+      const cb0=v._trajClampBounds?v._trajClampBounds[l0]:null;
+      const cb1=v._trajClampBounds?v._trajClampBounds[l1]:null;
+      const b0X=cb0?cb0[0]:1.75,b0Y=cb0?cb0[1]:1.75;
+      const b1X=cb1?cb1[0]:1.75,b1Y=cb1?cb1[1]:1.75;
+      tPos[vi2*3]=_clampTraj(_getScore(l0,ii,pcX)/_tlMx[l0][0],b0X);tPos[vi2*3+1]=_clampTraj(_getScore(l0,ii,pcY)/_tlMx[l0][1],b0Y);tPos[vi2*3+2]=z0;
       tCol[vi2*3]=cr;tCol[vi2*3+1]=cg;tCol[vi2*3+2]=cb;vi2++;
-      tPos[vi2*3]=_getScore(l1,ii,pcX)/_tlMx[l1][0];tPos[vi2*3+1]=_getScore(l1,ii,pcY)/_tlMx[l1][1];tPos[vi2*3+2]=z1;
+      tPos[vi2*3]=_clampTraj(_getScore(l1,ii,pcX)/_tlMx[l1][0],b1X);tPos[vi2*3+1]=_clampTraj(_getScore(l1,ii,pcY)/_tlMx[l1][1],b1Y);tPos[vi2*3+2]=z1;
       tCol[vi2*3]=cr;tCol[vi2*3+1]=cg;tCol[vi2*3+2]=cb;vi2++;
     }
     v._trajTokenMap.push({ti:ii,start:vStart,count:vi2-vStart});
@@ -1514,7 +1759,9 @@ function getGateRow(tokIdx){
 // Weight landscape: reacts to selected PCs — shows weight alignment for current pairs
 const _WL_COLORS=[0xFF4444,0xFF8844,0xFFCC44,0x44CC44,0x44CCCC,0x4488FF,0xAA44FF];
 const _WL_NAMES=['Q','K','V','O','gate','up','down'];
-let _wlData=null;// cached weight alignment data from server
+let _wlData=null;// cached weight alignment data from server (per-PC)
+let _wlDirData=null;// concept-direction alignment: {layers:[{layer,matrices:{name:mag}}], matrix_names:[...]}
+let _wlDirKey='';// cache key (a,b)
 let _wlBuiltKey='';// tracks what's currently built
 
 async function _loadWeightData(){
@@ -1523,35 +1770,87 @@ async function _loadWeightData(){
   return _wlData;
 }
 
+let _wlDirPending=null;
+async function _loadDirectionWeightData(a,b){
+  const key=`${a}:${b}:${model}:${mode}`;
+  if(_wlDirKey===key&&_wlDirData)return _wlDirData;
+  // Share the in-flight promise across concurrent callers so a second
+  // _onPinChange doesn't short-circuit on the already-set key with null.
+  if(_wlDirPending&&_wlDirPending.key===key)return _wlDirPending.p;
+  const p=(async()=>{
+    try{
+      const r=await api(`direction-weights/${model}/${mode}?a=${a}&b=${b}`);
+      if(r&&Array.isArray(r.layers)){
+        _wlDirData={layers:r.layers,matrix_names:r.matrix_names||[]};
+        _wlDirKey=key;
+      }else{_wlDirData=null;_wlDirKey='';}
+    }catch(e){_wlDirData=null;_wlDirKey='';}
+    _wlDirPending=null;
+    return _wlDirData;
+  })();
+  _wlDirPending={key,p};
+  return p;
+}
+
 function buildWeightLandscape(){
   _wlBuiltKey='';
   leftViews.forEach(lv=>{lv._wlLines=null;lv._varLines=null;lv._layerDots=null;lv._gateLineA=null;lv._gateLineB=null;lv._attnLines=null;lv._grid=null;lv._camSet=false;});
-  _loadWeightData().then(()=>{_rebuildWeightLines();leftViews.forEach(lv=>{lv.built=true;});_markDirty();});
+  _loadWeightData().then(async ()=>{
+    // If pins are live when weight data arrives, fetch concept-direction
+    // alignment too so the very first flower render uses DIR mode.
+    if(pinnedToken>=0&&pinnedTokenB>=0){
+      await _loadDirectionWeightData(pinnedToken,pinnedTokenB);
+    }
+    _rebuildWeightLines();
+    leftViews.forEach(lv=>{lv.built=true;});
+    _markDirty();
+  });
 }
 
 function _rebuildWeightLines(){
   if(!_wlData||!Array.isArray(_wlData)||!_wlData.length)return;
-  const key=`${vpPairs[0]},${vpPairs[1]},${vpPairs[2]}`;
+  // Include direction key so toggling pins triggers a rebuild
+  const key=`${vpPairs[0]},${vpPairs[1]},${vpPairs[2]}|${_wlDirKey||'pc'}`;
   const needsRebuild=key!==_wlBuiltKey;
   for(let vi=0;vi<3;vi++){_rebuildInternals(vi,vpPairs[vi],needsRebuild);}
   if(needsRebuild)_wlBuiltKey=key;
 }
 
-let _corrCache=null,_corrCacheKey='';
-function _clearCorrCache(){_corrCache=null;_corrCacheKey='';}
+function _clearCorrCache(){leftViews?.forEach(lv=>{if(lv){lv._corrCache=null;lv._corrCacheKey='';}});}
+const _WL_MAT_LOOKUP={'Q':'q_proj','K':'k_proj','V':'v_proj','O':'o_proj',
+                     'gate':'gate_proj','up':'up_proj','down':'down_proj'};
 function _updateInternalsValues(lv,pcA,pcB){
   if(!lv._legBtns||!_wlData)return;
   const nMat=_wlData[0]?.matrices?.length||0;
-  // Correlation is layer-independent — cache by token+PCs
+  const useDir=pinnedToken>=0&&pinnedTokenB>=0&&_wlDirData&&_wlDirData.layers;
+  if(useDir){
+    // DIR mode: petal text is per-layer magnitude against concept direction.
+    // Correlation is PC-mode-only — don't touch _corrCache so PC-mode cache
+    // survives the toggle and the three viewports don't thrash each other.
+    const dirByLayer={};
+    _wlDirData.layers.forEach(ld=>{dirByLayer[ld.layer]=ld.matrices||{};});
+    for(let mi=0;mi<nMat;mi++){
+      const btn=lv._legBtns[mi];if(!btn)continue;
+      const mag=dirByLayer[cL]?.[_WL_MAT_LOOKUP[_WL_NAMES[mi]]]||0;
+      const fmt=mag>=10?mag.toFixed(0):mag.toFixed(2);
+      btn.textContent=`${_WL_NAMES[mi]} ${fmt}`;
+    }
+    return;
+  }
+  // PC mode: per-viewport correlation cache (avoids thrash between viewports)
   const ck=`${pinnedToken}:${pcA}:${pcB}`;
-  if(ck!==_corrCacheKey){_corrCache=pinnedToken>=0?_computeCorrelations(pcA,pcB,nMat):null;_corrCacheKey=ck;}
-  const _corrWith=_corrCache;
+  if(ck!==lv._corrCacheKey){
+    lv._corrCache=pinnedToken>=0?_computeCorrelations(pcA,pcB,nMat):null;
+    lv._corrCacheKey=ck;
+  }
+  const _corrWith=lv._corrCache;
   for(let mi=0;mi<nMat;mi++){
     const btn=lv._legBtns[mi];if(!btn)continue;
     const al=_wlData[cL]?.matrices?.[mi]?.alignment||[];
     const vA=(al[pcA]||0),vB=(al[pcB]||0);
     const mag=Math.sqrt(vA*vA+vB*vB);
-    let txt=`${_WL_NAMES[mi]} ${mag.toFixed(2)}`;
+    const fmt=mag>=10?mag.toFixed(0):mag.toFixed(2);
+    let txt=`${_WL_NAMES[mi]} ${fmt}`;
     if(_corrWith)txt+=` r${_corrWith[mi]>=0?'+':''}${_corrWith[mi].toFixed(2)}`;
     btn.textContent=txt;
   }
@@ -1596,10 +1895,34 @@ function _rebuildInternals(vi,pair,needsRebuild){
   // Fixed angle per matrix (radial position in the flower)
   const angles=[];for(let mi=0;mi<nMat;mi++)angles.push(mi*(2*Math.PI/nMat));
 
-  // Alignment magnitude: max(al[pcA], al[pcB]) as petal length
-  // Clamp to real layers — virtual layers have no weight alignment data
+  // Alignment magnitude: concept-direction magnitude when pins active,
+  // else sqrt(al[pcA]² + al[pcB]²) as petal length.
+  // Clamp to real layers — virtual layers have no weight alignment data.
+  const _useDirFlower=pinnedToken>=0&&pinnedTokenB>=0&&_wlDirData&&_wlDirData.layers;
+  // Pre-index direction data by layer for O(1) lookup per call.
+  // Reuse the module-level _WL_MAT_LOOKUP — local duplicate removed.
+  const _dirByLayer={};
+  // DIR-mode magnitudes are in raw weight-norm units (can be 1-100+ on
+  // some layers) while PC-mode is bounded. Normalize DIR to PC's visual
+  // range so the flower stays inside the viewport.
+  let _dirScale=1;
+  if(_useDirFlower){
+    let maxDir=0;
+    _wlDirData.layers.forEach(ld=>{
+      _dirByLayer[ld.layer]=ld.matrices||{};
+      for(const k in (ld.matrices||{})){
+        const v=ld.matrices[k]; if(v>maxDir)maxDir=v;
+      }
+    });
+    // Target roughly the same visual range as PC mode: max petal ≈ 1.
+    _dirScale=maxDir>0?(1.0/maxDir):1;
+  }
   function _petalLen(l,mi){
     const rl=l>=_nRealLayers?(l===_nRealLayers?0:_nRealLayers-1):l;
+    if(_useDirFlower){
+      const raw=_dirByLayer[rl]?.[_WL_MAT_LOOKUP[_WL_NAMES[mi]]]||0;
+      return raw*_dirScale;
+    }
     const al=_wlData[rl]?.matrices?.[mi]?.alignment||[];
     const vA=al[pcA]||0,vB=al[pcB]||0;
     return Math.sqrt(vA*vA+vB*vB);
@@ -1801,6 +2124,46 @@ function _rebuildInternals(vi,pair,needsRebuild){
   }
   while(leg.firstChild)leg.removeChild(leg.firstChild);
   lv._legBtns=[];
+  // #23 — visual distinction for DIR mode in the flower itself: legend outline,
+  // bold badge, subtitle showing A↔B text, so glancing at the flower reveals the mode.
+  leg.classList.toggle('dir-active',!!_useDirFlower);
+  const badge=document.createElement('span');
+  badge.className='mode-badge ' + (_useDirFlower?'dir':'pc');
+  badge.textContent=_useDirFlower?'DIR':'PC';
+  badge.title=_useDirFlower
+    ?'Petals = ||W d|| for concept direction (tokenA − tokenB)'
+    :'Petals = √(al[pcA]² + al[pcB]²) for the viewport PCs';
+  leg.appendChild(badge);
+  if(_useDirFlower){
+    const sub=document.createElement('span');
+    sub.style.cssText='color:#c96;font-size:7px;align-self:center;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
+    const ta=texts[pinnedToken]||'?',tb=texts[pinnedTokenB]||'?';
+    sub.textContent=`${ta}\u2194${tb}`;
+    sub.title=`A: ${ta}  \u2194  B: ${tb}`;
+    leg.appendChild(sub);
+    // #1 falsification badges — surface in the flower so users don't have
+    // to hover the sep panel to see if the direction is geometric-only.
+    if(_dirBrief){
+      if(_dirBrief.functional_warning){
+        const nf=document.createElement('span');
+        nf.style.cssText='color:#f44;background:#1a0a0a;border:1px solid #642;border-radius:2px;padding:0 3px;font-size:7px;font-family:monospace;font-weight:bold';
+        nf.textContent='\u26A0NF';
+        nf.title='GEOMETRIC ONLY — top A/B tokens do not predict A/B through lmhead. Direction may reflect PCA artefacts, not a real feature.';
+        leg.appendChild(nf);
+      }
+      const p=_dirBrief.random_baseline_percentile;
+      if(typeof p==='number'){
+        const pc=p<10?'#4f4':p<30?'#cc4':'#f44';
+        const pbg=p<10?'#0a1a0a':p<30?'#1a1a0a':'#1a0a0a';
+        const pe=document.createElement('span');
+        pe.style.cssText=`color:${pc};background:${pbg};border:1px solid #333;border-radius:2px;padding:0 3px;font-size:7px;font-family:monospace`;
+        pe.textContent=`${p.toFixed(0)}%rand`;
+        pe.title='Percentile among 50 random token-pair directions. Lower = rarer/more-bimodal signal; >30 means random pairs are more bimodal than yours.';
+        leg.appendChild(pe);
+      }
+    }
+  }
+  lv._modeBadge=badge;
 
   function _isolate(lv,sel){
     const wasIsolated=lv._wlIsolated===sel;
@@ -2066,7 +2429,17 @@ function _buildRV0Variance(){
     rv.cam.position.set(0,0,2.5);rv.ctl.target.set(0,0,0);rv.ctl.update();
     return;
   }
-  if(rlbl)rlbl.textContent=`${texts[pinnedToken]||'A'} \u2194 ${texts[pinnedTokenB]||'B'}`;
+  if(rlbl){
+    // Label carries the asinh-scale badge so it's clear the Y axis isn't raw magnitude.
+    // Reference value (median) is shown so readers can translate visual position back to raw projection.
+    rlbl.textContent='';
+    const lab=document.createElement('span');
+    lab.textContent=`${texts[pinnedToken]||'A'} \u2194 ${texts[pinnedTokenB]||'B'}`;
+    rlbl.appendChild(lab);
+    rlbl._asinhBadge=document.createElement('span');
+    rlbl._asinhBadge.className='rlbl-mode';
+    rlbl.appendChild(rlbl._asinhBadge);
+  }
   const dd=_dirDepthData;
   const seq=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
   const nSteps=seq.length;
@@ -2079,12 +2452,29 @@ function _buildRV0Variance(){
     projA.push({si,l,v:d.proj_a});
     projB.push({si,l,v:d.proj_b});
   }
-  // Normalize Y to [-1,1] across all projections + percentiles
-  let yMax=0;
-  projA.forEach(p=>{yMax=Math.max(yMax,Math.abs(p.v));});
-  projB.forEach(p=>{yMax=Math.max(yMax,Math.abs(p.v));});
-  dd.layers.forEach(d=>{yMax=Math.max(yMax,Math.abs(d.p10),Math.abs(d.p90));});
-  yMax=yMax||1;
+  // Normalize Y with signed log scaling so early-layer micro-divergences
+  // remain visible alongside late-layer blowups. asinh(x/s) is smooth,
+  // sign-preserving, ≈ linear near 0, and logarithmic for |x|≫s.
+  // s = median(|y|) over all layer values, so the middle stays linear.
+  const absAll=[];
+  projA.forEach(p=>absAll.push(Math.abs(p.v)));
+  projB.forEach(p=>absAll.push(Math.abs(p.v)));
+  dd.layers.forEach(d=>{absAll.push(Math.abs(d.p10));absAll.push(Math.abs(d.p90));});
+  absAll.sort((a,b)=>a-b);
+  const s=absAll[Math.floor(absAll.length*0.5)]||1;
+  const _scaleY=v=>Math.asinh(v/s);
+  if(rlbl?._asinhBadge){
+    const sFmt=s>=100?s.toFixed(0):s>=1?s.toFixed(2):s.toExponential(1);
+    rlbl._asinhBadge.textContent=`asinh(v/${sFmt})`;
+    rlbl._asinhBadge.title=`Y-axis: asinh(v/s) where s=${s} (median |proj|). y=1 ≈ raw ${s.toFixed(2)}, y=2 ≈ raw ${(s*Math.sinh(2)).toFixed(1)}, y=3 ≈ raw ${(s*Math.sinh(3)).toFixed(1)}.`;
+  }
+  // Normalize asinh output to [-1, 1] using 98th percentile of |asinh(y/s)|
+  const absScaled=absAll.map(v=>Math.abs(_scaleY(v)));
+  absScaled.sort((a,b)=>a-b);
+  const yMax=(absScaled[Math.floor(absScaled.length*0.98)]||Math.asinh(1))*1.05;
+  projA.forEach(p=>{p.v=_scaleY(p.v);});
+  projB.forEach(p=>{p.v=_scaleY(p.v);});
+  dd.layers.forEach(d=>{d.p10=_scaleY(d.p10);d.p50=_scaleY(d.p50);d.p90=_scaleY(d.p90);});
   // Draw sample density as faint band (p10/p90 from server) at each layer
   const bandPos=[];const bandCol=[];
   for(let si=0;si<seq.length;si++){
@@ -2470,12 +2860,13 @@ function _buildRV2Attention(){
       const lm=new THREE.LineSegments(lg,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.6}));
       lm.frustumCulled=false;rv.sc.add(lm);
     }
-    // Dots
+    // Dots: fixed screen-size so low-alignment layers remain visible.
+    // The alignment magnitude is already encoded in Y (height) and brightness.
     const dg=new THREE.BufferGeometry();
     dg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(dotPos),3));
     dg.setAttribute('color',new THREE.BufferAttribute(new Float32Array(dotCol),3));
-    const maxSize=Math.max(...dotSizes)*0.004;
-    const dm2=new THREE.Points(dg,new THREE.PointsMaterial({size:Math.max(0.02,maxSize),vertexColors:true,transparent:true,opacity:0.8,sizeAttenuation:true,depthWrite:false}));
+    const _dpr=window.devicePixelRatio||1;
+    const dm2=new THREE.Points(dg,new THREE.PointsMaterial({size:4*_dpr,vertexColors:true,transparent:true,opacity:0.85,sizeAttenuation:false,depthWrite:false}));
     dm2.frustumCulled=false;rv.sc.add(dm2);
   });
 
@@ -2961,6 +3352,9 @@ function _renderPCSHoverLayer(tokIdx,scores){
 
 function _clearRV(rv){
   if(!rv)return;rv._rvSlices=[];
+  // Drop stale references so _updateRVLayer doesn't mutate disposed meshes
+  // during the gap between _clearRV and the new cursor assignment.
+  rv._dirCursor=null;rv._dirSeq=null;rv._dirNSteps=0;
   while(rv.sc.children.length>1){const c=rv.sc.children[rv.sc.children.length-1];rv.sc.remove(c);if(c.geometry)c.geometry.dispose();if(c.material)c.material.dispose();}
 }
 
@@ -3008,6 +3402,46 @@ function updateLeftViewports(){
 // Rebuild right column neurons/attention when pins change
 let _pinChangeGen=0;
 let _dirDepthData=null;// cached direction-depth response {layers:[...], n_layers:N}
+let _dirBrief=null;// cached cheap falsification signals {bimodality, random_baseline_percentile, functional_warning, ...}
+function _updateBriefBadges(lv){
+  if(!lv)return;
+  const leg=lv.el?.querySelector('.wl-legend');if(!leg)return;
+  // Remove any existing brief badges (marked via class)
+  [...leg.querySelectorAll('.brief-badge')].forEach(n=>n.remove());
+  if(!_dirBrief)return;
+  const insertAfter=leg.querySelector('.mode-badge.dir')?.nextSibling;
+  const mkBadge=(text,color,bg,title)=>{
+    const s=document.createElement('span');s.className='brief-badge';
+    s.style.cssText=`color:${color};background:${bg};border:1px solid #333;border-radius:2px;padding:0 3px;font-size:7px;font-family:monospace`;
+    s.textContent=text;s.title=title||'';return s;
+  };
+  const frag=document.createDocumentFragment();
+  if(_dirBrief.functional_warning){
+    frag.appendChild(mkBadge('\u26A0NF','#f44','#1a0a0a',
+      'GEOMETRIC ONLY — top A/B tokens do not predict A/B through lmhead.'));
+  }
+  const p=_dirBrief.random_baseline_percentile;
+  if(typeof p==='number'){
+    const pc=p<10?'#4f4':p<30?'#cc4':'#f44';
+    const pbg=p<10?'#0a1a0a':p<30?'#1a1a0a':'#1a0a0a';
+    frag.appendChild(mkBadge(`${p.toFixed(0)}%rand`,pc,pbg,
+      'Percentile among 50 random token-pair directions. Lower = rarer.'));
+  }
+  if(insertAfter){
+    // Find the A↔B subtitle and insert after it
+    let anchor=insertAfter;
+    if(anchor.className==='')anchor=anchor.nextSibling;
+    if(anchor)leg.insertBefore(frag,anchor);else leg.appendChild(frag);
+  }else leg.appendChild(frag);
+}
+async function _fetchDirBrief(){
+  if(pinnedToken<0||pinnedTokenB<0||!model||!mode||cL>=_nRealLayers){_dirBrief=null;return null;}
+  try{
+    const d=await api(`direction-brief/${model}/${mode}?a=${pinnedToken}&b=${pinnedTokenB}&layer=${cL}`);
+    _dirBrief=d?.error?null:d;
+  }catch(e){_dirBrief=null;}
+  return _dirBrief;
+}
 async function _fetchDirDepth(){
   if(pinnedToken<0||pinnedTokenB<0||!model||!mode){_dirDepthData=null;return null;}
   try{
@@ -3016,20 +3450,66 @@ async function _fetchDirDepth(){
   }catch(e){_dirDepthData=null;}
   return _dirDepthData;
 }
+let _pinChangeDebounce=null;
+let _sepDeferTimer=null;
 async function _onPinChange(){
-  const gen=++_pinChangeGen;
-  _nfUpdateActivations();// neuron field (async)
-  // Fetch full-K direction depth from server, then build rv0+rv2
-  await _fetchDirDepth();
-  if(_pinChangeGen!==gen)return;// superseded
-  _buildRV0Variance();// direction depth profile (uses _dirDepthData)
-  _buildRV2Attention();// interference map (uses _dirDepthData)
-  const tokA=pinnedToken,tokB=pinnedTokenB;// capture at call time
-  await _pcsLoadFull(tokA,'A');
-  if(_pinChangeGen!==gen)return;// superseded by newer pin change
-  await _pcsLoadFull(tokB,'B');
-  if(_pinChangeGen!==gen)return;// superseded by newer pin change
-  _buildPCSSpectrum();
+  // Debounce: two rapid pin changes (pinA then pinB) collapse into one run.
+  // Without this, the first call fires 6+ fetches that are immediately
+  // orphaned when gen bumps — wasted work and thread contention.
+  if(_pinChangeDebounce)clearTimeout(_pinChangeDebounce);
+  // Cancel any pending deferred _updateSeparation — next pin change has
+  // different tokens, don't let the old expensive analysis contend with
+  // the new critical-path fetches.
+  if(_sepDeferTimer){clearTimeout(_sepDeferTimer);_sepDeferTimer=null;}
+  return new Promise(resolve=>{
+    _pinChangeDebounce=setTimeout(async()=>{
+      _pinChangeDebounce=null;
+      const gen=++_pinChangeGen;
+      _nfUpdateActivations();
+      const tokA=pinnedToken,tokB=pinnedTokenB;
+      // Critical path: fire each endpoint in parallel. Each Python http
+      // thread does its own work; mmap + Gram + random-bm caches make
+      // warm repeats fast.
+      const pDepth   = _fetchDirDepth();
+      const pWeights = (tokA>=0&&tokB>=0)
+        ? _loadDirectionWeightData(tokA,tokB)
+        : Promise.resolve().then(()=>{_wlDirData=null;_wlDirKey='';});
+      const pPCSA    = _pcsLoadFull(tokA,'A');
+      const pPCSB    = _pcsLoadFull(tokB,'B');
+      // Brief falsification signals — small fetch (~100 ms) to surface the
+      // random-baseline / functional-warning badges inline. Keeps the
+      // epistemic safety rails visible without hover.
+      const pBrief   = (tokA>=0&&tokB>=0) ? _fetchDirBrief() : Promise.resolve();
+      // Fire non-critical side updates concurrently without blocking.
+      _fetchPredicts(tokA,'predsA');
+      _fetchPredicts(tokB,'predsB');
+      _applyDirectionColors();
+      await Promise.all([pDepth, pWeights, pPCSA, pPCSB, pBrief]);
+      if(_pinChangeGen!==gen){resolve();return;}
+      _rebuildWeightLines();
+      _buildRV0Variance();
+      _buildRV2Attention();
+      _buildPCSSpectrum();
+      resolve();
+      // Mark sep-panel stale so the hover handler knows the current token
+      // pair's analysis needs re-fetching. The actual direction-quality
+      // request (1-4s on first touch) only fires when the user hovers the
+      // sep panel, so rapid pin-flicking never blocks the critical path.
+      const panel=document.getElementById('sepPanel');
+      if(panel){
+        panel.dataset.stale = (tokA>=0&&tokB>=0) ? `${tokA}:${tokB}` : '';
+        // Show the panel with a "hover to analyze" hint
+        if(tokA>=0&&tokB>=0){
+          panel.style.display='block';
+          const dist=document.getElementById('sepDist');
+          if(dist&&dist.dataset.pair!==panel.dataset.stale){
+            dist.textContent='hover to analyze';dist.dataset.pair=panel.dataset.stale;
+            const list=document.getElementById('sepList');if(list)list.textContent='';
+          }
+        }else panel.style.display='none';
+      }
+    },40);// 40ms window catches rapid A+B sequence, imperceptible to user
+  });
 }
 
 let _nRealLayers=0;
@@ -3062,11 +3542,23 @@ function updateHUD(){
   document.getElementById('hst').textContent=`PC1:${p1}% dim:${lm.intrinsic_dim||'?'}`;
   document.getElementById('llbl').textContent=ln;
 }
+let _briefLayerTimer=null;
 function setLayer(l,light){cL=l;updateAllViewports();updateHUD();
   _updateBrowserLayer();_updateBrowserSelBoxes();
   if(!light)_updateBrowserOverlay();
   updateLeftViewports();
   if(pinnedToken>=0||pinnedTokenB>=0){_syncAllPins(!play);if(!play)showPinDetail(pinnedToken);}
+  // #7 — refresh falsification brief for the new layer, debounced so
+  // rapid arrow-key scrubbing doesn't fire one request per layer.
+  if(pinnedToken>=0&&pinnedTokenB>=0&&!play){
+    if(_briefLayerTimer)clearTimeout(_briefLayerTimer);
+    _briefLayerTimer=setTimeout(async()=>{
+      _briefLayerTimer=null;
+      await _fetchDirBrief();
+      // Update just the badges in the flower legends — cheap.
+      leftViews.forEach(lv=>_updateBriefBadges(lv));
+    },250);
+  }
   _markDirty();if(!light)_saveState();}
 
 // --- URL state serialization (#43) ---
@@ -3108,6 +3600,13 @@ async function loadAll(){
   _pcsHoverCache.clear();_hoverCache.clear();_pcFull.clear();_pcMedium.clear();_nfCache.clear();
   _pcsFullA=null;_pcsFullB=null;_pcsFullK=0;_pcsFullNL=0;_pcsScale=0;_pcsNK=0;
   _pcsLoadingA=-1;_pcsLoadingB=-1;_pcsHoverTok=-1;_hoverTok=-1;
+  // Drop direction colors across model/mode switch — they were fit to the old model.
+  // Bump the request id so in-flight projection responses from the old model are
+  // treated as superseded when they arrive.
+  if(!isSameModel){_dirColorActive=false;_dirColorReqId++;_dirProjLast=null;}
+  // Drop concept-direction weight alignment: cache was per (old-model × A × B)
+  // and the references would otherwise keep the old data alive until next pin.
+  if(!isSameModel){_wlDirData=null;_wlDirKey='';_wlBuiltKey='';}
 
   // Phase 2: parse scores binary + fetch layer0 metadata in parallel
   const [buf,d0]=await Promise.all([
@@ -3217,6 +3716,9 @@ async function loadAll(){
   setLayer(_rstL);showPinDetail(pinnedToken);updatePinMarkers();
   document.getElementById('st').textContent=`${model}/${mode} ${nN}tok ${nL}L`;
   _prevModel=model;_prevMode=mode;
+  // If both pins restored from URL, trigger the dependent fetches so
+  // direction-depth, direction-weights, and direction-colors populate.
+  if(pinnedToken>=0&&pinnedTokenB>=0){_onPinChange();_applyDirectionColors();}
   }catch(e){document.getElementById('st').textContent='Error: '+e.message;console.error(e);}
   finally{if(_ld)_ld.style.display='none';}
 
@@ -3255,10 +3757,26 @@ async function init(){const models=await api('models');const sel=document.getEle
       const q=e.target.value.toLowerCase().trim();_tsResults.textContent='';
       if(!q||q.length<1||!texts.length)return;
       const frag=document.createDocumentFragment();let count=0;
+      // Direction context: if dir colors active, annotate A-side / B-side and magnitude.
+      const dp=_dirColorActive&&_dirProjLast;
       for(let i=0;i<texts.length&&count<20;i++){
         if((texts[i]||'').toLowerCase().includes(q)){
-          const d=document.createElement('div');d.style.cssText='cursor:pointer;padding:1px 0;border-bottom:1px solid #111';
-          d.textContent=`#${i} ${texts[i]} [${scripts[i]}]`;d.dataset.ti=i;
+          const d=document.createElement('div');d.style.cssText='cursor:pointer;padding:1px 0;border-bottom:1px solid #111;display:flex;gap:4px;align-items:center';
+          const txt=document.createElement('span');
+          txt.textContent=`#${i} ${texts[i]} [${scripts[i]}]`;
+          txt.style.flex='1';
+          d.appendChild(txt);
+          if(dp){
+            const t=(_dirProjLast[i]-_dirProjMid)/_dirProjSpan;
+            const side=t>0.1?'A':t<-0.1?'B':'·';
+            const col=t>0.1?'#FF6644':t<-0.1?'#4477AA':'#666';
+            const tag=document.createElement('span');
+            tag.style.cssText=`color:${col};font-size:8px;min-width:30px;text-align:right`;
+            tag.textContent=`${side}${Math.abs(t)>0.1?Math.abs(t).toFixed(2):''}`;
+            tag.title=`Direction projection: ${_dirProjLast[i].toFixed(3)} (centered ${(t>0?'+':'')}${t.toFixed(2)})`;
+            d.appendChild(tag);
+          }
+          d.dataset.ti=i;
           frag.appendChild(d);count++;
         }
       }
@@ -3274,14 +3792,53 @@ async function init(){const models=await api('models');const sel=document.getEle
     try{
       const r=await api(`direction-discover/${model}/${mode}?layer=${cL}&n=10`);
       if(r.error){_discRes.textContent=r.error;return;}
+      // Header: outliers excluded + population size
+      if(r.outliers_excluded>0||r.n_population){
+        const hdr=document.createElement('div');
+        hdr.style.cssText='color:#666;font-size:8px;padding:2px 4px;margin-bottom:2px;border-bottom:1px solid #222';
+        hdr.textContent=`pop ${r.n_population||'?'} (${r.outliers_excluded||0} outliers excluded)`;
+        _discRes.appendChild(hdr);
+      }
+      // #16 — if discovered percentiles are all above 80, PCA is not finding
+      // distinctive directions; random pairs do better. Recommend template mode.
+      const pcts=(r.discovered||[]).map(d=>d.random_baseline_percentile).filter(v=>typeof v==='number');
+      if(mode==='raw'&&pcts.length>=3&&pcts.every(p=>p>80)){
+        const warn=document.createElement('div');
+        warn.style.cssText='color:#f84;font-size:8px;padding:3px 4px;margin-bottom:3px;border:1px solid #642;border-radius:2px;background:rgba(80,40,0,0.2)';
+        warn.textContent='\u26A0 raw-mode: all top PCs are less bimodal than random token pairs. PCA discovery may be the wrong tool here — try template mode.';
+        _discRes.appendChild(warn);
+      }
+      function _mkBadge(text,color,title){
+        const s=document.createElement('span');
+        s.style.cssText=`color:${color};font-size:8px;margin-left:4px`;
+        s.textContent=text;if(title)s.title=title;return s;
+      }
       r.discovered.forEach(d=>{
         const row=document.createElement('div');
         row.style.cssText='cursor:pointer;padding:2px 4px;margin:1px 0;border-radius:2px';
+        // #17 — dim the whole row when functional_warning=true so the token
+        // lists (which look authoritative) are visually de-emphasized.
+        if(d.functional_warning)row.style.opacity='0.5';
         const bmColor=d.bimodality<0.3?'#4f4':d.bimodality<0.6?'#cc4':'#888';
         const posText=d.top_pos.slice(0,3).map(t=>t.text).join(', ');
         const negText=d.top_neg.slice(0,3).map(t=>t.text).join(', ');
-        row.textContent=`PC${d.pc} [${(d.bimodality*100).toFixed(0)}%] "${posText}" vs "${negText}"`;
-        row.style.color=bmColor;
+        const head=document.createElement('span');
+        head.style.color=bmColor;
+        head.textContent=`PC${d.pc} [${(d.bimodality*100).toFixed(0)}%]`;
+        row.appendChild(head);
+        const pct=d.random_baseline_percentile;
+        if(pct!==undefined&&pct!==null){
+          const col=pct<10?'#4f4':pct<30?'#cc4':'#f44';
+          row.appendChild(_mkBadge(`${pct.toFixed(0)}%rand`,col,'percentile vs random token-pair directions'));
+        }
+        if(d.functional_warning){
+          row.appendChild(_mkBadge('\u26A0NF','#f44','geometric proximity does not predict lmhead output'));
+        }else if(d.functional_hit_rate!==null&&d.functional_hit_rate!==undefined){
+          row.appendChild(_mkBadge(`fn=${(d.functional_hit_rate*100).toFixed(0)}%`,'#4a4','fraction of top-A/B tokens that predict A/B through lmhead'));
+        }
+        const tail=document.createElement('span');
+        tail.textContent=` "${posText}" vs "${negText}"`;
+        row.appendChild(tail);
         row.addEventListener('mouseenter',()=>{row.style.background='#1a1a2a';});
         row.addEventListener('mouseleave',()=>{row.style.background='';});
         row.addEventListener('click',()=>{
@@ -3312,6 +3869,7 @@ function _togglePlay(){
 }
 // --- Viewport capture ---
 function _captureLabel(vi){
+  if(vi==='composite')return'composite';
   if(vi==='pcs')return'spectrum';if(vi==='br0')return'prism';
   if(typeof vi==='string'&&vi.startsWith('l'))return'internals'+vi[1];
   if(typeof vi==='string'&&vi.startsWith('r'))return'right'+vi[1];
@@ -3335,27 +3893,31 @@ _brPanels.forEach((p,i)=>{p.el.addEventListener('pointerenter',()=>{_setCapTarge
 
 // Text overlay for captures
 function _drawOverlay(ctx,w,h,vi,layer){
-  const fs=Math.round(h*0.025);const fsm=Math.round(h*0.018);
+  // Clamp font sizes to a useful range — proportional fonts go sub-pixel on
+  // the right-column viewports (rv0/rv1/rv2 are short). Also drop-shrink if
+  // the left+right texts would overrun the width.
+  let fs=Math.max(10,Math.min(28,Math.round(h*0.025)));
+  let fsm=Math.max(9,Math.min(22,Math.round(h*0.018)));
   ctx.font=`bold ${fs}px monospace`;ctx.textBaseline='top';
-  const pad=Math.round(w*0.012);
-  // Semi-transparent background strips for readability
-  ctx.fillStyle='rgba(0,0,0,0.6)';
-  ctx.fillRect(0,0,w,fs*2.5);// top strip
-  // Top-left: model + mode + layer
-  ctx.fillStyle='rgba(255,255,255,0.9)';
+  const pad=Math.max(4,Math.round(w*0.012));
   const layerName=layer>=_nRealLayers?(layer===_nRealLayers?'emb':'lmh'):`L${String(layer).padStart(2,'0')}`;
-  ctx.fillText(`${model}  ${mode}  ${layerName}`,pad,pad);
-  // Top-right: PC axes or viewport label
+  const leftText=`${model}  ${mode}  ${layerName}`;
   const v=typeof vi==='number'&&views[vi]?views[vi]:null;
-  if(v){
-    const ax=`PC${v.pcX} × PC${v.pcY} × PC${v.pcZ}`;
-    ctx.fillStyle='rgba(255,255,255,0.6)';
-    const m=ctx.measureText(ax);ctx.fillText(ax,w-m.width-pad,pad);
-  }else{
-    const label=_captureLabel(vi);
-    ctx.fillStyle='rgba(255,255,255,0.5)';
-    const m=ctx.measureText(label);ctx.fillText(label,w-m.width-pad,pad);
+  const rightText=v?`PC${v.pcX} × PC${v.pcY} × PC${v.pcZ}`:_captureLabel(vi);
+  // Fit check: shrink font until both labels + 2×pad fit within width.
+  while(fs>9){
+    const lw=ctx.measureText(leftText).width;
+    const rw=ctx.measureText(rightText).width;
+    if(lw+rw+pad*3<=w)break;
+    fs--;ctx.font=`bold ${fs}px monospace`;
   }
+  ctx.fillStyle='rgba(0,0,0,0.6)';
+  ctx.fillRect(0,0,w,fs*2.5);
+  ctx.fillStyle='rgba(255,255,255,0.9)';
+  ctx.fillText(leftText,pad,pad);
+  ctx.fillStyle=v?'rgba(255,255,255,0.6)':'rgba(255,255,255,0.5)';
+  const m=ctx.measureText(rightText);
+  ctx.fillText(rightText,w-m.width-pad,pad);
   // Bottom section: pinned tokens + direction metrics
   if(pinnedToken>=0||pinnedTokenB>=0){
     const nLines=2+(pinnedTokenB>=0&&_dirColorActive?1:0);
@@ -3424,46 +3986,55 @@ function _renderViewportToCanvas(sc,cam,el,vi,scale){
   tmp.dispose();cam.aspect=el.clientWidth/el.clientHeight;cam.updateProjectionMatrix();
   return cv;
 }
+function _captureError(rid,msg){
+  if(!rid)return;
+  fetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({request_id:rid,error:msg})}).catch(()=>{});
+}
 function captureComposite(rid){
-  // 2x2: cloud A (top-left), trajectory A (bottom-left), direction depth (top-right), superposition (bottom-right)
-  const scale=2;
-  const panels=[];
-  // Cloud A
-  if(views[0])panels.push({cv:_renderViewportToCanvas(views[0].sc,views[0].cam,views[0].el,0,scale),label:'Cloud'});
-  // Trajectory A
-  if(views[3])panels.push({cv:_renderViewportToCanvas(views[3].sc,views[3].cam,views[3].el,3,scale),label:'Trajectory'});
-  // Direction Depth (rv0)
-  if(rightViews[0]?.built)panels.push({cv:_renderViewportToCanvas(rightViews[0].sc,rightViews[0].cam,rightViews[0].el,'r0',scale),label:'Depth'});
-  // Superposition (rv2)
-  if(rightViews[2]?.built)panels.push({cv:_renderViewportToCanvas(rightViews[2].sc,rightViews[2].cam,rightViews[2].el,'r2',scale),label:'Superposition'});
-  if(!panels.length)return;
-  // Arrange in 2x2 grid
-  const cols=2,rows=Math.ceil(panels.length/cols);
-  const pw=panels[0].cv.width,ph=panels[0].cv.height;
-  const gap=4;
-  const totalW=pw*cols+gap*(cols-1);
-  const totalH=ph*rows+gap*(rows-1);
-  const comp=document.createElement('canvas');comp.width=totalW;comp.height=totalH;
-  const ctx=comp.getContext('2d');
-  ctx.fillStyle='#0a0a0a';ctx.fillRect(0,0,totalW,totalH);
-  panels.forEach((p,i)=>{
-    const col=i%cols,row=Math.floor(i/cols);
-    ctx.drawImage(p.cv,col*(pw+gap),row*(ph+gap));
-  });
-  // Upload composite
-  if(rid){
-    comp.toBlob(blob=>{
-      const filename=`${model}_${mode}_L${String(cL).padStart(2,'0')}_composite.png`;
-      fetch('/api/capture-upload?request_id='+encodeURIComponent(rid)+'&filename='+encodeURIComponent(filename),
-        {method:'POST',body:blob});
-    },'image/png');
-  }else{
-    comp.toBlob(blob=>{
-      const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-      a.download=`${model}_${mode}_L${String(cL).padStart(2,'0')}_composite.png`;a.click();
-      URL.revokeObjectURL(a.href);
-    },'image/png');
-  }
+  // 2x2: cloud A (top-left), trajectory A (bottom-left),
+  //      direction depth (top-right), superposition (bottom-right)
+  try{
+    // Clamp scale so the composite PNG stays under ~8MP (roughly 12-15 MB PNG).
+    // At scale=2 with a 4K viewport per panel, 4 panels would hit ~30MP.
+    const MAX_PANEL_PX=2048;// per-panel longer edge
+    const sampleEl=views[0]?.el||views[3]?.el;
+    const vpMax=sampleEl?Math.max(sampleEl.clientWidth,sampleEl.clientHeight):640;
+    const scale=Math.min(2,MAX_PANEL_PX/Math.max(1,vpMax));
+    const panels=[];
+    if(views[0])panels.push({cv:_renderViewportToCanvas(views[0].sc,views[0].cam,views[0].el,0,scale),label:'Cloud'});
+    if(views[3])panels.push({cv:_renderViewportToCanvas(views[3].sc,views[3].cam,views[3].el,3,scale),label:'Trajectory'});
+    if(rightViews[0]?.built)panels.push({cv:_renderViewportToCanvas(rightViews[0].sc,rightViews[0].cam,rightViews[0].el,'r0',scale),label:'Depth'});
+    if(rightViews[2]?.built)panels.push({cv:_renderViewportToCanvas(rightViews[2].sc,rightViews[2].cam,rightViews[2].el,'r2',scale),label:'Superposition'});
+    if(!panels.length){_captureError(rid,'composite: no viewports built (pin tokens first?)');return;}
+    const cols=2,rows=Math.ceil(panels.length/cols);
+    const pw=panels[0].cv.width,ph=panels[0].cv.height;
+    const gap=4;
+    const totalW=pw*cols+gap*(cols-1);
+    const totalH=ph*rows+gap*(rows-1);
+    const comp=document.createElement('canvas');comp.width=totalW;comp.height=totalH;
+    const ctx=comp.getContext('2d');
+    ctx.fillStyle='#0a0a0a';ctx.fillRect(0,0,totalW,totalH);
+    panels.forEach((p,i)=>{
+      const col=i%cols,row=Math.floor(i/cols);
+      ctx.drawImage(p.cv,col*(pw+gap),row*(ph+gap));
+    });
+    const filename=`${model}_${mode}_L${String(cL).padStart(2,'0')}_composite.png`;
+    if(rid){
+      comp.toBlob(blob=>{
+        if(!blob){_captureError(rid,'composite: toBlob returned null');return;}
+        fetch('/api/capture-upload?request_id='+encodeURIComponent(rid)+'&filename='+encodeURIComponent(filename),
+          {method:'POST',body:blob})
+          .catch(e=>_captureError(rid,'composite upload failed: '+e.message));
+      },'image/png');
+    }else{
+      comp.toBlob(blob=>{
+        if(!blob)return;
+        const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+        a.download=filename;a.click();URL.revokeObjectURL(a.href);
+      },'image/png');
+    }
+  }catch(e){_captureError(rid,'composite: '+e.message);}
 }
 
 // --- GIF encoder (inline, no dependencies) ---
@@ -3535,8 +4106,13 @@ class GIFEnc{
 }
 
 let _recording=false;
+let _recordingStart=0;
+// Auto-recover a stuck recording flag. If a previous session crashed mid-record,
+// pageshow clears nothing; this timestamp check makes a fresh record possible.
+function _recordingIsStale(){return _recording&&(Date.now()-_recordingStart)>10*60*1000;}
 async function recordViewport(sc,cam,el,vi,fps){
-  if(_recording)return;_recording=true;
+  if(_recording&&!_recordingIsStale())return;
+  _recording=true;_recordingStart=Date.now();
   fps=fps||10;const scale=2;
   const w=el.clientWidth*scale,h=el.clientHeight*scale;
   const tmp=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true});
@@ -3550,25 +4126,28 @@ async function recordViewport(sc,cam,el,vi,fps){
   const startL=cL;
   const delay=Math.round(100/fps);// GIF delay in 1/100th seconds
   const seq=_layerSeq.length?_layerSeq:[...Array(_nRealLayers).keys()];
-  for(let si=0;si<seq.length;si++){
-    setLayer(seq[si],true);const l=seq[si];
-    cam.aspect=w/h;cam.updateProjectionMatrix();
-    tmp.render(sc,cam);
-    // Composite: 3D render + text overlay
-    ctx.drawImage(tmp.domElement,0,0);
-    _drawOverlay(ctx,w,h,vi,l);
-    gif.addFrame(ctx.getImageData(0,0,w,h).data,delay);
-    await new Promise(r=>setTimeout(r,16));// yield to keep UI alive
+  try{
+    for(let si=0;si<seq.length;si++){
+      setLayer(seq[si],true);const l=seq[si];
+      cam.aspect=w/h;cam.updateProjectionMatrix();
+      tmp.render(sc,cam);
+      ctx.drawImage(tmp.domElement,0,0);
+      _drawOverlay(ctx,w,h,vi,l);
+      gif.addFrame(ctx.getImageData(0,0,w,h).data,delay);
+      await new Promise(r=>setTimeout(r,16));
+    }
+    const blob=gif.encode();
+    const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+    a.download=`${model}_${mode}_${_captureLabel(vi)}.gif`;a.click();
+    URL.revokeObjectURL(a.href);
+  }finally{
+    tmp.dispose();
+    cam.aspect=el.clientWidth/el.clientHeight;cam.updateProjectionMatrix();
+    setLayer(startL);
+    _recording=false;_recordingStart=0;
+    el.classList.remove('vp-recording');
+    if(recBtn)recBtn.style.color='#664444';
   }
-  const blob=gif.encode();
-  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
-  a.download=`${model}_${mode}_${_captureLabel(vi)}.gif`;a.click();
-  URL.revokeObjectURL(a.href);tmp.dispose();
-  cam.aspect=el.clientWidth/el.clientHeight;cam.updateProjectionMatrix();
-  setLayer(startL);
-  _recording=false;
-  el.classList.remove('vp-recording');
-  if(recBtn)recBtn.style.color='#664444';
 }
 // Wire [S] buttons on all .cbtn containers
 function _addSnapButtons(){
@@ -3793,9 +4372,9 @@ function _captureScreenshotRemote(sc,cam,el,vi,rid){
 }
 
 async function _captureGifRemote(sc,cam,el,vi,rid){
-  if(_recording){fetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
+  if(_recording&&!_recordingIsStale()){fetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({request_id:rid,error:'already recording'})});return;}
-  _recording=true;
+  _recording=true;_recordingStart=Date.now();
   const startL=cL;
   const wasPlay=play;play=true;// suppress heavy per-frame pin updates
   try{
@@ -3852,7 +4431,7 @@ async function _captureGifRemote(sc,cam,el,vi,rid){
     fetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({request_id:rid,error:e.message||'gif failed'})});
   }finally{
-    play=wasPlay;setLayer(startL);_recording=false;
+    play=wasPlay;setLayer(startL);_recording=false;_recordingStart=0;
   }
 }
 
@@ -3875,18 +4454,471 @@ document.getElementById('chatInput')?.addEventListener('keydown',e=>{
   userMsg.style.cssText='color:#ccc;margin:2px 0';
   userMsg.textContent='> '+msg;
   log.appendChild(userMsg);
-  // Send to MCP via navigate command with chat payload
-  fetch('/api/navigate',{method:'POST',headers:{'Content-Type':'application/json'},
-    body:JSON.stringify({cmd:'chat',message:msg,pinnedA:pinnedToken,pinnedB:pinnedTokenB,layer:cL,model,mode})
+  // Dedicated /api/chat endpoint — queued for MCP client to drain.
+  // Server responds with ack only; actual replies arrive via /api/chat-poll.
+  fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+    body:JSON.stringify({message:msg,pinnedA:pinnedToken,pinnedB:pinnedTokenB,layer:cL,model,mode})
   }).then(r=>r.json()).then(r=>{
-    const reply=document.createElement('div');
-    reply.style.cssText='color:#6c6;margin:2px 0';
-    reply.textContent=r.reply||r.error||'sent';
-    log.appendChild(reply);
+    if(r.error){
+      const err=document.createElement('div');
+      err.style.cssText='color:#f77;margin:2px 0';
+      err.textContent=r.error;
+      log.appendChild(err);
+    }else{
+      const ack=document.createElement('div');
+      ack.style.cssText='color:#555;margin:2px 0;font-size:8px';
+      ack.textContent=`queued (${r.request_id||'?'}) — waiting for MCP`;
+      log.appendChild(ack);
+    }
     log.scrollTop=log.scrollHeight;
   }).catch(()=>{});
   log.scrollTop=log.scrollHeight;
 });
+// Long-poll for MCP replies. Exponential backoff on transient failures
+// (server restart, 502/503) so a dead server doesn't hammer the network.
+async function _chatPollLoop(){
+  let backoff=1000;
+  const MAX_BACKOFF=60000;
+  let badgeEl=null;
+  const _setBadge=(disconnected)=>{
+    const arrow=document.getElementById('chatArrow');if(!arrow)return;
+    if(disconnected){
+      if(!badgeEl){badgeEl=document.createElement('span');
+        badgeEl.style.cssText='color:#d66;font-size:7px;margin-left:4px';
+        badgeEl.textContent='(disconnected)';
+        arrow.parentNode?.insertBefore(badgeEl,arrow);}
+    }else if(badgeEl){badgeEl.remove();badgeEl=null;}
+  };
+  while(true){
+    try{
+      const r=await fetch('/api/chat-poll?timeout=25');
+      if(r.status>=500){throw new Error('server '+r.status);}
+      const m=await r.json();
+      _setBadge(false);backoff=1000;
+      if(m&&m.reply){
+        const log=document.getElementById('chatLog');
+        const d=document.createElement('div');
+        d.style.cssText='color:#6c6;margin:2px 0';
+        d.textContent=m.reply;
+        log.appendChild(d);log.scrollTop=log.scrollHeight;
+      }
+    }catch(e){
+      _setBadge(true);
+      await new Promise(r=>setTimeout(r,backoff));
+      backoff=Math.min(MAX_BACKOFF,backoff*2);
+    }
+  }
+}
+setTimeout(_chatPollLoop,1500);
+
+// --- Live Forward ---
+// Type a prompt, server loads model (cached per-session) + runs forward pass,
+// returns per-layer PCA scores + top-5 predictions. No 3D plotting yet —
+// just show predictions, entropy, and a score-vector summary in the panel.
+// MRI metadata doesn't preserve the HF model id; user supplies it once,
+// we remember across sessions and auto-suggest from MRI directory name.
+const _LIVE_HF_MAP = {
+  'qwen-0.5b':       'Qwen/Qwen2-0.5B-Instruct',
+  'qwen-0.5b-base':  'Qwen/Qwen2-0.5B',
+  'smollm2-135m':    'HuggingFaceTB/SmolLM2-135M-Instruct',
+  'smollm2-360m':    'HuggingFaceTB/SmolLM2-360M-Instruct',
+  'qwen-1.5b':       'Qwen/Qwen2-1.5B-Instruct',
+  'qwen-3b':         'Qwen/Qwen2-3B-Instruct',
+  'qwen-7b':         'Qwen/Qwen2-7B-Instruct',
+  'phi-3.5':         'microsoft/Phi-3.5-mini-instruct',
+  'mistral-7b':      'mistralai/Mistral-7B-Instruct-v0.3',
+};
+function _liveSuggestModelId(){
+  // Respect previously-typed value if it's non-empty.
+  const input=document.getElementById('liveModelId');if(!input)return;
+  if(input.value.trim())return;
+  // 1) per-MRI memory from localStorage
+  try{
+    const saved=JSON.parse(localStorage.getItem('heinrich.liveModelId')||'{}');
+    const k=`${model}/${mode}`;
+    if(saved[k]){input.value=saved[k];return;}
+  }catch(e){}
+  // 2) table-based suggestion from MRI directory name
+  if(_LIVE_HF_MAP[model]){input.value=_LIVE_HF_MAP[model];}
+}
+function _liveSaveModelId(){
+  const input=document.getElementById('liveModelId');if(!input)return;
+  const val=input.value.trim();if(!val)return;
+  try{
+    const saved=JSON.parse(localStorage.getItem('heinrich.liveModelId')||'{}');
+    saved[`${model}/${mode}`]=val;
+    localStorage.setItem('heinrich.liveModelId',JSON.stringify(saved));
+  }catch(e){}
+}
+document.getElementById('liveToggle')?.addEventListener('click',()=>{
+  const box=document.getElementById('tokLive');
+  const arrow=document.getElementById('liveArrow');
+  box.classList.toggle('collapsed');
+  arrow.textContent=box.classList.contains('collapsed')?'\u25B6':'\u25BC';
+  if(!box.classList.contains('collapsed'))_liveSuggestModelId();
+});
+document.getElementById('liveModelId')?.addEventListener('change',_liveSaveModelId);
+document.getElementById('liveModelId')?.addEventListener('blur',_liveSaveModelId);
+let _liveBusy=false;
+function _liveRender(res,d){
+  while(res.firstChild)res.removeChild(res.firstChild);
+  const head=document.createElement('div');
+  head.style.marginBottom='3px';
+  if(d.prediction!=null){
+    const sp=document.createElement('span');sp.className='lk';
+    sp.textContent='\u2192 '+String(d.prediction);
+    head.appendChild(sp);
+  }
+  if(d.entropy!=null){
+    const sp=document.createElement('span');sp.className='lent';
+    sp.textContent='H='+d.entropy.toFixed(2);
+    head.appendChild(sp);
+  }
+  res.appendChild(head);
+  const row=document.createElement('div');
+  (d.logits_top5||[]).slice(0,5).forEach(t=>{
+    const tok=document.createElement('span');tok.className='lt';
+    tok.textContent=String(t.id);tok.title='id '+t.id;
+    const pct=document.createElement('span');pct.className='lp';
+    pct.textContent=(t.prob*100).toFixed(1)+'%';
+    row.appendChild(tok);row.appendChild(pct);
+    row.appendChild(document.createTextNode(' '));
+  });
+  res.appendChild(row);
+}
+async function _runLiveForward(prompt){
+  if(_liveBusy)return;
+  _liveBusy=true;
+  const st=document.getElementById('liveStatus');
+  const res=document.getElementById('liveResult');
+  st.textContent='running forward... (model load on first run ~5-30s)';
+  st.style.color='#a84';
+  try{
+    const model_id=document.getElementById('liveModelId')?.value.trim()||'';
+    const r=await fetch('/api/live-forward',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({prompt,mri_model:model,mode,model_id})
+    });
+    const d=await r.json();
+    if(d.error){
+      st.style.color='#f77';st.textContent='error: '+d.error;
+      while(res.firstChild)res.removeChild(res.firstChild);return;
+    }
+    st.style.color='#6c8';
+    st.textContent=(d.n_layers||'?')+' layers, '+((d.token_texts||[]).length)+' tokens';
+    _liveRender(res,d);
+  }catch(e){
+    st.style.color='#f77';st.textContent='fetch failed: '+e.message;
+  }finally{_liveBusy=false;}
+}
+document.getElementById('liveInput')?.addEventListener('keydown',e=>{
+  if(e.key!=='Enter')return;
+  const v=e.target.value.trim();if(!v)return;
+  _runLiveForward(v);
+});
+
+// --- Cross-Model Compare ---
+async function _populateCrossModels(){
+  const ms=document.getElementById('crossModel');if(!ms)return;
+  if(ms.options.length)return;// already populated
+  try{
+    const list=await api('models');
+    (list||[]).filter(m=>m.architecture==='transformer').forEach(m=>{
+      const opt=document.createElement('option');opt.value=m.model;
+      opt.textContent=`${m.model} / ${m.mode}`;opt.dataset.mode=m.mode;
+      ms.appendChild(opt);
+    });
+  }catch(e){}
+}
+_populateCrossModels();
+document.getElementById('crossToggle')?.addEventListener('click',()=>{
+  const box=document.getElementById('tokCross');
+  const arrow=document.getElementById('crossArrow');
+  box.classList.toggle('collapsed');
+  arrow.textContent=box.classList.contains('collapsed')?'\u25B6':'\u25BC';
+  if(!box.classList.contains('collapsed'))_populateCrossModels();
+});
+// When the cross-model dropdown changes, sync the mode selector to match.
+document.getElementById('crossModel')?.addEventListener('change',e=>{
+  const sel=e.target.selectedOptions[0];
+  const md=document.getElementById('crossMode');
+  if(sel?.dataset?.mode&&md){
+    for(const opt of md.options){if(opt.value===sel.dataset.mode){md.value=sel.dataset.mode;break;}}
+  }
+});
+function _renderCrossResult(d){
+  const res=document.getElementById('crossResult');
+  while(res.firstChild)res.removeChild(res.firstChild);
+  const sides=[['A',d.model_a,model],['B',d.model_b,document.getElementById('crossModel').value]];
+  sides.forEach(([tag,side,name])=>{
+    if(!side)return;
+    const row=document.createElement('div');row.className='cm-row';
+    const lbl=document.createElement('span');lbl.className='cm-lbl';
+    lbl.textContent=`${tag}: ${name||'?'}`;lbl.title=name||'';
+    const stat=document.createElement('span');stat.className='cm-stat';
+    stat.textContent=`L${side.best_layer}/${side.n_layers} bm=${side.min_bimodality.toFixed(3)} mag=${side.peak_magnitude.toFixed(1)}`;
+    row.appendChild(lbl);row.appendChild(stat);res.appendChild(row);
+  });
+  // Overlay: layer-fraction curve of bimodality (text mini-sparkline)
+  const spark=(layers)=>{
+    if(!layers||!layers.length)return '';
+    const BLOCKS=' ▁▂▃▄▅▆▇█';
+    // Invert bimodality so higher bar = more bimodal
+    const vals=layers.map(l=>1-l.bimodality);
+    const lo=Math.min(...vals),hi=Math.max(...vals);
+    const rng=(hi-lo)||1;
+    return vals.map(v=>BLOCKS[Math.min(8,Math.floor(((v-lo)/rng)*8.99))]).join('');
+  };
+  const sparkA=document.createElement('div');
+  sparkA.style.cssText='color:#8ac;font-family:monospace;padding:2px 4px;font-size:10px';
+  sparkA.textContent='A '+spark(d.model_a.layers);
+  sparkA.title='Bimodality sparkline — taller = more bimodal. Layer 0 at left.';
+  res.appendChild(sparkA);
+  const sparkB=document.createElement('div');
+  sparkB.style.cssText='color:#ca8;font-family:monospace;padding:2px 4px;font-size:10px';
+  sparkB.textContent='B '+spark(d.model_b.layers);
+  sparkB.title='Bimodality sparkline — taller = more bimodal. Layer 0 at left.';
+  res.appendChild(sparkB);
+}
+// Summarize a depth payload into the shape _renderCrossResult expects.
+function _summarizeDepth(d){
+  const layers=d.layers||[];
+  return {
+    n_layers: d.n_layers,
+    best_layer: d.best_layer,
+    worst_layer: d.worst_layer,
+    peak_magnitude: layers.reduce((m,l)=>Math.max(m,l.magnitude||0),0),
+    min_bimodality: layers.reduce((m,l)=>Math.min(m,l.bimodality??1),1),
+    layers: layers.map(l=>({
+      layer: l.layer,
+      layer_frac: l.layer / Math.max(1, d.n_layers-1),
+      magnitude: l.magnitude,
+      bimodality: l.bimodality,
+    })),
+  };
+}
+// Render one side's row + sparkline into the cross-result panel.
+function _renderCrossSide(tag, name, summary){
+  const res=document.getElementById('crossResult');
+  // Remove any previous side-row with this tag so re-runs replace cleanly
+  const stale=res.querySelector(`[data-cm-tag="${tag}"]`);
+  if(stale)stale.remove();
+  const staleSpark=res.querySelector(`[data-cm-spark="${tag}"]`);
+  if(staleSpark)staleSpark.remove();
+  // Row
+  const row=document.createElement('div');row.className='cm-row';
+  row.dataset.cmTag=tag;
+  const lbl=document.createElement('span');lbl.className='cm-lbl';
+  lbl.textContent=`${tag}: ${name||'?'}`;lbl.title=name||'';
+  const stat=document.createElement('span');stat.className='cm-stat';
+  stat.textContent=`L${summary.best_layer}/${summary.n_layers} bm=${summary.min_bimodality.toFixed(3)} mag=${summary.peak_magnitude.toFixed(1)}`;
+  row.appendChild(lbl);row.appendChild(stat);res.appendChild(row);
+  // Sparkline
+  const BLOCKS=' ▁▂▃▄▅▆▇█';
+  const vals=summary.layers.map(l=>1-l.bimodality);
+  const lo=Math.min(...vals),hi=Math.max(...vals),rng=(hi-lo)||1;
+  const spark=vals.map(v=>BLOCKS[Math.min(8,Math.floor(((v-lo)/rng)*8.99))]).join('');
+  const sparkEl=document.createElement('div');
+  sparkEl.dataset.cmSpark=tag;
+  sparkEl.style.cssText=`color:${tag==='A'?'#8ac':'#ca8'};font-family:monospace;padding:2px 4px;font-size:10px`;
+  sparkEl.textContent=`${tag} ${spark}`;
+  sparkEl.title='Bimodality sparkline — taller = more bimodal. Layer 0 at left.';
+  res.appendChild(sparkEl);
+}
+document.getElementById('crossRun')?.addEventListener('click',async()=>{
+  const st=document.getElementById('crossStatus');
+  const ms=document.getElementById('crossModel');
+  const md=document.getElementById('crossMode');
+  if(pinnedToken<0||pinnedTokenB<0){st.textContent='pin both A and B first';st.style.color='#f84';return;}
+  if(!ms.value){st.textContent='pick a second model';st.style.color='#f84';return;}
+  const resEl=document.getElementById('crossResult');
+  while(resEl.firstChild)resEl.removeChild(resEl.firstChild);
+  st.textContent='resolving tokens by text...';st.style.color='#a84';
+  // #9 — resolve B-model indices from A-model's token texts. Tokenizers
+  // fragment differently; raw index equality is almost never the same
+  // concept. We try to map by exact text; if either side can't find a
+  // match, fall back to raw indices and warn.
+  const txtA=texts[pinnedToken]||'';
+  const txtB=texts[pinnedTokenB]||'';
+  let bA=pinnedToken, bB=pinnedTokenB;
+  let resolvedA=false, resolvedB=false;
+  try{
+    const [rA,rB]=await Promise.all([
+      fetch(`/api/token-resolve/${encodeURIComponent(ms.value)}/${encodeURIComponent(md.value)}?text=${encodeURIComponent(txtA)}`).then(r=>r.json()),
+      fetch(`/api/token-resolve/${encodeURIComponent(ms.value)}/${encodeURIComponent(md.value)}?text=${encodeURIComponent(txtB)}`).then(r=>r.json()),
+    ]);
+    if(rA.idx>=0){bA=rA.idx;resolvedA=true;}
+    if(rB.idx>=0){bB=rB.idx;resolvedB=true;}
+  }catch(e){}
+  const unmatched=[];
+  if(!resolvedA)unmatched.push(`A="${txtA}"`);
+  if(!resolvedB)unmatched.push(`B="${txtB}"`);
+  if(unmatched.length){
+    const w=document.createElement('div');
+    w.style.cssText='color:#f84;font-size:8px;padding:3px 4px;margin-bottom:3px;border:1px solid #642;border-radius:2px;background:rgba(80,40,0,0.2)';
+    w.textContent=`\u26A0 no text match in ${ms.value}/${md.value} for: ${unmatched.join(', ')}. Falling back to raw indices — direction may not be the same concept.`;
+    resEl.appendChild(w);
+  }
+  st.textContent=`running A (${model} ${pinnedToken}/${pinnedTokenB}) and B (${ms.value} ${bA}/${bB})...`;
+  st.style.color='#a84';
+  const startedAt=performance.now();
+  let doneCount=0;const startOne=(tag,name,urlPath)=>fetch(urlPath)
+    .then(r=>r.json())
+    .then(d=>{
+      if(d.error)throw new Error(d.error);
+      _renderCrossSide(tag,name,_summarizeDepth(d));
+      doneCount++;
+      const elapsed=((performance.now()-startedAt)/1000).toFixed(1);
+      if(doneCount===1){st.style.color='#a84';st.textContent=`${tag} done in ${elapsed}s, waiting on the other...`;}
+      else{st.style.color='#6c8';st.textContent=`both done in ${elapsed}s${resolvedA&&resolvedB?' (text-matched)':' (partial text match)'}`;}
+    })
+    .catch(e=>{st.style.color='#f77';st.textContent=`${tag} failed: ${e.message}`;});
+  const urlA=`/api/direction-depth/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?a=${pinnedToken}&b=${pinnedTokenB}`;
+  const urlB=`/api/direction-depth/${encodeURIComponent(ms.value)}/${encodeURIComponent(md.value)}?a=${bA}&b=${bB}`;
+  Promise.all([startOne('A',model,urlA),startOne('B',ms.value,urlB)]);
+});
+
+// Debug / remote-control bridge. Module-scoped state can't reach window
+// directly; this gives Playwright/Puppeteer (and Claude) a handle to read
+// state and drive the same code paths the user drives. Everything goes
+// through the existing functions so "what the robot sees" = "what the
+// user sees."
+function _resolveViewByName(name){
+  const s=String(name);
+  if(/^\d+$/.test(s)){const vi=+s; return {vi,sc:views[vi]?.sc,cam:views[vi]?.cam,ctl:views[vi]?.ctl,el:views[vi]?.el,tag:'vp'+vi};}
+  const lm=s.match(/^l(\d)/);if(lm){const lv=leftViews[+lm[1]]; return lv?{vi:s,sc:lv.sc,cam:lv.cam,ctl:lv.ctl,el:lv.el,tag:s}:null;}
+  const rm=s.match(/^r(\d)/);if(rm){const rv=rightViews[+rm[1]]; return rv?{vi:s,sc:rv.sc,cam:rv.cam,ctl:rv.ctl,el:rv.el,tag:s}:null;}
+  if(s==='pcs')return _pcsSc?{vi:s,sc:_pcsSc,cam:_pcsCam,ctl:_pcsCtl,el:_pcsEl,tag:s}:null;
+  if(s==='br0'||s==='br1'){const pi=s==='br0'?0:1; const p=_brPanels?.[pi]; return p?{vi:s,sc:brSc,cam:p.cam,ctl:p.ctl,el:p.el,tag:s}:null;}
+  return null;
+}
+window.__heinrich = {
+  // --- state readers ---
+  get views(){return views;}, get leftViews(){return leftViews;}, get rightViews(){return rightViews;},
+  get vpPairs(){return vpPairs;},
+  get state(){return {model,mode,cL,nL,nN,nK,_nRealLayers,pinnedToken,pinnedTokenB,_dirColorActive,play};},
+  get wlData(){return _wlData;}, get wlDirData(){return _wlDirData;}, get wlDirKey(){return _wlDirKey;},
+  get dirProjLast(){return _dirProjLast;},
+  get hiddenScripts(){return [..._hiddenScripts];},
+
+  // --- direct handles to existing functions ---
+  buildTraj, setLayer, _onPinChange, _applyDirectionColors, _updateSeparation,
+  _togglePlay, _clampTraj, _robustColMax, _updateRVLayer, _rebuildWeightLines,
+
+  // --- navigation ---
+  layerNext(n=1){for(let i=0;i<n;i++){document.getElementById('lnext').click();} return cL;},
+  layerPrev(n=1){for(let i=0;i<n;i++){document.getElementById('lprev').click();} return cL;},
+  goLayer(l){if(typeof l==='number')setLayer(l); return cL;},
+  goEmb(){document.getElementById('lemb').click(); return cL;},
+  goLMH(){document.getElementById('llmh').click(); return cL;},
+
+  // --- pinning ---
+  pinA(idx){pinnedToken=idx; updatePinMarkers(); showPinDetail(pinnedToken); _updateBrowserOverlay(); updateLeftViewports(); _onPinChange(); _saveState(); return pinnedToken;},
+  pinB(idx){pinnedTokenB=idx; updatePinMarkers(); showPinDetail(pinnedToken); _updateBrowserOverlay(); updateLeftViewports(); _onPinChange(); _saveState(); return pinnedTokenB;},
+  pinClear(){pinnedToken=-1; pinnedTokenB=-1; updatePinMarkers(); _updateBrowserOverlay(); updateLeftViewports(); _onPinChange(); _saveState();},
+  findToken(text){for(let i=0;i<texts.length;i++){if(texts[i]===text)return i;} return -1;},
+
+  // --- script toggles ---
+  hideScript(s){_hiddenScripts.add(s); _applyFilter(); return [..._hiddenScripts];},
+  showScript(s){_hiddenScripts.delete(s); _applyFilter(); return [..._hiddenScripts];},
+  isolateScript(s){_hiddenScripts.clear(); (window.CL?Object.keys(CL):['latin','Cyrillic','Korean','CJK','code','special','latin','other']).forEach(k=>{if(k!==s)_hiddenScripts.add(k);}); _applyFilter(); return [..._hiddenScripts];},
+  showAllScripts(){_hiddenScripts.clear(); _applyFilter();},
+
+  // --- viewport PC pair selection ---
+  setPair(vi,pcX,pcY){
+    // vi: 0=cloud A, 2=cloud B (mirrors vp3/vp5 trajectory)
+    if(vi!==0&&vi!==1&&vi!==2)return{error:'vi must be 0/1/2 for cloud cols'};
+    vpPairs[vi]=[pcX,pcY];
+    const v=views[vi]; if(!v)return{error:'no view'};
+    v.pcX=pcX; v.pcY=pcY; v.pcZ=thirdPC(pcX,pcY);
+    _precomputeCloud(vi); updateVP(vi,pcX,pcY,v.pcZ,cL);
+    buildTraj(vi+3,pcX,pcY); _precomputeTraj(vi+3); updateVP(vi+3,pcX,pcY,0,cL);
+    _markDirty(); _saveState();
+    return {pcX,pcY,pcZ:v.pcZ};
+  },
+
+  // --- camera control ---
+  cameraOrbit(name,azimuth,elevation,distance){
+    const v=_resolveViewByName(name); if(!v||!v.cam)return{error:'no cam: '+name};
+    const d=distance||v.cam.position.length()||2.5;
+    const a=(azimuth||0)*Math.PI/180, e=(elevation||0)*Math.PI/180;
+    v.cam.position.set(d*Math.cos(e)*Math.sin(a), d*Math.sin(e), d*Math.cos(e)*Math.cos(a));
+    v.cam.lookAt(0,0,0); if(v.ctl){v.ctl.target.set(0,0,0); v.ctl.update();}
+    _markDirty();
+    return {pos:[v.cam.position.x,v.cam.position.y,v.cam.position.z], tag:v.tag};
+  },
+  cameraZoom(name,factor){
+    const v=_resolveViewByName(name); if(!v||!v.cam)return{error:'no cam: '+name};
+    v.cam.position.multiplyScalar(factor);
+    if(v.ctl)v.ctl.update();
+    _markDirty();
+    return {pos:[v.cam.position.x,v.cam.position.y,v.cam.position.z]};
+  },
+  cameraReset(name){
+    const v=_resolveViewByName(name); if(!v||!v.cam)return{error:'no cam: '+name};
+    v.cam.position.set(0,0,2.5); if(v.ctl){v.ctl.target.set(0,0,0); v.ctl.update();}
+    _markDirty(); return {pos:[0,0,2.5]};
+  },
+  cameraSnap(name,axis){
+    // axis: x/y/z (head-on) or r (ortho-like 3/4 view)
+    const v=_resolveViewByName(name); if(!v||!v.cam)return{error:'no cam: '+name};
+    const d=v.cam.position.length()||2.5;
+    if(axis==='x')v.cam.position.set(d,0,0);
+    else if(axis==='y')v.cam.position.set(0,d,0);
+    else if(axis==='z')v.cam.position.set(0,0,d);
+    else{v.cam.position.set(d*0.7,d*0.3,d*0.7);}// rotated 3/4
+    v.cam.lookAt(0,0,0); if(v.ctl){v.ctl.target.set(0,0,0); v.ctl.update();}
+    _markDirty(); return {axis:axis||'r'};
+  },
+
+  // --- capture a single viewport (PNG base64) ---
+  async captureVP(name){
+    const v=_resolveViewByName(name); if(!v||!v.sc||!v.cam||!v.el)return{error:'no vp: '+name};
+    const scale=2; const w=v.el.clientWidth*scale, h=v.el.clientHeight*scale;
+    const tmp=new THREE.WebGLRenderer({antialias:true,preserveDrawingBuffer:true,alpha:false});
+    tmp.setSize(w,h);
+    const bg=v.sc.background instanceof THREE.Color?v.sc.background:new THREE.Color(0x0a0a0a);
+    tmp.setClearColor(bg); tmp.clear();
+    v.cam.aspect=w/h; v.cam.updateProjectionMatrix();
+    tmp.render(v.sc,v.cam);
+    const cv=document.createElement('canvas'); cv.width=w; cv.height=h;
+    const ctx=cv.getContext('2d'); ctx.drawImage(tmp.domElement,0,0);
+    _drawOverlay(ctx,w,h,v.vi,cL);
+    const b64=await new Promise(resolve=>{cv.toBlob(b=>{const fr=new FileReader(); fr.onload=()=>resolve(fr.result); fr.readAsDataURL(b);},'image/png');});
+    tmp.dispose();
+    v.cam.aspect=v.el.clientWidth/v.el.clientHeight; v.cam.updateProjectionMatrix();
+    return {tag:v.tag, w, h, dataUrl:b64};
+  },
+
+  // --- bounds readers ---
+  vpBounds(vi){
+    const v=views[vi]; if(!v||!v.geo) return null;
+    const pos=v.geo.attributes?.position?.array; if(!pos) return null;
+    let xmin=Infinity,xmax=-Infinity,ymin=Infinity,ymax=-Infinity,zmin=Infinity,zmax=-Infinity;
+    const n=pos.length/3;
+    for(let i=0;i<n;i++){
+      const x=pos[i*3],y=pos[i*3+1],z=pos[i*3+2];
+      if(x>9000||y>9000)continue;
+      if(x<xmin)xmin=x; if(x>xmax)xmax=x;
+      if(y<ymin)ymin=y; if(y>ymax)ymax=y;
+      if(z<zmin)zmin=z; if(z>zmax)zmax=z;
+    }
+    return {n, xmin, xmax, ymin, ymax, zmin, zmax, pcX:v.pcX, pcY:v.pcY, pcZ:v.pcZ};
+  },
+  trajBounds(vi){
+    const v=views[vi]; if(!v||!v.trajGroup) return null;
+    const pos=v.trajGroup.geometry.attributes?.position?.array; if(!pos) return null;
+    let xmin=Infinity,xmax=-Infinity,ymin=Infinity,ymax=-Infinity;
+    const n=pos.length/3;
+    for(let i=0;i<n;i++){
+      const x=pos[i*3],y=pos[i*3+1];
+      if(x>9000||y>9000)continue;
+      if(x<xmin)xmin=x; if(x>xmax)xmax=x;
+      if(y<ymin)ymin=y; if(y>ymax)ymax=y;
+    }
+    return {n, xmin, xmax, ymin, ymax};
+  }
+};
 </script>
 </body>
 </html>

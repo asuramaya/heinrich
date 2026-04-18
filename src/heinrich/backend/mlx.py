@@ -16,6 +16,20 @@ class MLXBackend:
         self.config = detect_config(self.model, self.tokenizer)
         self._inner = getattr(self.model, "model", self.model)
 
+    def project_through_lm_head(self, direction: "np.ndarray") -> "np.ndarray":
+        """Project a hidden-space direction through lm_head, returning vocab logits.
+
+        Logit-lens interpretation: what tokens does this direction favor in
+        the final output distribution? Works even when no MRI is captured.
+        """
+        import mlx.core as mx
+        import numpy as np
+        d = np.asarray(direction, dtype=np.float32)
+        # Shape to [1, 1, hidden] for lm_head
+        h = mx.array(d.reshape(1, 1, -1))
+        logits = np.array(self._lm_head(h).astype(mx.float32)[0, 0, :])
+        return logits
+
     def _lm_head(self, h):
         """Project hidden states to logits, handling tied-embedding models."""
         from heinrich.cartography.runtime import _lm_head

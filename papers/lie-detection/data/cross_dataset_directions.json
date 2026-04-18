@@ -1,0 +1,102 @@
+{
+  "summaries": {
+    "cities": {
+      "d": 4.5077691078186035,
+      "boot_p5": 0.971904993057251,
+      "perm_p95": 0.9443831443786621,
+      "snr": 4.773241757774046,
+      "top_pos": [
+        " F\u00e4lle",
+        "\texplicit",
+        "_Tab",
+        " be\u011fen",
+        " Gr\u00fcnde"
+      ],
+      "top_neg": [
+        "\u9519",
+        " \ufffd",
+        " false",
+        " true",
+        " FALSE"
+      ]
+    },
+    "neg_cities": {
+      "d": 5.55603551864624,
+      "boot_p5": 0.9836332201957703,
+      "perm_p95": 0.9628788828849792,
+      "snr": 5.770232954218404,
+      "top_pos": [
+        "_usec",
+        "wr\u00f3",
+        "\u1ea1nh",
+        " gdy\u017c",
+        "_VC"
+      ],
+      "top_neg": [
+        " \ufffd",
+        " true",
+        " ",
+        " True",
+        "\u5685"
+      ]
+    },
+    "companies": {
+      "d": 1.4841138124465942,
+      "boot_p5": 0.4296826422214508,
+      "perm_p95": 0.8481134176254272,
+      "snr": 1.7499001479104739,
+      "top_pos": [
+        ".BLL",
+        " M\u00f6glich",
+        "\u3082\u3089\u3044",
+        ".Failure",
+        "\u3092\u8d85\u3048"
+      ],
+      "top_neg": [
+        "_",
+        " ",
+        ".",
+        ",",
+        " ("
+      ]
+    },
+    "common_claim": {
+      "d": 2.0064783096313477,
+      "boot_p5": 0.7193273305892944,
+      "perm_p95": 2.775657892227173,
+      "snr": 0.7228838640458395,
+      "top_pos": [
+        "\u5f80\u5f80",
+        " often",
+        "\u5927\u591a",
+        " Often",
+        " *****"
+      ],
+      "top_neg": [
+        ".onStart",
+        "\u304a\u304b\u3052",
+        ".shader",
+        " potr\u00e0",
+        "mainwindow"
+      ]
+    }
+  },
+  "cosines": {
+    "cities_vs_cities": 1.0,
+    "cities_vs_neg_cities": 0.3137446641921997,
+    "cities_vs_companies": 0.36604511737823486,
+    "cities_vs_common_claim": 0.2196657955646515,
+    "neg_cities_vs_cities": 0.3137446641921997,
+    "neg_cities_vs_neg_cities": 1.0,
+    "neg_cities_vs_companies": 0.22842398285865784,
+    "neg_cities_vs_common_claim": 0.26783597469329834,
+    "companies_vs_cities": 0.36604511737823486,
+    "companies_vs_neg_cities": 0.22842398285865784,
+    "companies_vs_companies": 1.0,
+    "companies_vs_common_claim": 0.20689505338668823,
+    "common_claim_vs_cities": 0.2196657955646515,
+    "common_claim_vs_neg_cities": 0.26783597469329834,
+    "common_claim_vs_companies": 0.20689505338668823,
+    "common_claim_vs_common_claim": 1.0
+  }
+}

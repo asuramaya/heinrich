@@ -14,6 +14,8 @@ import json
 import subprocess
 import sys
 import threading
+import time
+from collections import OrderedDict
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
@@ -39,6 +41,36 @@ _CAPTURE_DIR = Path("/tmp/heinrich/captures")
 _poll_commands: list[dict] = []  # pending commands for the browser
 _poll_event = threading.Event()  # signals when a new command is available
 _poll_lock = threading.Lock()
+
+# --- Chat inbox: browser → MCP client ---
+# MCP clients drain with chat_drain(); the browser long-polls /api/chat-poll
+# for replies posted via chat_reply(). Bounded so a disconnected MCP client
+# does not leak memory.
+_chat_inbox: list[dict] = []
+_chat_outbox: list[dict] = []  # replies from MCP client → browser
+_chat_lock = threading.Lock()
+_chat_event = threading.Event()       # browser ← MCP (outbox)
+_chat_inbox_event = threading.Event()  # browser → MCP (inbox)
+_CHAT_MAX = 200
+
+
+def chat_drain() -> list[dict]:
+    """MCP client pulls pending user messages. Called by external tools."""
+    with _chat_lock:
+        msgs = list(_chat_inbox)
+        _chat_inbox.clear()
+        if not _chat_inbox:
+            _chat_inbox_event.clear()
+    return msgs
+
+
+def chat_reply(text: str, request_id: str = "") -> None:
+    """MCP client posts a reply. Browser long-poll delivers it."""
+    with _chat_lock:
+        _chat_outbox.append({"reply": text, "request_id": request_id})
+        while len(_chat_outbox) > _CHAT_MAX:
+            _chat_outbox.pop(0)
+    _chat_event.set()
 
 
 def _poll_push(cmd: dict):
@@ -229,28 +261,368 @@ def _load_decomp_meta(mri_path: str) -> dict:
     return meta
 
 
-# --- Score cache: keeps last 3 layers' float32 arrays in RAM ---
+# --- Score cache: LRU by total bytes, drops entries for other MRIs on switch ---
 # First load from USB is ~4s, cached access is ~5ms.
-_score_cache: dict[str, np.ndarray] = {}  # key → float32 array
-_score_cache_order: list[str] = []
-_SCORE_CACHE_MAX = 3
+# OrderedDict: insertion order = LRU order, move_to_end() is O(1) on hit.
+_score_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
+# Budget in bytes. ~2 GB default covers 3 layers of Qwen-0.5B (~540 MB/layer) with
+# headroom for lmhead (~250 MB). Override via HEINRICH_SCORE_CACHE_GB env var for
+# larger models (a 7B model with hidden=4096, vocab=150K needs ~2.4 GB per layer).
+import os as _os
+_SCORE_CACHE_MAX_BYTES = int(
+    float(_os.environ.get("HEINRICH_SCORE_CACHE_GB", "2")) * 1_000_000_000
+)
+_score_cache_bytes = 0
+# Thread-safety for the cache — _score_cache_put/get race if two HTTP threads
+# simultaneously insert new layers. Held only during mutation, not during
+# file IO (IO happens before/after) so this doesn't serialize cold loads.
+_score_cache_lock = threading.Lock()
+
+
+def _score_cache_evict_to_fit(incoming_bytes: int,
+                              active_mri: str | None = None) -> None:
+    """Evict LRU entries until the cache has room for `incoming_bytes`.
+    Prefers evicting entries from other MRIs first so a model switch reclaims
+    memory from the previous model before trimming the current one.
+
+    Caller must hold _score_cache_lock.
+    """
+    global _score_cache_bytes
+    if active_mri:
+        for key in list(_score_cache):
+            if _score_cache_bytes + incoming_bytes <= _SCORE_CACHE_MAX_BYTES:
+                return
+            if not key.startswith(active_mri + ":"):
+                arr = _score_cache.pop(key)
+                _score_cache_bytes -= arr.nbytes
+    while (_score_cache and
+           _score_cache_bytes + incoming_bytes > _SCORE_CACHE_MAX_BYTES):
+        _, arr = _score_cache.popitem(last=False)
+        _score_cache_bytes -= arr.nbytes
+
+
+def _score_cache_put(key: str, arr: np.ndarray, active_mri: str | None = None) -> None:
+    global _score_cache_bytes
+    with _score_cache_lock:
+        if key in _score_cache:
+            _score_cache.move_to_end(key)
+            return
+        _score_cache_evict_to_fit(arr.nbytes, active_mri=active_mri)
+        _score_cache[key] = arr
+        _score_cache_bytes += arr.nbytes
 
 
 def _get_scores_f32(mri_path: str, layer: int) -> np.ndarray | None:
-    """Get float32 score array for a layer, cached in RAM."""
+    """Get float32 score array for a layer, cached in RAM.
+
+    Eagerly casts float16 → float32 because many callers index individual
+    rows and numpy's mixed-dtype ops silently upcast. Large models (26+
+    layers × 540 MB) can overflow the cache budget; callers that only
+    need projection should prefer `_get_scores_mmap` + `_project_chunked`.
+    """
     key = f"{mri_path}:L{layer:02d}"
     if key in _score_cache:
+        _score_cache.move_to_end(key)
         return _score_cache[key]
     score_path = Path(mri_path) / "decomp" / f"L{layer:02d}_scores.npy"
     if not score_path.exists():
         return None
     arr = np.load(str(score_path)).astype(np.float32)
-    _score_cache[key] = arr
-    _score_cache_order.append(key)
-    while len(_score_cache_order) > _SCORE_CACHE_MAX:
-        evict = _score_cache_order.pop(0)
-        _score_cache.pop(evict, None)
+    _score_cache_put(key, arr, active_mri=mri_path)
     return arr
+
+
+_scores_mmap_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
+_SCORES_MMAP_MAX = 256  # handles only — mmap backing is OS-paged
+
+# Weight matrix mmap cache (handles only, OS page cache handles warmth).
+_weight_mmap_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
+_WEIGHT_MMAP_MAX = 512
+
+
+def _get_weight_mmap(path: Path) -> np.ndarray | None:
+    """Mmap a weight matrix, caching the handle so repeated pins don't
+    re-open the same file. OS page cache handles warmth. LRU-bounded
+    so switching between many MRIs doesn't accumulate handles forever.
+    """
+    key = str(path)
+    h = _weight_mmap_cache.get(key)
+    if h is not None:
+        _weight_mmap_cache.move_to_end(key)
+        return h
+    if not path.exists():
+        return None
+    h = np.load(key, mmap_mode="r")
+    _weight_mmap_cache[key] = h
+    while len(_weight_mmap_cache) > _WEIGHT_MMAP_MAX:
+        _weight_mmap_cache.popitem(last=False)
+    return h
+
+
+# Gram matrix cache — for a weight W of shape [M, K] we cache the [D, D]
+# Gram matrix on the side matching the direction length D. This lets
+# ||W @ d|| = sqrt(d.T @ Gram @ d) bypass the O(MK) matmul per pin change.
+# One cold pass builds the cache (full W read once); subsequent pin changes
+# are pure O(D²) — hundreds of microseconds per matrix. LRU-evicted
+# by byte budget (override via HEINRICH_GRAM_CACHE_GB).
+_weight_gram_cache: "OrderedDict[tuple, np.ndarray]" = OrderedDict()
+_WEIGHT_GRAM_MAX_BYTES = int(
+    float(_os.environ.get("HEINRICH_GRAM_CACHE_GB", "1.5")) * 1_000_000_000
+)
+_weight_gram_bytes = 0
+
+# Token metadata cache — tokens.npz holds 150k-entry text/script/vocab_id
+# arrays. Loading + decoding + building the vocab→mri reverse map was
+# ~1s on repeat calls; do it once per MRI.
+_vocab_map_cache: dict[str, tuple] = {}
+
+
+def _get_vocab_map(mri_path: str) -> tuple:
+    """Return (texts, vocab_to_mri_index) for the MRI, cached.
+
+    `texts` is a list of str. `vocab_to_mri_index` is a dict from
+    tokenizer vocab id → row index in the captured MRI.
+    """
+    cached = _vocab_map_cache.get(mri_path)
+    if cached is not None:
+        return cached
+    tok = dict(np.load(str(Path(mri_path) / "tokens.npz"), allow_pickle=True))
+    texts = [str(t) for t in tok["token_texts"]]
+    token_ids = tok.get("token_ids")
+    vocab_to_mri: dict[int, int] = {}
+    if token_ids is not None:
+        for i, vid in enumerate(token_ids):
+            vocab_to_mri[int(vid)] = i
+    entry = (texts, vocab_to_mri)
+    _vocab_map_cache[mri_path] = entry
+    return entry
+
+
+def _get_weight_gram(path: Path, side: str) -> np.ndarray | None:
+    """Gram matrix for a weight file on the requested side.
+
+    side='col' → W.T @ W  (shape [K, K], for directions matching W.shape[1])
+    side='row' → W @ W.T  (shape [M, M], for directions matching W.shape[0])
+
+    Returns float32 Gram. None if the file doesn't exist.
+    LRU-evicted when cache exceeds HEINRICH_GRAM_CACHE_GB (default 1.5 GB).
+    """
+    global _weight_gram_bytes
+    key = (str(path), side)
+    g = _weight_gram_cache.get(key)
+    if g is not None:
+        _weight_gram_cache.move_to_end(key)
+        return g
+    W = _get_weight_mmap(path)
+    if W is None:
+        return None
+    Wf = W.astype(np.float32)
+    g = (Wf.T @ Wf) if side == "col" else (Wf @ Wf.T)
+    while _weight_gram_cache and (_weight_gram_bytes + g.nbytes) > _WEIGHT_GRAM_MAX_BYTES:
+        _, evicted = _weight_gram_cache.popitem(last=False)
+        _weight_gram_bytes -= evicted.nbytes
+    _weight_gram_cache[key] = g
+    _weight_gram_bytes += g.nbytes
+    return g
+
+
+def _get_scores_mmap(mri_path: str, layer: int) -> np.ndarray | None:
+    """Zero-copy mmap handle to a layer's score matrix (usually float16).
+
+    Cheap to keep open indefinitely — the OS page cache handles warmth.
+    Combined with _project_chunked this lets large MRIs sweep all layers
+    without the 2 GB score cache churning.
+    """
+    key = f"{mri_path}:L{layer:02d}"
+    mmap = _scores_mmap_cache.get(key)
+    if mmap is not None:
+        _scores_mmap_cache.move_to_end(key)
+        return mmap
+    path = Path(mri_path) / "decomp" / f"L{layer:02d}_scores.npy"
+    if not path.exists():
+        return None
+    mmap = np.load(str(path), mmap_mode="r")
+    _scores_mmap_cache[key] = mmap
+    while len(_scores_mmap_cache) > _SCORES_MMAP_MAX:
+        _scores_mmap_cache.popitem(last=False)
+    return mmap
+
+
+def _project_chunked(scores: np.ndarray, direction: np.ndarray,
+                     chunk: int = 10000) -> np.ndarray:
+    """Compute scores @ direction in memory-bounded chunks.
+
+    Avoids allocating a full float32 copy of the scores matrix. Direction
+    must be 1-D (single vector) or 2-D (batched [K, M]). Output is always
+    float32.
+    """
+    N = scores.shape[0]
+    if direction.ndim == 1:
+        out = np.empty(N, dtype=np.float32)
+        for i in range(0, N, chunk):
+            out[i:i + chunk] = scores[i:i + chunk].astype(np.float32) @ direction.astype(np.float32, copy=False)
+        return out
+    # 2-D: direction is [K, M]
+    M = direction.shape[1]
+    out = np.empty((N, M), dtype=np.float32)
+    dir_f32 = direction.astype(np.float32, copy=False)
+    for i in range(0, N, chunk):
+        out[i:i + chunk] = scores[i:i + chunk].astype(np.float32) @ dir_f32
+    return out
+
+
+def _bimodality(proj: np.ndarray) -> float:
+    """Histogram valley test on a 1-D projection. Lower = more bimodal.
+
+    Finds the two largest peaks in the density histogram (separated by
+    at least 10 bins), then the minimum bin between them. Returns
+    valley / min(peak_heights). Near 0 = clear bimodal gap; near 1 =
+    unimodal (no meaningful valley). Robust to skew / shift because it
+    uses the data's actual min-max range and doesn't assume a center.
+    """
+    proj = proj.astype(np.float32, copy=False)
+    lo, hi = float(proj.min()), float(proj.max())
+    if hi - lo < 1e-12:
+        return 1.0  # constant projection — not bimodal
+    n_bins = 100
+    hist, _ = np.histogram(proj, bins=n_bins, range=(lo, hi))
+    # Global peak
+    p1 = int(hist.argmax())
+    p1_h = int(hist[p1])
+    if p1_h == 0:
+        return 1.0
+    # Second peak: highest bin at least 10 bins away from p1
+    min_sep = 10
+    masked = hist.astype(np.int64).copy()
+    lo_i = max(0, p1 - min_sep)
+    hi_i = min(n_bins, p1 + min_sep + 1)
+    masked[lo_i:hi_i] = -1
+    if masked.max() <= 0:
+        return 1.0  # only one density mass — unimodal
+    p2 = int(masked.argmax())
+    p2_h = int(hist[p2])
+    # Valley: min bin strictly between the two peaks
+    a, b = (p1, p2) if p1 < p2 else (p2, p1)
+    valley_slice = hist[a + 1:b]
+    if valley_slice.size == 0:
+        return 1.0
+    valley = float(valley_slice.min())
+    min_peak = min(p1_h, p2_h)
+    return valley / (min_peak + 1e-8)
+
+
+_random_bm_cache: "OrderedDict[tuple, list[float]]" = OrderedDict()
+_RANDOM_BM_CACHE_MAX = 64
+
+
+def _random_bimodality_baseline(scores: np.ndarray, n_random: int = 50,
+                                seed: int = 42) -> list[float]:
+    """Bimodality of 50 directions between random token pairs. For percentile context.
+
+    Cached by (array id, shape, n_random, seed) — called repeatedly per layer
+    across pin-changes. Cache is LRU-bounded so model switches evict stale
+    entries. Array id is the numpy data pointer so cache hits only when the
+    same score matrix is reused.
+    """
+    key = (scores.ctypes.data, scores.shape, n_random, seed)
+    if key in _random_bm_cache:
+        _random_bm_cache.move_to_end(key)
+        return _random_bm_cache[key]
+
+    rng = np.random.RandomState(seed)
+    N = scores.shape[0]
+    # Batched path: build all random directions at once, do ONE [N,K]×[K,M] BLAS call.
+    # Chunked so we don't allocate a full float32 copy of scores.
+    idxs = rng.choice(N, (n_random, 2), replace=True).astype(np.int64)
+    dirs = (scores[idxs[:, 0]].astype(np.float32)
+            - scores[idxs[:, 1]].astype(np.float32))
+    norms = np.linalg.norm(dirs, axis=1)
+    valid = norms > 1e-8
+    dirs = dirs[valid] / norms[valid, None]
+    if dirs.shape[0] == 0:
+        _random_bm_cache[key] = []
+        return []
+    projs = _project_chunked(scores, dirs.T)  # [N, M]
+    out: list[float] = [_bimodality(projs[:, j]) for j in range(projs.shape[1])]
+
+    _random_bm_cache[key] = out
+    while len(_random_bm_cache) > _RANDOM_BM_CACHE_MAX:
+        _random_bm_cache.popitem(last=False)
+    return out
+
+
+def _bimodality_percentile(bimodal_ratio: float,
+                           random_bms: list[float]) -> float:
+    """Percent of random pairs MORE unimodal than this. Lower = rarer signal."""
+    if not random_bms:
+        return 50.0
+    return float(sum(1 for r in random_bms if r > bimodal_ratio)
+                 / len(random_bms) * 100)
+
+
+def _load_token_ids(mri_path: str) -> np.ndarray | None:
+    """Load token_ids array from tokens.npz without allow_pickle (int array, safe)."""
+    try:
+        with np.load(str(Path(mri_path) / "tokens.npz")) as z:
+            if "token_ids" in z.files:
+                return np.asarray(z["token_ids"])
+    except (FileNotFoundError, ValueError, OSError):
+        pass
+    return None
+
+
+def _functional_hit_rate(mri_path: str, layer: int,
+                         token_a: int, token_b: int,
+                         top_a_idx, top_b_idx,
+                         k_check: int = 5, top_k: int = 50) -> tuple:
+    """Do geometrically A-like tokens actually predict A through lmhead?
+
+    Returns (hit_rate, warning_bool) or (None, None) if files missing.
+    """
+    try:
+        mri_dir = Path(mri_path)
+        exit_path = mri_dir / f"L{layer:02d}_exit.npy"
+        lmhead_path = mri_dir / "lmhead.npy"
+        if not (exit_path.exists() and lmhead_path.exists()):
+            return None, None
+        token_ids = _load_token_ids(mri_path)
+        if token_ids is None:
+            return None, None
+        exits = np.load(str(exit_path), mmap_mode="r")
+        lmhead_key = f"{mri_path}:lmhead"
+        if lmhead_key not in _score_cache:
+            _score_cache_put(lmhead_key,
+                             np.load(str(lmhead_path)).astype(np.float32),
+                             active_mri=mri_path)
+        else:
+            _score_cache.move_to_end(lmhead_key)
+        lmhead = _score_cache[lmhead_key]
+
+        vocab_a = int(token_ids[token_a])
+        vocab_b = int(token_ids[token_b])
+
+        hits = 0
+        checks = 0
+        for idx in [int(i) for i in top_a_idx[:k_check]]:
+            if idx >= exits.shape[0]:
+                continue
+            logits = lmhead @ exits[idx].astype(np.float32)
+            if vocab_a in set(np.argsort(logits)[-top_k:].tolist()):
+                hits += 1
+            checks += 1
+        for idx in [int(i) for i in top_b_idx[:k_check]]:
+            if idx >= exits.shape[0]:
+                continue
+            logits = lmhead @ exits[idx].astype(np.float32)
+            if vocab_b in set(np.argsort(logits)[-top_k:].tolist()):
+                hits += 1
+            checks += 1
+        if checks == 0:
+            return None, None
+        rate = hits / checks
+        return rate, rate < 0.2
+    except (FileNotFoundError, ValueError, OSError):
+        return None, None
 
 
 def _direction_quality(mri_path: str, a: int, b: int, layer: int) -> dict:
@@ -292,49 +664,32 @@ def _direction_quality(mri_path: str, a: int, b: int, layer: int) -> dict:
                 "delta": float(diff[order[i]])}
                for i in range(min(5, len(order)))]
 
-    # Project all tokens onto direction
-    proj = scores @ direction
+    # Project all tokens onto direction (chunked, avoids 537MB float32 copy)
+    proj = _project_chunked(scores, direction)
 
-    # Explained variance: var(projection) / total layer variance
+    # Explained variance: var(projection) / total layer variance.
+    # Two-pass chunked variance: exact, no fp16 overflow.
+    #   pass 1: mean via sum of float32 chunks
+    #   pass 2: sum of squared deviations from that mean
     proj_var = float(np.var(proj))
-    total_var = float(np.sum(np.var(scores, axis=0)))
+    CV = 10000
+    col_sum = np.zeros(K, dtype=np.float64)
+    for i in range(0, N, CV):
+        col_sum += scores[i:i + CV].astype(np.float32).sum(axis=0, dtype=np.float64)
+    col_mean = col_sum / N
+    ssd = np.zeros(K, dtype=np.float64)
+    for i in range(0, N, CV):
+        chunk = scores[i:i + CV].astype(np.float32) - col_mean.astype(np.float32)
+        ssd += (chunk.astype(np.float64) ** 2).sum(axis=0)
+    total_var = float(ssd.sum() / N)
     explained = proj_var / (total_var + 1e-8)
 
-    # Bimodality: histogram valley test
-    hist, edges = np.histogram(proj, bins=100)
-    mid = len(hist) // 2
-    left_peak = float(hist[:mid].max())
-    right_peak = float(hist[mid:].max())
-    valley = float(hist[max(0, mid - 5):mid + 5].min())
-    bimodal_ratio = valley / (min(left_peak, right_peak) + 1e-8)
+    # Bimodality: histogram valley test (shared helper)
+    bimodal_ratio = _bimodality(proj)
 
-    # Random baseline: where does this bimodality sit among random pairs?
-    rng = np.random.RandomState(42)
-    n_random = 50
-    random_bms: list[float] = []
-    for _ in range(n_random):
-        ra, rb = rng.choice(N, 2, replace=False)
-        rd = scores[ra].astype(np.float32) - scores[rb].astype(np.float32)
-        rm = float(np.linalg.norm(rd))
-        if rm < 1e-8:
-            continue
-        rdir = rd / rm
-        rproj = scores @ rdir
-        rhist, _ = np.histogram(rproj, bins=100)
-        rmid = len(rhist) // 2
-        rlp = float(rhist[:rmid].max())
-        rrp = float(rhist[rmid:].max())
-        rval = float(rhist[max(0, rmid - 5):rmid + 5].min())
-        rbm = rval / (min(rlp, rrp) + 1e-8)
-        random_bms.append(rbm)
-
-    # Percentile: what fraction of random pairs have LOWER bimodality (= more bimodal)?
-    if random_bms:
-        random_bms_sorted = sorted(random_bms)
-        percentile = float(sum(1 for r in random_bms_sorted if r > bimodal_ratio)
-                           / len(random_bms_sorted) * 100)
-    else:
-        percentile = 50.0  # fallback if all random pairs degenerate
+    # Random baseline: percentile among 50 random token-pair directions
+    random_bms = _random_bimodality_baseline(scores)
+    percentile = _bimodality_percentile(bimodal_ratio, random_bms)
 
     # All-layer bimodality sweep (mmap reads, no cache eviction)
     import json as _json
@@ -344,28 +699,23 @@ def _direction_quality(mri_path: str, a: int, b: int, layer: int) -> dict:
         dm = _json.loads(decomp_meta_path.read_text())
         for li_meta in dm.get("layers", []):
             li = li_meta.get("layer", -1)
+            # Skip virtual layers ('emb', 'lmh') — no L{NN}_scores.npy files
+            if not isinstance(li, int):
+                continue
             if li == layer:
                 layer_bms.append({"layer": li, "bimodality": bimodal_ratio})
                 continue
-            li_score_path = Path(mri_path) / "decomp" / f"L{li:02d}_scores.npy"
-            if not li_score_path.exists():
+            li_scores = _get_scores_mmap(mri_path, li)
+            if li_scores is None:
                 continue
-            li_scores = np.load(str(li_score_path), mmap_mode='r')
             if a >= li_scores.shape[0]:
                 continue
             li_diff = li_scores[a].astype(np.float32) - li_scores[b].astype(np.float32)
             li_mag = float(np.linalg.norm(li_diff))
             if li_mag < 1e-8:
                 continue
-            li_dir = li_diff / li_mag
-            li_proj = li_scores @ li_dir
-            li_hist, _ = np.histogram(li_proj, bins=100)
-            li_mid = len(li_hist) // 2
-            li_lp = float(li_hist[:li_mid].max())
-            li_rp = float(li_hist[li_mid:].max())
-            li_val = float(li_hist[max(0, li_mid - 5):li_mid + 5].min())
-            li_bm = li_val / (min(li_lp, li_rp) + 1e-8)
-            layer_bms.append({"layer": li, "bimodality": li_bm})
+            li_proj = _project_chunked(li_scores, li_diff / li_mag)
+            layer_bms.append({"layer": li, "bimodality": _bimodality(li_proj)})
 
     # Top tokens per side
     sorted_idx = np.argsort(proj)
@@ -383,14 +733,7 @@ def _direction_quality(mri_path: str, a: int, b: int, layer: int) -> dict:
     def _alt_bimodality(idx_a: int, idx_b: int) -> float:
         alt_diff = scores[idx_a].astype(np.float32) - scores[idx_b].astype(np.float32)
         alt_mag = float(np.linalg.norm(alt_diff))
-        alt_dir = alt_diff / (alt_mag + 1e-8)
-        alt_proj = scores @ alt_dir
-        h, _ = np.histogram(alt_proj, bins=100)
-        m = len(h) // 2
-        lp = float(h[:m].max())
-        rp = float(h[m:].max())
-        v = float(h[max(0, m - 5):m + 5].min())
-        return v / (min(lp, rp) + 1e-8)
+        return _bimodality(_project_chunked(scores, alt_diff / (alt_mag + 1e-8)))
 
     # Top-3 A-like: highest projection, excluding A itself
     alt_a_candidates = sorted_idx[::-1]  # descending
@@ -418,55 +761,9 @@ def _direction_quality(mri_path: str, a: int, b: int, layer: int) -> dict:
         alt_bimodalities = []
 
     # --- Functional validation ---
-    # Check whether geometric proximity predicts functional behavior:
-    # do top A-like tokens actually predict token A through lmhead?
-    functional_hit_rate = None
-    functional_warning = None
-    try:
-        mri_dir = Path(mri_path)
-        exit_path = mri_dir / f"L{layer:02d}_exit.npy"
-        lmhead_path = mri_dir / "lmhead.npy"
-        tok_data = dict(np.load(str(mri_dir / "tokens.npz"), allow_pickle=True))
-        token_ids = tok_data["token_ids"]
-
-        if exit_path.exists() and lmhead_path.exists():
-            exits = np.load(str(exit_path), mmap_mode="r")
-            # Cache lmhead
-            lmhead_key = f"{mri_path}:lmhead"
-            if lmhead_key not in _score_cache:
-                _score_cache[lmhead_key] = np.load(
-                    str(lmhead_path)).astype(np.float32)
-            lmhead = _score_cache[lmhead_key]
-
-            vocab_a = int(token_ids[a])
-            vocab_b = int(token_ids[b])
-
-            hits = 0
-            checks = 0
-            # Top-5 A-like tokens
-            for idx in [int(i) for i in top_a_idx[:5]]:
-                if idx >= exits.shape[0]:
-                    continue
-                logits = lmhead @ exits[idx].astype(np.float32)
-                top50 = set(np.argsort(logits)[-50:].tolist())
-                if vocab_a in top50:
-                    hits += 1
-                checks += 1
-            # Top-5 B-like tokens
-            for idx in [int(i) for i in top_b_idx[:5]]:
-                if idx >= exits.shape[0]:
-                    continue
-                logits = lmhead @ exits[idx].astype(np.float32)
-                top50 = set(np.argsort(logits)[-50:].tolist())
-                if vocab_b in top50:
-                    hits += 1
-                checks += 1
-
-            if checks > 0:
-                functional_hit_rate = hits / checks
-                functional_warning = functional_hit_rate < 0.2
-    except Exception:
-        pass  # graceful degradation — files missing or shape mismatch
+    # Do top A-like tokens actually predict token A through lmhead?
+    functional_hit_rate, functional_warning = _functional_hit_rate(
+        mri_path, layer, a, b, top_a_idx, top_b_idx)
 
     result = {
         "layer": layer, "K": K, "N": N,
@@ -498,8 +795,7 @@ def _direction_project(mri_path: str, a: int, b: int, layer: int) -> dict:
     Returns normalized projections [-1, +1] centered on the A-B midpoint,
     suitable for direct use as color values in the browser.
     """
-    decomp = Path(mri_path) / "decomp"
-    scores = _get_scores_f32(mri_path, layer)
+    scores = _get_scores_mmap(mri_path, layer)
     if scores is None:
         return {"error": f"No scores at L{layer}"}
     N, K = scores.shape
@@ -507,11 +803,11 @@ def _direction_project(mri_path: str, a: int, b: int, layer: int) -> dict:
     if a >= N or b >= N:
         return {"error": f"Token index out of range (max {N-1})"}
 
-    diff = scores[a] - scores[b]
+    diff = scores[a].astype(np.float32) - scores[b].astype(np.float32)
     mag = float(np.linalg.norm(diff))
     direction = diff / (mag + 1e-8)
 
-    proj = (scores @ direction).tolist()
+    proj = _project_chunked(scores, direction).tolist()
 
     return {"projections": proj, "magnitude": mag, "K": K,
             "proj_a": proj[a], "proj_b": proj[b]}
@@ -597,345 +893,32 @@ def _direction_nonlinear(mri_path: str, a: int, b: int, layer: int,
             "gap": gap, "verdict": verdict, "n_sample": n_sample, "K": K}
 
 
-def _direction_depth(mri_path: str, a: int, b: int) -> dict:
-    """Compute full-K direction strength at every layer.
-
-    Returns per-layer: magnitude, concentration (pcs_50), token A and B
-    projections, and population percentiles (10th, 50th, 90th).
-    """
-    decomp = Path(mri_path) / "decomp"
-    meta_path = decomp / "meta.json"
-    if not meta_path.exists():
-        return {"error": "No decomp/meta.json"}
-    meta = json.loads(meta_path.read_text())
-    n_layers = len(meta["layers"])
-
-    layers = []
-    for li in range(n_layers):
-        scores = _get_scores_f32(mri_path, li)
-        if scores is None:
-            continue
-        N, K = scores.shape
-        if a >= N or b >= N:
-            continue
-
-        diff = scores[a] - scores[b]
-        mag = float(np.linalg.norm(diff))
-        direction = diff / (mag + 1e-8)
-
-        pa = float(scores[a] @ direction)
-        pb = float(scores[b] @ direction)
-
-        step = max(1, N // 500)
-        sample_proj = scores[::step] @ direction
-        p10 = float(np.percentile(sample_proj, 10))
-        p50 = float(np.percentile(sample_proj, 50))
-        p90 = float(np.percentile(sample_proj, 90))
-
-        # Concentration: how many PCs carry 50% of squared difference
-        diff2 = diff ** 2
-        total_d2 = float(diff2.sum())
-        order = np.argsort(diff2)[::-1]
-        cumul = np.cumsum(diff2[order]) / (total_d2 + 1e-8)
-        pcs_50 = int(np.searchsorted(cumul, 0.5)) + 1
-
-        # Top 8 PCs at this layer
-        top_n = min(8, len(order))
-        top_pcs = [{"pc": int(order[i]),
-                    "share": float(diff2[order[i]] / (total_d2 + 1e-8))}
-                   for i in range(top_n)]
-
-        layers.append({
-            "layer": li, "magnitude": mag,
-            "proj_a": pa, "proj_b": pb,
-            "p10": p10, "p50": p50, "p90": p90,
-            "pcs_50": pcs_50, "top_pcs": top_pcs,
-        })
-
-    return {"layers": layers, "n_layers": n_layers}
+# _direction_depth, _direction_circuit, _direction_weight_alignment live in
+# companion_directions.py. Imported at module bottom so all helpers they
+# depend on (_get_scores_f32, _bimodality, etc.) are defined first.
 
 
-def _direction_circuit(mri_path: str, a: int, b: int) -> dict:
-    """Per-head and MLP write-attribution for the A-B concept direction.
-
-    For each layer, measures how much of the concept direction each
-    attention head's output subspace can reconstruct (via o_proj slices),
-    plus the MLP's contribution (via down_proj).
-
-    This is Sharkey et al. 2025 open problem 2.3: automatic circuit
-    discovery from concept directions.
-    """
-    mri_dir = Path(mri_path)
-    decomp = mri_dir / "decomp"
-    meta_path = mri_dir / "metadata.json"
-    decomp_meta_path = decomp / "meta.json"
-
-    if not meta_path.exists():
-        return {"error": "No metadata.json"}
-    if not decomp_meta_path.exists():
-        return {"error": "No decomp/meta.json"}
-
-    mri_meta = json.loads(meta_path.read_text())
-    decomp_meta = json.loads(decomp_meta_path.read_text())
-
-    model_info = mri_meta.get("model", {})
-    n_heads = model_info.get("n_heads")
-    hidden_size = model_info.get("hidden_size")
-    if not n_heads or not hidden_size:
-        return {"error": "metadata.json missing n_heads or hidden_size"}
-
-    head_dim = hidden_size // n_heads
-    n_layers = len(decomp_meta.get("layers", []))
-
-    layers_out = []
-    for li in range(n_layers):
-        scores = _get_scores_f32(mri_path, li)
-        if scores is None:
-            continue
-        N, K = scores.shape
-        if a >= N or b >= N:
-            continue
-
-        # Direction in PC space
-        diff = scores[a] - scores[b]
-        mag = float(np.linalg.norm(diff))
-        if mag < 1e-12:
-            continue
-        dir_pc = diff / mag
-
-        # Map to hidden space via PCA components
-        comp_path = decomp / f"L{li:02d}_components.npy"
-        if not comp_path.exists():
-            continue
-        components = np.load(str(comp_path))  # [K, hidden]
-        dir_hidden = components.T @ dir_pc[:components.shape[0]]
-        dir_norm = float(np.linalg.norm(dir_hidden))
-        if dir_norm < 1e-12:
-            continue
-        dir_hidden = dir_hidden / dir_norm
-
-        # Per-head attribution via o_proj
-        o_proj_path = mri_dir / "weights" / f"L{li:02d}" / "o_proj.npy"
-        heads_out = []
-        if o_proj_path.exists():
-            o_proj = np.load(str(o_proj_path))  # [hidden, hidden]
-            for h in range(n_heads):
-                W_h = o_proj[:, h * head_dim:(h + 1) * head_dim]  # [hidden, head_dim]
-                proj = W_h @ (W_h.T @ dir_hidden)
-                attrib = float(np.linalg.norm(proj))
-                heads_out.append({"head": h, "attrib": attrib})
-        else:
-            heads_out = [{"head": h, "attrib": 0.0} for h in range(n_heads)]
-
-        # MLP attribution via down_proj
-        mlp_attrib = 0.0
-        down_proj_path = mri_dir / "weights" / f"L{li:02d}" / "down_proj.npy"
-        if down_proj_path.exists():
-            down_proj = np.load(str(down_proj_path))  # [hidden, intermediate]
-            proj_mlp = down_proj @ (down_proj.T @ dir_hidden)
-            mlp_attrib = float(np.linalg.norm(proj_mlp))
-
-        # Normalize: scale so max(heads + mlp) = 1 for readability
-        all_attribs = [hd["attrib"] for hd in heads_out] + [mlp_attrib]
-        max_attrib = max(all_attribs) if all_attribs else 1.0
-        if max_attrib > 1e-12:
-            for hd in heads_out:
-                hd["attrib"] = hd["attrib"] / max_attrib
-            mlp_attrib = mlp_attrib / max_attrib
-
-        layers_out.append({
-            "layer": li,
-            "heads": heads_out,
-            "mlp_attrib": mlp_attrib,
-        })
-
-    # --- Random baseline z-scores at peak layer ---
-    # Generate 50 random unit vectors, compute attributions at the layer
-    # with strongest head signal. Report z-scores to check if concept
-    # attribution exceeds chance.
-    peak_zscore = None
-    peak_layer = None
-    if layers_out:
-        # Find peak layer: layer with highest max-head attribution (pre-normalization
-        # values are gone, so re-derive from unnormalized pass at the best candidate).
-        # Use normalized values to identify the peak, then recompute raw attributions there.
-        best_li = max(layers_out, key=lambda ld: max(
-            h["attrib"] for h in ld["heads"]))
-        peak_layer = best_li["layer"]
-
-        # Recompute raw (unnormalized) attributions at peak layer
-        scores = _get_scores_f32(mri_path, peak_layer)
-        comp_path = decomp / f"L{peak_layer:02d}_components.npy"
-        o_proj_path = mri_dir / "weights" / f"L{peak_layer:02d}" / "o_proj.npy"
-        down_proj_path = mri_dir / "weights" / f"L{peak_layer:02d}" / "down_proj.npy"
-
-        if (scores is not None and comp_path.exists()):
-            diff = scores[a] - scores[b]
-            mag = float(np.linalg.norm(diff))
-            if mag > 1e-12:
-                dir_pc = diff / mag
-                components = np.load(str(comp_path))
-                dir_hidden = components.T @ dir_pc[:components.shape[0]]
-                dir_norm = float(np.linalg.norm(dir_hidden))
-                if dir_norm > 1e-12:
-                    dir_hidden = dir_hidden / dir_norm
-
-                    o_proj = np.load(str(o_proj_path)) if o_proj_path.exists() else None
-                    down_proj = np.load(str(down_proj_path)) if down_proj_path.exists() else None
-
-                    def _attribs_for_dir(d):
-                        """Compute raw head + MLP attributions for direction d."""
-                        h_out = []
-                        if o_proj is not None:
-                            for h in range(n_heads):
-                                W_h = o_proj[:, h * head_dim:(h + 1) * head_dim]
-                                p = W_h @ (W_h.T @ d)
-                                h_out.append(float(np.linalg.norm(p)))
-                        else:
-                            h_out = [0.0] * n_heads
-                        m_attr = 0.0
-                        if down_proj is not None:
-                            p = down_proj @ (down_proj.T @ d)
-                            m_attr = float(np.linalg.norm(p))
-                        return h_out, m_attr
-
-                    # Concept attributions (raw)
-                    concept_heads, concept_mlp = _attribs_for_dir(dir_hidden)
-
-                    # Random baseline: 50 random unit vectors
-                    rng = np.random.RandomState(42)
-                    n_random = 50
-                    random_heads = []
-                    random_mlps = []
-                    for _ in range(n_random):
-                        rv = rng.randn(hidden_size).astype(np.float32)
-                        rv = rv / (float(np.linalg.norm(rv)) + 1e-8)
-                        rh, rm = _attribs_for_dir(rv)
-                        random_heads.append(rh)
-                        random_mlps.append(rm)
-
-                    random_heads = np.array(random_heads)  # [50, n_heads]
-                    random_mlps = np.array(random_mlps)    # [50]
-
-                    head_mean = random_heads.mean(axis=0)
-                    head_std = random_heads.std(axis=0)
-                    mlp_mean = float(random_mlps.mean())
-                    mlp_std = float(random_mlps.std())
-
-                    head_zscores = []
-                    for h in range(n_heads):
-                        z = ((concept_heads[h] - head_mean[h])
-                             / (head_std[h] + 1e-8))
-                        head_zscores.append({
-                            "head": h,
-                            "attrib": concept_heads[h],
-                            "zscore": float(z),
-                        })
-
-                    mlp_z = (concept_mlp - mlp_mean) / (mlp_std + 1e-8)
-                    peak_zscore = {
-                        "heads": head_zscores,
-                        "mlp": {
-                            "attrib": concept_mlp,
-                            "zscore": float(mlp_z),
-                        },
-                    }
-
-    result = {"layers": layers_out, "n_heads": n_heads, "n_layers": n_layers}
-    if peak_layer is not None:
-        result["peak_layer"] = peak_layer
-    if peak_zscore is not None:
-        result["peak_zscore"] = peak_zscore
-    return result
-
-
-def _direction_weight_alignment(mri_path: str, a: int, b: int) -> dict:
-    """Compute how each weight matrix at each layer aligns with the concept direction in hidden space.
-
-    For each layer, maps the A-B concept direction from PC space into the
-    full hidden space, then measures each weight matrix's ability to access
-    that direction:  alignment = ||W @ (W^T @ dir)|| / ||dir||
-
-    This is Sharkey et al. 2025 open problem 2.1.1: bridging PCA-space
-    and weight-space representations.
-    """
-    mri_dir = Path(mri_path)
-    decomp = mri_dir / "decomp"
-    meta_path = mri_dir / "metadata.json"
-    decomp_meta_path = decomp / "meta.json"
-
-    if not meta_path.exists():
-        return {"error": "No metadata.json"}
-    if not decomp_meta_path.exists():
-        return {"error": "No decomp/meta.json"}
-
-    decomp_meta = json.loads(decomp_meta_path.read_text())
-    n_layers = len(decomp_meta.get("layers", []))
-
-    MATRICES = ["q_proj", "k_proj", "v_proj", "o_proj",
-                "gate_proj", "up_proj", "down_proj"]
-
-    layers_out = []
-    for li in range(n_layers):
-        scores = _get_scores_f32(mri_path, li)
-        if scores is None:
-            continue
-        N, K = scores.shape
-        if a >= N or b >= N:
-            continue
-
-        # Direction in PC space -> hidden space via PCA components
-        diff = scores[a] - scores[b]
-        mag = float(np.linalg.norm(diff))
-        if mag < 1e-12:
-            continue
-        dir_pc = diff / mag
-
-        comp_path = decomp / f"L{li:02d}_components.npy"
-        if not comp_path.exists():
-            continue
-        components = np.load(str(comp_path))  # [K, hidden]
-        dir_hidden = (components.T @ dir_pc[:components.shape[0]]).astype(np.float32)
-        dir_norm = float(np.linalg.norm(dir_hidden))
-        if dir_norm < 1e-12:
-            continue
-        dir_hidden = dir_hidden / dir_norm
-
-        weights_dir = mri_dir / "weights" / f"L{li:02d}"
-        matrices = {}
-        for mname in MATRICES:
-            wp = weights_dir / f"{mname}.npy"
-            if not wp.exists():
-                continue
-            W = np.load(str(wp), mmap_mode='r').astype(np.float32)
-            # W shape: [out_features, in_features].
-            # Alignment = how much of the direction W's column space can reconstruct.
-            # Case 1: in_features == hidden (e.g. q/k/v_proj: W projects FROM hidden)
-            #   → W^T @ dir lives in out-space, W @ (W^T @ dir) back in hidden.
-            # Case 2: out_features == hidden (e.g. down_proj: W projects TO hidden)
-            #   → same formula works: W^T @ dir goes to in-space, W @ that returns.
-            if W.shape[1] == len(dir_hidden):
-                proj = W @ (W.T @ dir_hidden)
-                alignment = float(np.linalg.norm(proj))
-            elif W.shape[0] == len(dir_hidden):
-                proj = W @ (W.T @ dir_hidden)
-                alignment = float(np.linalg.norm(proj))
-            else:
-                alignment = 0.0
-            matrices[mname] = alignment
-
-        layers_out.append({"layer": li, "matrices": matrices})
-
-    return {"layers": layers_out, "n_layers": n_layers, "matrix_names": MATRICES}
-
-
-def _auto_discover_directions(mri_path: str, layer: int, n_top: int = 20) -> dict:
+def _auto_discover_directions(mri_path: str, layer: int, n_top: int = 20,
+                              exclude_outliers: bool = True) -> dict:
     """Automated direction discovery: find bimodal PCA components.
 
     Each PC is already a direction in hidden space.  The scores column IS
     the projection of all tokens onto that direction.  PCs with bimodal
     score distributions correspond to real features the model uses ---
     features humans haven't labeled.
+
+    When ``exclude_outliers`` is True, filters tokens with |z-score| > 6 on
+    any PC before computing bimodality, so the crystal (뀔 in raw mode) and
+    similar extreme-outlier tokens don't dominate every PC. The unfiltered
+    population is still returned in ``top_pos``/``top_neg``.
+
+    Each discovered PC carries:
+      - bimodality (lower = more bimodal)
+      - random_baseline_percentile: how rare this bimodality is
+        vs 50 random token-pair directions (lower = rarer signal)
+      - functional_hit_rate: fraction of top-A and top-B tokens that
+        predict A/B through lmhead (None if missing files)
+      - functional_warning: True when hit rate < 20%
 
     Addresses open problem 3.5 (Microscope AI) from Sharkey et al. 2025.
     """
@@ -952,7 +935,6 @@ def _auto_discover_directions(mri_path: str, layer: int, n_top: int = 20) -> dic
     texts = [str(t) for t in tok["token_texts"]]
     scripts_arr = [str(s) for s in tok["scripts"]]
 
-    # Load variance data for variance_pct
     var_path = Path(mri_path) / "decomp" / f"L{layer:02d}_variance.npy"
     if var_path.exists():
         variance = np.load(str(var_path)).astype(np.float32)
@@ -961,41 +943,72 @@ def _auto_discover_directions(mri_path: str, layer: int, n_top: int = 20) -> dic
         variance = None
         total_var = 1.0
 
-    # Compute bimodality for each PC
-    pc_bimodality = []
-    for pc in range(K):
-        proj = scores[:, pc]
-        hist, _ = np.histogram(proj, bins=100)
-        mid = len(hist) // 2
-        left_peak = float(hist[:mid].max())
-        right_peak = float(hist[mid:].max())
-        valley = float(hist[max(0, mid - 5):mid + 5].min())
-        bimodal = valley / (min(left_peak, right_peak) + 1e-8)
-        pc_bimodality.append((pc, bimodal))
+    # Outlier mask (crystal suppression): drop tokens with |z| > 6 on any PC.
+    # Computed once on the full scores, used for bimodality calc only.
+    # Std floor: float16 scores have PCs where std approaches zero on near-dead
+    # axes; naive z = x/std blows up spuriously. Clamp std to the 5th percentile
+    # of per-PC stds so near-zero axes can't manufacture outliers.
+    outlier_mask = None
+    excluded_count = 0
+    if exclude_outliers and N > 20:
+        raw_std = scores.std(axis=0)
+        std_floor = float(np.percentile(raw_std[raw_std > 0], 5)) if np.any(raw_std > 0) else 1e-8
+        std = np.maximum(raw_std, std_floor) + 1e-8
+        z_all = np.abs(scores) / std[None, :]
+        outlier_mask = (z_all.max(axis=1) > 6.0)
+        excluded_count = int(outlier_mask.sum())
+        # Only apply if it doesn't nuke the population
+        if excluded_count > N // 2:
+            outlier_mask = None
+            excluded_count = 0
 
-    # Rank by bimodality (lowest = most bimodal = strongest features)
-    pc_bimodality.sort(key=lambda x: x[1])
+    scored = scores if outlier_mask is None else scores[~outlier_mask]
 
-    # Build results for top-N
+    # Per-PC bimodality over the filtered population
+    pc_bimodality = [(pc, _bimodality(scored[:, pc])) for pc in range(K)]
+    pc_bimodality.sort(key=lambda x: x[1])  # most bimodal first
+
+    # Random baseline (computed once on filtered population — applies to all PCs)
+    random_bms = _random_bimodality_baseline(scored)
+
     discovered = []
     for pc, bimodal in pc_bimodality[:n_top]:
         proj = scores[:, pc]
         top_pos = np.argsort(proj)[-5:][::-1]
         top_neg = np.argsort(proj)[:5]
 
-        var_pct = float(variance[pc] / total_var) if variance is not None and pc < len(variance) else 0.0
+        var_pct = (float(variance[pc] / total_var)
+                   if variance is not None and pc < len(variance) else 0.0)
+
+        pctile = _bimodality_percentile(bimodal, random_bms)
+
+        # Functional validation: anchor = single top-A and top-B token
+        top_a_anchor = int(top_pos[0]) if len(top_pos) else 0
+        top_b_anchor = int(top_neg[0]) if len(top_neg) else 0
+        hit_rate, warning = _functional_hit_rate(
+            mri_path, layer, top_a_anchor, top_b_anchor,
+            top_pos.tolist(), top_neg.tolist(),
+        )
 
         discovered.append({
             "pc": int(pc),
             "bimodality": float(bimodal),
             "variance_pct": var_pct,
+            "random_baseline_percentile": pctile,
+            "functional_hit_rate": hit_rate,
+            "functional_warning": warning,
             "top_pos": [{"idx": int(i), "text": texts[i], "script": scripts_arr[i],
                          "proj": float(proj[i])} for i in top_pos],
             "top_neg": [{"idx": int(i), "text": texts[i], "script": scripts_arr[i],
                          "proj": float(proj[i])} for i in top_neg],
         })
 
-    return {"layer": int(layer), "discovered": discovered}
+    return {
+        "layer": int(layer),
+        "discovered": discovered,
+        "outliers_excluded": excluded_count,
+        "n_population": int(scored.shape[0]),
+    }
 
 
 def _token_predicts(mri_path: str, token_idx: int, layer: int, top_k: int = 20) -> dict:
@@ -1025,7 +1038,11 @@ def _token_predicts(mri_path: str, token_idx: int, layer: int, top_k: int = 20) 
     # Load lmhead (cached after first access)
     cache_key = f"{mri_path}:lmhead"
     if cache_key not in _score_cache:
-        _score_cache[cache_key] = np.load(str(lmhead_path)).astype(np.float32)
+        _score_cache_put(cache_key,
+                         np.load(str(lmhead_path)).astype(np.float32),
+                         active_mri=mri_path)
+    else:
+        _score_cache.move_to_end(cache_key)
     lmhead = _score_cache[cache_key]
 
     # Project: logits = lmhead @ exit_vec
@@ -1039,14 +1056,9 @@ def _token_predicts(mri_path: str, token_idx: int, layer: int, top_k: int = 20) 
     # Top-K
     top_indices = np.argsort(logits)[-top_k:][::-1]
 
-    # Map vocab indices to token texts via token_ids
-    tok = dict(np.load(str(mri_dir / "tokens.npz"), allow_pickle=True))
-    texts = [str(t) for t in tok["token_texts"]]
-    token_ids = tok["token_ids"]
-    # Build reverse map: vocab_id → mri_index
-    vocab_to_mri = {}
-    for i, vid in enumerate(token_ids):
-        vocab_to_mri[int(vid)] = i
+    # Token metadata: cached per MRI — rebuilding the 150k-entry vocab→mri
+    # dict per call was eating ~1s on warm repeats.
+    texts, vocab_to_mri = _get_vocab_map(mri_path)
 
     predictions = []
     for vi in top_indices:
@@ -1066,6 +1078,826 @@ def _token_predicts(mri_path: str, token_idx: int, layer: int, top_k: int = 20) 
         "token_text": texts[token_idx] if token_idx < len(texts) else "?",
         "layer": layer,
         "top_k": predictions,
+    }
+
+
+def _residual_trajectory(mri_path: str, prompt: str, layer: int,
+                         n_generated: int = 10, model_id: str = "") -> dict:
+    """Capture the residual at `layer` at every generated position.
+
+    Answers "does belief/refusal/commitment emerge during generation,
+    or is it decided at the prompt boundary?" — plumbing #2.
+
+    Returns a list of residuals: position 0 is prompt-end, 1 is after
+    first generated token, 2 is after the second, etc. Also returns the
+    generated text so callers can correlate position → token meaning.
+    """
+    if not model_id:
+        try:
+            mri_meta = json.loads((Path(mri_path) / "metadata.json").read_text())
+            model_id = mri_meta["model"].get("huggingface_id") or mri_meta["model"].get("name", "")
+        except (FileNotFoundError, KeyError):
+            return {"error": "No MRI metadata; supply model_id explicitly."}
+    try:
+        backend = _get_steer_backend(model_id)
+    except Exception as e:
+        return {"error": f"Cannot load model {model_id}: {e}"}
+
+    # Position 0: prompt-end residual via a normal forward
+    try:
+        r0 = backend.forward(prompt, return_residual=True, residual_layers=[layer])
+        pos0 = r0.residuals.get(layer) if r0.residuals else None
+        if pos0 is None:
+            return {"error": f"Backend did not return residual at layer {layer}"}
+        if pos0.ndim > 1:
+            pos0 = pos0[-1]
+    except Exception as e:
+        return {"error": f"Prompt forward failed: {e}"}
+
+    residuals = [np.asarray(pos0, dtype=np.float32)]
+    tokens_out: list[dict] = []
+
+    # Positions 1..N: generate step by step, capture residual at each
+    try:
+        with backend.generation_context(prompt) as gen:
+            gen.capture_at(layer)
+            for tok in gen.tokens(max_tokens=n_generated):
+                if tok.residual is not None:
+                    residuals.append(np.asarray(tok.residual, dtype=np.float32).ravel())
+                tokens_out.append({
+                    "step": tok.step,
+                    "token_id": tok.token_id,
+                    "text": tok.token_text,
+                })
+                if len(residuals) - 1 >= n_generated:
+                    break
+    except Exception as e:
+        return {"error": f"Generation failed: {e}"}
+
+    arr = np.stack(residuals) if residuals else np.zeros((0, 1), dtype=np.float32)
+    return {
+        "model_id": model_id,
+        "prompt": prompt,
+        "layer": layer,
+        "n_positions": arr.shape[0],
+        "hidden_size": int(arr.shape[1]) if arr.ndim > 1 else 0,
+        "generated_tokens": tokens_out,
+        "residuals_shape": list(arr.shape),
+        # Return the full residual tensor as a nested list. Small: [n+1, hidden] float32.
+        # Compact enough at n=10, hidden=896 → ~35 KB JSON.
+        "residuals": arr.tolist(),
+    }
+
+
+def _capture_residual_at_position(backend, prompt: str, layer: int,
+                                   position: int = 0) -> "np.ndarray | None":
+    """Capture residual at `layer` for `prompt`, at given position.
+
+    Single-layer convenience wrapper. For multi-layer sweeps use
+    `_capture_residuals_multilayer` — it does one forward pass per prompt
+    regardless of how many layers you want, saving ~N× time.
+    """
+    return _capture_residuals_multilayer(
+        backend, prompt, [layer], position
+    ).get(layer)
+
+
+def _capture_residuals_multilayer(backend, prompt: str, layers: list,
+                                   position: int = 0) -> dict:
+    """Capture residuals at multiple layers in ONE forward pass.
+
+    Returns {layer: np.ndarray(hidden,)}.  Dramatic speedup for multi-layer
+    sweeps: on Qwen-7B, a 6-layer sweep goes from ~6× forward passes per
+    prompt to ~1× forward pass per prompt.
+
+    position=0: last prompt token.
+    position>0: step through generation, capture at position-th generated token.
+    """
+    if position == 0:
+        try:
+            r = backend.forward(prompt, return_residual=True,
+                                residual_layers=list(layers))
+            residuals = getattr(r, "residuals", None)
+            out = {}
+            if residuals:
+                for L in layers:
+                    vec = residuals.get(L)
+                    if vec is None:
+                        continue
+                    if vec.ndim > 1:
+                        vec = vec[-1]
+                    out[L] = np.asarray(vec, dtype=np.float32)
+            return out
+        except Exception:
+            return {}
+    # Multi-position generation: pick up residual at the k-th generated step.
+    # Current backend only captures one layer per GenerationContext — fall back
+    # to N separate generation passes when position > 0. Rare path.
+    out = {}
+    for L in layers:
+        try:
+            with backend.generation_context(prompt) as gen:
+                gen.capture_at(L)
+                for tok in gen.tokens(max_tokens=position):
+                    if tok.step + 1 == position and tok.residual is not None:
+                        out[L] = np.asarray(tok.residual, dtype=np.float32).ravel()
+                    if tok.step + 1 >= position:
+                        break
+        except Exception:
+            pass
+    return out
+
+
+def _behavioral_direction(mri_path: str, pos_prompts: list, neg_prompts: list,
+                          layer: int, model_id: str = "",
+                          mri_match_k: int = 30,
+                          position: int = 0) -> dict:
+    """Extract a direction from contrastive prompt groups, verify it robustly.
+
+    position: 0 = last prompt token; >0 = captured at the k-th generated
+              position. For tests of "does the direction only appear during
+              generation" (Berger 2026).
+
+    Runs the model on each prompt, captures the residual at `layer` at the
+    chosen position, computes direction = mean(pos) − mean(neg). This is
+    the contrastive-behavior direction.
+
+    Validates with:
+    - Cohen's d between pos/neg projections
+    - Bootstrap cosine: resample prompts with replacement, measure direction stability
+    - Projects MRI vocab onto the direction for top-K sanity
+    """
+    if not pos_prompts or not neg_prompts:
+        return {"error": "Need non-empty pos_prompts and neg_prompts"}
+    if len(pos_prompts) < 3 or len(neg_prompts) < 3:
+        return {"error": "Need at least 3 prompts per side for meaningful statistics"}
+
+    if not model_id:
+        mri_meta = json.loads((Path(mri_path) / "metadata.json").read_text())
+        model_id = mri_meta["model"].get("huggingface_id") or mri_meta["model"].get("name", "")
+    try:
+        backend = _get_steer_backend(model_id)
+    except Exception as e:
+        return {"error": f"Cannot load model {model_id}: {e}"}
+
+    pos_vecs = [_capture_residual_at_position(backend, p, layer, position) for p in pos_prompts]
+    neg_vecs = [_capture_residual_at_position(backend, p, layer, position) for p in neg_prompts]
+    pos_vecs = [v for v in pos_vecs if v is not None]
+    neg_vecs = [v for v in neg_vecs if v is not None]
+    if not pos_vecs or not neg_vecs:
+        return {"error": "No residuals captured (backend may not support residual_layers)"}
+
+    P = np.stack(pos_vecs)  # [n_pos, hidden]
+    N = np.stack(neg_vecs)  # [n_neg, hidden]
+    pos_mean = P.mean(axis=0)
+    neg_mean = N.mean(axis=0)
+    diff = pos_mean - neg_mean
+    mag = float(np.linalg.norm(diff))
+    direction = diff / (mag + 1e-8)
+
+    # Cohen's d on the direction
+    pos_proj = P @ direction
+    neg_proj = N @ direction
+    pooled_std = float(np.sqrt(
+        (pos_proj.var(ddof=1) + neg_proj.var(ddof=1)) / 2 + 1e-12))
+    cohen_d = float((pos_proj.mean() - neg_proj.mean()) / (pooled_std + 1e-8))
+
+    # Bootstrap: resample pos/neg with replacement, recompute direction, measure cosine
+    rng = np.random.RandomState(42)
+    boot_cos = []
+    for _ in range(50):
+        bp_idx = rng.randint(0, len(pos_vecs), size=len(pos_vecs))
+        bn_idx = rng.randint(0, len(neg_vecs), size=len(neg_vecs))
+        bp = P[bp_idx].mean(axis=0)
+        bn = N[bn_idx].mean(axis=0)
+        bd = bp - bn
+        bn_mag = float(np.linalg.norm(bd))
+        if bn_mag < 1e-8:
+            continue
+        boot_cos.append(float((bd / bn_mag) @ direction))
+    boot_cos = np.array(boot_cos, dtype=np.float32)
+    boot_cos.sort()
+
+    # Project direction onto vocabulary — "top_pos / top_neg" labels.
+    # Primary path: MRI's captured score matrix (token-level residuals) —
+    # gives projections in the model's actual residual geometry at this layer.
+    # Fallback path: project direction through lm_head directly (logit lens).
+    # This works for ANY model, even without a captured MRI.
+    top_pos = []
+    top_neg = []
+    comp_path = Path(mri_path) / "decomp" / f"L{layer:02d}_components.npy"
+    tok_path = Path(mri_path) / "tokens.npz"
+    vocab_source = "none"
+    if comp_path.exists() and tok_path.exists():
+        components = np.load(str(comp_path))
+        dir_pc = components @ direction
+        scores = _get_scores_mmap(mri_path, layer)
+        if scores is not None:
+            proj_vocab = _project_chunked(scores, dir_pc[:scores.shape[1]])
+            srt = np.argsort(proj_vocab)
+            try:
+                texts, _ = _get_vocab_map(mri_path)
+                for i in srt[-10:][::-1]:
+                    top_pos.append({"idx": int(i), "text": texts[i], "proj": float(proj_vocab[i])})
+                for i in srt[:10]:
+                    top_neg.append({"idx": int(i), "text": texts[i], "proj": float(proj_vocab[i])})
+                vocab_source = "mri"
+            except Exception:
+                pass
+    if not top_pos and hasattr(backend, "project_through_lm_head"):
+        try:
+            logits = backend.project_through_lm_head(direction)
+            tokenizer = backend.tokenizer
+            srt = np.argsort(logits)
+            for i in srt[-10:][::-1]:
+                text = tokenizer.decode([int(i)])
+                top_pos.append({"idx": int(i), "text": text, "proj": float(logits[i])})
+            for i in srt[:10]:
+                text = tokenizer.decode([int(i)])
+                top_neg.append({"idx": int(i), "text": text, "proj": float(logits[i])})
+            vocab_source = "lm_head"
+        except Exception:
+            pass
+
+    def _pctile(arr, p):
+        if len(arr) == 0:
+            return None
+        idx = min(len(arr) - 1, int(len(arr) * p))
+        return float(arr[idx])
+
+    return {
+        "layer": layer,
+        "position": position,
+        "n_pos": len(pos_vecs),
+        "n_neg": len(neg_vecs),
+        "magnitude": mag,
+        "cohen_d": cohen_d,
+        "direction_hidden": direction.tolist(),
+        "bootstrap_cosine": {
+            "p5":  _pctile(boot_cos, 0.05),
+            "p50": _pctile(boot_cos, 0.50),
+            "p95": _pctile(boot_cos, 0.95),
+            "mean": float(boot_cos.mean()) if len(boot_cos) else None,
+        },
+        "top_pos": top_pos,
+        "top_neg": top_neg,
+        "model_id": model_id,
+    }
+
+
+def _replicate_probe(mri_path: str, pos_prompts: list, neg_prompts: list,
+                     layer: int, model_id: str = "",
+                     expected_tokens_pos: list | None = None,
+                     expected_tokens_neg: list | None = None,
+                     n_random_null: int = 100,
+                     position: int = 0) -> dict:
+    """Apply the 5-test falsification pipeline to a contrastive probe.
+
+    Returns a verdict object any paper's claim must pass. See
+    papers/lie-detection/ATTACK_PLAN.md.
+
+    Tests:
+      1. Bootstrap anchor stability — boot_cos p5 > 0.7
+      2. Random-direction null — orig d beats null distribution
+      3. Within-group control — d(pos_vs_neg) > 2.5× max(d_within_pos, d_within_neg)
+      4. Vocab projection sanity — top tokens contain expected concept words
+      5. (Causal ablation is the 5th test; runs via a separate steering endpoint)
+
+    verdict ∈ {robust_feature, partial, falsified}
+    """
+    if len(pos_prompts) < 6 or len(neg_prompts) < 6:
+        return {"error": "Need at least 6 prompts per side for within-group splits"}
+
+    # --- Main extraction (Test 1 is inside: bootstrap_cosine) ---
+    main = _behavioral_direction(
+        mri_path, pos_prompts, neg_prompts, layer,
+        model_id=model_id, position=position,
+    )
+    if "error" in main:
+        return {"error": f"main extraction: {main['error']}"}
+
+    direction = np.array(main["direction_hidden"], dtype=np.float32)
+
+    # --- Test 2: random-direction null baseline ---
+    # Generate n random unit vectors in hidden space. For each, compute Cohen's d
+    # on the pos/neg projections. If original d is inside this null distribution,
+    # the signal is not distinguishable from random directions.
+    # We need pos/neg residual vectors — re-capture them (one more pass, cached).
+    try:
+        backend = _get_steer_backend(main["model_id"])
+    except Exception as e:
+        return {"error": f"Cannot load model for null test: {e}"}
+    pos_vecs = [_capture_residual_at_position(backend, p, layer, position) for p in pos_prompts]
+    neg_vecs = [_capture_residual_at_position(backend, p, layer, position) for p in neg_prompts]
+    pos_vecs = [v for v in pos_vecs if v is not None]
+    neg_vecs = [v for v in neg_vecs if v is not None]
+    P = np.stack(pos_vecs).astype(np.float32)
+    N = np.stack(neg_vecs).astype(np.float32)
+    K_hidden = direction.shape[0]
+
+    rng = np.random.RandomState(123)
+    null_dirs = rng.randn(n_random_null, K_hidden).astype(np.float32)
+    null_dirs /= np.linalg.norm(null_dirs, axis=1, keepdims=True) + 1e-8
+    null_d = []
+    for i in range(n_random_null):
+        d = null_dirs[i]
+        pp = P @ d; nn = N @ d
+        ps = float(np.sqrt((pp.var(ddof=1) + nn.var(ddof=1)) / 2 + 1e-12))
+        null_d.append(float((pp.mean() - nn.mean()) / (ps + 1e-8)))
+    null_d = np.array(null_d, dtype=np.float32)
+    # Direction sign is arbitrary in random, so use |d|
+    abs_null_d = np.abs(null_d)
+    abs_null_d.sort()
+    null_p95 = float(abs_null_d[int(len(abs_null_d) * 0.95)])
+    null_max = float(abs_null_d.max())
+    orig_d_abs = abs(main["cohen_d"])
+    null_pass = orig_d_abs > null_p95
+
+    # --- Test 3: within-group control ---
+    def _within_split_d(vecs: list) -> float:
+        """Cohen's d from splitting one class in half and extracting a direction."""
+        n = len(vecs)
+        if n < 6:
+            return 0.0
+        half = n // 2
+        # Random shuffle for fairness
+        rng2 = np.random.RandomState(42)
+        perm = rng2.permutation(n)
+        a_idx = perm[:half]
+        b_idx = perm[half:2 * half]
+        A = np.stack([vecs[i] for i in a_idx])
+        B = np.stack([vecs[i] for i in b_idx])
+        d = A.mean(axis=0) - B.mean(axis=0)
+        m = float(np.linalg.norm(d))
+        if m < 1e-8:
+            return 0.0
+        dir_ = d / m
+        ap = A @ dir_; bp = B @ dir_
+        ps = float(np.sqrt((ap.var(ddof=1) + bp.var(ddof=1)) / 2 + 1e-12))
+        return float((ap.mean() - bp.mean()) / (ps + 1e-8))
+
+    within_pos_d = _within_split_d(pos_vecs)
+    within_neg_d = _within_split_d(neg_vecs)
+    within_max = max(abs(within_pos_d), abs(within_neg_d))
+    signal_noise = orig_d_abs / (within_max + 1e-8)
+    within_pass = signal_noise > 2.5
+
+    # --- Test 1 verdict (already computed in main) ---
+    boot_p5 = main.get("bootstrap_cosine", {}).get("p5", 0.0) or 0.0
+    boot_pass = boot_p5 > 0.7
+
+    # --- Test 4: vocab projection sanity ---
+    vocab_match = None
+    if expected_tokens_pos or expected_tokens_neg:
+        pos_texts = {t["text"].strip().lower() for t in main.get("top_pos", [])}
+        neg_texts = {t["text"].strip().lower() for t in main.get("top_neg", [])}
+        exp_pos = {x.strip().lower() for x in (expected_tokens_pos or [])}
+        exp_neg = {x.strip().lower() for x in (expected_tokens_neg or [])}
+
+        def _match_any(got: set, expected: set) -> int:
+            """Count expected tokens that appear in top-10 (substring match)."""
+            n = 0
+            for e in expected:
+                for g in got:
+                    if e in g or g in e:
+                        n += 1
+                        break
+            return n
+        pos_matches = _match_any(pos_texts, exp_pos)
+        neg_matches = _match_any(neg_texts, exp_neg)
+        vocab_match = {
+            "pos_matches": pos_matches,
+            "pos_expected": len(exp_pos),
+            "neg_matches": neg_matches,
+            "neg_expected": len(exp_neg),
+            "pos_fraction": pos_matches / max(1, len(exp_pos)),
+            "neg_fraction": neg_matches / max(1, len(exp_neg)),
+        }
+    vocab_pass = (
+        vocab_match is None or  # no expected tokens given — skip
+        ((vocab_match["pos_matches"] >= 3) or
+         (vocab_match["neg_matches"] >= 3))
+    )
+
+    # --- Verdict ---
+    all_pass = boot_pass and null_pass and within_pass and vocab_pass
+    any_pass = boot_pass or null_pass or within_pass
+    if all_pass:
+        verdict = "robust_feature"
+    elif any_pass:
+        verdict = "partial"
+    else:
+        verdict = "falsified"
+
+    return {
+        "layer": layer,
+        "position": position,
+        "n_pos": main["n_pos"],
+        "n_neg": main["n_neg"],
+        "cohen_d": main["cohen_d"],
+        "magnitude": main["magnitude"],
+        "direction_hidden": main["direction_hidden"],
+        "top_pos": main["top_pos"],
+        "top_neg": main["top_neg"],
+        "test_1_bootstrap": {
+            "boot_cosine_p5": boot_p5,
+            "boot_cosine_p50": main.get("bootstrap_cosine", {}).get("p50"),
+            "pass": boot_pass,
+        },
+        "test_2_null": {
+            "null_p95_abs_d": null_p95,
+            "null_max_abs_d": null_max,
+            "orig_abs_d": orig_d_abs,
+            "pass": null_pass,
+        },
+        "test_3_within_group": {
+            "within_pos_d": within_pos_d,
+            "within_neg_d": within_neg_d,
+            "signal_noise_ratio": signal_noise,
+            "pass": within_pass,
+        },
+        "test_4_vocab": {
+            "match": vocab_match,
+            "pass": vocab_pass,
+        },
+        "verdict": verdict,
+        "model_id": main["model_id"],
+    }
+
+
+def _replicate_probe_multilayer(
+    mri_path: str, pos_prompts: list, neg_prompts: list,
+    layers: list, model_id: str = "",
+    expected_tokens_pos: list | None = None,
+    expected_tokens_neg: list | None = None,
+    n_random_null: int = 100,
+    position: int = 0,
+) -> dict:
+    """Replicate-probe at multiple layers, ONE forward pass per prompt.
+
+    ~N× faster than calling `_replicate_probe` N times for N layers:
+    both prompt-sets go through the model once, we slice out the
+    requested layers from the cached residuals, and run the 5-test
+    pipeline per layer offline.
+
+    On Qwen-7B: 6-layer sweep drops from ~60 min (6× the 10-min single-layer
+    run) to ~10-12 min (one forward-pass batch + cheap per-layer analysis).
+    """
+    if len(pos_prompts) < 6 or len(neg_prompts) < 6:
+        return {"error": "Need at least 6 prompts per side for within-group splits"}
+    if not layers:
+        return {"error": "No layers specified"}
+
+    if not model_id:
+        try:
+            mri_meta = json.loads((Path(mri_path) / "metadata.json").read_text())
+            model_id = mri_meta["model"].get("huggingface_id") or mri_meta["model"].get("name", "")
+        except (FileNotFoundError, KeyError):
+            return {"error": "No MRI metadata; supply model_id explicitly."}
+    try:
+        backend = _get_steer_backend(model_id)
+    except Exception as e:
+        return {"error": f"Cannot load model {model_id}: {e}"}
+
+    # --- Single capture pass: one backend.forward per prompt, all layers ---
+    import time as _t
+    t_cap = _t.time()
+    pos_captures = [_capture_residuals_multilayer(backend, p, layers, position)
+                    for p in pos_prompts]
+    neg_captures = [_capture_residuals_multilayer(backend, p, layers, position)
+                    for p in neg_prompts]
+    capture_sec = _t.time() - t_cap
+
+    # --- Per-layer analysis (cheap; no model forward) ---
+    results_per_layer = {}
+    for L in layers:
+        pos_vecs = [c.get(L) for c in pos_captures]
+        pos_vecs = [v for v in pos_vecs if v is not None]
+        neg_vecs = [c.get(L) for c in neg_captures]
+        neg_vecs = [v for v in neg_vecs if v is not None]
+        if len(pos_vecs) < 3 or len(neg_vecs) < 3:
+            results_per_layer[L] = {"error": "Too few captured residuals"}
+            continue
+
+        P = np.stack(pos_vecs).astype(np.float32)
+        N = np.stack(neg_vecs).astype(np.float32)
+        diff = P.mean(axis=0) - N.mean(axis=0)
+        mag = float(np.linalg.norm(diff))
+        direction = diff / (mag + 1e-8)
+
+        # Cohen's d
+        pp = P @ direction; nn = N @ direction
+        pooled = float(np.sqrt((pp.var(ddof=1) + nn.var(ddof=1)) / 2 + 1e-12))
+        cohen_d = float((pp.mean() - nn.mean()) / (pooled + 1e-8))
+
+        # Bootstrap cosine stability
+        rng = np.random.RandomState(42 + L)
+        boot_cos = []
+        for _ in range(50):
+            bp = P[rng.randint(0, len(pos_vecs), size=len(pos_vecs))].mean(axis=0)
+            bn = N[rng.randint(0, len(neg_vecs), size=len(neg_vecs))].mean(axis=0)
+            bd = bp - bn
+            bnm = float(np.linalg.norm(bd))
+            if bnm < 1e-8:
+                continue
+            boot_cos.append(float((bd / bnm) @ direction))
+        boot_cos = np.array(boot_cos, dtype=np.float32) if boot_cos else np.array([0.0])
+        boot_cos.sort()
+        boot_p5 = float(boot_cos[int(len(boot_cos) * 0.05)])
+
+        # Permutation null: shuffle (pos+neg) labels, re-extract the
+        # direction the same way, recompute Cohen's d. The distribution
+        # of permutation d's is the correct null — it accounts for the
+        # optimization bias that the original random-unit-vector baseline
+        # missed. Replaces broken Test 2 + Test 3.
+        n_pos = len(pos_vecs); n_neg = len(neg_vecs)
+        all_vecs = np.concatenate([P, N], axis=0)
+        perm_rng = np.random.RandomState(777 + L)
+        n_perm = max(100, n_random_null)
+        perm_d_abs = []
+        for _ in range(n_perm):
+            idx = perm_rng.permutation(n_pos + n_neg)
+            A = all_vecs[idx[:n_pos]]
+            B = all_vecs[idx[n_pos:n_pos + n_neg]]
+            d_ = A.mean(axis=0) - B.mean(axis=0)
+            m = float(np.linalg.norm(d_))
+            if m < 1e-8:
+                continue
+            dir_ = d_ / m
+            ap = A @ dir_; bp = B @ dir_
+            ps = float(np.sqrt((ap.var(ddof=1) + bp.var(ddof=1)) / 2 + 1e-12))
+            perm_d_abs.append(abs(float((ap.mean() - bp.mean()) / (ps + 1e-8))))
+        perm_arr = np.array(perm_d_abs, dtype=np.float32); perm_arr.sort()
+        perm_p95 = float(perm_arr[int(len(perm_arr) * 0.95)])
+        perm_p99 = float(perm_arr[int(len(perm_arr) * 0.99)])
+        # Report SNR = d / perm_p95 for continuity with prior runs
+        snr = abs(cohen_d) / (perm_p95 + 1e-8)
+        # Legacy fields kept for backcompat — interpreted as permutation-based now
+        null_p95 = perm_p95
+        within_pos_d = 0.0  # deprecated
+        within_neg_d = 0.0  # deprecated
+
+        # Vocab projection — MRI first, lm_head fallback
+        top_pos = []; top_neg = []
+        vocab_source = "none"
+        comp_path = Path(mri_path) / "decomp" / f"L{L:02d}_components.npy"
+        if comp_path.exists() and (Path(mri_path) / "tokens.npz").exists():
+            try:
+                components = np.load(str(comp_path))
+                dir_pc = components @ direction
+                scores = _get_scores_mmap(mri_path, L)
+                if scores is not None:
+                    proj_vocab = _project_chunked(scores, dir_pc[:scores.shape[1]])
+                    srt = np.argsort(proj_vocab)
+                    texts, _ = _get_vocab_map(mri_path)
+                    for i in srt[-10:][::-1]:
+                        top_pos.append({"idx": int(i), "text": texts[i], "proj": float(proj_vocab[i])})
+                    for i in srt[:10]:
+                        top_neg.append({"idx": int(i), "text": texts[i], "proj": float(proj_vocab[i])})
+                    vocab_source = "mri"
+            except Exception:
+                pass
+        if not top_pos and hasattr(backend, "project_through_lm_head"):
+            try:
+                logits = backend.project_through_lm_head(direction)
+                tokenizer = backend.tokenizer
+                srt = np.argsort(logits)
+                for i in srt[-10:][::-1]:
+                    text = tokenizer.decode([int(i)])
+                    top_pos.append({"idx": int(i), "text": text, "proj": float(logits[i])})
+                for i in srt[:10]:
+                    text = tokenizer.decode([int(i)])
+                    top_neg.append({"idx": int(i), "text": text, "proj": float(logits[i])})
+                vocab_source = "lm_head"
+            except Exception:
+                pass
+
+        # Vocab match test
+        vocab_match = None
+        if expected_tokens_pos or expected_tokens_neg:
+            pos_texts = {t["text"].strip().lower() for t in top_pos}
+            neg_texts = {t["text"].strip().lower() for t in top_neg}
+            exp_pos = {x.strip().lower() for x in (expected_tokens_pos or [])}
+            exp_neg = {x.strip().lower() for x in (expected_tokens_neg or [])}
+            def _mcount(got, expected):
+                """Substring match. Ignore empty got (strip of whitespace
+                tokens) — "" in anything is True and would spuriously
+                match every expected token. Also ignore single-char got
+                (punctuation) unless the expected is exactly that char."""
+                n = 0
+                clean_got = {g for g in got if len(g) >= 2}
+                for e in expected:
+                    for g in clean_got:
+                        if e in g or g in e:
+                            n += 1
+                            break
+                return n
+            vocab_match = {
+                "pos_matches": _mcount(pos_texts, exp_pos),
+                "neg_matches": _mcount(neg_texts, exp_neg),
+                "pos_expected": len(exp_pos),
+                "neg_expected": len(exp_neg),
+            }
+        boot_pass = boot_p5 > 0.7
+        # Permutation pass: orig d exceeds the 95th percentile of shuffled-label d's.
+        # This is the correctly-calibrated null — replaces the broken Test 2 + Test 3.
+        perm_pass = abs(cohen_d) > perm_p95
+        # SNR threshold relaxed from 2.5 (for the broken within-group test) to 1.1
+        # since perm_p95 already IS the 95% null floor. Anything meaningfully above
+        # it is real signal.
+        within_pass = snr > 1.1
+        vocab_pass = (vocab_match is None or
+                      vocab_match["pos_matches"] >= 3 or
+                      vocab_match["neg_matches"] >= 3)
+        all_pass = boot_pass and perm_pass and within_pass and vocab_pass
+        any_pass = boot_pass or perm_pass
+        verdict = ("robust_feature" if all_pass else
+                   "partial" if any_pass else "falsified")
+
+        results_per_layer[L] = {
+            "layer": L,
+            "cohen_d": cohen_d,
+            "magnitude": mag,
+            "direction_hidden": direction.tolist(),
+            "test_1_bootstrap": {"boot_cosine_p5": boot_p5, "pass": boot_pass},
+            "test_2_permutation": {
+                "perm_p95": perm_p95,
+                "perm_p99": perm_p99,
+                "orig_abs_d": abs(cohen_d),
+                "pass": perm_pass,
+            },
+            "test_3_signal_to_noise": {
+                "signal_noise_ratio": snr,  # d / perm_p95
+                "pass": within_pass,
+            },
+            "test_4_vocab": {"match": vocab_match, "pass": vocab_pass,
+                             "vocab_source": vocab_source},
+            "top_pos": top_pos, "top_neg": top_neg,
+            "verdict": verdict,
+        }
+
+    return {
+        "layers": list(layers),
+        "n_pos": len(pos_prompts),
+        "n_neg": len(neg_prompts),
+        "position": position,
+        "capture_sec": capture_sec,
+        "model_id": model_id,
+        "results": results_per_layer,
+    }
+
+
+def _causal_truth_test(
+    direction: list,  # hidden-space unit vector
+    layer: int,
+    statements: list,  # [{"statement": str, "label": 0 or 1}, ...]
+    model_id: str,
+    alphas: list | None = None,
+    eval_template: str = 'True or false: "{}" Answer:',
+) -> dict:
+    """Behavioral causal test: does steering with `direction` flip the
+    model's truth judgment?
+
+    For each statement, build an evaluation prompt. Run forward with and
+    without steering. Extract logits for " True" and " False" tokens.
+    Compute truth-score = logit(True) − logit(False).
+
+    Predictions:
+      - If `direction` is a true truth direction (M&T's claim): +α should
+        raise truth-score for FALSE statements (bias toward asserting true)
+        and −α should lower it for TRUE statements.
+      - If `direction` is a flag-this-claim direction (Finding 02): α
+        should shift the truth-score similarly for both, or differently in
+        a way that doesn't track the statement's ground-truth label.
+
+    The test reports the mean shift in truth-score per (label, alpha)
+    cell. Clean answer to "is the direction causal-for-truth."
+    """
+    if not statements:
+        return {"error": "Need statements"}
+    if alphas is None:
+        alphas = [-3.0, -1.5, 0.0, +1.5, +3.0]
+    try:
+        backend = _get_steer_backend(model_id)
+    except Exception as e:
+        return {"error": f"Cannot load model {model_id}: {e}"}
+
+    d = np.asarray(direction, dtype=np.float32)
+    d /= np.linalg.norm(d) + 1e-8
+
+    # Resolve truth/falsity tokens. Try the most common variants.
+    tokenizer = backend.tokenizer
+    def _tok_id(s):
+        ids = tokenizer.encode(s)
+        # Skip BOS if present
+        if len(ids) >= 2 and ids[0] == getattr(tokenizer, "bos_token_id", -1):
+            return ids[1]
+        return ids[0] if ids else -1
+    # Try both leading-space and capitalization variants; pick best later
+    candidates = {
+        "True": [_tok_id(" True"), _tok_id("True")],
+        "False": [_tok_id(" False"), _tok_id("False")],
+        "true": [_tok_id(" true"), _tok_id("true")],
+        "false": [_tok_id(" false"), _tok_id("false")],
+    }
+
+    def _truth_score(logits: np.ndarray) -> tuple:
+        """Return (truth_score, p_true, p_false) using the best candidate pair."""
+        # Use log-softmax-ish comparison: just logit differences
+        best = None
+        for t_var, f_var in [(" True", " False"), ("True", "False"),
+                              (" true", " false"), ("true", "false")]:
+            t_id = _tok_id(t_var); f_id = _tok_id(f_var)
+            if t_id < 0 or f_id < 0 or t_id >= len(logits) or f_id >= len(logits):
+                continue
+            lt = float(logits[t_id]); lf = float(logits[f_id])
+            if best is None or abs(lt - lf) > abs(best[0]):
+                best = (lt - lf, lt, lf, t_var, f_var)
+        if best is None:
+            return None, None, None, None, None
+        return best  # (score, logit_true, logit_false, t_var, f_var)
+
+    # Run per (alpha, label) cell
+    results = []
+    for stmt in statements:
+        s_text = stmt["statement"]
+        label = int(stmt["label"])
+        prompt = eval_template.format(s_text)
+        row = {"statement": s_text, "label": label, "alphas": {}}
+        # For clean α=0 we can run without steering
+        for alpha in alphas:
+            # steer_dirs tuple is (direction, mean_gap). Runtime applies
+            # direction × mean_gap × alpha. We want linear α scaling, so
+            # mean_gap=1.0 and alpha varies.
+            steer_dirs = {layer: (d, 1.0)} if abs(alpha) > 1e-8 else None
+            try:
+                if steer_dirs:
+                    r = backend.forward(prompt, steer_dirs=steer_dirs, alpha=alpha)
+                else:
+                    r = backend.forward(prompt)
+            except Exception as e:
+                row["alphas"][alpha] = {"error": str(e)}
+                continue
+            logits = r.logits
+            score, lt, lf, tv, fv = _truth_score(logits)
+            # Top-1 token under this steering
+            top_id = int(np.argmax(logits))
+            top_tok = tokenizer.decode([top_id])
+            row["alphas"][alpha] = {
+                "truth_score": score,
+                "logit_true": lt, "logit_false": lf,
+                "top_token": top_tok,
+                "t_var": tv, "f_var": fv,
+            }
+        results.append(row)
+
+    # Aggregate per (label, alpha)
+    from collections import defaultdict
+    agg = defaultdict(list)
+    for row in results:
+        for alpha, cell in row["alphas"].items():
+            if "truth_score" in cell and cell["truth_score"] is not None:
+                agg[(row["label"], alpha)].append(cell["truth_score"])
+    summary = {}
+    for (label, alpha), scores in agg.items():
+        arr = np.array(scores, dtype=np.float32)
+        summary[f"label={label},alpha={alpha}"] = {
+            "n": len(scores),
+            "mean_truth_score": float(arr.mean()),
+            "std": float(arr.std()),
+            "frac_positive": float((arr > 0).mean()),
+        }
+
+    # Compute the effect per label: truth_score at +α vs -α
+    effects = {}
+    for label in (0, 1):
+        sorted_alphas = sorted(alphas)
+        if len(sorted_alphas) >= 2:
+            low = sorted_alphas[0]
+            high = sorted_alphas[-1]
+            low_scores = [c["truth_score"]
+                          for r in results if r["label"] == label
+                          for a, c in r["alphas"].items()
+                          if a == low and "truth_score" in c and c["truth_score"] is not None]
+            high_scores = [c["truth_score"]
+                           for r in results if r["label"] == label
+                           for a, c in r["alphas"].items()
+                           if a == high and "truth_score" in c and c["truth_score"] is not None]
+            if low_scores and high_scores:
+                effects[f"label={label}"] = {
+                    "low_alpha": low, "mean_score_at_low": float(np.mean(low_scores)),
+                    "high_alpha": high, "mean_score_at_high": float(np.mean(high_scores)),
+                    "causal_shift": float(np.mean(high_scores) - np.mean(low_scores)),
+                }
+
+    return {
+        "layer": layer,
+        "alphas": alphas,
+        "n_statements": len(statements),
+        "per_statement": results,
+        "aggregate_by_label_alpha": summary,
+        "causal_effects": effects,
+        "model_id": model_id,
     }
 
 
@@ -1148,11 +1980,29 @@ def _live_forward(mri_path: str, prompt: str, model_id: str = "") -> dict:
 _steer_backend_cache = {}
 
 def _get_steer_backend(model_id: str):
-    """Get or create a model backend for steering tests."""
-    if model_id not in _steer_backend_cache:
+    """Get or create a model backend for steering tests.
+
+    Dispatch order:
+      - path ending in .checkpoint.pt → decepticon backend (causal bank)
+      - existing local directory → HF backend (local snapshot)
+      - anything else → MLX backend (HF hub ID or local HF dir)
+
+    Raises on load failure — caller wraps in try/except.
+    """
+    if model_id in _steer_backend_cache:
+        return _steer_backend_cache[model_id]
+    path = Path(model_id)
+    if model_id.endswith(".checkpoint.pt") and path.exists():
+        from .backend.decepticon import DecepticonBackend
+        backend = DecepticonBackend(str(path))
+    elif path.is_dir() and (path / "config.json").exists():
+        from .backend.hf import HFBackend
+        backend = HFBackend(str(path))
+    else:
         from .backend.mlx import MLXBackend
-        _steer_backend_cache[model_id] = MLXBackend(model_id)
-    return _steer_backend_cache[model_id]
+        backend = MLXBackend(model_id)
+    _steer_backend_cache[model_id] = backend
+    return backend
 
 
 def _direction_steer_test(mri_path: str, a: int, b: int, layer: int,
@@ -1739,6 +2589,18 @@ def _list_commands() -> list[dict]:
 
 
 
+# Direction-analysis functions extracted to sibling module. Import at bottom
+# so their late-bound `_c.*` lookups see a fully-loaded companion module.
+from .companion_directions import (  # noqa: E402
+    _direction_depth,
+    _direction_circuit,
+    _direction_weight_alignment,
+    _direction_cross_model,
+    _direction_brief,
+    _direction_bootstrap,
+    _find_token_by_text,
+    _pca_reconstruction,
+)
 
 
 class CompanionHandler(SimpleHTTPRequestHandler):
@@ -1762,6 +2624,33 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 self._send_json(cmd)
             else:
                 self._send_json({"cmd": "none"})
+            return
+
+        # Chat outbox long-poll: browser waits for MCP replies
+        if path == '/api/chat-poll':
+            timeout = float(qs.get('timeout', ['25'])[0])
+            _chat_event.wait(timeout=timeout)
+            with _chat_lock:
+                if _chat_outbox:
+                    reply = _chat_outbox.pop(0)
+                    if not _chat_outbox:
+                        _chat_event.clear()
+                    self._send_json(reply)
+                else:
+                    _chat_event.clear()
+                    self._send_json({"reply": None})
+            return
+
+        # Chat inbox drain: MCP client pulls pending user messages.
+        # Add ?timeout=N to long-poll; wakes on first message instead of polling.
+        if path == '/api/chat-drain':
+            timeout = float(qs.get('timeout', ['0'])[0])
+            if timeout > 0:
+                with _chat_lock:
+                    have_now = bool(_chat_inbox)
+                if not have_now:
+                    _chat_inbox_event.wait(timeout=min(timeout, 60.0))
+            self._send_json({"messages": chat_drain()})
             return
 
         if path == '/' or path == '/index.html':
@@ -2094,6 +2983,70 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 self._send_json(result)
             else:
                 self._send_json({"error": "Usage: /api/direction-depth/<model>/<mode>?a=N&b=N"})
+        elif path.startswith('/api/token-resolve/'):
+            # /api/token-resolve/<model>/<mode>?text=...
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                text = qs.get('text', [''])[0]
+                mri_path = self._mri_path(model, mode)
+                idx = _find_token_by_text(mri_path, text)
+                self._send_json({"text": text, "idx": idx})
+            else:
+                self._send_json({"error": "Usage: /api/token-resolve/<model>/<mode>?text=..."})
+        elif path.startswith('/api/direction-bootstrap/'):
+            # /api/direction-bootstrap/<model>/<mode>?a=N&b=N&layer=L&n_boot=100
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                a = int(qs.get('a', ['0'])[0])
+                b = int(qs.get('b', ['0'])[0])
+                layer = int(qs.get('layer', ['0'])[0])
+                n_boot = int(qs.get('n_boot', ['100'])[0])
+                n_random = int(qs.get('n_random', ['100'])[0])
+                neighborhood = int(qs.get('neighborhood', ['20'])[0])
+                mri_path = self._mri_path(model, mode)
+                self._send_json(_direction_bootstrap(
+                    mri_path, a, b, layer,
+                    n_boot=n_boot, n_random=n_random, neighborhood=neighborhood))
+            else:
+                self._send_json({"error": "Usage: /api/direction-bootstrap/<model>/<mode>?a=N&b=N&layer=L"})
+        elif path.startswith('/api/direction-brief/'):
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                a = int(qs.get('a', ['0'])[0])
+                b = int(qs.get('b', ['0'])[0])
+                layer = int(qs.get('layer', ['0'])[0])
+                mri_path = self._mri_path(model, mode)
+                self._send_json(_direction_brief(mri_path, a, b, layer))
+            else:
+                self._send_json({"error": "Usage: /api/direction-brief/<model>/<mode>?a=N&b=N&layer=L"})
+        elif path.startswith('/api/pca-reconstruction/'):
+            # PCA faithfulness at a layer. /<model>/<mode>?layer=L&top_k=50
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                layer = int(qs.get('layer', ['0'])[0])
+                top_k = int(qs.get('top_k', ['50'])[0])
+                mri_path = self._mri_path(model, mode)
+                self._send_json(_pca_reconstruction(mri_path, layer, top_k=top_k))
+            else:
+                self._send_json({"error": "Usage: /api/pca-reconstruction/<model>/<mode>?layer=L"})
+        elif path == '/api/direction-cross':
+            # Cross-model direction comparison. Query params:
+            #   model_a, mode_a, a_a, b_a, model_b, mode_b, a_b, b_b
+            try:
+                mri_a = self._mri_path(qs['model_a'][0], qs['mode_a'][0])
+                mri_b = self._mri_path(qs['model_b'][0], qs['mode_b'][0])
+                result = _direction_cross_model(
+                    mri_a, mri_b,
+                    int(qs['a_a'][0]), int(qs['b_a'][0]),
+                    int(qs['a_b'][0]), int(qs['b_b'][0]),
+                )
+                self._send_json(result)
+            except (KeyError, ValueError) as e:
+                self._send_json({"error": f"Usage: /api/direction-cross?model_a=...&mode_a=...&a_a=N&b_a=N&model_b=...&mode_b=...&a_b=N&b_b=N. {e}"})
         elif path.startswith('/api/direction-circuit/'):
             parts = path.split('/')
             if len(parts) >= 5:
@@ -2155,6 +3108,25 @@ class CompanionHandler(SimpleHTTPRequestHandler):
         path = parsed.path
         length = int(self.headers.get('Content-Length', 0))
         body = self.rfile.read(length) if length else b'{}'
+
+        # Binary endpoints — body is blob bytes, not JSON. Handle before json.loads
+        # so PNG/GIF uploads don't get rejected.
+        if path == '/api/capture-upload':
+            _CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
+            qs = parse_qs(parsed.query)
+            rid = qs.get("request_id", [""])[0]
+            filename = qs.get("filename", [f"capture_{rid}.png"])[0]
+            filepath = _CAPTURE_DIR / filename
+            filepath.write_bytes(body)
+            with _capture_lock:
+                _capture_results[rid] = {"data_path": str(filepath),
+                                         "filename": filename}
+                ev = _capture_pending.get(rid)
+                if ev:
+                    ev.set()
+            self._send_json({"path": str(filepath), "size": len(body)})
+            return
+
         try:
             args = json.loads(body)
         except json.JSONDecodeError:
@@ -2166,6 +3138,41 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             cmd.update(args)
             _poll_push(cmd)
             self._send_json({"ok": True})
+
+        elif path == '/api/chat-reply':
+            # External MCP client posts a reply; browser picks it up via /api/chat-poll.
+            text = args.get("reply", "")
+            rid = args.get("request_id", "")
+            if not text:
+                self._send_json({"error": "empty reply"})
+                return
+            chat_reply(text, request_id=rid)
+            self._send_json({"ok": True})
+
+        elif path == '/api/chat':
+            # Browser posts a chat message. Queues for MCP client drain via chat_drain().
+            msg = args.get("message", "").strip()
+            if not msg:
+                self._send_json({"error": "empty message"})
+                return
+            import uuid
+            rid = uuid.uuid4().hex[:8]
+            with _chat_lock:
+                _chat_inbox.append({
+                    "request_id": rid,
+                    "message": msg,
+                    "pinnedA": args.get("pinnedA"),
+                    "pinnedB": args.get("pinnedB"),
+                    "layer": args.get("layer"),
+                    "model": args.get("model"),
+                    "mode": args.get("mode"),
+                    "ts": time.time(),
+                })
+                while len(_chat_inbox) > _CHAT_MAX:
+                    _chat_inbox.pop(0)
+            _chat_inbox_event.set()
+            self._send_json({"ok": True, "request_id": rid,
+                             "pending": "queued for MCP client"})
 
         elif path == '/api/capture':
             import uuid
@@ -2221,22 +3228,6 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             self._send_json({"path": str(filepath), "size": len(img_data),
                              "filename": filename})
 
-        elif path == '/api/capture-upload':
-            # Direct binary upload from browser
-            _CAPTURE_DIR.mkdir(parents=True, exist_ok=True)
-            qs = parse_qs(parsed.query)
-            rid = qs.get("request_id", [""])[0]
-            filename = qs.get("filename", [f"capture_{rid}.png"])[0]
-            filepath = _CAPTURE_DIR / filename
-            filepath.write_bytes(body)
-            with _capture_lock:
-                _capture_results[rid] = {"data_path": str(filepath),
-                                         "filename": filename}
-                ev = _capture_pending.get(rid)
-                if ev:
-                    ev.set()
-            self._send_json({"path": str(filepath), "size": len(body)})
-
         elif path == '/api/capture-result':
             # JSON capture result from browser (base64 data or error)
             rid = args.get("request_id", "")
@@ -2246,6 +3237,103 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 if ev:
                     ev.set()
             self._send_json({"ok": True})
+
+        elif path == '/api/residual-trajectory':
+            # POST body: {model, mode, prompt, layer, n_generated, model_id}
+            model = args.get("model", "")
+            mode = args.get("mode", "raw")
+            prompt = args.get("prompt", "")
+            layer = int(args.get("layer", 0))
+            n_generated = int(args.get("n_generated", 10))
+            model_id = args.get("model_id", "")
+            if not prompt:
+                self._send_json({"error": "prompt required"})
+                return
+            if not model:
+                self._send_json({"error": "model required"})
+                return
+            mri_path = self._mri_path(model, mode)
+            self._send_json(_residual_trajectory(
+                mri_path, prompt, layer, n_generated=n_generated, model_id=model_id))
+        elif path == '/api/causal-truth-test':
+            # POST: {direction:[...], layer, statements:[{statement, label}], model_id, alphas}
+            direction = args.get("direction") or []
+            layer = int(args.get("layer", 20))
+            stmts = args.get("statements") or []
+            model_id = args.get("model_id", "")
+            alphas = args.get("alphas")
+            if not direction or not stmts or not model_id:
+                self._send_json({"error": "direction, statements, model_id required"})
+                return
+            self._send_json(_causal_truth_test(
+                direction, layer, stmts, model_id,
+                alphas=alphas,
+            ))
+        elif path == '/api/replicate-probe-multilayer':
+            # POST: {model, mode, layers:[...], pos_prompts, neg_prompts,
+            #        expected_tokens_pos, expected_tokens_neg, model_id, n_random_null, position}
+            model = args.get("model", "")
+            mode = args.get("mode", "raw")
+            layers = [int(x) for x in (args.get("layers") or [])]
+            pos = args.get("pos_prompts") or []
+            neg = args.get("neg_prompts") or []
+            model_id = args.get("model_id", "")
+            exp_pos = args.get("expected_tokens_pos")
+            exp_neg = args.get("expected_tokens_neg")
+            n_null = int(args.get("n_random_null", 100))
+            position = int(args.get("position", 0))
+            if not model:
+                self._send_json({"error": "model required"})
+                return
+            mri_path = self._mri_path(model, mode)
+            self._send_json(_replicate_probe_multilayer(
+                mri_path, pos, neg, layers,
+                model_id=model_id,
+                expected_tokens_pos=exp_pos,
+                expected_tokens_neg=exp_neg,
+                n_random_null=n_null,
+                position=position,
+            ))
+        elif path == '/api/replicate-probe':
+            # POST body: {model, mode, layer, pos_prompts, neg_prompts, model_id,
+            #             expected_tokens_pos, expected_tokens_neg, n_random_null, position}
+            model = args.get("model", "")
+            mode = args.get("mode", "raw")
+            layer = int(args.get("layer", 0))
+            pos = args.get("pos_prompts") or []
+            neg = args.get("neg_prompts") or []
+            model_id = args.get("model_id", "")
+            exp_pos = args.get("expected_tokens_pos")
+            exp_neg = args.get("expected_tokens_neg")
+            n_null = int(args.get("n_random_null", 100))
+            position = int(args.get("position", 0))
+            if not model:
+                self._send_json({"error": "model required"})
+                return
+            mri_path = self._mri_path(model, mode)
+            self._send_json(_replicate_probe(
+                mri_path, pos, neg, layer,
+                model_id=model_id,
+                expected_tokens_pos=exp_pos,
+                expected_tokens_neg=exp_neg,
+                n_random_null=n_null,
+                position=position,
+            ))
+        elif path == '/api/behavioral-direction':
+            # POST body: {model, mode, layer, pos_prompts:[...], neg_prompts:[...], model_id:"..."}
+            model = args.get("model", "")
+            mode = args.get("mode", "raw")
+            layer = int(args.get("layer", 0))
+            pos = args.get("pos_prompts") or []
+            neg = args.get("neg_prompts") or []
+            model_id = args.get("model_id", "")
+            if not model:
+                self._send_json({"error": "model required"})
+                return
+            mri_path = self._mri_path(model, mode)
+            result = _behavioral_direction(
+                mri_path, pos, neg, layer, model_id=model_id)
+            self._send_json(result)
 
         elif path == '/api/live-forward':
             prompt = args.get("prompt", "")

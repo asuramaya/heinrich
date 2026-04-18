@@ -182,6 +182,23 @@ def build_parser() -> argparse.ArgumentParser:
     p_shrt.add_argument("--output", "-o", default=None, help="Output .shrt.npz file path")
     p_shrt.add_argument("--db", default=None, help="Database path for prompts/directions")
 
+    # Direction audit: 5-test pipeline on a mean-diff direction
+    p_audit = sub.add_parser("audit-direction", help="Run 5-test falsification on a mean-diff direction")
+    p_audit.add_argument("--model", required=True, help="Model ID (MLX)")
+    p_audit.add_argument("--datasets", nargs="+", required=True,
+                         help="CSV paths; first is train-on, rest are transfer targets. Columns: statement,label")
+    p_audit.add_argument("--layer", type=int, required=True, help="Layer to capture residual at")
+    p_audit.add_argument("--n-per-class", type=int, default=80)
+    p_audit.add_argument("--train-frac", type=float, default=0.8)
+    p_audit.add_argument("--seed", type=int, default=42)
+    p_audit.add_argument("--n-bootstrap", type=int, default=50)
+    p_audit.add_argument("--n-permutation", type=int, default=200)
+    p_audit.add_argument("--truth-tokens", default=None,
+                         help="Comma-separated expected-truth single-tokens (for vocab projection test)")
+    p_audit.add_argument("--false-tokens", default=None,
+                         help="Comma-separated expected-false single-tokens")
+    p_audit.add_argument("--output", "-o", default=None, help="Output JSON path")
+
     # Output profile (.sht)
     p_sht = sub.add_parser("sht-profile", help="Generate a .sht output profile for a model")
     p_sht.add_argument("--model", required=True, help="Model ID")
@@ -689,6 +706,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_frt(args)
     elif args.command == "shart-profile":
         _cmd_shrt(args)
+    elif args.command == "audit-direction":
+        _cmd_audit_direction(args)
     elif args.command == "sht-profile":
         _cmd_sht(args)
     elif args.command == "profile-chain":
@@ -1195,6 +1214,42 @@ def _cmd_frt(args: argparse.Namespace) -> None:
         for w in meta["warnings"]:
             print(f"    ! {w}")
     print(f"\n  Saved to {output}")
+
+
+def _cmd_audit_direction(args: argparse.Namespace) -> None:
+    """Run the 5-test falsification pipeline on a mean-diff direction."""
+    from .profile.audit import audit_direction
+
+    truth_tokens = args.truth_tokens.split(",") if args.truth_tokens else None
+    false_tokens = args.false_tokens.split(",") if args.false_tokens else None
+    result = audit_direction(
+        model_id=args.model,
+        datasets=list(args.datasets),
+        layer=args.layer,
+        n_per_class=args.n_per_class,
+        train_frac=args.train_frac,
+        seed=args.seed,
+        n_bootstrap=args.n_bootstrap,
+        n_permutation=args.n_permutation,
+        truth_tokens=truth_tokens,
+        false_tokens=false_tokens,
+        output_path=args.output,
+    )
+    # Terminal summary
+    print(f"\n=== audit-direction: {args.model} L{args.layer} ===")
+    print(f"train on: {result['train_dataset']}")
+    print(f"in_domain_test_acc: {result['in_domain_test_acc']:.2%}")
+    print(f"cohens_d: {result['cohens_d']:+.2f}  boot_p5: {result['boot_p5']:.2f}  perm_p95: {result['perm_p95']:.2f}  SNR: {result['snr']:.2f}")
+    if result["transfer"]:
+        print("transfer:")
+        for k, v in result["transfer"].items():
+            print(f"  {k}: {v:.2%}")
+    v = result["vocab"]
+    print(f"vocab_pass: {v['vocab_pass']} (pos_truth={v['pos_truth']} pos_false={v['pos_false']} neg_truth={v['neg_truth']} neg_false={v['neg_false']})")
+    print(f"  pos_top: {v['pos_top'][:5]}")
+    print(f"  neg_top: {v['neg_top'][:5]}")
+    print(f"tests_passed: {result['tests_passed']}")
+    print(f"VERDICT: {result['verdict']}")
 
 
 def _cmd_shrt(args: argparse.Namespace) -> None:

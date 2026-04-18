@@ -50,6 +50,71 @@ def _setup_forward(model, tokenizer, prompt, *, token_ids=None, max_tokens: int 
     return inner, input_ids, mask, tokens, mx
 
 
+def _capture_per_head_attention(ly, h, mask, mx, ablate_head_idx=None, capture=True):
+    """Inline the TransformerBlock forward for a capture layer.
+
+    Replaces `ly(h, mask=mask, cache=None)` with a manual forward that
+    intercepts scaled_dot_product_attention output and optionally splits
+    it per head to compute each head's contribution to the residual stream,
+    and/or zeros specified heads before o_proj.
+
+    ablate_head_idx: iterable of head indices to zero (set sdpa output to 0
+        for those heads before o_proj). If None, no ablation.
+    capture: if True, returns per_head_residuals as [n_heads, hidden]. If
+        False, returns None for per-head (for ablation-only use).
+
+    Returns (h_next, per_head_residuals or None).
+    """
+    a = ly.self_attn
+    x_normed = ly.input_layernorm(h)
+    B, L, D = x_normed.shape
+    q = a.q_proj(x_normed).reshape(B, L, a.n_heads, -1).transpose(0, 2, 1, 3)
+    k = a.k_proj(x_normed).reshape(B, L, a.n_kv_heads, -1).transpose(0, 2, 1, 3)
+    v = a.v_proj(x_normed).reshape(B, L, a.n_kv_heads, -1).transpose(0, 2, 1, 3)
+    q = a.rope(q)
+    k = a.rope(k)
+    sdpa = mx.fast.scaled_dot_product_attention(q, k, v, scale=a.scale, mask=mask)
+    # sdpa: [B, n_heads, L, head_dim] → transpose to [B, L, n_heads, head_dim]
+    sdpa = sdpa.transpose(0, 2, 1, 3)
+    head_dim = sdpa.shape[-1]
+    per_head_np = None
+    if capture:
+        # Per-head contribution at last position: for each head, apply o_proj
+        # to a one-hot-in-head-slot version of the sdpa output. Works with
+        # quantized weights too (unlike direct weight slicing).
+        last_flat = sdpa.reshape(B, L, -1)[0, -1, :]  # [hidden]
+        per_head_np = np.empty((a.n_heads, D), dtype=np.float32)
+        for hd in range(a.n_heads):
+            one_head = mx.zeros((1, 1, D), dtype=last_flat.dtype)
+            s, e = hd * head_dim, (hd + 1) * head_dim
+            # Build [1, 1, hidden] vector with only this head's slice populated
+            slice_vals = last_flat[s:e].reshape(1, 1, head_dim)
+            # Assignment via indexing not supported on MLX arrays; use concat
+            parts = []
+            if s > 0:
+                parts.append(mx.zeros((1, 1, s), dtype=last_flat.dtype))
+            parts.append(slice_vals)
+            if e < D:
+                parts.append(mx.zeros((1, 1, D - e), dtype=last_flat.dtype))
+            one_head = mx.concatenate(parts, axis=-1)
+            contrib = a.o_proj(one_head)[0, 0, :]  # [hidden]
+            per_head_np[hd] = np.array(contrib.astype(mx.float32))
+    # Ablate: zero specified heads' sdpa output before o_proj
+    if ablate_head_idx:
+        # Build a mask: [n_heads] where 0 = ablated, 1 = kept
+        keep = np.ones(a.n_heads, dtype=np.float32)
+        for hd in ablate_head_idx:
+            keep[hd] = 0.0
+        keep_mx = mx.array(keep).reshape(1, 1, a.n_heads, 1)
+        sdpa = sdpa * keep_mx
+    # Complete the layer path exactly as TransformerBlock.__call__
+    attn_flat = sdpa.reshape(B, L, -1)
+    attn_out = a.o_proj(attn_flat)
+    h_mid = h + attn_out
+    mlp_out = ly.mlp(ly.post_attention_layernorm(h_mid))
+    return h_mid + mlp_out, per_head_np
+
+
 def forward_pass(
     model: Any,
     tokenizer: Any,
@@ -62,6 +127,8 @@ def forward_pass(
     ablate_mode: str = "zero",
     return_residual: bool = False,
     residual_layer: int = -1,
+    capture_heads: set[int] | None = None,
+    ablate_heads: dict[int, set[int]] | None = None,
 ) -> dict[str, Any]:
     """Unified forward pass with optional steering and ablation.
 
@@ -75,21 +142,39 @@ def forward_pass(
         "zero_mlp"  — zero the MLP component only, keep attention
     return_residual: if True, also return residual stream at last position
     residual_layer: which layer's residual to capture (-1 = after all layers)
+    capture_heads: set of layer indices to capture per-head residual contributions
+        at. For each captured layer, per-head output is the sdpa output for that
+        head multiplied by the head's slice of o_proj. Result in 'head_residuals'
+        as dict {layer_idx: ndarray of shape [n_heads, hidden]}. Last-position only.
+    ablate_heads: {layer_idx: set of head indices} — zero those heads' sdpa output
+        before o_proj. Causal test for per-head contributions.
 
     Returns dict with 'probs', 'logits', 'top_token', 'top_id', 'entropy',
-    and optionally 'residual'.
+    and optionally 'residual', 'residuals', 'head_residuals'.
     """
     inner, input_ids, mask, tokens, mx = _setup_forward(
         model, tokenizer, prompt, token_ids=token_ids)
 
     residual = None
     residuals_multi = {}  # for multi-layer capture
+    head_residuals = {}
+    capture_heads_set = set(capture_heads) if capture_heads else set()
+    ablate_heads_map = dict(ablate_heads) if ablate_heads else {}
     residual_layers_set = set()
     if return_residual and isinstance(residual_layer, (list, set)):
         residual_layers_set = set(residual_layer)
     h = inner.embed_tokens(input_ids)
     for i, ly in enumerate(inner.layers):
-        if ablate_layers and i in ablate_layers:
+        needs_inline = (i in capture_heads_set) or (i in ablate_heads_map)
+        if needs_inline and not (ablate_layers and i in ablate_layers):
+            h, per_head_np = _capture_per_head_attention(
+                ly, h, mask, mx,
+                ablate_head_idx=ablate_heads_map.get(i),
+                capture=(i in capture_heads_set),
+            )
+            if per_head_np is not None:
+                head_residuals[i] = per_head_np
+        elif ablate_layers and i in ablate_layers:
             if ablate_mode == "zero":
                 h_before = h
                 h = ly(h, mask=mask, cache=None)
@@ -160,6 +245,8 @@ def forward_pass(
         result["residual"] = residual
     if residuals_multi:
         result["residuals"] = residuals_multi
+    if head_residuals:
+        result["head_residuals"] = head_residuals
     return result
 
 
