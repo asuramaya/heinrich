@@ -4701,6 +4701,169 @@ def causal_bank_reproduce(backend, *, seq_len: int = 256, seed: int = 42) -> dic
     }
 
 
+# ---------------------------------------------------------------------------
+# Session-12 forensics: effective-context knee (T1) and ablations (T2).
+# Helpers live here next to the other causal-bank analysis tools.
+# ---------------------------------------------------------------------------
+
+
+def _bucket_positions(seqlen: int, bounds: list[int]) -> list[dict]:
+    """Partition position indices [1..seqlen-1] into buckets defined by
+    ``bounds`` (left-inclusive, right-exclusive). Last bucket right-bound
+    is clamped to seqlen. Position 0 is excluded because it has no prefix.
+
+    Returns list of dicts ``{min, max, indices}`` in order.
+    """
+    bounds = sorted(set(int(b) for b in bounds))
+    kept = [b for b in bounds if b < seqlen]
+    if not kept:
+        raise ValueError(f"no bucket bounds fit inside seqlen={seqlen}: {bounds}")
+    kept.append(seqlen)
+    out = []
+    for lo, hi in zip(kept[:-1], kept[1:]):
+        indices = list(range(lo, hi))
+        out.append({"min": lo, "max": hi, "indices": indices})
+    return out
+
+
+def _find_knee_bucket(bucket_bpbs: list[float], threshold: float) -> int | None:
+    """Return the index of the first bucket where bpb[i] - bpb[i+1] < threshold.
+
+    Returns None if no such index exists (curve is strictly decreasing at every
+    step by at least ``threshold`` — no saturation observed yet).
+    """
+    for i in range(len(bucket_bpbs) - 1):
+        if bucket_bpbs[i] - bucket_bpbs[i + 1] < threshold:
+            return i
+    return None
+
+
+def _logsumexp(x: np.ndarray, *, axis: int, keepdims: bool = False) -> np.ndarray:
+    """Numerically-stable log-sum-exp for cross-entropy computation."""
+    m = np.max(x, axis=axis, keepdims=True)
+    y = m + np.log(np.sum(np.exp(x - m), axis=axis, keepdims=True))
+    if not keepdims:
+        y = np.squeeze(y, axis=axis)
+    return y
+
+
+def _load_effective_context_backend(model_path: str,
+                                     result_json: str | None,
+                                     tokenizer_path: str | None):
+    """Load a causal-bank backend for T1/T2; injected for tests."""
+    from ..backend.protocol import load_backend
+    kwargs = {}
+    if result_json:
+        kwargs["result_json"] = result_json
+    if tokenizer_path:
+        kwargs["tokenizer_path"] = tokenizer_path
+    backend = load_backend(model_path, backend="decepticon", **kwargs)
+    if backend.config.model_type != "causal_bank":
+        raise ValueError(
+            f"profile-cb-effective-context requires a causal-bank model; "
+            f"got model_type={backend.config.model_type!r}")
+    return backend
+
+
+def _load_effective_context_val(val: str | None,
+                                 seqlen: int,
+                                 n_trials: int,
+                                 vocab_size: int) -> np.ndarray:
+    """Load val data as [n_trials, seqlen] int64. If val is None, sample
+    random tokens from [0, vocab_size) for a null-content baseline (useful
+    for shape/instrumentation checks but not for real measurements)."""
+    if val is None:
+        rng = np.random.default_rng(42)
+        return rng.integers(0, vocab_size, size=(n_trials, seqlen),
+                             dtype=np.int64)
+    from ..backend.decepticon import load_val_sequences
+    byte_level = vocab_size == 256
+    return load_val_sequences(val, seq_len=seqlen, n_seqs=n_trials,
+                              byte_level=byte_level)
+
+
+def _cb_effective_context(model_path: str,
+                          *,
+                          val: str | None,
+                          seqlen: int,
+                          n_trials: int,
+                          buckets: list[int],
+                          knee_threshold: float,
+                          result_json: str | None = None,
+                          tokenizer_path: str | None = None) -> dict:
+    """Context-knee test: per-position bpb on random-prefix sequences.
+
+    For each of n_trials sequences of length seqlen, compute next-token
+    cross-entropy at every position. Partition positions into buckets,
+    compute mean bpb per bucket, identify the first adjacent-bucket delta
+    below knee_threshold as the context-saturation point.
+
+    The load-bearing session-12 diagnostic. Current finding: all
+    substrate-primary causal-bank models plateau at a 16-byte effective
+    context regardless of half_life_max or linear_modes.
+    """
+    backend = _load_effective_context_backend(
+        model_path, result_json, tokenizer_path)
+    vocab_size = int(backend.config.vocab_size)
+    seqs = _load_effective_context_val(val, seqlen, n_trials, vocab_size)
+
+    bucket_defs = _bucket_positions(seqlen=seqs.shape[1], bounds=buckets)
+
+    # Per-position cross-entropy accumulator across trials.
+    per_pos_sum = np.zeros(seqs.shape[1], dtype=np.float64)
+    per_pos_n = np.zeros(seqs.shape[1], dtype=np.int64)
+
+    for i in range(seqs.shape[0]):
+        seq_i = seqs[i:i + 1]  # [1, seqlen]
+        logits = backend.forward(seq_i)  # [1, seqlen, vocab]
+        logits_2d = np.asarray(logits[0], dtype=np.float32)  # [seqlen, vocab]
+        log_probs = logits_2d - _logsumexp(logits_2d, axis=-1, keepdims=True)
+        targets = np.asarray(seqs[i], dtype=np.int64)
+        for pos in range(seqs.shape[1] - 1):
+            nll = -float(log_probs[pos, targets[pos + 1]])
+            per_pos_sum[pos] += nll
+            per_pos_n[pos] += 1
+
+    with np.errstate(divide="ignore", invalid="ignore"):
+        per_pos_ce = np.where(per_pos_n > 0, per_pos_sum / per_pos_n, np.nan)
+    per_pos_bpb = per_pos_ce / np.log(2.0)
+
+    bucket_reports = []
+    for b in bucket_defs:
+        ce_vals = per_pos_bpb[b["indices"]]
+        ce_vals = ce_vals[~np.isnan(ce_vals)]
+        if len(ce_vals) == 0:
+            bucket_reports.append({
+                "min": b["min"], "max": b["max"],
+                "n": 0, "bpb_mean": float("nan"), "bpb_sem": float("nan"),
+            })
+            continue
+        mean = float(np.mean(ce_vals))
+        sem = float(np.std(ce_vals, ddof=1) / np.sqrt(len(ce_vals))) \
+               if len(ce_vals) > 1 else 0.0
+        bucket_reports.append({
+            "min": b["min"], "max": b["max"],
+            "n": int(len(ce_vals)),
+            "bpb_mean": round(mean, 4),
+            "bpb_sem": round(sem, 4),
+        })
+
+    bucket_bpbs = [b["bpb_mean"] for b in bucket_reports]
+    knee_idx = _find_knee_bucket(bucket_bpbs, threshold=knee_threshold)
+
+    return {
+        "model": model_path,
+        "val_data": val,
+        "n_trials": int(n_trials),
+        "seqlen": int(seqlen),
+        "knee_threshold": float(knee_threshold),
+        "buckets": bucket_reports,
+        "knee_bucket_min": bucket_reports[knee_idx]["min"] if knee_idx is not None else None,
+        "knee_bucket_max": bucket_reports[knee_idx]["max"] if knee_idx is not None else None,
+        "saturation_bpb": bucket_reports[-1]["bpb_mean"],
+    }
+
+
 def tokenizer_compare(tokenizer_paths: list[str], *,
                       sample_text: str | None = None) -> dict:
     """Compare multiple sentencepiece tokenizers.
