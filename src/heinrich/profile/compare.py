@@ -4864,6 +4864,178 @@ def _cb_effective_context(model_path: str,
     }
 
 
+# ---------------------------------------------------------------------------
+# T2: profile-cb-ablations — measure per-path bpb contribution by
+# zeroing substrate, local, or a rank-truncated substrate slice.
+# ---------------------------------------------------------------------------
+
+
+def _parse_ablation_spec(spec: str) -> tuple[str, int | None]:
+    """Parse ``--ablate`` spec into (mode, arg)."""
+    if spec in ("substrate", "local"):
+        return spec, None
+    if spec.startswith("truncate:"):
+        k_str = spec[len("truncate:"):]
+        if not k_str:
+            raise ValueError("truncate requires a rank: truncate:K")
+        try:
+            return "truncate", int(k_str)
+        except ValueError as e:
+            raise ValueError(f"truncate requires integer K; got {k_str!r}") from e
+    if spec == "truncate":
+        raise ValueError("truncate requires a rank: truncate:K")
+    raise ValueError(f"unknown ablation: {spec!r}; expected "
+                      f"substrate|local|truncate:K")
+
+
+def _compute_bpb_over_sequences(backend, seqs: np.ndarray) -> float:
+    """Mean bpb over all next-token predictions in seqs.
+
+    seqs: [n_seqs, seqlen] int64. Returns a single scalar bpb.
+    """
+    total_nll = 0.0
+    total_n = 0
+    for i in range(seqs.shape[0]):
+        seq_i = seqs[i:i + 1]
+        logits = np.asarray(backend.forward(seq_i), dtype=np.float32)[0]
+        log_probs = logits - _logsumexp(logits, axis=-1, keepdims=True)
+        targets = seqs[i].astype(np.int64)
+        for t in range(seqs.shape[1] - 1):
+            total_nll -= float(log_probs[t, targets[t + 1]])
+            total_n += 1
+    if total_n == 0:
+        raise ValueError("no predictions collected")
+    ce_nats = total_nll / total_n
+    return ce_nats / float(np.log(2.0))
+
+
+from contextlib import contextmanager as _contextmanager
+
+
+@_contextmanager
+def _ablate_local(model):
+    """Replace model._local_logits with a zero-returning stub; restore on exit."""
+    if not hasattr(model, "_local_logits"):
+        raise AttributeError(
+            "model has no _local_logits; local ablation not supported on this model")
+    orig = model._local_logits
+
+    def _zero_local(*args, **kwargs):
+        out = orig(*args, **kwargs)
+        return np.zeros_like(np.asarray(out))
+
+    model._local_logits = _zero_local
+    try:
+        yield
+    finally:
+        model._local_logits = orig
+
+
+@_contextmanager
+def _ablate_substrate(model):
+    """Zero the substrate contribution to logits.
+
+    Wraps model._linear_logits and zeros the substrate slice of
+    _last_features before readout. Works for adaptive-substrate models
+    where _last_features = concat(substrate_modes, x_embed).
+    """
+    if not hasattr(model, "_linear_logits"):
+        raise AttributeError(
+            "model has no _linear_logits; substrate ablation not supported")
+    orig_ll = model._linear_logits
+    n_modes = getattr(model.config, "n_modes", None)
+
+    def _zeroed_substrate_ll(*args, **kwargs):
+        if n_modes is not None and hasattr(model, "_last_features") \
+                and model._last_features is not None:
+            f = model._last_features
+            f[..., :n_modes] = 0
+        return orig_ll(*args, **kwargs)
+
+    model._linear_logits = _zeroed_substrate_ll
+    try:
+        yield
+    finally:
+        model._linear_logits = orig_ll
+
+
+@_contextmanager
+def _ablate_truncate(model, k: int):
+    """Zero substrate modes at indices ≥ k before the readout."""
+    if not hasattr(model, "_linear_logits"):
+        raise AttributeError(
+            "model has no _linear_logits; truncate ablation unsupported")
+    n_modes = getattr(model.config, "n_modes", None)
+    if n_modes is None:
+        raise AttributeError("model.config has no n_modes; truncate unsupported")
+    if k < 0 or k > n_modes:
+        raise ValueError(f"truncate K={k} out of range [0, {n_modes}]")
+
+    orig_ll = model._linear_logits
+
+    def _truncated_ll(*args, **kwargs):
+        if hasattr(model, "_last_features") and model._last_features is not None:
+            f = model._last_features
+            f[..., k:n_modes] = 0
+        return orig_ll(*args, **kwargs)
+
+    model._linear_logits = _truncated_ll
+    try:
+        yield
+    finally:
+        model._linear_logits = orig_ll
+
+
+def _cb_ablations(model_path: str,
+                  *,
+                  ablate: str,
+                  val: str | None,
+                  n_tokens: int,
+                  result_json: str | None = None,
+                  tokenizer_path: str | None = None) -> dict:
+    """Measure per-path bpb contribution.
+
+    Modes:
+      substrate  — zero substrate contribution; local path only
+      local      — zero local contribution; substrate path only
+      truncate:K — keep only substrate modes [0..K)
+    """
+    mode, k = _parse_ablation_spec(ablate)
+    backend = _load_effective_context_backend(
+        model_path, result_json, tokenizer_path)
+    vocab_size = int(backend.config.vocab_size)
+    seqlen = 256
+    n_seqs = max(1, int(n_tokens) // max(seqlen - 1, 1) + 1)
+    seqs = _load_effective_context_val(val, seqlen, n_seqs, vocab_size)
+
+    baseline_bpb = _compute_bpb_over_sequences(backend, seqs)
+
+    model = backend.model
+    if mode == "local":
+        ctx = _ablate_local(model)
+    elif mode == "substrate":
+        ctx = _ablate_substrate(model)
+    elif mode == "truncate":
+        ctx = _ablate_truncate(model, k)
+    else:  # pragma: no cover — _parse_ablation_spec raises first
+        raise ValueError(f"unknown mode: {mode!r}")
+
+    with ctx:
+        ablated_bpb = _compute_bpb_over_sequences(backend, seqs)
+
+    delta = ablated_bpb - baseline_bpb
+    multiplier = (ablated_bpb / baseline_bpb) if baseline_bpb > 0 else float("inf")
+    return {
+        "model": model_path,
+        "ablation": ablate,
+        "n_tokens": int(max(seqlen - 1, 1) * n_seqs),
+        "baseline_bpb": round(baseline_bpb, 4),
+        "ablated_bpb": round(ablated_bpb, 4),
+        "delta_bpb": round(delta, 4),
+        "multiplier": round(multiplier, 3),
+    }
+
+
 def tokenizer_compare(tokenizer_paths: list[str], *,
                       sample_text: str | None = None) -> dict:
     """Compare multiple sentencepiece tokenizers.

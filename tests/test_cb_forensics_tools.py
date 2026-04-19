@@ -108,3 +108,109 @@ def test_cb_effective_context_decreasing_bpb_with_fake_backend(monkeypatch):
     assert "knee_bucket_min" in result
     assert "saturation_bpb" in result
     assert result["saturation_bpb"] == bpbs[-1]
+
+
+def test_parse_ablation_spec_handles_three_modes():
+    from heinrich.profile.compare import _parse_ablation_spec
+    assert _parse_ablation_spec("substrate") == ("substrate", None)
+    assert _parse_ablation_spec("local") == ("local", None)
+    assert _parse_ablation_spec("truncate:32") == ("truncate", 32)
+    with pytest.raises(ValueError, match="truncate requires"):
+        _parse_ablation_spec("truncate")
+    with pytest.raises(ValueError, match="unknown ablation"):
+        _parse_ablation_spec("silly")
+
+
+def test_compute_bpb_from_logits_matches_manual_cross_entropy():
+    """bpb = -log2(p(correct)) averaged over target positions.
+
+    For a 2-token vocab with uniform logits, bpb = 1.0 exactly.
+    """
+    from heinrich.profile.compare import _compute_bpb_over_sequences
+
+    vocab = 2
+    seqs = np.array([[0, 1, 0, 1, 0]], dtype=np.int64)
+
+    class _Uniform:
+        class config:
+            vocab_size = vocab
+        def forward(self, seq):
+            _, seqlen = seq.shape
+            return np.zeros((1, seqlen, vocab), dtype=np.float32)
+
+    bpb = _compute_bpb_over_sequences(_Uniform(), seqs)
+    assert abs(bpb - 1.0) < 1e-4
+
+
+def test_ablate_local_restores_on_exit():
+    """_ablate_local monkey-patches model._local_logits and restores
+    even if the body raises. Verified by observing behavior change + revert.
+    """
+    from heinrich.profile.compare import _ablate_local
+
+    class _Model:
+        def _local_logits(self, *a, **kw):
+            return np.ones((1, 4, 4), dtype=np.float32)
+
+    m = _Model()
+    # Before patch: returns ones.
+    assert np.all(m._local_logits() == 1.0)
+    try:
+        with _ablate_local(m):
+            # Inside: returns zeros.
+            assert np.all(m._local_logits() == 0.0)
+            raise RuntimeError("boom")
+    except RuntimeError:
+        pass
+    # After exit (even with exception): returns ones again.
+    assert np.all(m._local_logits() == 1.0), \
+        "local_logits behavior not restored after exception"
+
+
+def test_cb_ablations_dispatches_and_computes_delta(monkeypatch):
+    """End-to-end with fake backend: baseline and local-ablated runs
+    produce a reported delta."""
+    from heinrich.profile import compare as cmp_mod
+
+    class _FakeModel:
+        def _local_logits(self, *a, **kw):
+            return np.zeros((1, 8, 4), dtype=np.float32)
+
+    class _FakeBackend:
+        class config:
+            vocab_size = 4
+            model_type = "causal_bank"
+        def __init__(self):
+            self.model = _FakeModel()
+            self._call = 0
+        def forward(self, seq):
+            self._call += 1
+            _, seqlen = seq.shape
+            if self._call <= 2:
+                peak = 2.0
+            else:
+                peak = 0.5
+            logits = np.full((1, seqlen, 4), -peak * 0.1, dtype=np.float32)
+            for t in range(seqlen):
+                next_t = min(t + 1, seqlen - 1)
+                logits[0, t, int(seq[0, next_t])] = peak
+            return logits
+
+    fake_backend = _FakeBackend()
+    monkeypatch.setattr(cmp_mod, "_load_effective_context_backend",
+                         lambda *a, **kw: fake_backend)
+    monkeypatch.setattr(cmp_mod, "_load_effective_context_val",
+                         lambda *a, **kw:
+                         np.array([[0, 1, 2, 3, 0, 1, 2, 3]], dtype=np.int64))
+
+    result = cmp_mod._cb_ablations(
+        model_path="IGNORED",
+        ablate="local",
+        val=None,
+        n_tokens=8,
+    )
+    assert result["ablation"] == "local"
+    assert "baseline_bpb" in result
+    assert "ablated_bpb" in result
+    assert result["delta_bpb"] == round(
+        result["ablated_bpb"] - result["baseline_bpb"], 4)
