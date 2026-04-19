@@ -1809,8 +1809,8 @@ function buildWeightLandscape(){
 
 function _rebuildWeightLines(){
   if(!_wlData||!Array.isArray(_wlData)||!_wlData.length)return;
-  // Include direction key so toggling pins triggers a rebuild
-  const key=`${vpPairs[0]},${vpPairs[1]},${vpPairs[2]}|${_wlDirKey||'pc'}`;
+  // Flower is PC-only now; only PC-pair changes require rebuild.
+  const key=`${vpPairs[0]},${vpPairs[1]},${vpPairs[2]}`;
   const needsRebuild=key!==_wlBuiltKey;
   for(let vi=0;vi<3;vi++){_rebuildInternals(vi,vpPairs[vi],needsRebuild);}
   if(needsRebuild)_wlBuiltKey=key;
@@ -1822,24 +1822,8 @@ const _WL_MAT_LOOKUP={'Q':'q_proj','K':'k_proj','V':'v_proj','O':'o_proj',
 function _updateInternalsValues(lv,pcA,pcB){
   if(!lv._legBtns||!_wlData)return;
   const nMat=_wlData[0]?.matrices?.length||0;
-  const useDir=pinnedToken>=0&&pinnedTokenB>=0&&_wlDirData&&_wlDirData.layers;
-  if(useDir){
-    // DIR mode: petal text is per-layer magnitude against concept direction.
-    // Correlation is PC-mode-only — don't touch _corrCache so PC-mode cache
-    // survives the toggle and the three viewports don't thrash each other.
-    const dirByLayer={};
-    _wlDirData.layers.forEach(ld=>{dirByLayer[ld.layer]=ld.matrices||{};});
-    // Clamp virtual layers (emb/lmh) to nearest real layer so legend isn't
-    // all zeros when scrubbing past the real-layer range.
-    const rlForLegend=cL>=_nRealLayers?(cL===_nRealLayers?0:_nRealLayers-1):cL;
-    for(let mi=0;mi<nMat;mi++){
-      const btn=lv._legBtns[mi];if(!btn)continue;
-      const mag=dirByLayer[rlForLegend]?.[_WL_MAT_LOOKUP[_WL_NAMES[mi]]]||0;
-      const fmt=mag>=10?mag.toFixed(0):mag.toFixed(2);
-      btn.textContent=`${_WL_NAMES[mi]} ${fmt}`;
-    }
-    return;
-  }
+  // Flower is always PC mode — DIR (concept-direction alignment) visualization
+  // belongs in a dedicated viewport (superposition / direction VPs), not here.
   // PC mode: per-viewport correlation cache (avoids thrash between viewports)
   const ck=`${pinnedToken}:${pcA}:${pcB}`;
   if(ck!==lv._corrCacheKey){
@@ -1898,37 +1882,11 @@ function _rebuildInternals(vi,pair,needsRebuild){
   // Fixed angle per matrix (radial position in the flower)
   const angles=[];for(let mi=0;mi<nMat;mi++)angles.push(mi*(2*Math.PI/nMat));
 
-  // Alignment magnitude: concept-direction magnitude when pins active,
-  // else sqrt(al[pcA]² + al[pcB]²) as petal length.
-  // Clamp to real layers — virtual layers have no weight alignment data.
-  const _useDirFlower=pinnedToken>=0&&pinnedTokenB>=0&&_wlDirData&&_wlDirData.layers;
-  // Pre-index direction data by layer for O(1) lookup per call.
-  // Reuse the module-level _WL_MAT_LOOKUP — local duplicate removed.
-  const _dirByLayer={};
-  // DIR-mode magnitudes span orders of magnitude across matrices (k_proj
-  // hits 200+ while o_proj / v_proj / down_proj live in 0.1-5). Linear
-  // global normalization crushes the small matrices to invisibility.
-  // Per-matrix normalization preserves within-matrix shape but destroys
-  // the cross-matrix importance comparison. Use log(raw+1) so "big vs
-  // small" (multiplicative) reads correctly while no matrix collapses.
-  let _dirScale=1;
-  if(_useDirFlower){
-    let maxLog=0;
-    _wlDirData.layers.forEach(ld=>{
-      _dirByLayer[ld.layer]=ld.matrices||{};
-      for(const k in (ld.matrices||{})){
-        const v=Math.log1p(ld.matrices[k]||0);
-        if(v>maxLog)maxLog=v;
-      }
-    });
-    _dirScale=maxLog>0?(1.0/maxLog):1;
-  }
+  // Flower is always PC mode — petal length = sqrt(al[pcA]² + al[pcB]²).
+  // DIR (concept-direction alignment) visualization belongs in a dedicated
+  // viewport (superposition / direction VPs), not crammed into the flower.
   function _petalLen(l,mi){
     const rl=l>=_nRealLayers?(l===_nRealLayers?0:_nRealLayers-1):l;
-    if(_useDirFlower){
-      const raw=_dirByLayer[rl]?.[_WL_MAT_LOOKUP[_WL_NAMES[mi]]]||0;
-      return Math.log1p(raw)*_dirScale;
-    }
     const al=_wlData[rl]?.matrices?.[mi]?.alignment||[];
     const vA=al[pcA]||0,vB=al[pcB]||0;
     return Math.sqrt(vA*vA+vB*vB);
@@ -2130,45 +2088,12 @@ function _rebuildInternals(vi,pair,needsRebuild){
   }
   while(leg.firstChild)leg.removeChild(leg.firstChild);
   lv._legBtns=[];
-  // #23 — visual distinction for DIR mode in the flower itself: legend outline,
-  // bold badge, subtitle showing A↔B text, so glancing at the flower reveals the mode.
-  leg.classList.toggle('dir-active',!!_useDirFlower);
+  // PC mode only — DIR visualization moved out of the flower.
   const badge=document.createElement('span');
-  badge.className='mode-badge ' + (_useDirFlower?'dir':'pc');
-  badge.textContent=_useDirFlower?'DIR':'PC';
-  badge.title=_useDirFlower
-    ?'Petals = ||W d|| for concept direction (tokenA − tokenB)'
-    :'Petals = √(al[pcA]² + al[pcB]²) for the viewport PCs';
+  badge.className='mode-badge pc';
+  badge.textContent='PC';
+  badge.title='Petals = √(al[pcA]² + al[pcB]²) for the viewport PCs';
   leg.appendChild(badge);
-  if(_useDirFlower){
-    const sub=document.createElement('span');
-    sub.style.cssText='color:#c96;font-size:7px;align-self:center;max-width:120px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap';
-    const ta=texts[pinnedToken]||'?',tb=texts[pinnedTokenB]||'?';
-    sub.textContent=`${ta}\u2194${tb}`;
-    sub.title=`A: ${ta}  \u2194  B: ${tb}`;
-    leg.appendChild(sub);
-    // #1 falsification badges — surface in the flower so users don't have
-    // to hover the sep panel to see if the direction is geometric-only.
-    if(_dirBrief){
-      if(_dirBrief.functional_warning){
-        const nf=document.createElement('span');
-        nf.style.cssText='color:#f44;background:#1a0a0a;border:1px solid #642;border-radius:2px;padding:0 3px;font-size:7px;font-family:monospace;font-weight:bold';
-        nf.textContent='\u26A0NF';
-        nf.title='GEOMETRIC ONLY — top A/B tokens do not predict A/B through lmhead. Direction may reflect PCA artefacts, not a real feature.';
-        leg.appendChild(nf);
-      }
-      const p=_dirBrief.random_baseline_percentile;
-      if(typeof p==='number'){
-        const pc=p<10?'#4f4':p<30?'#cc4':'#f44';
-        const pbg=p<10?'#0a1a0a':p<30?'#1a1a0a':'#1a0a0a';
-        const pe=document.createElement('span');
-        pe.style.cssText=`color:${pc};background:${pbg};border:1px solid #333;border-radius:2px;padding:0 3px;font-size:7px;font-family:monospace`;
-        pe.textContent=`${p.toFixed(0)}%rand`;
-        pe.title='Percentile among 50 random token-pair directions. Lower = rarer/more-bimodal signal; >30 means random pairs are more bimodal than yours.';
-        leg.appendChild(pe);
-      }
-    }
-  }
   lv._modeBadge=badge;
 
   function _isolate(lv,sel){
