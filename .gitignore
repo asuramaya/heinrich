@@ -40,8 +40,12 @@ data/runs/*
 ~/.heinrich/
 src/heinrich/profile/__pycache__/frt.cpython-312.pyc
 data/logs/
+logs/
 *.log
 __pycache__/
+
+# Agent / CLI session state (per-machine, shouldn't be versioned)
+.claude/
 
 # Build artifacts
 **/.build/
