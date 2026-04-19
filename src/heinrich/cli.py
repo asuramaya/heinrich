@@ -3189,17 +3189,20 @@ def _cmd_cb_pc_bands(args: argparse.Namespace) -> None:
         # Header
         band_labels = [b["range"] for b in res["reports"][0]["bands"]] if res["reports"] else []
         band_header = "  ".join(f'PC{l:>8s}'.rjust(26) for l in band_labels)
-        print(f'  {"mri":<55} {"EffDim":>7} {"2band":>6}  '
+        print(f'  {"mri":<55} {"EffDim":>7} {"score":>6} {"verdict":>12}  '
               + "  ".join(f'{"PC " + l:>24}' for l in band_labels))
-        sub_header = (" " * (55 + 1)) + (" " * 7) + "        " + \
+        sub_header = (" " * (55 + 1)) + (" " * (7 + 6 + 12 + 2)) + \
                       "  ".join(f'{"var% pos_r2 byte_r2":>24}' for _ in band_labels)
         print(sub_header)
-        print('-' * max(120, 65 + 26 * len(band_labels)))
+        print('-' * max(132, 77 + 26 * len(band_labels)))
         for r in res["reports"]:
             name = r["mri"].split("/")[-1].replace(".seq.mri", "").replace(".mri", "")[-55:]
+            score_str = (f'{r["partition_score"]:>6.1f}'
+                         if r["partition_score"] < 1000 else f'{">1000":>6}')
             row = [f'  {name:<55}',
                    f'{r["eff_dim"]:>7.1f}',
-                   f'{"YES" if r["two_band_partition"] else "no":>6}']
+                   score_str,
+                   f'{r["partition_verdict"]:>12}']
             for b in r["bands"]:
                 row.append(f' {b["var_pct"]:>5.1f}% {b["pos_r2"]:>6.3f} {b["byte_r2"]:>6.3f}'.rjust(24))
             print("  ".join(row))
@@ -3211,11 +3214,16 @@ def _cmd_cb_pc_bands(args: argparse.Namespace) -> None:
             vals = "  ".join(f'{e["pos_r2"]:>8.3f}' for e in r["cumulative_pos_r2"])
             print(f'  {name:<55} {vals}')
 
-        # Flag any two-band partitions
+        # Summary by verdict
+        from collections import Counter
+        verdicts = Counter(r["partition_verdict"] for r in res["reports"])
+        if verdicts:
+            print(f'\n  Partition summary: '
+                  + ", ".join(f'{v}={c}' for v, c in sorted(verdicts.items())))
         flags = [r for r in res["reports"] if r["two_band_partition"]]
         if flags:
-            print(f'\n  ⚠ {len(flags)} MRI(s) show a two-band partition. '
-                  f'EffDim undercounts their working dimensionality.')
+            print(f'  ⚠ {len(flags)} MRI(s) have a two-band partition '
+                  f'(partial or partitioned). EffDim undercounts working dim.')
 
     _json_or(args, result, _fmt)
 

@@ -320,6 +320,154 @@ def test_tokenizer_difficulty():
     assert len(result["difficulty_quartiles"]) == 4
 
 
+# --- causal_bank_pc_bands: partition-score heuristic ---
+
+def _make_mri_with_substrate(tmp_path: Path, substrate: np.ndarray, tokens: np.ndarray) -> str:
+    """Build a minimal sequence-mode MRI backed by a caller-supplied substrate
+    and token stream. Just enough metadata for causal_bank_pc_bands to load."""
+    n_seqs, seq_len, D = substrate.shape
+    mri_dir = tmp_path / "pc_bands_test.seq.mri"
+    mri_dir.mkdir()
+    metadata = {
+        "version": "0.7", "type": "mri", "architecture": "causal_bank",
+        "model": {"name": "test", "n_modes": D, "n_experts": 1, "n_bands": 1,
+                  "embed_dim": 16, "vocab_size": 256, "n_layers": 1,
+                  "hidden_size": D},
+        "capture": {"mode": "sequence", "n_seqs": n_seqs, "seq_len": seq_len,
+                    "n_tokens": n_seqs * seq_len},
+        "provenance": {"seed": 42},
+    }
+    with open(mri_dir / "metadata.json", "w") as f:
+        json.dump(metadata, f)
+    np.savez_compressed(mri_dir / "tokens.npz", token_ids=tokens.astype(np.int32))
+    np.save(mri_dir / "substrate.npy", substrate.astype(np.float16))
+    np.save(mri_dir / "embedding.npy",
+            np.random.randn(n_seqs, seq_len, 16).astype(np.float16))
+    np.save(mri_dir / "half_lives.npy", np.logspace(0, 2, D, dtype=np.float32))
+    return str(mri_dir)
+
+
+def test_pc_bands_absent_verdict_for_no_position():
+    """Substrate with no position structure anywhere → verdict 'absent'."""
+    from heinrich.profile.compare import causal_bank_pc_bands
+
+    rng = np.random.default_rng(0)
+    n_seqs, seq_len, D = 10, 64, 32
+    # Pure byte-content substrate: each position's state depends only on the
+    # random byte token there, no position dependence.
+    tokens = rng.integers(0, 256, (n_seqs, seq_len))
+    # Make substrate a function of token only (broadcast content-only pattern)
+    byte_embeds = rng.standard_normal((256, D)) * 0.5
+    substrate = byte_embeds[tokens].astype(np.float32)
+    # Add noise so SVD has non-degenerate spectrum
+    substrate += rng.standard_normal(substrate.shape) * 0.05
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mri = _make_mri_with_substrate(Path(tmp), substrate, tokens)
+        r = causal_bank_pc_bands(mri)
+        assert r["partition_verdict"] == "absent", (
+            f"expected absent, got {r['partition_verdict']} "
+            f"(top={r['top_pos_r2']}, tail={r['max_tail_pos_r2']})")
+        assert not r["two_band_partition"]
+
+
+def test_pc_bands_partitioned_verdict_for_clean_two_band():
+    """Substrate with content in top PCs + position in mid PCs →
+    verdict 'partitioned' with high score."""
+    from heinrich.profile.compare import causal_bank_pc_bands
+
+    rng = np.random.default_rng(0)
+    n_seqs, seq_len, D = 20, 64, 32
+    tokens = rng.integers(0, 256, (n_seqs, seq_len))
+    # Two disjoint subspaces, by coordinate index.
+    # Content lives in coords 0-7 (high variance), position in 8-15 (lower
+    # variance), rest is noise. Orthogonal by construction.
+    byte_embeds = rng.standard_normal((256, 8)) * 2.0  # large variance
+    position_embeds = np.stack([
+        np.sin(np.arange(seq_len) / 5),
+        np.cos(np.arange(seq_len) / 5),
+        np.sin(np.arange(seq_len) / 10),
+        np.cos(np.arange(seq_len) / 10),
+        np.sin(np.arange(seq_len) / 20),
+        np.cos(np.arange(seq_len) / 20),
+        np.arange(seq_len, dtype=np.float32) / seq_len,
+        (np.arange(seq_len, dtype=np.float32) / seq_len) ** 2,
+    ], axis=-1) * 0.8  # moderate variance, lower than content
+
+    content_block = byte_embeds[tokens]                    # [S, T, 8]
+    # position_embeds is [T, 8]; broadcast over sequences
+    pos_block = np.broadcast_to(position_embeds, (n_seqs, seq_len, 8))
+    tail = rng.standard_normal((n_seqs, seq_len, D - 16)) * 0.05
+    substrate = np.concatenate([content_block, pos_block, tail], axis=-1).astype(np.float32)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mri = _make_mri_with_substrate(Path(tmp), substrate, tokens)
+        r = causal_bank_pc_bands(mri)
+        # Top band should be content-only; mid band should carry position
+        assert r["partition_verdict"] in ("partitioned", "partial"), (
+            f"expected partition, got {r['partition_verdict']} "
+            f"(top={r['top_pos_r2']}, tail={r['max_tail_pos_r2']}, score={r['partition_score']})")
+        assert r["max_tail_pos_r2"] > 0.1, (
+            "position signal should be detected in tail bands")
+        assert r["two_band_partition"], (
+            "two_band_partition should be true for clean content/position split")
+
+
+def test_pc_bands_leaky_verdict_when_position_mixes_with_content():
+    """Position signal present but in PC0-7 (content band) → 'leaky'."""
+    from heinrich.profile.compare import causal_bank_pc_bands
+
+    rng = np.random.default_rng(1)
+    n_seqs, seq_len, D = 20, 64, 32
+    tokens = rng.integers(0, 256, (n_seqs, seq_len))
+    # Entangle: position signal lives in the same high-variance coords as
+    # byte content, so PCA will pack both into the top band.
+    byte_embeds = rng.standard_normal((256, 8)) * 1.5
+    position_scalar = (np.arange(seq_len, dtype=np.float32) / seq_len).reshape(1, -1, 1)
+    content_block = byte_embeds[tokens] + position_scalar * 0.8  # entangled
+    tail = rng.standard_normal((n_seqs, seq_len, D - 8)) * 0.05
+    substrate = np.concatenate([content_block, tail], axis=-1).astype(np.float32)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mri = _make_mri_with_substrate(Path(tmp), substrate, tokens)
+        r = causal_bank_pc_bands(mri)
+        # Position R² should be non-trivially present in top, tail shouldn't
+        # dominate: verdict leaky OR absent (depending on how strongly the
+        # position scalar survives PCA). Accept either as "not partitioned".
+        assert r["partition_verdict"] in ("leaky", "absent"), (
+            f"expected leaky/absent, got {r['partition_verdict']} "
+            f"(top={r['top_pos_r2']}, tail={r['max_tail_pos_r2']})")
+        assert not r["two_band_partition"]
+
+
+def test_pc_bands_score_is_regularized():
+    """partition_score must be finite even when top_pos_r2 = 0 exactly."""
+    from heinrich.profile.compare import causal_bank_pc_bands
+
+    rng = np.random.default_rng(2)
+    n_seqs, seq_len, D = 15, 64, 24
+    tokens = rng.integers(0, 256, (n_seqs, seq_len))
+    # Build a substrate where top band is exactly zero on position. Use
+    # content-only in first 8 dims, pure position in dim 10+.
+    byte_embeds = rng.standard_normal((256, 8)) * 3.0
+    pos_feature = (np.arange(seq_len, dtype=np.float32) / seq_len).reshape(1, -1)
+    pos_block = np.broadcast_to(pos_feature[:, :, None] * rng.standard_normal((1, 1, 8)),
+                                 (n_seqs, seq_len, 8))
+    substrate = np.concatenate([
+        byte_embeds[tokens],
+        pos_block,
+        rng.standard_normal((n_seqs, seq_len, D - 16)) * 0.02,
+    ], axis=-1).astype(np.float32)
+
+    with tempfile.TemporaryDirectory() as tmp:
+        mri = _make_mri_with_substrate(Path(tmp), substrate, tokens)
+        r = causal_bank_pc_bands(mri)
+        # Score must be finite (regularized by 0.005 floor), not inf/NaN
+        import math
+        assert math.isfinite(r["partition_score"]), (
+            f"partition_score must be finite, got {r['partition_score']}")
+
+
 def test_tokenizer_compare():
     """tokenizer-compare runs on available tokenizer."""
     import os

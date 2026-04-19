@@ -5365,13 +5365,51 @@ def causal_bank_pc_bands(mri_path: str, *,
     var_exp = (S ** 2) / (S ** 2).sum()
     eff_dim = float(np.exp(-(var_exp * np.log(var_exp + 1e-12)).sum()))
 
-    # "Undercount" flag: two-band detected when at least one low-variance
-    # band carries significantly more position or byte signal than the
-    # top band would suggest. Heuristic: top-8 pos_r2 < 0.01 but some
-    # later band has pos_r2 > 0.05 → two-band partition present.
+    # Partition score: ratio of the strongest tail band's position signal
+    # to the top-8 band's position signal, regularized by a small floor so
+    # a clean top=0, tail>0 partition doesn't become infinite. The earlier
+    # binary flag (top8 < 0.01 AND max_tail > 0.05) was too strict — W2-B
+    # (s12+b4) at 50k leaked a little into PC0-7 (top8=0.030) but concentrated
+    # very strongly in PC8-19 (tail=0.415); ratio = 14, clearly partitioned.
+    # Binary threshold flipped that to NO and missed the call.
+    #
+    # Score bands, with the tail floored at 0.02 to avoid declaring "partition"
+    # on no-position-anywhere substrates:
+    #   tail < 0.02                → absent    (no position signal detected)
+    #   score < 2                  → leaky     (position present but mixed
+    #                                           into top band)
+    #   score in [2, 5)            → partial   (position concentrated but top
+    #                                           band has some leak)
+    #   score >= 5                 → partitioned (clean or near-clean)
     top8_pos = band_results[0]["pos_r2"] if band_results else 0.0
     max_tail_pos = max((b["pos_r2"] for b in band_results[1:]), default=0.0)
-    two_band = top8_pos < 0.01 and max_tail_pos > 0.05
+    _floor = 0.005
+    partition_score = float(max_tail_pos / max(top8_pos, _floor))
+    if max_tail_pos < 0.02:
+        partition_verdict = "absent"
+    elif partition_score >= 5.0:
+        partition_verdict = "partitioned"
+    elif partition_score >= 2.0:
+        partition_verdict = "partial"
+    else:
+        partition_verdict = "leaky"
+    # Back-compat boolean: treat partial + partitioned as two-band. This is
+    # looser than the old threshold (max_tail > 0.05 AND top < 0.01) — the
+    # intent of the flag has always been "EffDim undercounts this" and the
+    # undercount is real whenever tail carries meaningful position signal,
+    # even if the top band has some leak.
+    two_band = partition_verdict in ("partitioned", "partial")
+
+    note = None
+    if partition_verdict == "partitioned":
+        note = ("clean top/tail partition; EffDim undercounts working "
+                "dimensionality (position lives in PCs EffDim counts as noise)")
+    elif partition_verdict == "partial":
+        note = ("concentrated tail position with some leak into content band; "
+                "EffDim undercounts working dimensionality")
+    elif partition_verdict == "leaky":
+        note = ("position signal mixed across content band; partition not "
+                "clean — single-band encoding")
 
     return {
         "mri": mri_path,
@@ -5380,11 +5418,12 @@ def causal_bank_pc_bands(mri_path: str, *,
         "eff_dim": round(eff_dim, 1),
         "bands": band_results,
         "cumulative_pos_r2": cum,
+        "top_pos_r2": round(top8_pos, 6),
+        "max_tail_pos_r2": round(max_tail_pos, 6),
+        "partition_score": round(partition_score, 2),
+        "partition_verdict": partition_verdict,
         "two_band_partition": bool(two_band),
-        "two_band_note": (
-            "content-only top-8 + position-carrying mid-spectrum band detected; "
-            "EffDim likely undercounts working dimensionality" if two_band else None
-        ),
+        "two_band_note": note,
     }
 
 
