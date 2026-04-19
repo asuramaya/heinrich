@@ -327,6 +327,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_decompose.add_argument("--n-sample", type=int, default=0, help="Tokens to sample (0 = full vocabulary)")
     p_decompose.add_argument("--n-components", type=int, default=0, help="PCA components (0 = all directions = hidden_size)")
 
+    p_serve = sub.add_parser("mri-serve", help="Build query-shaped serve/ artifacts for the companion viewer from an existing decomposition")
+    p_serve.add_argument("--mri", required=True, help=".mri directory")
+    p_serve.add_argument("--steps", default="10,25,50", help="Precompute sampled PC indexes for these token strides")
+    p_serve.add_argument("--force", action="store_true", help="Rebuild serve artifacts even if they already exist")
+
     p_logitlens = sub.add_parser("profile-logit-lens", help="What would the model predict at each layer? Applies norm+lmhead to exit states")
     p_logitlens.add_argument("--mri", required=True, help=".mri directory")
     p_logitlens.add_argument("--top-k", type=int, default=5, help="Top K predictions per layer (default: 5)")
@@ -790,6 +795,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_mri_health(args)
     elif args.command == "mri-decompose":
         _cmd_mri_decompose(args)
+    elif args.command == "mri-serve":
+        _cmd_mri_serve(args)
     elif args.command == "profile-logit-lens":
         _cmd_logit_lens(args)
     elif args.command == "profile-layer-deltas":
@@ -2734,6 +2741,31 @@ def _cmd_mri_decompose(args: argparse.Namespace) -> None:
             print(f"  {ln:>5s}  PC1={lr['pc1_pct']:>5.1f}%  dim={lr['intrinsic_dim']:>4.0f}  "
                   f"nbr={lr['neighbor_stability']:.2f}  {dim_bar}")
         print()
+    _json_or(args, result, _fmt)
+
+
+def _cmd_mri_serve(args: argparse.Namespace) -> None:
+    """Build query-shaped serve artifacts for the companion viewer."""
+    from .companion_serve import build_serve_artifacts
+
+    steps = tuple(
+        int(part.strip())
+        for part in str(args.steps).split(",")
+        if part.strip()
+    )
+    result = build_serve_artifacts(args.mri, steps=steps, force=bool(args.force))
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+
+    def _fmt(r):
+        print(f"\n=== MRI Serve: {r['mri_path']} ===\n")
+        print(f"  {r['n_tokens']} tokens × {r['full_k']} PCs × {r['n_layers']} layers")
+        print(f"  Output: {r['serve_dir']}")
+        for step_key, step_info in sorted(r["steps"].items(), key=lambda kv: int(kv[0])):
+            print(f"  step={step_key:>3s}  {step_info['n_sample']:>8} sampled tokens  {step_info['pc_scores']}")
+        print()
+
     _json_or(args, result, _fmt)
 
 

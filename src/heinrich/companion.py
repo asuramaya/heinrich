@@ -11,6 +11,7 @@ Usage:
 from __future__ import annotations
 
 import json
+import struct
 import subprocess
 import sys
 import threading
@@ -23,12 +24,23 @@ from typing import Any
 
 import numpy as np
 
+from .companion_serve import load_serve_meta, resolve_pc_index, resolve_token_index
+
+
+_CLOUD_BUNDLE_MAGIC = b"CLDB"
+_TOKEN_BUNDLE_MAGIC = b"TKBD"
+_BUNDLE_VERSION = 1
+
 
 # --- In-memory caches ---
 
 _ui_html_cache: str | None = None
 _decomp_meta_cache: dict[str, dict] = {}
 _weight_align_cache: dict[str, list] = {}
+_decomp_meta_lock = threading.Lock()
+_decomp_meta_pending: dict[str, threading.Event] = {}
+_weight_align_lock = threading.Lock()
+_weight_align_pending: dict[str, threading.Event] = {}
 
 
 # --- Capture relay: MCP → server → browser poll → result ---
@@ -52,6 +64,38 @@ _chat_lock = threading.Lock()
 _chat_event = threading.Event()       # browser ← MCP (outbox)
 _chat_inbox_event = threading.Event()  # browser → MCP (inbox)
 _CHAT_MAX = 200
+
+
+def _cache_claim_fill(lock, pending: dict, key) -> bool:
+    """Claim exclusive responsibility for filling one cache key.
+
+    Returns True for the loader thread. Waiters block until the loader releases
+    the claim, then return False so callers can re-check the cache.
+    """
+    with lock:
+        ev = pending.get(key)
+        if ev is None:
+            pending[key] = threading.Event()
+            return True
+    ev.wait()
+    return False
+
+
+def _cache_finish_fill(lock, pending: dict, key) -> None:
+    """Release a cache fill claim and wake any waiting threads."""
+    with lock:
+        ev = pending.pop(key, None)
+    if ev is not None:
+        ev.set()
+
+
+def _ordered_cache_get(cache: OrderedDict, key, lock):
+    """Thread-safe hit path for OrderedDict-backed LRUs."""
+    with lock:
+        value = cache.get(key)
+        if value is not None:
+            cache.move_to_end(key)
+        return value
 
 
 def chat_drain() -> list[dict]:
@@ -247,18 +291,30 @@ def _load_decomp(mri_path: str, layer: int) -> dict:
 
 def _load_decomp_meta(mri_path: str) -> dict:
     """Load decomposition metadata (variance spectrum, intrinsic dim per layer)."""
-    if mri_path in _decomp_meta_cache:
-        return _decomp_meta_cache[mri_path]
-    p = Path(mri_path) / "decomp" / "meta.json"
-    if not p.exists():
-        return {"error": "No decomposition. Run mri-decompose."}
-    meta = json.loads(p.read_text())
-    meta["model_dir"] = Path(mri_path).parent.name
-    mri_meta = json.loads((Path(mri_path) / "metadata.json").read_text())
-    meta["mode"] = mri_meta.get("capture", {}).get("mode", "?")
-    meta["intermediate_size"] = mri_meta.get("capture", {}).get("intermediate_size", 0)
-    _decomp_meta_cache[mri_path] = meta
-    return meta
+    while True:
+        with _decomp_meta_lock:
+            cached = _decomp_meta_cache.get(mri_path)
+            if cached is not None:
+                return cached
+        if _cache_claim_fill(_decomp_meta_lock, _decomp_meta_pending, mri_path):
+            break
+    try:
+        p = Path(mri_path) / "decomp" / "meta.json"
+        if not p.exists():
+            return {"error": "No decomposition. Run mri-decompose."}
+        meta = json.loads(p.read_text())
+        meta["model_dir"] = Path(mri_path).parent.name
+        mri_meta = json.loads((Path(mri_path) / "metadata.json").read_text())
+        meta["mode"] = mri_meta.get("capture", {}).get("mode", "?")
+        meta["intermediate_size"] = mri_meta.get("capture", {}).get("intermediate_size", 0)
+        with _decomp_meta_lock:
+            cached = _decomp_meta_cache.get(mri_path)
+            if cached is not None:
+                return cached
+            _decomp_meta_cache[mri_path] = meta
+        return meta
+    finally:
+        _cache_finish_fill(_decomp_meta_lock, _decomp_meta_pending, mri_path)
 
 
 # --- Score cache: LRU by total bytes, drops entries for other MRIs on switch ---
@@ -277,6 +333,7 @@ _score_cache_bytes = 0
 # simultaneously insert new layers. Held only during mutation, not during
 # file IO (IO happens before/after) so this doesn't serialize cold loads.
 _score_cache_lock = threading.Lock()
+_score_cache_pending: dict[str, threading.Event] = {}
 
 
 def _score_cache_evict_to_fit(incoming_bytes: int,
@@ -312,6 +369,46 @@ def _score_cache_put(key: str, arr: np.ndarray, active_mri: str | None = None) -
         _score_cache_bytes += arr.nbytes
 
 
+def _score_cache_get(key: str) -> np.ndarray | None:
+    """Thread-safe hit path for the float32 score cache."""
+    return _ordered_cache_get(_score_cache, key, _score_cache_lock)
+
+
+def _load_score_cache_f32(key: str, path: Path, active_mri: str) -> np.ndarray | None:
+    """Load one float32 array into the score cache with per-key dedupe."""
+    global _score_cache_bytes
+    while True:
+        arr = _score_cache_get(key)
+        if arr is not None:
+            return arr
+        if _cache_claim_fill(_score_cache_lock, _score_cache_pending, key):
+            break
+    try:
+        if not path.exists():
+            return None
+        arr = np.load(str(path)).astype(np.float32)
+        with _score_cache_lock:
+            cached = _score_cache.get(key)
+            if cached is not None:
+                _score_cache.move_to_end(key)
+                return cached
+            _score_cache_evict_to_fit(arr.nbytes, active_mri=active_mri)
+            _score_cache[key] = arr
+            _score_cache_bytes += arr.nbytes
+        return arr
+    finally:
+        _cache_finish_fill(_score_cache_lock, _score_cache_pending, key)
+
+
+def _get_lmhead_f32(mri_path: str) -> np.ndarray | None:
+    """Load lmhead through the shared float32 cache with thread-safe dedupe."""
+    return _load_score_cache_f32(
+        key=f"{mri_path}:lmhead",
+        path=Path(mri_path) / "lmhead.npy",
+        active_mri=mri_path,
+    )
+
+
 def _get_scores_f32(mri_path: str, layer: int) -> np.ndarray | None:
     """Get float32 score array for a layer, cached in RAM.
 
@@ -321,23 +418,20 @@ def _get_scores_f32(mri_path: str, layer: int) -> np.ndarray | None:
     need projection should prefer `_get_scores_mmap` + `_project_chunked`.
     """
     key = f"{mri_path}:L{layer:02d}"
-    if key in _score_cache:
-        _score_cache.move_to_end(key)
-        return _score_cache[key]
     score_path = Path(mri_path) / "decomp" / f"L{layer:02d}_scores.npy"
-    if not score_path.exists():
-        return None
-    arr = np.load(str(score_path)).astype(np.float32)
-    _score_cache_put(key, arr, active_mri=mri_path)
-    return arr
+    return _load_score_cache_f32(key, score_path, active_mri=mri_path)
 
 
 _scores_mmap_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
 _SCORES_MMAP_MAX = 256  # handles only — mmap backing is OS-paged
+_scores_mmap_lock = threading.Lock()
+_scores_mmap_pending: dict[str, threading.Event] = {}
 
 # Weight matrix mmap cache (handles only, OS page cache handles warmth).
 _weight_mmap_cache: "OrderedDict[str, np.ndarray]" = OrderedDict()
 _WEIGHT_MMAP_MAX = 512
+_weight_mmap_lock = threading.Lock()
+_weight_mmap_pending: dict[str, threading.Event] = {}
 
 
 def _get_weight_mmap(path: Path) -> np.ndarray | None:
@@ -346,17 +440,29 @@ def _get_weight_mmap(path: Path) -> np.ndarray | None:
     so switching between many MRIs doesn't accumulate handles forever.
     """
     key = str(path)
-    h = _weight_mmap_cache.get(key)
-    if h is not None:
-        _weight_mmap_cache.move_to_end(key)
+    while True:
+        h = _ordered_cache_get(_weight_mmap_cache, key, _weight_mmap_lock)
+        if h is not None:
+            return h
+        if not path.exists():
+            return None
+        if _cache_claim_fill(_weight_mmap_lock, _weight_mmap_pending, key):
+            break
+    try:
+        if not path.exists():
+            return None
+        h = np.load(key, mmap_mode="r")
+        with _weight_mmap_lock:
+            cached = _weight_mmap_cache.get(key)
+            if cached is not None:
+                _weight_mmap_cache.move_to_end(key)
+                return cached
+            _weight_mmap_cache[key] = h
+            while len(_weight_mmap_cache) > _WEIGHT_MMAP_MAX:
+                _weight_mmap_cache.popitem(last=False)
         return h
-    if not path.exists():
-        return None
-    h = np.load(key, mmap_mode="r")
-    _weight_mmap_cache[key] = h
-    while len(_weight_mmap_cache) > _WEIGHT_MMAP_MAX:
-        _weight_mmap_cache.popitem(last=False)
-    return h
+    finally:
+        _cache_finish_fill(_weight_mmap_lock, _weight_mmap_pending, key)
 
 
 # Gram matrix cache — for a weight W of shape [M, K] we cache the [D, D]
@@ -370,11 +476,15 @@ _WEIGHT_GRAM_MAX_BYTES = int(
     float(_os.environ.get("HEINRICH_GRAM_CACHE_GB", "1.5")) * 1_000_000_000
 )
 _weight_gram_bytes = 0
+_weight_gram_lock = threading.Lock()
+_weight_gram_pending: dict[tuple, threading.Event] = {}
 
 # Token metadata cache — tokens.npz holds 150k-entry text/script/vocab_id
 # arrays. Loading + decoding + building the vocab→mri reverse map was
 # ~1s on repeat calls; do it once per MRI.
 _vocab_map_cache: dict[str, tuple] = {}
+_vocab_map_lock = threading.Lock()
+_vocab_map_pending: dict[str, threading.Event] = {}
 
 
 def _get_vocab_map(mri_path: str) -> tuple:
@@ -383,19 +493,30 @@ def _get_vocab_map(mri_path: str) -> tuple:
     `texts` is a list of str. `vocab_to_mri_index` is a dict from
     tokenizer vocab id → row index in the captured MRI.
     """
-    cached = _vocab_map_cache.get(mri_path)
-    if cached is not None:
-        return cached
-    tok = dict(np.load(str(Path(mri_path) / "tokens.npz"), allow_pickle=True))
-    texts = [str(t) for t in tok["token_texts"]]
-    token_ids = tok.get("token_ids")
-    vocab_to_mri: dict[int, int] = {}
-    if token_ids is not None:
-        for i, vid in enumerate(token_ids):
-            vocab_to_mri[int(vid)] = i
-    entry = (texts, vocab_to_mri)
-    _vocab_map_cache[mri_path] = entry
-    return entry
+    while True:
+        with _vocab_map_lock:
+            cached = _vocab_map_cache.get(mri_path)
+            if cached is not None:
+                return cached
+        if _cache_claim_fill(_vocab_map_lock, _vocab_map_pending, mri_path):
+            break
+    try:
+        tok = dict(np.load(str(Path(mri_path) / "tokens.npz"), allow_pickle=True))
+        texts = [str(t) for t in tok["token_texts"]]
+        token_ids = tok.get("token_ids")
+        vocab_to_mri: dict[int, int] = {}
+        if token_ids is not None:
+            for i, vid in enumerate(token_ids):
+                vocab_to_mri[int(vid)] = i
+        entry = (texts, vocab_to_mri)
+        with _vocab_map_lock:
+            cached = _vocab_map_cache.get(mri_path)
+            if cached is not None:
+                return cached
+            _vocab_map_cache[mri_path] = entry
+        return entry
+    finally:
+        _cache_finish_fill(_vocab_map_lock, _vocab_map_pending, mri_path)
 
 
 def _get_weight_gram(path: Path, side: str) -> np.ndarray | None:
@@ -409,21 +530,31 @@ def _get_weight_gram(path: Path, side: str) -> np.ndarray | None:
     """
     global _weight_gram_bytes
     key = (str(path), side)
-    g = _weight_gram_cache.get(key)
-    if g is not None:
-        _weight_gram_cache.move_to_end(key)
+    while True:
+        g = _ordered_cache_get(_weight_gram_cache, key, _weight_gram_lock)
+        if g is not None:
+            return g
+        if _cache_claim_fill(_weight_gram_lock, _weight_gram_pending, key):
+            break
+    try:
+        W = _get_weight_mmap(path)
+        if W is None:
+            return None
+        Wf = W.astype(np.float32)
+        g = (Wf.T @ Wf) if side == "col" else (Wf @ Wf.T)
+        with _weight_gram_lock:
+            cached = _weight_gram_cache.get(key)
+            if cached is not None:
+                _weight_gram_cache.move_to_end(key)
+                return cached
+            while _weight_gram_cache and (_weight_gram_bytes + g.nbytes) > _WEIGHT_GRAM_MAX_BYTES:
+                _, evicted = _weight_gram_cache.popitem(last=False)
+                _weight_gram_bytes -= evicted.nbytes
+            _weight_gram_cache[key] = g
+            _weight_gram_bytes += g.nbytes
         return g
-    W = _get_weight_mmap(path)
-    if W is None:
-        return None
-    Wf = W.astype(np.float32)
-    g = (Wf.T @ Wf) if side == "col" else (Wf @ Wf.T)
-    while _weight_gram_cache and (_weight_gram_bytes + g.nbytes) > _WEIGHT_GRAM_MAX_BYTES:
-        _, evicted = _weight_gram_cache.popitem(last=False)
-        _weight_gram_bytes -= evicted.nbytes
-    _weight_gram_cache[key] = g
-    _weight_gram_bytes += g.nbytes
-    return g
+    finally:
+        _cache_finish_fill(_weight_gram_lock, _weight_gram_pending, key)
 
 
 def _get_scores_mmap(mri_path: str, layer: int) -> np.ndarray | None:
@@ -434,18 +565,30 @@ def _get_scores_mmap(mri_path: str, layer: int) -> np.ndarray | None:
     without the 2 GB score cache churning.
     """
     key = f"{mri_path}:L{layer:02d}"
-    mmap = _scores_mmap_cache.get(key)
-    if mmap is not None:
-        _scores_mmap_cache.move_to_end(key)
-        return mmap
     path = Path(mri_path) / "decomp" / f"L{layer:02d}_scores.npy"
-    if not path.exists():
-        return None
-    mmap = np.load(str(path), mmap_mode="r")
-    _scores_mmap_cache[key] = mmap
-    while len(_scores_mmap_cache) > _SCORES_MMAP_MAX:
-        _scores_mmap_cache.popitem(last=False)
-    return mmap
+    while True:
+        mmap = _ordered_cache_get(_scores_mmap_cache, key, _scores_mmap_lock)
+        if mmap is not None:
+            return mmap
+        if not path.exists():
+            return None
+        if _cache_claim_fill(_scores_mmap_lock, _scores_mmap_pending, key):
+            break
+    try:
+        if not path.exists():
+            return None
+        mmap = np.load(str(path), mmap_mode="r")
+        with _scores_mmap_lock:
+            cached = _scores_mmap_cache.get(key)
+            if cached is not None:
+                _scores_mmap_cache.move_to_end(key)
+                return cached
+            _scores_mmap_cache[key] = mmap
+            while len(_scores_mmap_cache) > _SCORES_MMAP_MAX:
+                _scores_mmap_cache.popitem(last=False)
+        return mmap
+    finally:
+        _cache_finish_fill(_scores_mmap_lock, _scores_mmap_pending, key)
 
 
 def _project_chunked(scores: np.ndarray, direction: np.ndarray,
@@ -513,6 +656,8 @@ def _bimodality(proj: np.ndarray) -> float:
 
 _random_bm_cache: "OrderedDict[tuple, list[float]]" = OrderedDict()
 _RANDOM_BM_CACHE_MAX = 64
+_random_bm_lock = threading.Lock()
+_random_bm_pending: dict[tuple, threading.Event] = {}
 
 
 def _random_bimodality_baseline(scores: np.ndarray, n_random: int = 50,
@@ -525,30 +670,39 @@ def _random_bimodality_baseline(scores: np.ndarray, n_random: int = 50,
     same score matrix is reused.
     """
     key = (scores.ctypes.data, scores.shape, n_random, seed)
-    if key in _random_bm_cache:
-        _random_bm_cache.move_to_end(key)
-        return _random_bm_cache[key]
-
-    rng = np.random.RandomState(seed)
-    N = scores.shape[0]
-    # Batched path: build all random directions at once, do ONE [N,K]×[K,M] BLAS call.
-    # Chunked so we don't allocate a full float32 copy of scores.
-    idxs = rng.choice(N, (n_random, 2), replace=True).astype(np.int64)
-    dirs = (scores[idxs[:, 0]].astype(np.float32)
-            - scores[idxs[:, 1]].astype(np.float32))
-    norms = np.linalg.norm(dirs, axis=1)
-    valid = norms > 1e-8
-    dirs = dirs[valid] / norms[valid, None]
-    if dirs.shape[0] == 0:
-        _random_bm_cache[key] = []
-        return []
-    projs = _project_chunked(scores, dirs.T)  # [N, M]
-    out: list[float] = [_bimodality(projs[:, j]) for j in range(projs.shape[1])]
-
-    _random_bm_cache[key] = out
-    while len(_random_bm_cache) > _RANDOM_BM_CACHE_MAX:
-        _random_bm_cache.popitem(last=False)
-    return out
+    while True:
+        cached = _ordered_cache_get(_random_bm_cache, key, _random_bm_lock)
+        if cached is not None:
+            return cached
+        if _cache_claim_fill(_random_bm_lock, _random_bm_pending, key):
+            break
+    try:
+        rng = np.random.RandomState(seed)
+        N = scores.shape[0]
+        # Batched path: build all random directions at once, do ONE [N,K]×[K,M] BLAS call.
+        # Chunked so we don't allocate a full float32 copy of scores.
+        idxs = rng.choice(N, (n_random, 2), replace=True).astype(np.int64)
+        dirs = (scores[idxs[:, 0]].astype(np.float32)
+                - scores[idxs[:, 1]].astype(np.float32))
+        norms = np.linalg.norm(dirs, axis=1)
+        valid = norms > 1e-8
+        dirs = dirs[valid] / norms[valid, None]
+        if dirs.shape[0] == 0:
+            out: list[float] = []
+        else:
+            projs = _project_chunked(scores, dirs.T)  # [N, M]
+            out = [_bimodality(projs[:, j]) for j in range(projs.shape[1])]
+        with _random_bm_lock:
+            cached = _random_bm_cache.get(key)
+            if cached is not None:
+                _random_bm_cache.move_to_end(key)
+                return cached
+            _random_bm_cache[key] = out
+            while len(_random_bm_cache) > _RANDOM_BM_CACHE_MAX:
+                _random_bm_cache.popitem(last=False)
+        return out
+    finally:
+        _cache_finish_fill(_random_bm_lock, _random_bm_pending, key)
 
 
 def _bimodality_percentile(bimodal_ratio: float,
@@ -589,14 +743,9 @@ def _functional_hit_rate(mri_path: str, layer: int,
         if token_ids is None:
             return None, None
         exits = np.load(str(exit_path), mmap_mode="r")
-        lmhead_key = f"{mri_path}:lmhead"
-        if lmhead_key not in _score_cache:
-            _score_cache_put(lmhead_key,
-                             np.load(str(lmhead_path)).astype(np.float32),
-                             active_mri=mri_path)
-        else:
-            _score_cache.move_to_end(lmhead_key)
-        lmhead = _score_cache[lmhead_key]
+        lmhead = _get_lmhead_f32(mri_path)
+        if lmhead is None:
+            return None, None
 
         vocab_a = int(token_ids[token_a])
         vocab_b = int(token_ids[token_b])
@@ -1036,14 +1185,9 @@ def _token_predicts(mri_path: str, token_idx: int, layer: int, top_k: int = 20) 
     exit_vec = exits[token_idx].astype(np.float32)
 
     # Load lmhead (cached after first access)
-    cache_key = f"{mri_path}:lmhead"
-    if cache_key not in _score_cache:
-        _score_cache_put(cache_key,
-                         np.load(str(lmhead_path)).astype(np.float32),
-                         active_mri=mri_path)
-    else:
-        _score_cache.move_to_end(cache_key)
-    lmhead = _score_cache[cache_key]
+    lmhead = _get_lmhead_f32(mri_path)
+    if lmhead is None:
+        return {"error": "No lmhead matrix"}
 
     # Project: logits = lmhead @ exit_vec
     logits = lmhead @ exit_vec
@@ -1978,6 +2122,8 @@ def _live_forward(mri_path: str, prompt: str, model_id: str = "") -> dict:
 
 
 _steer_backend_cache = {}
+_steer_backend_lock = threading.Lock()
+_steer_backend_pending: dict[str, threading.Event] = {}
 
 def _get_steer_backend(model_id: str):
     """Get or create a model backend for steering tests.
@@ -1989,20 +2135,32 @@ def _get_steer_backend(model_id: str):
 
     Raises on load failure — caller wraps in try/except.
     """
-    if model_id in _steer_backend_cache:
-        return _steer_backend_cache[model_id]
-    path = Path(model_id)
-    if model_id.endswith(".checkpoint.pt") and path.exists():
-        from .backend.decepticon import DecepticonBackend
-        backend = DecepticonBackend(str(path))
-    elif path.is_dir() and (path / "config.json").exists():
-        from .backend.hf import HFBackend
-        backend = HFBackend(str(path))
-    else:
-        from .backend.mlx import MLXBackend
-        backend = MLXBackend(model_id)
-    _steer_backend_cache[model_id] = backend
-    return backend
+    while True:
+        with _steer_backend_lock:
+            cached = _steer_backend_cache.get(model_id)
+            if cached is not None:
+                return cached
+        if _cache_claim_fill(_steer_backend_lock, _steer_backend_pending, model_id):
+            break
+    try:
+        path = Path(model_id)
+        if model_id.endswith(".checkpoint.pt") and path.exists():
+            from .backend.decepticon import DecepticonBackend
+            backend = DecepticonBackend(str(path))
+        elif path.is_dir() and (path / "config.json").exists():
+            from .backend.hf import HFBackend
+            backend = HFBackend(str(path))
+        else:
+            from .backend.mlx import MLXBackend
+            backend = MLXBackend(model_id)
+        with _steer_backend_lock:
+            cached = _steer_backend_cache.get(model_id)
+            if cached is not None:
+                return cached
+            _steer_backend_cache[model_id] = backend
+        return backend
+    finally:
+        _cache_finish_fill(_steer_backend_lock, _steer_backend_pending, model_id)
 
 
 def _direction_steer_test(mri_path: str, a: int, b: int, layer: int,
@@ -2096,45 +2254,82 @@ def _weight_alignment(mri_path: str, layer: int) -> dict:
 
 def _weight_alignment_all(mri_path: str) -> list | dict:
     """Get all weight-PC alignment data, cached in memory."""
-    if mri_path in _weight_align_cache:
-        return _weight_align_cache[mri_path]
-    p = Path(mri_path) / "decomp" / "weight_alignment.json"
-    if not p.exists():
-        return {"error": "No weight alignment. Re-run mri-decompose."}
-    data = json.loads(p.read_text())
-    _weight_align_cache[mri_path] = data
-    return data
+    while True:
+        with _weight_align_lock:
+            cached = _weight_align_cache.get(mri_path)
+            if cached is not None:
+                return cached
+        if _cache_claim_fill(_weight_align_lock, _weight_align_pending, mri_path):
+            break
+    try:
+        p = Path(mri_path) / "decomp" / "weight_alignment.json"
+        if not p.exists():
+            return {"error": "No weight alignment. Re-run mri-decompose."}
+        data = json.loads(p.read_text())
+        with _weight_align_lock:
+            cached = _weight_align_cache.get(mri_path)
+            if cached is not None:
+                return cached
+            _weight_align_cache[mri_path] = data
+        return data
+    finally:
+        _cache_finish_fill(_weight_align_lock, _weight_align_pending, mri_path)
 
 
 # Cache mmap'd gate/up arrays per MRI path — avoids 60 file opens per request
 _mlp_mmap_cache: dict[str, tuple] = {}  # mri_path → (n_layers, intermediate, gates[], ups[])
+_mlp_mmap_lock = threading.Lock()
+_mlp_mmap_pending: dict[str, threading.Event] = {}
 _NEURON_CACHE_MAX = 2000  # ~180MB at 90KB/entry
 _neuron_result_cache: dict[str, bytes] = {}  # "mri_path:token_idx" → result bytes
+_neuron_result_lock = threading.Lock()
+_neuron_result_pending: dict[str, threading.Event] = {}
+
+
+def _prune_neuron_result_cache_locked() -> None:
+    """Trim the neuron cache by 25% once it reaches the hard cap."""
+    if len(_neuron_result_cache) < _NEURON_CACHE_MAX:
+        return
+    keys = list(_neuron_result_cache.keys())
+    for k in keys[:len(keys) // 4]:
+        del _neuron_result_cache[k]
 
 def _get_mlp_mmaps(mri_path: str):
-    if mri_path in _mlp_mmap_cache:
-        return _mlp_mmap_cache[mri_path]
-    mri_dir = Path(mri_path)
-    meta_path = mri_dir / "metadata.json"
-    if not meta_path.exists():
-        return None
-    meta = json.loads(meta_path.read_text())
-    n_layers = meta['model']['n_layers']
-    intermediate = meta['capture'].get('intermediate_size', 0)
-    if not intermediate:
-        return None
-    mlp_dir = mri_dir / "mlp"
-    if not mlp_dir.exists():
-        return None
-    gates, ups = [], []
-    for li in range(n_layers):
-        gp = mlp_dir / f"L{li:02d}_gate.npy"
-        up = mlp_dir / f"L{li:02d}_up.npy"
-        gates.append(np.load(str(gp), mmap_mode='r') if gp.exists() else None)
-        ups.append(np.load(str(up), mmap_mode='r') if up.exists() else None)
-    entry = (n_layers, intermediate, gates, ups)
-    _mlp_mmap_cache[mri_path] = entry
-    return entry
+    while True:
+        with _mlp_mmap_lock:
+            cached = _mlp_mmap_cache.get(mri_path)
+            if cached is not None:
+                return cached
+        if _cache_claim_fill(_mlp_mmap_lock, _mlp_mmap_pending, mri_path):
+            break
+    try:
+        mri_dir = Path(mri_path)
+        meta_path = mri_dir / "metadata.json"
+        if not meta_path.exists():
+            return None
+        meta = json.loads(meta_path.read_text())
+        n_layers = meta['model']['n_layers']
+        intermediate = meta['capture'].get('intermediate_size', 0)
+        if not intermediate:
+            return None
+        mlp_dir = mri_dir / "mlp"
+        if not mlp_dir.exists():
+            return None
+        gates, ups = [], []
+        for li in range(n_layers):
+            gp = mlp_dir / f"L{li:02d}_gate.npy"
+            up = mlp_dir / f"L{li:02d}_up.npy"
+            gates.append(np.load(str(gp), mmap_mode='r') if gp.exists() else None)
+            ups.append(np.load(str(up), mmap_mode='r') if up.exists() else None)
+        entry = (n_layers, intermediate, gates, ups)
+        with _mlp_mmap_lock:
+            cached = _mlp_mmap_cache.get(mri_path)
+            if cached is not None:
+                return cached
+            _mlp_mmap_cache[mri_path] = entry
+        return entry
+    finally:
+        _cache_finish_fill(_mlp_mmap_lock, _mlp_mmap_pending, mri_path)
 
 
 def _neuron_field(mri_path: str, token_idx: int) -> bytes | dict:
@@ -2147,83 +2342,106 @@ def _neuron_field(mri_path: str, token_idx: int) -> bytes | dict:
     Falls back to per-layer mmaps if index doesn't exist.
     """
     cache_key = f"{mri_path}:{token_idx}"
-    if cache_key in _neuron_result_cache:
-        return _neuron_result_cache[cache_key]
+    while True:
+        with _neuron_result_lock:
+            cached = _neuron_result_cache.get(cache_key)
+            if cached is not None:
+                return cached
+        if _cache_claim_fill(_neuron_result_lock, _neuron_result_pending, cache_key):
+            break
 
-    # Fast path: transposed index
-    tok_idx_path = Path(mri_path) / "decomp" / "token_neurons.bin"
-    if tok_idx_path.exists():
-        import struct as _st
-        with open(tok_idx_path, 'rb') as f:
-            hdr = f.read(16)
-            magic, n_tok, n_layers, intermediate = _st.unpack('<4sIII', hdr)
-            if magic == b'TOKN' and token_idx < n_tok:
-                stride = n_layers * intermediate * 2
-                f.seek(16 + token_idx * stride)
-                data = f.read(stride)
-                if len(_neuron_result_cache) >= _NEURON_CACHE_MAX:
-                    keys = list(_neuron_result_cache.keys())
-                    for k in keys[:len(keys) // 4]:
-                        del _neuron_result_cache[k]
-                _neuron_result_cache[cache_key] = data
-                return data
+    try:
+        # Fast path: transposed index
+        tok_idx_path = Path(mri_path) / "decomp" / "token_neurons.bin"
+        if tok_idx_path.exists():
+            import struct as _st
+            with open(tok_idx_path, 'rb') as f:
+                hdr = f.read(16)
+                magic, n_tok, n_layers, intermediate = _st.unpack('<4sIII', hdr)
+                if magic == b'TOKN' and token_idx < n_tok:
+                    stride = n_layers * intermediate * 2
+                    f.seek(16 + token_idx * stride)
+                    data = f.read(stride)
+                    with _neuron_result_lock:
+                        cached = _neuron_result_cache.get(cache_key)
+                        if cached is not None:
+                            return cached
+                        _prune_neuron_result_cache_locked()
+                        _neuron_result_cache[cache_key] = data
+                    return data
 
-    # Slow path: gather from per-layer mmaps
-    entry = _get_mlp_mmaps(mri_path)
-    if not entry:
-        return {"error": "No MLP data"}
-    n_layers, intermediate, gates, ups = entry
-    result = np.zeros((n_layers, intermediate), dtype=np.float16)
-    for li in range(n_layers):
-        g = gates[li]
-        if g is None:
-            continue
-        if token_idx >= g.shape[0]:
-            return {"error": f"Token {token_idx} out of range (max {g.shape[0]-1})"}
-        gt = g[token_idx].astype(np.float32)
-        u = ups[li]
-        if u is not None:
-            result[li] = (gt * u[token_idx].astype(np.float32)).astype(np.float16)
-        else:
-            result[li] = gt.astype(np.float16)
-    data = result.tobytes()
-    if len(_neuron_result_cache) >= _NEURON_CACHE_MAX:
-        keys = list(_neuron_result_cache.keys())
-        for k in keys[:len(keys) // 4]:
-            del _neuron_result_cache[k]
-    _neuron_result_cache[cache_key] = data
-    return data
+        # Slow path: gather from per-layer mmaps
+        entry = _get_mlp_mmaps(mri_path)
+        if not entry:
+            return {"error": "No MLP data"}
+        n_layers, intermediate, gates, ups = entry
+        result = np.zeros((n_layers, intermediate), dtype=np.float16)
+        for li in range(n_layers):
+            g = gates[li]
+            if g is None:
+                continue
+            if token_idx >= g.shape[0]:
+                return {"error": f"Token {token_idx} out of range (max {g.shape[0]-1})"}
+            gt = g[token_idx].astype(np.float32)
+            u = ups[li]
+            if u is not None:
+                result[li] = (gt * u[token_idx].astype(np.float32)).astype(np.float16)
+            else:
+                result[li] = gt.astype(np.float16)
+        data = result.tobytes()
+        with _neuron_result_lock:
+            cached = _neuron_result_cache.get(cache_key)
+            if cached is not None:
+                return cached
+            _prune_neuron_result_cache_locked()
+            _neuron_result_cache[cache_key] = data
+        return data
+    finally:
+        _cache_finish_fill(_neuron_result_lock, _neuron_result_pending, cache_key)
 
 
 # Cache decomp score mmaps: mri_path → {layer_idx: np.memmap}
 _decomp_score_cache: dict[str, dict] = {}
+_decomp_score_cache_lock = threading.Lock()
+_decomp_score_cache_pending: dict[tuple[str, int], threading.Event] = {}
 
 def _get_score_mmap(mri_path: str, layer: int):
     """Get mmap'd score array for a layer, cached."""
-    if mri_path not in _decomp_score_cache:
-        _decomp_score_cache[mri_path] = {}
-    cache = _decomp_score_cache[mri_path]
-    if layer in cache:
-        return cache[layer]
-    decomp = Path(mri_path) / "decomp"
-    meta_path = decomp / "meta.json"
-    if not meta_path.exists():
-        return None
-    meta = json.loads(meta_path.read_text())
-    n_real = meta.get("n_real_layers", meta["n_layers"])
-    if layer < n_real:
-        sp = decomp / f"L{layer:02d}_scores.npy"
-    elif layer == n_real:
-        sp = decomp / "emb_scores.npy"
-    elif layer == n_real + 1:
-        sp = decomp / "lmh_scores.npy"
-    else:
-        return None
-    if not sp.exists():
-        return None
-    arr = np.load(str(sp), mmap_mode='r')
-    cache[layer] = arr
-    return arr
+    key = (mri_path, layer)
+    while True:
+        with _decomp_score_cache_lock:
+            cache = _decomp_score_cache.get(mri_path)
+            if cache is not None and layer in cache:
+                return cache[layer]
+        if _cache_claim_fill(_decomp_score_cache_lock, _decomp_score_cache_pending, key):
+            break
+    try:
+        decomp = Path(mri_path) / "decomp"
+        meta_path = decomp / "meta.json"
+        if not meta_path.exists():
+            return None
+        meta = json.loads(meta_path.read_text())
+        n_real = meta.get("n_real_layers", meta["n_layers"])
+        if layer < n_real:
+            sp = decomp / f"L{layer:02d}_scores.npy"
+        elif layer == n_real:
+            sp = decomp / "emb_scores.npy"
+        elif layer == n_real + 1:
+            sp = decomp / "lmh_scores.npy"
+        else:
+            return None
+        if not sp.exists():
+            return None
+        arr = np.load(str(sp), mmap_mode='r')
+        with _decomp_score_cache_lock:
+            cache = _decomp_score_cache.setdefault(mri_path, {})
+            cached = cache.get(layer)
+            if cached is not None:
+                return cached
+            cache[layer] = arr
+        return arr
+    finally:
+        _cache_finish_fill(_decomp_score_cache_lock, _decomp_score_cache_pending, key)
 
 
 def _pc_column_cached(mri_path: str, pc: int, layer: int) -> bytes | dict:
@@ -2285,18 +2503,212 @@ def _token_layer_scores(mri_path: str, token: int, layer: int) -> bytes | dict:
     return header + row.tobytes()
 
 
+def _dedupe_ints(values: list[int]) -> list[int]:
+    out: list[int] = []
+    seen: set[int] = set()
+    for value in values:
+        iv = int(value)
+        if iv in seen:
+            continue
+        seen.add(iv)
+        out.append(iv)
+    return out
+
+
+def _read_pc_index_slabs(mri_path: str, pcs: list[int], step: int | None = None) -> tuple[int, int, np.ndarray] | dict:
+    """Read multiple PC-major slabs in one pass from the serve/decomp index.
+
+    Returns ``(n_layers, n_tokens_or_sample, slabs)`` where ``slabs`` is
+    float16 ``[n_pcs, n_layers, n_tokens_or_sample]``.
+    """
+    pcs = _dedupe_ints(pcs)
+    if not pcs:
+        idx_path, _, _ = resolve_pc_index(mri_path, step=step if step and step > 1 else None)
+        if not idx_path or not idx_path.exists():
+            return {"error": "No PC index"}
+        with open(idx_path, 'rb') as f:
+            n_layers, n_tok, _ = struct.unpack('<4sIII', f.read(16))[1:]
+        return n_layers, n_tok, np.zeros((0, n_layers, n_tok), dtype=np.float16)
+
+    idx_path, _, n_tok_orig = resolve_pc_index(mri_path, step=step if step and step > 1 else None)
+    if not idx_path or not idx_path.exists():
+        return {"error": "No PC index"}
+
+    with open(idx_path, 'rb') as f:
+        hdr = f.read(16)
+        magic, n_layers, n_tok_file, full_k = struct.unpack('<4sIII', hdr)
+        if magic != b'PCSC':
+            return {"error": f"Bad PC index magic: {magic!r}"}
+        stride = n_layers * n_tok_file * 2
+        slabs = np.zeros((len(pcs), n_layers, n_tok_file), dtype=np.float16)
+        for pi, pc in enumerate(pcs):
+            if pc < 0 or pc >= full_k:
+                return {"error": f"PC {pc} out of range (max {full_k-1})"}
+            f.seek(16 + pc * stride)
+            slabs[pi] = np.frombuffer(f.read(stride), dtype=np.float16).reshape(n_layers, n_tok_file)
+
+    if step and step > 1 and n_tok_file == n_tok_orig:
+        slabs = slabs[:, :, ::step].copy()
+        n_tok_file = slabs.shape[2]
+    return n_layers, n_tok_file, slabs
+
+
+def _cloud_bundle(mri_path: str, full_pcs: list[int], medium_pcs: list[int], step: int = 10) -> bytes | dict:
+    """Bundle the cloud/browser score substrate into one response.
+
+    Layout:
+      [4s magic][7I version, n_full, n_med, n_layers, n_tok, n_sample, step]
+      [uint32 * n_full pcs][uint32 * n_med pcs]
+      [float16 full slabs][float16 medium slabs]
+    """
+    full_ids = _dedupe_ints(full_pcs)
+    medium_ids = [pc for pc in _dedupe_ints(medium_pcs) if pc not in set(full_ids)]
+
+    full_result = _read_pc_index_slabs(mri_path, full_ids)
+    if isinstance(full_result, dict):
+        return full_result
+    n_layers, n_tok, full_slabs = full_result
+
+    if medium_ids:
+        med_result = _read_pc_index_slabs(mri_path, medium_ids, step=step)
+        if isinstance(med_result, dict):
+            return med_result
+        med_layers, n_sample, med_slabs = med_result
+        if med_layers != n_layers:
+            return {"error": "Cloud bundle layer mismatch"}
+    else:
+        n_sample = (n_tok + step - 1) // step if step > 1 else n_tok
+        med_slabs = np.zeros((0, n_layers, n_sample), dtype=np.float16)
+
+    header = struct.pack(
+        '<4sIIIIIII',
+        _CLOUD_BUNDLE_MAGIC,
+        _BUNDLE_VERSION,
+        len(full_ids),
+        len(medium_ids),
+        n_layers,
+        n_tok,
+        n_sample,
+        step,
+    )
+    full_ids_bytes = struct.pack(f'<{len(full_ids)}I', *full_ids) if full_ids else b''
+    medium_ids_bytes = struct.pack(f'<{len(medium_ids)}I', *medium_ids) if medium_ids else b''
+    return header + full_ids_bytes + medium_ids_bytes + full_slabs.tobytes() + med_slabs.tobytes()
+
+
+def _read_token_index_rows(mri_path: str, tokens: list[int]) -> tuple[int, int, np.ndarray] | dict:
+    """Read multiple token-major full PCA rows in one pass.
+
+    Returns ``(n_layers, full_k, rows)`` where ``rows`` is float32
+    ``[n_tokens, n_layers, full_k]``.
+    """
+    token_ids = _dedupe_ints(tokens)
+    tok_idx_path = resolve_token_index(mri_path)
+    if not tok_idx_path or not tok_idx_path.exists():
+        return {"error": "No token-major index"}
+    with open(tok_idx_path, 'rb') as f:
+        hdr = f.read(16)
+        magic, n_tok, n_layers, full_k = struct.unpack('<4sIII', hdr)
+        if magic != b'TOKS':
+            return {"error": f"Bad token index magic: {magic!r}"}
+        stride = n_layers * full_k * 2
+        rows = np.zeros((len(token_ids), n_layers, full_k), dtype=np.float32)
+        for ti, token_idx in enumerate(token_ids):
+            if token_idx < 0 or token_idx >= n_tok:
+                return {"error": f"Token {token_idx} out of range (max {n_tok-1})"}
+            f.seek(16 + token_idx * stride)
+            row = np.frombuffer(f.read(stride), dtype=np.float16).reshape(n_layers, full_k)
+            rows[ti] = row.astype(np.float32)
+    return n_layers, full_k, rows
+
+
+def _token_bundle(mri_path: str, full_tokens: list[int], hover_tokens: list[int], layer: int) -> bytes | dict:
+    """Bundle exact token-major and hover payloads into one response.
+
+    Entry layout:
+      [6I token, flags, n_layers, full_k, hover_k, hover_inter]
+      payloads in entry order:
+        full PCA float32 [n_layers * full_k] if flags & 1
+        hover pc float16 [hover_k] if flags & 2
+        hover neurons float16 [hover_inter] if flags & 4
+    """
+    full_ids = _dedupe_ints(full_tokens)
+    hover_ids = _dedupe_ints(hover_tokens)
+    token_ids = _dedupe_ints(full_ids + hover_ids)
+    if not token_ids:
+        header = struct.pack('<4sIII', _TOKEN_BUNDLE_MAGIC, _BUNDLE_VERSION, layer, 0)
+        return header
+
+    rows_by_token: dict[int, tuple[int, int, np.ndarray]] = {}
+    row_result = _read_token_index_rows(mri_path, token_ids)
+    if isinstance(row_result, dict):
+        return row_result
+    if token_ids:
+        full_result = row_result
+        if isinstance(full_result, dict):
+            return full_result
+        n_layers, full_k, rows = full_result
+        for ti, token_idx in enumerate(token_ids):
+            rows_by_token[token_idx] = (n_layers, full_k, rows[ti])
+
+    entry_headers: list[bytes] = []
+    payloads: list[bytes] = []
+    for token_idx in token_ids:
+        flags = 0
+        n_layers = 0
+        full_k = 0
+        hover_k = 0
+        hover_inter = 0
+
+        if token_idx in rows_by_token:
+            n_layers, full_k, row = rows_by_token[token_idx]
+        if token_idx in full_ids:
+            flags |= 1
+            payloads.append(np.ascontiguousarray(row, dtype=np.float32).tobytes())
+
+        if token_idx in hover_ids:
+            row_info = rows_by_token.get(token_idx)
+            if row_info is None:
+                return {"error": f"Missing token row for {token_idx}"}
+            row_n_layers, row_full_k, row = row_info
+            if layer < 0 or layer >= row_n_layers:
+                return {"error": f"Layer {layer} out of range (max {row_n_layers-1})"}
+            hover_k = row_full_k
+            hover_row = row[layer].astype(np.float16)
+            hover_inter = 0
+            neuron_bytes = b''
+            hover_blob = _token_hover(mri_path, token_idx, layer)
+            if not isinstance(hover_blob, dict):
+                hover_k_blob, hover_inter_blob, _ = struct.unpack('<III', hover_blob[:12])
+                u16 = np.frombuffer(hover_blob[12:], dtype=np.uint16)
+                if hover_k_blob == hover_k:
+                    hover_row = u16[:hover_k_blob].view(np.float16)
+                hover_inter = hover_inter_blob
+                neuron_bytes = u16[hover_k_blob:hover_k_blob + hover_inter_blob].tobytes()
+            flags |= 2
+            payloads.append(np.ascontiguousarray(hover_row, dtype=np.float16).tobytes())
+            if hover_inter:
+                flags |= 4
+                payloads.append(neuron_bytes)
+
+        entry_headers.append(struct.pack('<IIIIII', token_idx, flags, n_layers, full_k, hover_k, hover_inter))
+
+    header = struct.pack('<4sIII', _TOKEN_BUNDLE_MAGIC, _BUNDLE_VERSION, layer, len(token_ids))
+    return header + b''.join(entry_headers) + b''.join(payloads)
+
+
 def _pc_full(mri_path: str, pc: int) -> bytes | dict:
     """One PC, all tokens, all layers. Returns float16 [nLayers × nTokens].
     ~3.1MB for SmolLM2-135M (32 layers × 48660 tokens × 2 bytes).
 
-    Uses PC-major index (pc_scores.bin) for single-seek O(1) reads.
+    Uses the serve PC-major index for single-seek O(1) reads when present.
     Falls back to per-layer mmaps if index doesn't exist.
     """
     decomp = Path(mri_path) / "decomp"
 
     # Fast path: PC-major index — one seek, one sequential read
-    pc_idx_path = decomp / "pc_scores.bin"
-    if pc_idx_path.exists():
+    pc_idx_path, _, _ = resolve_pc_index(mri_path)
+    if pc_idx_path and pc_idx_path.exists():
         import struct as _st
         with open(pc_idx_path, 'rb') as f:
             hdr = f.read(16)
@@ -2338,6 +2750,25 @@ def _pc_medium(mri_path: str, pcs: list[int], step: int = 10) -> bytes | dict:
     """Multiple PCs, sampled tokens, all layers.
     ~312KB per PC for SmolLM2-135M at step=10 (32 layers × 4866 tokens × 2 bytes).
     """
+    idx_path, n_sample, n_tok = resolve_pc_index(mri_path, step=step)
+    if idx_path and idx_path.exists():
+        import struct as _st
+        with open(idx_path, 'rb') as f:
+            hdr = f.read(16)
+            magic, n_layers, n_tok_file, full_k = _st.unpack('<4sIII', hdr)
+            if magic == b'PCSC':
+                n_pcs = len(pcs)
+                slab = np.zeros((n_pcs, n_layers, n_tok_file), dtype=np.float16)
+                stride = n_layers * n_tok_file * 2
+                for pi, pc in enumerate(pcs):
+                    if pc >= full_k:
+                        continue
+                    f.seek(16 + pc * stride)
+                    slab[pi] = np.frombuffer(f.read(stride), dtype=np.float16).reshape(n_layers, n_tok_file)
+                header = _st.pack('<IIIII', n_pcs, n_layers, n_tok_file, step, n_tok or n_tok_file)
+                pc_bytes = _st.pack(f'<{n_pcs}I', *pcs)
+                return header + pc_bytes + slab.tobytes()
+
     decomp = Path(mri_path) / "decomp"
     meta_path = decomp / "meta.json"
     if not meta_path.exists():
@@ -2362,7 +2793,6 @@ def _pc_medium(mri_path: str, pcs: list[int], step: int = 10) -> bytes | dict:
                 result[pi, li] = arr[::step, pc].astype(np.float16)[:n_sample]
     import struct
     header = struct.pack('<IIIII', n_pcs, n_total, n_sample, step, n_tok)
-    # Append PC indices
     pc_bytes = struct.pack(f'<{n_pcs}I', *pcs)
     return header + pc_bytes + result.tobytes()
 
@@ -2370,14 +2800,14 @@ def _pc_medium(mri_path: str, pcs: list[int], step: int = 10) -> bytes | dict:
 def _token_pca_full(mri_path: str, token_idx: int) -> bytes | dict:
     """All PC scores for one token across all layers.
 
-    Uses transposed index (token_scores.bin) for single-seek O(1) reads.
+    Uses the serve token-major index for single-seek O(1) reads when present.
     Falls back to per-layer mmaps if index doesn't exist.
     """
     decomp = Path(mri_path) / "decomp"
-    tok_idx_path = decomp / "token_scores.bin"
+    tok_idx_path = resolve_token_index(mri_path)
 
     # Fast path: transposed index — one seek, one read
-    if tok_idx_path.exists():
+    if tok_idx_path and tok_idx_path.exists():
         import struct as _st
         with open(tok_idx_path, 'rb') as f:
             hdr = f.read(16)
@@ -2653,6 +3083,12 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             self._send_json({"messages": chat_drain()})
             return
 
+        if path == '/favicon.ico':
+            self.send_response(204)
+            self.send_header('Content-Length', '0')
+            self.end_headers()
+            return
+
         if path == '/' or path == '/index.html':
             ui_path = Path(__file__).parent / "companion_ui.html"
             self._send_html(ui_path.read_text())
@@ -2743,6 +3179,14 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 self._send_json(result)
             else:
                 self._send_json({"error": "Usage: /api/decomp-meta/<model>/<mode>"})
+        elif path.startswith('/api/serve-meta/'):
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                mri_path = self._mri_path(model, mode)
+                self._send_json(load_serve_meta(mri_path))
+            else:
+                self._send_json({"error": "Usage: /api/serve-meta/<model>/<mode>"})
         elif path.startswith('/api/token-bio/'):
             parts = path.split('/')
             if len(parts) >= 5:
@@ -2761,6 +3205,36 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                     self._send_file(hp)
                 else:
                     self._send_json({"error": "No gate heatmap"})
+        elif path.startswith('/api/cloud-bundle/'):
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                full_pcs = [int(p) for p in qs.get('full', [''])[0].split(',') if p]
+                medium_pcs = [int(p) for p in qs.get('medium', [''])[0].split(',') if p]
+                step = int(qs.get('step', ['10'])[0])
+                mri_path = self._mri_path(model, mode)
+                result = _cloud_bundle(mri_path, full_pcs, medium_pcs, step=step)
+                if isinstance(result, dict):
+                    self._send_json(result)
+                else:
+                    self._send_bytes(result)
+            else:
+                self._send_json({"error": "Usage: /api/cloud-bundle/<model>/<mode>?full=...&medium=...&step=N"})
+        elif path.startswith('/api/token-bundle/'):
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                full_tokens = [int(t) for t in qs.get('full', [''])[0].split(',') if t]
+                hover_tokens = [int(t) for t in qs.get('hover', [''])[0].split(',') if t]
+                layer = int(qs.get('layer', ['0'])[0])
+                mri_path = self._mri_path(model, mode)
+                result = _token_bundle(mri_path, full_tokens, hover_tokens, layer)
+                if isinstance(result, dict):
+                    self._send_json(result)
+                else:
+                    self._send_bytes(result)
+            else:
+                self._send_json({"error": "Usage: /api/token-bundle/<model>/<mode>?full=...&hover=...&layer=N"})
         elif path.startswith('/api/pc-full/'):
             parts = path.split('/')
             if len(parts) >= 5:
