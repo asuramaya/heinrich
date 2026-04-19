@@ -457,6 +457,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_cb_effctx.add_argument("--result-json", default=None, help="Path to result.json for model config")
     p_cb_effctx.add_argument("--tokenizer-path", default=None, help="Path to tokenizer model")
 
+    p_cb_abl = sub.add_parser("profile-cb-ablations",
+                              help="Per-path bpb contribution: substrate/local/truncate ablations")
+    p_cb_abl.add_argument("--model", required=True, help="Checkpoint path (.checkpoint.pt)")
+    p_cb_abl.add_argument("--ablate", required=True,
+                          help="Ablation mode: substrate | local | truncate:K")
+    p_cb_abl.add_argument("--val", default=None, help="Val bytes file (optional)")
+    p_cb_abl.add_argument("--n-tokens", type=int, default=50000,
+                          help="Number of token predictions to measure over (default: 50000)")
+    p_cb_abl.add_argument("--result-json", default=None, help="Path to result.json")
+    p_cb_abl.add_argument("--tokenizer-path", default=None, help="Path to tokenizer model")
+
     p_lookup = sub.add_parser("profile-lookup-fraction", help="How much of language modeling is a table lookup vs computation?")
     p_lookup.add_argument("--mri", required=True, help=".mri directory")
     p_lookup.add_argument("--n-sample", type=int, default=5000, help="Tokens to sample (default: 5000)")
@@ -863,6 +874,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_cb_reproduce(args)
     elif args.command == "profile-cb-effective-context":
         _cmd_cb_effective_context(args)
+    elif args.command == "profile-cb-ablations":
+        _cmd_cb_ablations(args)
     elif args.command == "profile-lookup-fraction":
         _cmd_lookup_fraction(args)
     elif args.command == "profile-distribution-drift":
@@ -3565,6 +3578,32 @@ def _cmd_cb_effective_context(args: argparse.Namespace) -> None:
         else:
             print(f"  knee: [{r['knee_bucket_min']},{r['knee_bucket_max']})")
         print(f"  saturation_bpb: {r['saturation_bpb']:.4f}\n")
+
+    _json_or(args, result, _fmt)
+
+
+def _cmd_cb_ablations(args: argparse.Namespace) -> None:
+    """Ablation forensics: substrate/local/truncate path contributions to bpb."""
+    from .profile.compare import _cb_ablations
+
+    result = _cb_ablations(
+        model_path=args.model,
+        ablate=args.ablate,
+        val=args.val,
+        n_tokens=args.n_tokens,
+        result_json=getattr(args, "result_json", None),
+        tokenizer_path=getattr(args, "tokenizer_path", None),
+    )
+
+    def _fmt(r: dict) -> None:
+        print(f"\n=== Ablation forensics for {r['model']} ===\n")
+        print(f"  ablation: {r['ablation']}")
+        print(f"  n_tokens: {r['n_tokens']}\n")
+        print(f"  baseline:   {r['baseline_bpb']:.4f} bpb")
+        print(f"  ablated:    {r['ablated_bpb']:.4f} bpb")
+        sign = "+" if r["delta_bpb"] >= 0 else ""
+        print(f"  delta:     {sign}{r['delta_bpb']:.4f} bpb  "
+              f"({r['multiplier']:.3f}×)\n")
 
     _json_or(args, result, _fmt)
 
