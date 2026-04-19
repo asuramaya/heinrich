@@ -405,7 +405,7 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Rows sampled per SVD for tail-PC position R² (default: 5000)")
 
     p_cb_pcb = sub.add_parser("profile-cb-pc-bands",
-                               help="PC-band decomposition: reports variance %, position R², byte R² per PC band on a CB substrate. Detects two-band (content + position) partitions that EffDim undercounts.")
+                               help="PC-band decomposition: reports variance %%, position R², byte R² per PC band on a CB substrate. Detects two-band (content + position) partitions that EffDim undercounts.")
     p_cb_pcb.add_argument("--mris", nargs="+", required=True, help="One or more .seq.mri directories")
     p_cb_pcb.add_argument("--n-bootstrap", type=int, default=0,
                            help="Bootstrap K train/test splits for per-band pos_r2 ± SEM (default: 0 = off)")
@@ -535,7 +535,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_earlyexit = sub.add_parser("profile-early-exit", help="Find tokens resolved before the final layer (reads MRI)")
     p_earlyexit.add_argument("--mri", required=True, help=".mri directory")
-    p_earlyexit.add_argument("--threshold", type=float, default=95.0, help="Cosine similarity threshold (%)")
+    p_earlyexit.add_argument("--threshold", type=float, default=95.0, help="Cosine similarity threshold (%%)")
 
     p_tmplover = sub.add_parser("profile-template-overhead", help="Measure template vs content contribution per layer")
     p_tmplover.add_argument("--template-mri", required=True, help="Template mode .mri directory")
