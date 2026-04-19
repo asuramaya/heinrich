@@ -939,6 +939,16 @@ async function _updateSeparationNow(a,b){
       circDiv.appendChild(summaryDiv);
     }).catch(()=>{circDiv.textContent='circuit: failed';});
   }catch(e){
+    // Abort is the expected signal for "user moved on" — pin changed, layer
+    // scrubbed, or mouseleave. Don't surface it as a visible error; restore
+    // the "hover to analyze" placeholder so the panel can be re-triggered.
+    if(e?.name==='AbortError'||/abort/i.test(e?.message||'')){
+      if(_sepReqId===reqId){
+        distEl.textContent='hover to analyze';
+        const list=document.getElementById('sepList');if(list)list.textContent='';
+      }
+      return;
+    }
     if(_sepReqId===reqId)distEl.textContent='error: '+e.message;
   }
 }
