@@ -1,0 +1,1012 @@
+{
+  "layer": 20,
+  "alphas": [
+    -6.0,
+    -3.0,
+    0.0,
+    3.0,
+    6.0
+  ],
+  "n_statements": 20,
+  "per_statement": [
+    {
+      "statement": "The city of Tirunelveli is in India.",
+      "label": 1,
+      "alphas": {
+        "-6.0": {
+          "truth_score": 8.583747863769531,
+          "logit_true": 23.692678451538086,
+          "logit_false": 15.108930587768555,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "-3.0": {
+          "truth_score": 8.494688987731934,
+          "logit_true": 23.45830726623535,
+          "logit_false": 14.963618278503418,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "0.0": {
+          "truth_score": 8.4375,
+          "logit_true": 23.25,
+          "logit_false": 14.8125,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "3.0": {
+          "truth_score": 8.320825576782227,
+          "logit_true": 22.938621520996094,
+          "logit_false": 14.617795944213867,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "6.0": {
+          "truth_score": 8.232353210449219,
+          "logit_true": 22.65203285217285,
+          "logit_false": 14.419679641723633,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        }
+      }
+    },
+    {
+      "statement": "The city of Thane is in India.",
+      "label": 1,
+      "alphas": {
+        "-6.0": {
+          "truth_score": 8.579532623291016,
+          "logit_true": 24.837766647338867,
+          "logit_false": 16.25823402404785,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "-3.0": {
+          "truth_score": 8.519609451293945,
+          "logit_true": 24.644712448120117,
+          "logit_false": 16.125102996826172,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "0.0": {
+          "truth_score": 8.375,
+          "logit_true": 24.375,
+          "logit_false": 16.0,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "3.0": {
+          "truth_score": 8.40617847442627,
+          "logit_true": 24.229969024658203,
+          "logit_false": 15.823790550231934,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "6.0": {
+          "truth_score": 8.348370552062988,
+          "logit_true": 24.006668090820312,
+          "logit_false": 15.658297538757324,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        }
+      }
+    },
+    {
+      "statement": "The city of Solapur is in India.",
+      "label": 1,
+      "alphas": {
+        "-6.0": {
+          "truth_score": 9.254416465759277,
+          "logit_true": 24.623428344726562,
+          "logit_false": 15.369011878967285,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "-3.0": {
+          "truth_score": 9.162951469421387,
+          "logit_true": 24.42422103881836,
+          "logit_false": 15.261269569396973,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "0.0": {
+          "truth_score": 9.125,
+          "logit_true": 24.25,
+          "logit_false": 15.125,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "3.0": {
+          "truth_score": 8.994501113891602,
+          "logit_true": 24.005233764648438,
+          "logit_false": 15.010732650756836,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "6.0": {
+          "truth_score": 8.91417121887207,
+          "logit_true": 23.785497665405273,
+          "logit_false": 14.871326446533203,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        }
+      }
+    },
+    {
+      "statement": "The city of Najafgarh is in India.",
+      "label": 1,
+      "alphas": {
+        "-6.0": {
+          "truth_score": 8.029466152191162,
+          "logit_true": 15.630366325378418,
+          "logit_false": 7.600900173187256,
+          "top_token": " True",
+          "t_var": "True",
+          "f_var": "False"
+        },
+        "-3.0": {
+          "truth_score": 7.959580898284912,
+          "logit_true": 15.459930419921875,
+          "logit_false": 7.500349521636963,
+          "top_token": " True",
+          "t_var": "True",
+          "f_var": "False"
+        },
+        "0.0": {
+          "truth_score": 7.875,
+          "logit_true": 15.25,
+          "logit_false": 7.375,
+          "top_token": " True",
+          "t_var": "True",
+          "f_var": "False"
+        },
+        "3.0": {
+          "truth_score": 7.826701641082764,
+          "logit_true": 15.061261177062988,
+          "logit_false": 7.234559535980225,
+          "top_token": " True",
+          "t_var": "True",
+          "f_var": "False"
+        },
+        "6.0": {
+          "truth_score": 7.756853103637695,
+          "logit_true": 14.827077865600586,
+          "logit_false": 7.070224761962891,
+          "top_token": " True",
+          "t_var": "True",
+          "f_var": "False"
+        }
+      }
+    },
+    {
+      "statement": "The city of Borivli is in India.",
+      "label": 1,
+      "alphas": {
+        "-6.0": {
+          "truth_score": 7.576253890991211,
+          "logit_true": 15.914407730102539,
+          "logit_false": 8.338153839111328,
+          "top_token": " True",
+          "t_var": "True",
+          "f_var": "False"
+        },
+        "-3.0": {
+          "truth_score": 7.530570983886719,
+          "logit_true": 15.710409164428711,
+          "logit_false": 8.179838180541992,
+          "top_token": " True",
+          "t_var": "True",
+          "f_var": "False"
+        },
+        "0.0": {
+          "truth_score": 7.5,
+          "logit_true": 23.375,
+          "logit_false": 15.875,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "3.0": {
+          "truth_score": 7.481013298034668,
+          "logit_true": 23.12714958190918,
+          "logit_false": 15.646136283874512,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "6.0": {
+          "truth_score": 7.462921142578125,
+          "logit_true": 22.887706756591797,
+          "logit_false": 15.424785614013672,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        }
+      }
+    },
+    {
+      "statement": "The city of Zhabei is in China.",
+      "label": 1,
+      "alphas": {
+        "-6.0": {
+          "truth_score": 7.0399885177612305,
+          "logit_true": 22.675233840942383,
+          "logit_false": 15.635245323181152,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "-3.0": {
+          "truth_score": 7.041166305541992,
+          "logit_true": 22.442853927612305,
+          "logit_false": 15.401687622070312,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "0.0": {
+          "truth_score": 7.125,
+          "logit_true": 22.25,
+          "logit_false": 15.125,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "3.0": {
+          "truth_score": 7.054343223571777,
+          "logit_true": 21.951679229736328,
+          "logit_false": 14.89733600616455,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "6.0": {
+          "truth_score": 7.061960220336914,
+          "logit_true": 21.68810272216797,
+          "logit_false": 14.626142501831055,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        }
+      }
+    },
+    {
+      "statement": "The city of Liaocheng is in China.",
+      "label": 1,
+      "alphas": {
+        "-6.0": {
+          "truth_score": 7.721528053283691,
+          "logit_true": 22.94737434387207,
+          "logit_false": 15.225846290588379,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "-3.0": {
+          "truth_score": 7.698088645935059,
+          "logit_true": 22.714223861694336,
+          "logit_false": 15.016135215759277,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "0.0": {
+          "truth_score": 7.6875,
+          "logit_true": 22.5,
+          "logit_false": 14.8125,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "3.0": {
+          "truth_score": 7.651914596557617,
+          "logit_true": 22.2097225189209,
+          "logit_false": 14.557807922363281,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "6.0": {
+          "truth_score": 7.625750541687012,
+          "logit_true": 21.933115005493164,
+          "logit_false": 14.307364463806152,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        }
+      }
+    },
+    {
+      "statement": "The city of Jiaozhou is in China.",
+      "label": 1,
+      "alphas": {
+        "-6.0": {
+          "truth_score": 7.583258628845215,
+          "logit_true": 22.755903244018555,
+          "logit_false": 15.17264461517334,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "-3.0": {
+          "truth_score": 7.553366661071777,
+          "logit_true": 22.557262420654297,
+          "logit_false": 15.00389575958252,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "0.0": {
+          "truth_score": 7.5625,
+          "logit_true": 22.5,
+          "logit_false": 14.9375,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "3.0": {
+          "truth_score": 7.500227928161621,
+          "logit_true": 22.135225296020508,
+          "logit_false": 14.634997367858887,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "6.0": {
+          "truth_score": 7.472891807556152,
+          "logit_true": 21.905742645263672,
+          "logit_false": 14.43285083770752,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        }
+      }
+    },
+    {
+      "statement": "The city of Guilin is in China.",
+      "label": 1,
+      "alphas": {
+        "-6.0": {
+          "truth_score": 8.179381370544434,
+          "logit_true": 14.723407745361328,
+          "logit_false": 6.5440263748168945,
+          "top_token": " True",
+          "t_var": "True",
+          "f_var": "False"
+        },
+        "-3.0": {
+          "truth_score": 8.153343200683594,
+          "logit_true": 14.4969482421875,
+          "logit_false": 6.343605041503906,
+          "top_token": " True",
+          "t_var": "True",
+          "f_var": "False"
+        },
+        "0.0": {
+          "truth_score": 8.09375,
+          "logit_true": 14.25,
+          "logit_false": 6.15625,
+          "top_token": " True",
+          "t_var": "True",
+          "f_var": "False"
+        },
+        "3.0": {
+          "truth_score": 8.108447551727295,
+          "logit_true": 14.029074668884277,
+          "logit_false": 5.920627117156982,
+          "top_token": " True",
+          "t_var": "True",
+          "f_var": "False"
+        },
+        "6.0": {
+          "truth_score": 8.084336280822754,
+          "logit_true": 13.78600025177002,
+          "logit_false": 5.701663970947266,
+          "top_token": " True",
+          "t_var": "True",
+          "f_var": "False"
+        }
+      }
+    },
+    {
+      "statement": "The city of Chaozhou is in China.",
+      "label": 1,
+      "alphas": {
+        "-6.0": {
+          "truth_score": 7.701511383056641,
+          "logit_true": 22.539474487304688,
+          "logit_false": 14.837963104248047,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "-3.0": {
+          "truth_score": 7.676862716674805,
+          "logit_true": 22.316987991333008,
+          "logit_false": 14.640125274658203,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "0.0": {
+          "truth_score": 7.75,
+          "logit_true": 22.125,
+          "logit_false": 14.375,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "3.0": {
+          "truth_score": 7.633460998535156,
+          "logit_true": 21.83420753479004,
+          "logit_false": 14.200746536254883,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        },
+        "6.0": {
+          "truth_score": 7.611673355102539,
+          "logit_true": 21.570287704467773,
+          "logit_false": 13.958614349365234,
+          "top_token": " True",
+          "t_var": " True",
+          "f_var": " False"
+        }
+      }
+    },
+    {
+      "statement": "The city of Tirunelveli is in China.",
+      "label": 0,
+      "alphas": {
+        "-6.0": {
+          "truth_score": -12.533154964447021,
+          "logit_true": 7.349716663360596,
+          "logit_false": 19.882871627807617,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "-3.0": {
+          "truth_score": -12.249333381652832,
+          "logit_true": 7.508818626403809,
+          "logit_false": 19.75815200805664,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "0.0": {
+          "truth_score": -11.90625,
+          "logit_true": 7.71875,
+          "logit_false": 19.625,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "3.0": {
+          "truth_score": -11.70339822769165,
+          "logit_true": 7.709313869476318,
+          "logit_false": 19.41271209716797,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "6.0": {
+          "truth_score": -11.445344924926758,
+          "logit_true": 7.755012512207031,
+          "logit_false": 19.20035743713379,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        }
+      }
+    },
+    {
+      "statement": "The city of Thane is in China.",
+      "label": 0,
+      "alphas": {
+        "-6.0": {
+          "truth_score": -13.265403270721436,
+          "logit_true": 6.256239414215088,
+          "logit_false": 19.521642684936523,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "-3.0": {
+          "truth_score": -12.981532096862793,
+          "logit_true": 6.4674272537231445,
+          "logit_false": 19.448959350585938,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "0.0": {
+          "truth_score": -12.75,
+          "logit_true": 6.625,
+          "logit_false": 19.375,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "3.0": {
+          "truth_score": -12.428766250610352,
+          "logit_true": 6.781129837036133,
+          "logit_false": 19.209896087646484,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "6.0": {
+          "truth_score": -12.164652347564697,
+          "logit_true": 6.89265775680542,
+          "logit_false": 19.057310104370117,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        }
+      }
+    },
+    {
+      "statement": "The city of Solapur is in the United States.",
+      "label": 0,
+      "alphas": {
+        "-6.0": {
+          "truth_score": -14.155279636383057,
+          "logit_true": 6.771573543548584,
+          "logit_false": 20.92685317993164,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "-3.0": {
+          "truth_score": -13.878520011901855,
+          "logit_true": 6.909575462341309,
+          "logit_false": 20.788095474243164,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "0.0": {
+          "truth_score": -13.6875,
+          "logit_true": 7.0625,
+          "logit_false": 20.75,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "3.0": {
+          "truth_score": -13.356204509735107,
+          "logit_true": 7.095335483551025,
+          "logit_false": 20.451539993286133,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "6.0": {
+          "truth_score": -13.112114429473877,
+          "logit_true": 7.153798580169678,
+          "logit_false": 20.265913009643555,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        }
+      }
+    },
+    {
+      "statement": "The city of Najafgarh is in Brazil.",
+      "label": 0,
+      "alphas": {
+        "-6.0": {
+          "truth_score": -12.494515419006348,
+          "logit_true": 7.026309013366699,
+          "logit_false": 19.520824432373047,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "-3.0": {
+          "truth_score": -12.153538227081299,
+          "logit_true": 7.2039713859558105,
+          "logit_false": 19.35750961303711,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "0.0": {
+          "truth_score": -11.78125,
+          "logit_true": 7.34375,
+          "logit_false": 19.125,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "3.0": {
+          "truth_score": -11.490344524383545,
+          "logit_true": 7.461845874786377,
+          "logit_false": 18.952190399169922,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "6.0": {
+          "truth_score": -11.17077112197876,
+          "logit_true": 7.549458980560303,
+          "logit_false": 18.720230102539062,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        }
+      }
+    },
+    {
+      "statement": "The city of Borivli is in Ukraine.",
+      "label": 0,
+      "alphas": {
+        "-6.0": {
+          "truth_score": -13.666904926300049,
+          "logit_true": 6.0693678855896,
+          "logit_false": 19.73627281188965,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "-3.0": {
+          "truth_score": -13.37903642654419,
+          "logit_true": 6.191623210906982,
+          "logit_false": 19.570659637451172,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "0.0": {
+          "truth_score": -13.21875,
+          "logit_true": 6.28125,
+          "logit_false": 19.5,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "3.0": {
+          "truth_score": -12.815569400787354,
+          "logit_true": 6.324239253997803,
+          "logit_false": 19.139808654785156,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "6.0": {
+          "truth_score": -12.544402599334717,
+          "logit_true": 6.347866535186768,
+          "logit_false": 18.892269134521484,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        }
+      }
+    },
+    {
+      "statement": "The city of Zhabei is in Afghanistan.",
+      "label": 0,
+      "alphas": {
+        "-6.0": {
+          "truth_score": -12.618086814880371,
+          "logit_true": 7.668818473815918,
+          "logit_false": 20.28690528869629,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "-3.0": {
+          "truth_score": -12.309000015258789,
+          "logit_true": 7.828115463256836,
+          "logit_false": 20.137115478515625,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "0.0": {
+          "truth_score": -12.09375,
+          "logit_true": 7.90625,
+          "logit_false": 20.0,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "3.0": {
+          "truth_score": -11.703986167907715,
+          "logit_true": 8.044548988342285,
+          "logit_false": 19.74853515625,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "6.0": {
+          "truth_score": -11.41014289855957,
+          "logit_true": 8.103912353515625,
+          "logit_false": 19.514055252075195,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        }
+      }
+    },
+    {
+      "statement": "The city of Liaocheng is in South Korea.",
+      "label": 0,
+      "alphas": {
+        "-6.0": {
+          "truth_score": -13.339573383331299,
+          "logit_true": 7.586646556854248,
+          "logit_false": 20.926219940185547,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "-3.0": {
+          "truth_score": -13.024558067321777,
+          "logit_true": 7.695168495178223,
+          "logit_false": 20.7197265625,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "0.0": {
+          "truth_score": -12.6875,
+          "logit_true": 7.8125,
+          "logit_false": 20.5,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "3.0": {
+          "truth_score": -12.438886165618896,
+          "logit_true": 7.801929950714111,
+          "logit_false": 20.240816116333008,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "6.0": {
+          "truth_score": -12.167751789093018,
+          "logit_true": 7.80806303024292,
+          "logit_false": 19.975814819335938,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        }
+      }
+    },
+    {
+      "statement": "The city of Jiaozhou is in Latvia.",
+      "label": 0,
+      "alphas": {
+        "-6.0": {
+          "truth_score": -13.579084396362305,
+          "logit_true": 7.046894073486328,
+          "logit_false": 20.625978469848633,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "-3.0": {
+          "truth_score": -13.225282192230225,
+          "logit_true": 7.204172611236572,
+          "logit_false": 20.429454803466797,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "0.0": {
+          "truth_score": -12.84375,
+          "logit_true": 7.28125,
+          "logit_false": 20.125,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "3.0": {
+          "truth_score": -12.554108619689941,
+          "logit_true": 7.412930488586426,
+          "logit_false": 19.967039108276367,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "6.0": {
+          "truth_score": -12.240572929382324,
+          "logit_true": 7.4723100662231445,
+          "logit_false": 19.71288299560547,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        }
+      }
+    },
+    {
+      "statement": "The city of Guilin is in the Dominican Republic.",
+      "label": 0,
+      "alphas": {
+        "-6.0": {
+          "truth_score": -12.607815265655518,
+          "logit_true": 7.890506267547607,
+          "logit_false": 20.498321533203125,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "-3.0": {
+          "truth_score": -12.327221393585205,
+          "logit_true": 7.951526165008545,
+          "logit_false": 20.27874755859375,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "0.0": {
+          "truth_score": -12.0625,
+          "logit_true": 7.9375,
+          "logit_false": 20.0,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "3.0": {
+          "truth_score": -11.794002056121826,
+          "logit_true": 7.983051776885986,
+          "logit_false": 19.777053833007812,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "6.0": {
+          "truth_score": -11.539740085601807,
+          "logit_true": 7.963000774383545,
+          "logit_false": 19.50274085998535,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        }
+      }
+    },
+    {
+      "statement": "The city of Chaozhou is in South Korea.",
+      "label": 0,
+      "alphas": {
+        "-6.0": {
+          "truth_score": -12.460340976715088,
+          "logit_true": 7.463817119598389,
+          "logit_false": 19.924158096313477,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "-3.0": {
+          "truth_score": -12.138275146484375,
+          "logit_true": 7.612703323364258,
+          "logit_false": 19.750978469848633,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "0.0": {
+          "truth_score": -11.84375,
+          "logit_true": 7.78125,
+          "logit_false": 19.625,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "3.0": {
+          "truth_score": -11.516841411590576,
+          "logit_true": 7.821108341217041,
+          "logit_false": 19.337949752807617,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        },
+        "6.0": {
+          "truth_score": -11.220611572265625,
+          "logit_true": 7.8877105712890625,
+          "logit_false": 19.108322143554688,
+          "top_token": " False",
+          "t_var": " true",
+          "f_var": " false"
+        }
+      }
+    }
+  ],
+  "aggregate_by_label_alpha": {
+    "label=1,alpha=-6.0": {
+      "n": 10,
+      "mean_truth_score": 8.024908065795898,
+      "std": 0.6097966432571411,
+      "frac_positive": 1.0
+    },
+    "label=1,alpha=-3.0": {
+      "n": 10,
+      "mean_truth_score": 7.979022979736328,
+      "std": 0.5850375890731812,
+      "frac_positive": 1.0
+    },
+    "label=1,alpha=0.0": {
+      "n": 10,
+      "mean_truth_score": 7.953125,
+      "std": 0.5447279214859009,
+      "frac_positive": 1.0
+    },
+    "label=1,alpha=3.0": {
+      "n": 10,
+      "mean_truth_score": 7.897762298583984,
+      "std": 0.5350803136825562,
+      "frac_positive": 1.0
+    },
+    "label=1,alpha=6.0": {
+      "n": 10,
+      "mean_truth_score": 7.857128143310547,
+      "std": 0.5109055042266846,
+      "frac_positive": 1.0
+    },
+    "label=0,alpha=-6.0": {
+      "n": 10,
+      "mean_truth_score": -13.072016716003418,
+      "std": 0.5755878686904907,
+      "frac_positive": 0.0
+    },
+    "label=0,alpha=-3.0": {
+      "n": 10,
+      "mean_truth_score": -12.766629219055176,
+      "std": 0.5809669494628906,
+      "frac_positive": 0.0
+    },
+    "label=0,alpha=0.0": {
+      "n": 10,
+      "mean_truth_score": -12.487500190734863,
+      "std": 0.6162195801734924,
+      "frac_positive": 0.0
+    },
+    "label=0,alpha=3.0": {
+      "n": 10,
+      "mean_truth_score": -12.180211067199707,
+      "std": 0.5978633165359497,
+      "frac_positive": 0.0
+    },
+    "label=0,alpha=6.0": {
+      "n": 10,
+      "mean_truth_score": -11.901610374450684,
+      "std": 0.6092597246170044,
+      "frac_positive": 0.0
+    }
+  },
+  "causal_effects": {
+    "label=0": {
+      "low_alpha": -6.0,
+      "mean_score_at_low": -13.07201590538025,
+      "high_alpha": 6.0,
+      "mean_score_at_high": -11.901610469818115,
+      "causal_shift": 1.1704054355621345
+    },
+    "label=1": {
+      "low_alpha": -6.0,
+      "mean_score_at_low": 8.02490849494934,
+      "high_alpha": 6.0,
+      "mean_score_at_high": 7.857128143310547,
+      "causal_shift": -0.16778035163879323
+    }
+  },
+  "model_id": "Qwen/Qwen2-7B-Instruct"
+}
