@@ -1829,9 +1829,12 @@ function _updateInternalsValues(lv,pcA,pcB){
     // survives the toggle and the three viewports don't thrash each other.
     const dirByLayer={};
     _wlDirData.layers.forEach(ld=>{dirByLayer[ld.layer]=ld.matrices||{};});
+    // Clamp virtual layers (emb/lmh) to nearest real layer so legend isn't
+    // all zeros when scrubbing past the real-layer range.
+    const rlForLegend=cL>=_nRealLayers?(cL===_nRealLayers?0:_nRealLayers-1):cL;
     for(let mi=0;mi<nMat;mi++){
       const btn=lv._legBtns[mi];if(!btn)continue;
-      const mag=dirByLayer[cL]?.[_WL_MAT_LOOKUP[_WL_NAMES[mi]]]||0;
+      const mag=dirByLayer[rlForLegend]?.[_WL_MAT_LOOKUP[_WL_NAMES[mi]]]||0;
       const fmt=mag>=10?mag.toFixed(0):mag.toFixed(2);
       btn.textContent=`${_WL_NAMES[mi]} ${fmt}`;
     }
@@ -1902,26 +1905,30 @@ function _rebuildInternals(vi,pair,needsRebuild){
   // Pre-index direction data by layer for O(1) lookup per call.
   // Reuse the module-level _WL_MAT_LOOKUP — local duplicate removed.
   const _dirByLayer={};
-  // DIR-mode magnitudes are in raw weight-norm units (can be 1-100+ on
-  // some layers) while PC-mode is bounded. Normalize DIR to PC's visual
-  // range so the flower stays inside the viewport.
-  let _dirScale=1;
+  // DIR-mode magnitudes are in raw weight-norm units: scale varies wildly
+  // across matrices (k_proj can be 200+ while o_proj is <1), so a single
+  // global max crushes 5 of 7 petals to invisibility. Normalize PER MATRIX
+  // by its own max across layers, keeping every matrix visually present.
+  const _dirScalePerMat=new Array(nMat).fill(1);
   if(_useDirFlower){
-    let maxDir=0;
+    const maxByMat=new Array(nMat).fill(0);
     _wlDirData.layers.forEach(ld=>{
       _dirByLayer[ld.layer]=ld.matrices||{};
-      for(const k in (ld.matrices||{})){
-        const v=ld.matrices[k]; if(v>maxDir)maxDir=v;
+      for(let mi=0;mi<nMat;mi++){
+        const v=(ld.matrices||{})[_WL_MAT_LOOKUP[_WL_NAMES[mi]]]||0;
+        if(v>maxByMat[mi])maxByMat[mi]=v;
       }
     });
-    // Target roughly the same visual range as PC mode: max petal ≈ 1.
-    _dirScale=maxDir>0?(1.0/maxDir):1;
+    // Each matrix's max petal ≈ 1; relative within-matrix shape preserved.
+    for(let mi=0;mi<nMat;mi++){
+      _dirScalePerMat[mi]=maxByMat[mi]>0?(1.0/maxByMat[mi]):1;
+    }
   }
   function _petalLen(l,mi){
     const rl=l>=_nRealLayers?(l===_nRealLayers?0:_nRealLayers-1):l;
     if(_useDirFlower){
       const raw=_dirByLayer[rl]?.[_WL_MAT_LOOKUP[_WL_NAMES[mi]]]||0;
-      return raw*_dirScale;
+      return raw*_dirScalePerMat[mi];
     }
     const al=_wlData[rl]?.matrices?.[mi]?.alignment||[];
     const vA=al[pcA]||0,vB=al[pcB]||0;
@@ -3550,10 +3557,13 @@ function setLayer(l,light){cL=l;updateAllViewports();updateHUD();
   if(pinnedToken>=0||pinnedTokenB>=0){_syncAllPins(!play);if(!play)showPinDetail(pinnedToken);}
   // #7 — refresh falsification brief for the new layer, debounced so
   // rapid arrow-key scrubbing doesn't fire one request per layer.
+  // Also re-apply direction coloring: /api/direction-project is
+  // layer-dependent, so cloud/trajectory A/B colors must refresh per layer.
   if(pinnedToken>=0&&pinnedTokenB>=0&&!play){
     if(_briefLayerTimer)clearTimeout(_briefLayerTimer);
     _briefLayerTimer=setTimeout(async()=>{
       _briefLayerTimer=null;
+      _applyDirectionColors();
       await _fetchDirBrief();
       // Update just the badges in the flower legends — cheap.
       leftViews.forEach(lv=>_updateBriefBadges(lv));
