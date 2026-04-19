@@ -562,6 +562,15 @@ TOOLS = {
             "knee_threshold": {"type": "number", "description": "bpb delta threshold for saturation (default: 0.01)"},
         },
     },
+    "heinrich_cb_ablations": {
+        "description": "Ablation forensics: substrate/local/truncate path contributions to bpb. Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Checkpoint path (.checkpoint.pt)", "required": True},
+            "ablate": {"type": "string", "description": "substrate | local | truncate:K", "required": True},
+            "val": {"type": "string", "description": "Val bytes file (optional)"},
+            "n_tokens": {"type": "integer", "description": "Number of token predictions (default: 50000)"},
+        },
+    },
     "heinrich_profile_shart_anatomy": {
         "description": "What makes a shart: crystal neuron, gradient sensitivity, frozen zone, bandwidth analysis.",
         "parameters": {
@@ -1064,6 +1073,11 @@ class ToolServer:
                 optional={"val": "--val", "seqlen": "--seqlen",
                           "n_trials": "--n-trials", "buckets": "--buckets",
                           "knee_threshold": "--knee-threshold"},
+                timeout=1800)
+        if name == "heinrich_cb_ablations":
+            return self._do_subprocess(arguments, "profile-cb-ablations",
+                ["--model", arguments["model"], "--ablate", arguments["ablate"]],
+                optional={"val": "--val", "n_tokens": "--n-tokens"},
                 timeout=1800)
         if name == "heinrich_profile_shart_anatomy":
             return self._do_subprocess(arguments, "profile-shart-anatomy",
