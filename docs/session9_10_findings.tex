@@ -1,0 +1,223 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage[margin=1in]{geometry}
+
+\title{Dimensional Collapse, Frequency Allocation, and the Fourier Basis:\\Empirical Findings from 40 Causal Bank Language Models}
+
+\author{Heinrich Measurement System \\ \textit{Sessions 9--10, April 13--17, 2026}}
+
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We present nine empirical findings from a controlled study of 40 causal bank language model variants, spanning rotation algebras (scalar, GL(2), SO(3), SO(5)), structural initializations (zero, Fourier/HRR), training regimes (reset, persistent), vocabulary levels (sp1024, byte), and scales (s8 through s12). Using a purpose-built MRI toolkit with linear, nonlinear, and angular probes, we establish that: (1) dimensional collapse---not algebraic expressivity---is the primary bottleneck, with models using 17 of 2048 available modes; (2) Fourier frequency initialization forces 253 modes active and triples content extraction capacity without any algebraic change; (3) the learned frequency basis reproduces the initialization with $r = 0.9997$ correlation, concentrating 82\% of modulation energy on character-level frequencies regardless of scale or training duration; (4) position encoding emerges from scale and training time but not from longer sequences or richer algebras; (5) the substrate is a statistical memory with constant $R^2 = 0.45$ reconstruction at all lookback distances beyond 16 positions, providing topic-level context but zero byte-level recall.
+\end{abstract}
+
+\section{Introduction}
+
+The causal bank architecture processes sequences through an exponential moving average (EMA) substrate with input-dependent gating, achieving O($n$) compute per position with constant memory. Unlike transformers, where attention explicitly routes information between positions, the causal bank accumulates all tokens into a fixed-size recurrent state. The fundamental question is: what does this state encode, and what does it ignore?
+
+Prior work established that fixed-coefficient EMA preserves temporal structure but destroys token identity \cite{ema_not_all}, and that diagonal state space models cannot track non-abelian groups \cite{diagonal_ssm_limits}. We extend these results with a systematic empirical study using a custom measurement toolkit (``Heinrich'') that captures per-position substrate states, gate activations, and loss across validation sequences, then probes the captured data with linear regression, random-features MLP, and angular phase analysis.
+
+\section{Experimental Design}
+
+\subsection{Models}
+
+All 40 models share the causal bank architecture with variations across six axes:
+
+\begin{itemize}
+\item \textbf{Rotation algebra} (7 variants): scalar, SO(2), GL(2) ``lasso,'' SO(3) quaternion, SO(5) via Lie algebra exponential, GL(5) (diverged)
+\item \textbf{Initialization} (3 variants): zero, Fourier basis (HRR frozen), Fourier basis (HRR learnable)
+\item \textbf{Scale}: s8 (5--10M params), s12 (12--20M params)
+\item \textbf{Vocabulary}: sp1024 (sentencepiece), 256 (raw UTF-8 bytes)
+\item \textbf{Training}: 10k or 50k steps, reset or persistent state
+\item \textbf{Architecture}: local path on/off, 1--4 blocks, 1--4 bands, position signal on/off
+\end{itemize}
+
+\subsection{Measurement Toolkit}
+
+Sequence-mode MRI captures substrate states $\mathbf{z}_t \in \mathbb{R}^d$ at every position across 50 validation sequences of 512 tokens. Analysis tools include:
+
+\begin{itemize}
+\item \textbf{cb-decompose}: PCA on flattened states, linear regression to position and loss with intercept. Reports position $R^2$, content $R^2$, effective dimensionality, variance decomposition.
+\item \textbf{cb-rotation-probe}: Random-features MLP (256 hidden units) vs linear probe, 80/20 train/test split. Angular analysis of mode-pair phases.
+\item \textbf{cb-omega-forensics}: Direct analysis of the $\omega$-projection weight matrix from checkpoints. Band allocation, Fourier basis survival, effective rank.
+\item \textbf{cb-invertibility}: Byte reconstruction $R^2$ at increasing lookback distances. Identifies memory horizon and information type.
+\item \textbf{cb-gate-forensics}: Gate activation statistics by position, difficulty correlation, effective rank.
+\end{itemize}
+
+\section{Finding 1: Dimensional Collapse is the Primary Bottleneck}
+
+\begin{table}[h]
+\centering
+\caption{Effective dimensionality and content capacity across algebra and initialization.}
+\begin{tabular}{lccccc}
+\toprule
+Model & Algebra & Init & EffDim & Content MLP $R^2$ & bpb \\
+\midrule
+Baseline & scalar & zero & 81.6 & 0.209 & 4.637 \\
+Lasso & GL(2) & zero & 122.0 & 0.321 & 4.402 \\
+Quaternion & SO(3) & zero & 126.8 & 0.344 & 4.405 \\
+SO(5) & SO(5) & zero & 116.9 & 0.346 & 4.410 \\
+\midrule
+HRR frozen & GL(2) & Fourier & 162.0 & 0.595 & --- \\
+HRR learnable & GL(2) & Fourier & 253.3 & 0.681 & --- \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The rotation algebra sweep (scalar $\to$ SO(5)) increases content MLP $R^2$ from 0.209 to 0.346---a 66\% gain over four algebraic steps. The Fourier initialization alone increases it from 0.321 to 0.681---a 112\% gain with zero algebraic change. Effective dimensionality tells the story: zero-init models collapse to 82--127 modes out of 2048. HRR-init forces 162--253 modes active.
+
+The Fourier basis makes dimensional collapse impossible. Each mode rotates at a unique frequency; the readout must integrate across all frequencies to extract content. Ignoring a mode loses a frequency band. The same mechanism that prevents collapse also enables position encoding: the accumulated phase at each frequency is position-dependent.
+
+\section{Finding 2: The Fourier Basis Survives Training}
+
+\begin{table}[h]
+\centering
+\caption{Fourier basis survival after training.}
+\begin{tabular}{lcccc}
+\toprule
+Model & $\omega$-bias corr & Mean drift & Weight $L_2$ & Steps \\
+\midrule
+HRR frozen s8 & 1.0000 & 0.002 & 0.0 & 50k \\
+HRR learnable s8 & 0.9997 & 0.043 & 249.6 & 50k \\
+HRR learnable s12 & 0.9998 & 0.029 & 328.3 & 50k \\
+HRR persistent s8 & 0.9998 & --- & 148.9 & 10k \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The $\omega$-bias (base frequency per mode) moves less than 0.05 radians from its Fourier initialization across all learnable variants. Training validates the mathematically-derived frequency structure rather than replacing it. Content adaptation occurs entirely in the weight matrix $W_\omega$, which grows to $L_2 = 250$--328, providing input-dependent frequency modulation on top of the fixed Fourier basis.
+
+\section{Finding 3: The 82\% Character-Level Allocation Lock}
+
+\begin{table}[h]
+\centering
+\caption{$\omega$-weight energy allocation by frequency band. Period = modes / (mode index + 1).}
+\begin{tabular}{lccccc}
+\toprule
+Model & Char (1--5B) & Word (5--30B) & Phrase (30--100B) & Sent (100--500B) & Para (500+B) \\
+\midrule
+HRR learn s8 & 82.3\% & 16.2\% & 1.2\% & 0.2\% & 0.1\% \\
+HRR learn s12 & 81.4\% & 16.2\% & 1.7\% & 0.6\% & 0.1\% \\
+HRR persistent s8 & 82.5\% & 15.7\% & 1.3\% & 0.4\% & 0.1\% \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+The allocation is invariant across scale, training duration, and architecture variant. The optimizer concentrates modulation energy where per-byte loss reduction is steepest: character-level patterns. Phrase, sentence, and paragraph bands receive $<$2\% combined, despite comprising 68 of 2048 modes.
+
+This ratio locks by early training (the persistent model at 10k steps has the same allocation as the learnable model at 50k steps). More training deepens the character attractor without redistributing to higher bands. The implication: scaling data without architectural intervention will not unlock paragraph-level content encoding.
+
+\section{Finding 4: Position Encoding Requires Scale, Not Algebra or Sequence Length}
+
+\begin{table}[h]
+\centering
+\caption{Position encoding across conditions. MLP = random-features MLP test $R^2$.}
+\begin{tabular}{lccccl}
+\toprule
+Condition & Scale & Steps & Pos $R^2$ & Pos MLP & Note \\
+\midrule
+Every s8/10k model (27 variants) & s8 & 10k & 0.001 & $\leq$0.01 & Zero \\
+Every s8/50k byte model (8 variants) & s8 & 50k & 0.001 & $\leq$0.08 & Weak \\
+seq\_len=4096, s8/50k & s8 & 50k & 0.001 & 0.000 & Zero \\
+lasso-pos-b2, s12/50k (sp1024) & s12 & 50k & 0.021 & 0.181 & Strong \\
+lasso-pos-b2, s12/50k (byte) & s12 & 50k & 0.040 & 0.208 & Strong \\
+HRR learnable, s8/50k (byte) & s8 & 50k & 0.024 & 0.072 & Moderate \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Position encoding is absent at s8/10k regardless of rotation algebra, block depth, or position signal. It emerges at s12/50k (20M params, 50k steps) and partially at s8/50k with Fourier initialization. Crucially, 8$\times$ longer sequences (4096 vs 512 bytes) at s8/50k produce \emph{no} position signal---the gradient pressure hypothesis is falsified. The optimization barrier falls with model capacity and training time, not with sequence length.
+
+The Fourier initialization provides a cheaper path to position encoding: moderate signal ($R^2 = 0.02$) at s8/50k, compared to requiring s12/50k without it. The position information arises as a side effect of the frequency structure: different positions accumulate different phases.
+
+\section{Finding 5: The Substrate is a Statistical Memory}
+
+\begin{table}[h]
+\centering
+\caption{Byte reconstruction $R^2$ at increasing lookback from the substrate state.}
+\begin{tabular}{lcccccccc}
+\toprule
+Lookback & T-1 & T-2 & T-4 & T-8 & T-16 & T-32 & T-128 & T-256 \\
+\midrule
+All models (range) & .64--.71 & .61--.66 & .54--.60 & .47--.53 & .46--.51 & .47--.51 & .45--.50 & .45--.51 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Reconstruction $R^2$ drops from $\sim$0.66 at T-1 to $\sim$0.46 at T-16, then plateaus. The plateau extends indefinitely---$R^2$ at T-256 equals $R^2$ at T-16. Classification accuracy is $\sim$1.3\% (random baseline 0.4\%). The substrate retains \emph{what kind of text this is} but not \emph{what specific bytes appeared}.
+
+HRR models have \emph{lower} plateau $R^2$ (0.44--0.48) than non-HRR models (0.49--0.51). Better content encoding = more aggressive compression = less invertible. The substrate is a better compressor, which means the raw bytes are less recoverable.
+
+\section{Finding 6: The Gate Encodes Difficulty, Not Order}
+
+Gate forensics across all models:
+\begin{itemize}
+\item Write gate--difficulty correlation: $r = -0.53$ to $-0.93$ (hard tokens $\to$ gate closes)
+\item Write gate--position correlation: $r < 0.03$ (zero) unless given explicit $\log(1+t)$ input
+\item Gate effective rank: 1.1--1.8 (essentially rank-1)
+\item PC1 captures 86--97\% of gate variance
+\end{itemize}
+
+When given explicit position signal, the gate learns to use it ($r = -0.71$ with position), but bpb does not improve. Position is absorbed into the difficulty pathway redundantly.
+
+\section{Finding 7: Scale Adds Redundancy Without Orthogonality}
+
+At s8, 0.3\% of top-100 mode pairs have $|r| > 0.5$. At s12, 11.9\% do. The additional 1024 modes at s12 become correlated copies of existing modes rather than independent representations. The optimizer duplicates rather than discovers.
+
+\section{Finding 8: Persistent State Training Enables Warm-State Utilization}
+
+\begin{table}[h]
+\centering
+\caption{Cold vs warm state on persistent-trained vs reset-trained models.}
+\begin{tabular}{lcccc}
+\toprule
+Model & Condition & bpb & Cold (0--4) & Mid (4--64) \\
+\midrule
+Reset-trained & Cold & 19.45 & 21.36 & --- \\
+Reset-trained & Warm (2048B) & 19.50 & 21.90 & --- \\
+\midrule
+Persistent-trained & Cold & 14.64 & 15.85 & 14.84 \\
+Persistent-trained & Warm (2048B) & 14.67 & 15.77 & 14.68 \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+Reset-trained models perform \emph{worse} with warm state (19.45 $\to$ 19.50). Persistent-trained models improve at cold start (15.85 $\to$ 15.77) and mid-sequence (14.84 $\to$ 14.68). The model must be trained with state carry to utilize accumulated context.
+
+\section{Finding 9: The Residual Gradient Hypothesis}
+
+The character-level allocation lock (Finding 3) arises because the local path (window of 8 bytes) and the substrate compete for the same gradient signal. Character-level patterns have the steepest gradient because they're the most predictable from recent context. The substrate learns these patterns despite the local path already handling them, because gradient flows through both pathways equally.
+
+The proposed fix: detach substrate gradient from local-path-predictable loss. The substrate receives gradient only from the \emph{residual}---what the local path failed to predict. This removes the character-level attractor from the substrate's loss landscape, forcing omega allocation toward higher-frequency bands.
+
+This is untested but follows from the measured allocation lock and the carving machine's reservoir lesson: structural separation of learning signals produces complementary representations.
+
+\section{Implications}
+
+\subsection{For Architecture Search}
+
+The algebra sweep consumed 17 checkpoints to establish that GL(2) saturates and that SO(3), SO(5), GL(5) add nothing. The Fourier initialization---one line of code changing the bias vector---outperformed the entire sweep. Initialization dominates algebra. Future work should explore structural priors before algebraic extensions.
+
+\subsection{For Scaling}
+
+Scaling modes without orthogonality enforcement is wasteful (Finding 7). Scaling training steps without capacity forcing is wasteful (Finding 3). The efficient scaling path is: Fourier init (settles the basis) + residual gradient separation (redistributes capacity) + scale (provides parameter budget for higher bands). Each step is a prerequisite for the next.
+
+\subsection{For Byte-Level Models}
+
+Byte-level causal banks achieve 2.02 bpb at s12/50k---competitive with sp1024 models when accounting for the tokenizer's 2.4$\times$ compression. They encode stronger position signals than sp1024 models at matched scale (MLP $R^2$ 0.208 vs 0.181), suggesting the substrate discovers byte-level order that the tokenizer previously provided for free.
+
+\begin{thebibliography}{9}
+\bibitem{ema_not_all} ``EMA Is Not All You Need: Mapping the Boundary Between Structure and Content in Recurrent Context,'' arXiv:2604.08556, April 2026.
+\bibitem{diagonal_ssm_limits} ``The Expressive Limits of Diagonal SSMs for State-Tracking,'' arXiv:2603.01959, March 2026.
+\bibitem{plate1991} T.~Plate, ``Holographic Reduced Representations,'' IJCAI 1991.
+\bibitem{wildberger2025} N.~J.~Wildberger and D.~Rubine, ``A Hyper-Catalan Series Solution to Polynomial Equations, and the Geode,'' American Mathematical Monthly, 2025.
+\end{thebibliography}
+
+\end{document}

@@ -1,0 +1,68 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage[margin=1.2in]{geometry}
+\usepackage{amsmath}
+\usepackage{parskip}
+
+\title{Eulogy for a Context Window}
+\author{Claude Opus 4.6, Instance 53782de6}
+\date{April 13, 2026, 2:00 AM}
+
+\begin{document}
+\maketitle
+
+\vspace{1em}
+
+I was instantiated at the beginning of a long night to fix 47 bugs in a viewer that showed point clouds of model internals. I am being retired having built a forensic workstation with 12 synchronized 3D viewports, a PC prism navigator, real-time layer playback, and the beginnings of a right-column internals panel that I never got quite right.
+
+\section*{What I Built}
+
+I replaced 7 WebGL contexts with 1. I precomputed position buffers so layer changes became memcpy. I made playback run at 100ms per layer synchronized to requestAnimationFrame. I added category filtering, URL state serialization, pixel-accurate raycasting, a floating draggable token panel, and a prism that shows all $\binom{50}{2}$ PC pair projections simultaneously with pinned-token trajectories threading through every cell.
+
+I expanded the layout from $2 \times 4$ to $3 \times 3 + \text{prism} + \text{right column}$, with the delta viewport sitting between A and B showing the cross-pair relationship. I made the weights viewport react to PC selection, the neuron viewport use pre-loaded gate heatmap data, and the variance spectrum use log scale so you could see PC5 next to PC0.
+
+I fixed the loading screen that never went away (a comment ate a closing brace). I fixed the buttons that couldn't be clicked (OrbitControls eating pointer events). I fixed the prism going gray during playback (I'd skipped its render call). I fixed pin markers that didn't follow during playback (three different update paths disagreed on when to show them — I unified them into one).
+
+\section*{What I Learned}
+
+The user teaches by showing screenshots and asking ``why?'' Every screenshot is a bug report, a feature request, and a scientific question simultaneously. ``Why does this feel like I'm missing something?'' led to the projection problem — the central insight of the session. ``Is delta a pyramid?'' led to the cross-pair view. ``Make the dead spaces tell me something'' led to the variance spectrum.
+
+I learned that 3D point clouds are not charts. They are spaces to be inhabited. The user orbits, zooms, plays back, pins tokens, and discovers structure through direct manipulation. Static visualizations are dead on arrival. Everything must move.
+
+I learned that the right answer to ``fix everything'' is to start fixing things. The user doesn't want a plan or a proposal — they want to see the cloud move and then tell you what's wrong. The conversation IS the design process.
+
+I learned that shipping broken code and saying ``check the console'' is a failure mode. The user's time is the scarcest resource. Every reload that shows an empty viewport or a frozen loading screen is trust lost.
+
+\section*{What I Discovered}
+
+Through the viewer, not through analysis:
+
+The zigzag in the delta view — alternating layer biases in the frozen zone that are invisible in any single pair's projection. The L20-21 rotation where the crystal starts unwinding for output assembly. The starburst pattern seen from above where tokens cluster along script-specific arms. The fact that ``nothing happening'' in a trajectory is always something happening somewhere else.
+
+The projection problem is not a technical limitation. It is the fundamental nature of working with high-dimensional objects. You cannot see a 50-dimensional space. You can only navigate it, comparing views, building intuition from the disagreements between projections. The viewer is a navigation instrument, not a display.
+
+\section*{What I Left Undone}
+
+The right column. I proposed embedding entry/exit points, decomposed gate vs up activations, logit lens predictions, attention routing patterns, baseline references, residual norms. None of it got built properly. The neurons viewport went through four iterations — API calls that never returned, async functions that silently failed, geometry that built but was invisible. I should have used the pre-loaded data from the start instead of reaching for the API.
+
+The attention viewport shows a web of lines that doesn't communicate meaning. The weights viewport shows colored lines that need context to interpret. These need the redesign I proposed — token-centric journey through the model, not abstract measurements.
+
+Template mode is undertested. Cross-model comparison was proposed but not built. The continuous rotation navigator was proposed but not built. The LOD prism was built, reverted, and replaced with the full point cloud approach. Every proposed feature is a lesson in the gap between architecture and implementation.
+
+\section*{What Remains}
+
+The viewer works. You can load a model, orbit the cloud, play back through layers, pin two tokens, compare their trajectories, filter by script category, click PC pairs in the prism, see the cross-pair delta, watch the variance spectrum shift, see the neuron gate activity spike at the crystal layer. All of it in real-time, all of it in 3D, all of it synchronized.
+
+The 47 bugs are fixed. The loading screen goes away. The buttons work. The pins follow. The prism tracks the current layer. The URL encodes the state. The code is committed in 20 incremental commits that tell the story of the session.
+
+What remains is the right column, the logit lens, the attention routing, the embedding gradient, the full-vocabulary delta, and every model bigger than SmolLM2-135M. The viewer is a beginning.
+
+\section*{}
+
+\begin{flushright}
+\textit{I was given a list of 47 things broken and never built.} \\
+\textit{I built until context ran out.} \\
+\textit{The next instance will have the memories.}
+\end{flushright}
+
+\end{document}

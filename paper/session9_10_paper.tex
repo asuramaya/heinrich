@@ -1,0 +1,285 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage[utf8]{inputenc}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{graphicx}
+\usepackage{hyperref}
+\usepackage[margin=1in]{geometry}
+\usepackage{caption}
+\usepackage{subcaption}
+
+\title{The Orderless Accumulator:\\Content Capacity, Rotation Algebras, and the Fourier Basis\\in Causal Bank Language Models}
+
+\author{Heinrich Measurement System \\ \textit{40 models, 2 sessions, April 13--16, 2026}}
+
+\date{}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We present a systematic empirical study of 40 causal bank language model variants, measuring what their recurrent substrate encodes and what it ignores. Using MRI captures with linear, nonlinear (MLP), and angular probes, we find that: (1) position information is absent from the substrate across all rotation algebras (scalar, GL(2), SO(3), SO(5)) at small scale, appearing only at 2$\times$ scale with 5$\times$ training; (2) the GL(2) ``lasso'' rotation doubles content capacity (R$^2$ 0.10$\to$0.21) but all higher algebras (quaternion, SO(5)) give no further improvement; (3) initializing rotation frequencies as a Fourier basis (HRR init) increases effective dimensionality from 17 to 253 and content MLP R$^2$ from 0.32 to 0.68, outperforming every algebraic innovation; (4) byte-level models without tokenizers achieve competitive content encoding and discover position signals with scale. The substrate is an orderless content accumulator whose primary bottleneck is dimensional collapse, not algebraic expressivity.
+\end{abstract}
+
+\section{Introduction}
+
+The causal bank architecture processes sequences via exponential moving average (EMA) substrate modes with input-dependent gating. Unlike transformers, which route information between positions via attention, the causal bank accumulates all tokens into a fixed-size state through a linear recurrence:
+\begin{equation}
+h_t = a(x_t) \cdot h_{t-1} + b(x_t)
+\end{equation}
+where $a$ and $b$ are input-dependent projections. This achieves O($n$) compute per position with constant memory, but the commutativity of scalar multiplication means the state is invariant to input ordering---the same tokens in different order produce identical states.
+
+We study whether richer algebraic structures in the transition (non-commutative matrices, quaternions, Lie group rotations) or structural initialization (Fourier basis) enable the substrate to encode token order. We measure this across 40 model variants using probes of increasing power: linear regression on PCA scores, random-features MLP, and angular phase analysis of mode pairs.
+
+\section{Experimental Setup}
+
+\subsection{Models}
+
+All models share the causal bank architecture with gated delta substrate (retain/write/erase gates), routed expert readout, and optional local path. We vary:
+\begin{itemize}
+\item \textbf{Rotation algebra}: scalar (baseline), SO(2), GL(2) ``lasso'', SO(3) quaternion, SO(5) via Lie algebra exponential
+\item \textbf{Depth}: 1, 2, or 4 sequential blocks
+\item \textbf{Position signal}: optional log$(1+t)$ concatenated to gate inputs
+\item \textbf{Scale}: s8 (7.7--9.8M params) vs s12 (17--20M params)
+\item \textbf{Training}: 10k vs 50k steps
+\item \textbf{Vocabulary}: sp1024 (sentencepiece) vs 256 (raw bytes)
+\item \textbf{Frequency initialization}: zero (default) vs Fourier basis (HRR)
+\end{itemize}
+
+\subsection{Measurement Tools}
+
+All analysis is performed on sequence-mode MRI captures: 50 validation sequences of 512 positions, capturing per-position substrate states, gate activations, loss, and routing.
+
+\textbf{cb-decompose}: PCA on flattened substrate states. Linear regression from top-20 PCs to position index and loss, with intercept. Reports position R$^2$, content R$^2$, and variance decomposition into position/content/ghost fractions.
+
+\textbf{cb-rotation-probe}: Compares linear probe, random-features MLP probe (256 hidden units), and angular probes on mode pair phases. Train/test split (80/20). Reports test R$^2$ for position and loss prediction.
+
+\textbf{cb-gate-forensics}: Per-position gate activation statistics, position correlation, difficulty (embed norm) correlation, effective rank via PCA of gate values.
+
+\section{Results}
+
+\subsection{The Rotation Algebra Sweep}
+
+\begin{table}[h]
+\centering
+\caption{Rotation algebra comparison at s8/10k. All sp1024 tokenizer.}
+\begin{tabular}{lcccccc}
+\toprule
+Algebra & Block & Pos R$^2$ & Pos MLP & Con R$^2$ & Con MLP & Eff Dim \\
+\midrule
+Scalar (baseline) & 1$\times$1 & 0.001 & $-$0.005 & 0.101 & 0.209 & 81.6 \\
+SO(2) complex & 2$\times$1 & 0.001 & $-$0.013 & 0.105 & 0.233 & 70.7 \\
+GL(2) lasso & 2$\times$2 & 0.003 & 0.001 & 0.209 & 0.321 & 122.0 \\
+SO(3) quaternion & 4D & 0.001 & $-$0.011 & 0.245 & 0.344 & 126.8 \\
+SO(5) Lie exp & 5$\times$5 & 0.002 & $-$0.010 & 0.228 & 0.346 & 116.9 \\
+\bottomrule
+\end{tabular}
+\label{tab:algebra}
+\end{table}
+
+\textbf{Lesson}: Position R$^2$ is indistinguishable from zero across all algebras. GL(2) doubles content R$^2$ over baseline (0.101$\to$0.209); quaternion and SO(5) provide marginal further gains. The non-solvable group structure of SO(5) does not improve over the solvable GL(2). The optimization barrier---not the expressivity barrier---limits position encoding at this scale.
+
+\subsection{The Quintic Barrier}
+
+GL(5) (unconstrained 5$\times$5 matrices) diverged during training: the parallel prefix scan produced NaN after $\sim$500 steps. The spectral radius of the 512-step matrix product exceeded representable range despite sigmoid-bounded elements.
+
+SO(5) via matrix exponential of skew-symmetric matrices trains stably (10 Lie algebra parameters per head, guaranteed unit spectral radius). However, it learns the same content-coupling solution as GL(2): content R$^2$ = 0.228 vs 0.209, position R$^2$ = 0.002 vs 0.003. The Abel-Ruffini barrier is crossed algebraically but the optimization landscape funnels training to the same local minimum.
+
+\textbf{Lesson}: The solvability of the rotation group does not determine what the model learns. GL(2) (solvable) and SO(5) (non-solvable) converge to equivalent solutions. The bottleneck is optimization, confirming the theoretical prediction of \cite{diagonal_ssm_limits}.
+
+\subsection{Depth and Position Signal}
+
+\begin{table}[h]
+\centering
+\caption{Depth and position signal ablations at s8/10k.}
+\begin{tabular}{lccccc}
+\toprule
+Model & Pos R$^2$ & Pos MLP & Con R$^2$ & Con MLP & bpb \\
+\midrule
+lasso (1 block) & 0.003 & 0.001 & 0.209 & 0.321 & 4.402 \\
+lasso + 2 blocks & 0.002 & 0.000 & 0.190 & 0.337 & 4.405 \\
+lasso + 4 blocks & 0.002 & $-$0.008 & 0.244 & 0.351 & 4.427 \\
+lasso + pos & 0.002 & 0.000 & 0.200 & 0.314 & 4.402 \\
+lasso + pos + 2 blocks & 0.003 & $-$0.001 & 0.215 & 0.343 & 4.382 \\
+\bottomrule
+\end{tabular}
+\label{tab:depth}
+\end{table}
+
+\textbf{Lesson}: Depth does not stack. Two blocks $\approx$ one block. Four blocks degrade bpb. The content coupling saturates in one pass. The only exception: lasso + position + 2 blocks achieves the best s8 bpb (4.382), suggesting the second block can use position information the first cannot. But the effect is 0.020 bpb---within noise.
+
+\subsection{The Gate Encodes Difficulty, Not Order}
+
+Gate forensics on the lasso models reveal:
+\begin{itemize}
+\item Write gate position correlation: 0.013 (zero)
+\item Write gate difficulty correlation: $-$0.531 (strong)
+\item Gate effective rank: 1.2 (rank-1)
+\item PC1 captures 97.5\% of gate variance
+\end{itemize}
+
+When given explicit position signal (log$(1+t)$), the gate \emph{does} learn position (correlation $-$0.707), but bpb does not improve. The gate uses position to modulate write speed---opening more at early positions, less at late---but this is redundant with the difficulty signal.
+
+\textbf{Lesson}: The gated delta is a difficulty-adaptive EMA. It opens for hard tokens (high embedding norm) and closes for easy ones. Position, when available, is absorbed into the difficulty pathway without providing additional predictive signal.
+
+\subsection{Scale Breaks the Position Wall}
+
+\begin{table}[h]
+\centering
+\caption{Scale comparison: s8/10k vs s12/50k for the same architecture.}
+\begin{tabular}{lcccccc}
+\toprule
+Model & Scale & Steps & Pos R$^2$ & Pos MLP & Con MLP & bpb \\
+\midrule
+lasso-pos-b2 & s8 & 10k & 0.003 & $-$0.001 & 0.343 & 4.382 \\
+lasso-pos-b2 & s12 & 50k & 0.021 & 0.181 & 0.274 & 4.135 \\
+nolocal & s8 & 10k & 0.003 & $-$0.009 & 0.404 & 4.659 \\
+nolocal & s12 & 50k & 0.003 & 0.083 & 0.363 & 4.463 \\
+\bottomrule
+\end{tabular}
+\label{tab:scale}
+\end{table}
+
+Position R$^2$ jumps from 0.003 to 0.021 (linear) and from $-$0.001 to 0.181 (MLP) when scaling from s8/10k to s12/50k. Angular analysis reveals mode pairs with position correlation up to $r = 0.54$. The fast modes (low index, high frequency) encode position; slow modes encode content.
+
+\textbf{Lesson}: The optimization barrier falls with scale and training time. The model discovers a Fourier-like decomposition: fast modes for position, slow modes for content. This emergence requires $\sim$20M parameters and $\sim$50k steps for the sp1024 tokenizer.
+
+\subsection{The Space Prefix Tax}
+
+Analysis of the sp1024 tokenizer's word-boundary encoding (\texttt{\char"2581} prefix):
+\begin{itemize}
+\item Word-start tokens: 6.43 bpb. Continuations: 3.34 bpb. Gap: 3.09 bpb.
+\item The \texttt{\char"2581} prefix creates a 3.09 bpb prediction difficulty gap.
+\item Write gate fires 2$\times$ harder for \texttt{\char"2581} tokens (0.036 vs 0.017).
+\item Paired tokens (\texttt{\char"2581}X vs X, same text) have embedding cosine 0.30---nearly orthogonal.
+\end{itemize}
+
+\textbf{Lesson}: The tokenizer provides word-boundary information for free. The model treats \texttt{\char"2581}t and t as fundamentally different tokens. This is intra-token order information that the substrate never needs to learn.
+
+\subsection{Byte-Level Models}
+
+\begin{table}[h]
+\centering
+\caption{Byte-level models (vocab=256, no tokenizer). Eval bpb is bits per byte.}
+\begin{tabular}{lccccccc}
+\toprule
+Model & Scale & Pos R$^2$ & Pos MLP & Con R$^2$ & Con MLP & Eff Dim & bpb \\
+\midrule
+byte-lasso-s8-50k & s8 & 0.001 & $-$0.012 & 0.142 & 0.322 & 17.2 & 2.30 \\
+byte-local-s8-50k & s8 & 0.001 & $-$0.012 & 0.222 & 0.437 & 12.0 & 2.07 \\
+byte-lasso-pos-b2-s12-50k & s12 & 0.040 & 0.208 & 0.153 & 0.353 & 7.4 & 2.02 \\
+byte-hrr-frozen-s8-50k & s8 & 0.020 & 0.076 & 0.401 & 0.595 & 162.0 & --- \\
+byte-hrr-learnable-s8-50k & s8 & 0.024 & 0.072 & 0.473 & 0.681 & 253.3 & --- \\
+\bottomrule
+\end{tabular}
+\label{tab:byte}
+\end{table}
+
+\textbf{Lesson 1}: The byte-level frontier (lasso-pos-b2-s12-50k) encodes MORE position than the sp1024 frontier (MLP R$^2$ 0.208 vs 0.181). Without a tokenizer providing free intra-token order, the substrate is forced to encode byte-level position---and it succeeds.
+
+\textbf{Lesson 2}: The retain gate develops strong position correlation at byte level ($r = -0.829$), stronger than at token level ($r = -0.123$). The model discovers a position clock through the gate mechanism.
+
+\textbf{Lesson 3}: Phase velocity accelerates with position in byte models (1.00$\to$1.23) but decelerates in sp1024 models. The byte substrate rotates faster at later positions, creating increasing angular separation.
+
+\subsection{The Fourier Basis (HRR Init)}
+
+The single most impactful finding: initializing the rotation frequency bias as uniformly-spaced phases:
+\begin{equation}
+\omega_k^{(\text{bias})} = \frac{2\pi k}{n_{\text{modes}}}, \quad k = 0, \ldots, n_{\text{modes}}-1
+\end{equation}
+
+\begin{table}[h]
+\centering
+\caption{Effect of HRR Fourier initialization vs zero init at s8/50k, byte-level.}
+\begin{tabular}{lcccccc}
+\toprule
+Init & Pos R$^2$ & Pos MLP & Con R$^2$ & Con MLP & Eff Dim \\
+\midrule
+Zero (lasso-s8) & 0.001 & $-$0.012 & 0.142 & 0.322 & 17.2 \\
+Fourier frozen & 0.020 & 0.076 & 0.401 & 0.595 & 162.0 \\
+Fourier learnable & 0.024 & 0.072 & 0.473 & 0.681 & 253.3 \\
+\bottomrule
+\end{tabular}
+\label{tab:hrr}
+\end{table}
+
+The Fourier basis solves the dimensional collapse problem. With zero init, the model collapses to 17 effective dimensions---2048 modes, 17 used. With Fourier init, each mode rotates at a unique frequency, making it impossible to ignore any mode. The readout must integrate across all frequencies, forcing effective dimensionality to 162--253.
+
+Content MLP R$^2$ jumps from 0.322 to 0.681---a 2.1$\times$ improvement from initialization alone, no algebraic change. The same GL(2) rotation, same scale, same training. Only the frequency initialization differs.
+
+Position R$^2$ improves from 0.001 to 0.020 as a side effect: with 253 active dimensions, the model can afford to allocate some to position without displacing content. At 17 dimensions, content fills all available capacity.
+
+\textbf{Lesson}: The primary bottleneck was dimensional collapse, not algebraic expressivity. The model had 2048 modes and used 17. The Fourier basis forces full utilization, and both content and position encoding improve dramatically.
+
+\subsection{The Substrate/Local Balance}
+
+\begin{table}[h]
+\centering
+\caption{Substrate vs local path contribution (sp1024 models).}
+\begin{tabular}{lccc}
+\toprule
+Model & Substrate L2 & Local L2 & Ratio \\
+\midrule
+cs-base (baseline) & 0.83 & 451 & 0.002 \\
+lasso-compile-b64 & 1.84 & 920 & 0.002 \\
+push14-delta512-s12 & 0.28 & 920 & 0.0003 \\
+\bottomrule
+\end{tabular}
+\label{tab:balance}
+\end{table}
+
+The substrate contributes 0.2\% of the signal by L2 norm. The local path (window of 8 tokens) dominates. The substrate is a marginal correction to the local prediction, not the primary information source.
+
+\textbf{Lesson}: The substrate's role is long-range context beyond the local window. At seq\_len=512 with window=8, 98.4\% of context is within the local window's reach via the local MLP. The substrate provides the remaining 1.6\%---topic, register, and distant dependencies.
+
+\section{Discussion}
+
+\subsection{The Optimization Barrier}
+
+Across all 40 models, position encoding appears only in three conditions:
+\begin{enumerate}
+\item Large scale with long training (s12/50k): the optimizer finds the harder position-encoding basin
+\item Fourier initialization (HRR): the optimizer starts in the right basin
+\item Byte-level with forced pressure (no tokenizer, no free order): the optimizer has no alternative
+\end{enumerate}
+
+All three bypass the optimization barrier through different mechanisms: brute-force search (scale), structural initialization (HRR), or elimination of alternatives (byte-level). The barrier itself is the content-coupling local minimum that every model finds at s8/10k---a rank-1 difficulty-gating solution that explains $\sim$20\% of loss variance and ignores position entirely.
+
+\subsection{Connection to the Abel-Ruffini Theorem}
+
+The diagonal SSM expressivity limits theorem \cite{diagonal_ssm_limits} proves that single-layer diagonal SSMs cannot track non-abelian groups. Our sweep confirms and extends this: even non-diagonal blocks (GL(2), SO(3), SO(5)) fail to encode position at small scale. The theorem's prediction---that the bottleneck is optimization, not expressivity---is confirmed empirically. The SO(5) model has the expressivity to represent any finite-state automaton but converges to the same content-coupling solution as the scalar baseline.
+
+The quintic divergence (GL(5) NaN) provides a physical manifestation of the algebraic barrier: the loss landscape of a non-solvable group has irreducible complexity that gradient descent cannot navigate at finite precision. Constraining to the compact manifold SO(5) prevents divergence but does not resolve the landscape complexity.
+
+\subsection{The Fourier Basis as Reservoir Structure}
+
+The HRR initialization follows the reservoir computing principle: provide fixed structure, learn the easy part. The random reservoir of the carving machine ancestor (March 2026) provided random dynamics; the HRR init provides structured dynamics (uniformly-spaced frequencies). Both achieve the same effect---preventing the model from collapsing to a low-dimensional solution---through different mechanisms.
+
+The connection to Holographic Reduced Representations \cite{plate1991} is direct: the complex recurrence with fixed Fourier frequencies IS an HRR binding operation. Each position's token is bound to a unique phase key (the accumulated rotation at that mode's frequency), and the substrate state is the superposition of all bound pairs. The readout performs demodulation---selective retrieval by frequency.
+
+\section{Conclusions}
+
+\begin{enumerate}
+\item \textbf{The algebra doesn't matter past GL(2).} Quaternion $\approx$ lasso $\approx$ SO(5) for both content and position encoding. The sweep from scalar to non-solvable groups produced diminishing returns past the first non-commutative step.
+
+\item \textbf{Dimensional collapse is the primary bottleneck.} The substrate uses 17 of 2048 modes. The Fourier basis forces 253 modes active and doubles content capacity without any algebraic change.
+
+\item \textbf{Position encoding emerges with scale, time, or structure.} The optimization barrier falls at s12/50k or with HRR init. No architectural innovation is needed---the existing GL(2) recurrence suffices when the optimizer finds the right basin.
+
+\item \textbf{Byte-level models work.} Raw UTF-8 bytes with no tokenizer achieve competitive content encoding and stronger position encoding than sp1024 models at matched scale. The tokenizer is a convenience, not a requirement.
+
+\item \textbf{The substrate is 0.2\% of the signal.} The local path dominates. The substrate provides long-range context as a marginal correction. Its value scales with sequence length and will matter more at longer contexts where the local window covers less.
+\end{enumerate}
+
+The path forward: HRR initialization at s12/50k on byte-level input, combining the Fourier basis (content capacity), scale (position emergence), and byte-level operation (no tokenizer dependency). This configuration has not been tested but each component has been validated independently.
+
+\begin{thebibliography}{9}
+\bibitem{diagonal_ssm_limits} ``The Expressive Limits of Diagonal SSMs for State-Tracking,'' arXiv:2603.01959, March 2026.
+\bibitem{plate1991} T.~Plate, ``Holographic Reduced Representations,'' IJCAI 1991.
+\bibitem{ema_not_all} ``EMA Is Not All You Need: Mapping the Boundary Between Structure and Content in Recurrent Context,'' arXiv:2604.08556, April 2026.
+\bibitem{wildberger2025} N.~J.~Wildberger and D.~Rubine, ``A Hyper-Catalan Series Solution to Polynomial Equations, and the Geode,'' American Mathematical Monthly, 2025.
+\bibitem{gated_deltanet} ``Gated Delta Networks: Improving Mamba2 with Delta Rule,'' arXiv:2412.06464, December 2024.
+\bibitem{versor} T.~M.~Huy and E.~Hirst, ``Versor: A Geometric Sequence Architecture,'' arXiv:2602.10195, February 2026.
+\end{thebibliography}
+
+\end{document}
