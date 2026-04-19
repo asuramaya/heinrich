@@ -2715,187 +2715,22 @@ function _nfShowHover(neurons){
 let _nfLastLayer=-1;
 function _nfSetLayer(l){if(l===_nfLastLayer)return;_nfLastLayer=l;_nfBuildDots();}
 
-// rv2: Superposition — tubes through depth for top PCs
-// Uses full-K server data from _dirDepthData (pcs_50, top_pc, top_share per layer)
-// Each top PC gets a tube from emb→lmh. Height = top_share at that layer.
-// Concentration label shows pcs_50 (how many PCs carry 50% of the direction).
+// rv2: Superposition — MERGED into PC Spectrum viewport as a direction-share
+// overlay. The spectrum retains full 896-PC detail; the top-N PCs carrying
+// the A↔B direction are drawn as colored vertical "spikes" at their (pc,
+// layer) positions. See _buildPCSSpectrum for the overlay logic.
+// This stub empties the rv2 slot and shows a pointer so returning users
+// don't see a stale scene.
 function _buildRV2Attention(){
   const rv=rightViews[2];if(!rv)return;
   _clearRV(rv);rv._rvSlices=[];rv.built=true;
+  const oldLeg=rv.el?.querySelector('.rv2-legend');
+  if(oldLeg)oldLeg.remove();
   const rlbl=rv.el?.querySelector('.rlbl');
-  if(pinnedToken<0||pinnedTokenB<0||!_dirDepthData||!_dirDepthData.layers||!_dirDepthData.layers.length){
-    if(rlbl)rlbl.textContent='Superposition';return;
-  }
-  if(rlbl)rlbl.textContent='Superposition';
-  const dd=_dirDepthData;
-  const seq=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
-  const nSteps=seq.length;
-  const nTop=8;// track top 8 PCs
-
-  // Map server layer indices to sequence positions
-  const layerMap={};dd.layers.forEach(d=>{layerMap[d.layer]=d;});
-
-  // Collect top PCs across all layers — each layer now has top_pcs[8]
-  // Pick the nTop most frequent PCs across all layers
-  const pcScore={};
-  dd.layers.forEach(d=>{
-    if(!d.top_pcs)return;
-    d.top_pcs.forEach(({pc,share})=>{pcScore[pc]=(pcScore[pc]||0)+share;});
-  });
-  const pcEntries=Object.entries(pcScore).map(([k,v])=>({k:parseInt(k),v}));
-  pcEntries.sort((a,b)=>b.v-a.v);
-  const tracked=pcEntries.slice(0,nTop).map(p=>p.k);
-
-  // Build alignment grid from server's top_pcs per layer
-  const alignGrid=[];
-  for(let si=0;si<nSteps;si++){
-    const l=seq[si];const d=layerMap[l];
-    if(!d||!d.top_pcs){alignGrid.push(null);continue;}
-    const al={};
-    const shareMap={};d.top_pcs.forEach(({pc,share})=>{shareMap[pc]=share;});
-    tracked.forEach(pc=>{al[pc]=shareMap[pc]||0;});
-    alignGrid.push(al);
-  }
-
-  const maxPC=Math.max(1,...tracked);
-
-  // Build lines + sized dots for each tracked PC through depth
-  tracked.forEach((pc,ti)=>{
-    const hue=pc/(maxPC+1);const color=new THREE.Color().setHSL(hue,0.7,0.5);
-    const x=(ti/(nTop-1||1))*1.6-0.8;
-    const dotPos=[];const dotCol=[];const dotSizes=[];
-    for(let si=0;si<nSteps;si++){
-      const al=alignGrid[si];
-      const v=al?al[pc]||0:0;
-      const z=(si/(nSteps-1||1))*2-1;
-      const y=v*1.5;
-      dotPos.push(x,y,z);
-      const bright=0.3+v*0.7;
-      dotCol.push(color.r*bright,color.g*bright,color.b*bright);
-      dotSizes.push(Math.max(2,v*30));
-    }
-    // Line segments between layers
-    const lp2=[];const lc2=[];
-    for(let si=0;si<nSteps-1;si++){
-      const al0=alignGrid[si],al1=alignGrid[si+1];
-      const v0=al0?al0[pc]||0:0,v1=al1?al1[pc]||0:0;
-      const z0=(si/(nSteps-1||1))*2-1,z1=((si+1)/(nSteps-1||1))*2-1;
-      lp2.push(x,v0*1.5,z0, x,v1*1.5,z1);
-      const b0=0.3+v0*0.7,b1=0.3+v1*0.7;
-      lc2.push(color.r*b0,color.g*b0,color.b*b0, color.r*b1,color.g*b1,color.b*b1);
-    }
-    if(lp2.length){
-      const lg=new THREE.BufferGeometry();
-      lg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(lp2),3));
-      lg.setAttribute('color',new THREE.BufferAttribute(new Float32Array(lc2),3));
-      const lm=new THREE.LineSegments(lg,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.6}));
-      lm.frustumCulled=false;rv.sc.add(lm);
-    }
-    // Dots: fixed screen-size so low-alignment layers remain visible.
-    // The alignment magnitude is already encoded in Y (height) and brightness.
-    const dg=new THREE.BufferGeometry();
-    dg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(dotPos),3));
-    dg.setAttribute('color',new THREE.BufferAttribute(new Float32Array(dotCol),3));
-    const _dpr=window.devicePixelRatio||1;
-    const dm2=new THREE.Points(dg,new THREE.PointsMaterial({size:4*_dpr,vertexColors:true,transparent:true,opacity:0.85,sizeAttenuation:false,depthWrite:false}));
-    dm2.frustumCulled=false;rv.sc.add(dm2);
-  });
-
-  // Layer cursor
-  const curGeo=new THREE.BufferGeometry();
-  curGeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array([-1,0,0, 1,0,0]),3));
-  const curMat=new THREE.LineBasicMaterial({color:0xffffff,transparent:true,opacity:0.4});
-  const curLine=new THREE.LineSegments(curGeo,curMat);
-  curLine.frustumCulled=false;rv.sc.add(curLine);
-  rv._dirCursor=curLine;rv._dirNSteps=nSteps;rv._dirSeq=seq;
-
-  // Store data for interaction
-  rv._spTracked=tracked;rv._spAlignGrid=alignGrid;rv._spNSteps=nSteps;rv._spSeq=seq;rv._spNTop=nTop;rv._spK=maxPC+1;
-
-  rv.cam.position.set(0,0.8,2.5);rv.ctl.target.set(0,0,0);rv.ctl.update();
-  _updateRVLayer();
+  if(rlbl)rlbl.textContent='Superposition → see PC Spectrum';
+  return;
 }
 
-// --- Superposition viewport interaction ---
-let _spTooltip=null;
-function _spGetTooltip(){
-  if(!_spTooltip){
-    _spTooltip=document.createElement('div');
-    _spTooltip.style.cssText='position:fixed;background:rgba(10,10,10,0.95);color:#ccc;font:9px monospace;padding:4px 6px;border:1px solid #333;border-radius:3px;pointer-events:none;z-index:100;display:none;white-space:pre';
-    document.body.appendChild(_spTooltip);
-  }
-  return _spTooltip;
-}
-function _spHitTest(rv,e){
-  // Find which tracked PC and layer the pointer is near
-  if(!rv._spTracked)return null;
-  const rect=rv.el.getBoundingClientRect();
-  const mx=((e.clientX-rect.left)/rect.width)*2-1;
-  const my=-((e.clientY-rect.top)/rect.height)*2+1;
-  const ray=new THREE.Raycaster();
-  ray.setFromCamera(new THREE.Vector2(mx,my),rv.cam);
-  ray.params.Points.threshold=0.12;
-  // Test against all children that are Points
-  let bestDist=Infinity,bestPC=-1,bestSI=-1;
-  for(const child of rv.sc.children){
-    if(!(child instanceof THREE.Points))continue;
-    const hits=ray.intersectObject(child);
-    if(hits.length&&hits[0].distance<bestDist){
-      bestDist=hits[0].distance;
-      // Find which tracked PC this Points belongs to by matching X position
-      const px=hits[0].point.x;
-      const nTop=rv._spNTop;
-      let closestTI=0,closestDX=Infinity;
-      for(let ti=0;ti<nTop;ti++){
-        const tx=(ti/(nTop-1||1))*1.6-0.8;
-        if(Math.abs(px-tx)<closestDX){closestDX=Math.abs(px-tx);closestTI=ti;}
-      }
-      bestPC=closestTI;
-      // Find layer from Z position
-      const pz=hits[0].point.z;
-      const nSteps=rv._spNSteps;
-      bestSI=Math.round(((pz+1)/2)*(nSteps-1));
-      bestSI=Math.max(0,Math.min(nSteps-1,bestSI));
-    }
-  }
-  if(bestPC<0)return null;
-  return{ti:bestPC,si:bestSI,pc:rv._spTracked[bestPC]};
-}
-(function(){
-  const rv=rightViews[2];if(!rv)return;
-  let _hoverTI=-1;
-  rv.el.addEventListener('mousemove',e=>{
-    const hit=_spHitTest(rv,e);
-    const tip=_spGetTooltip();
-    if(!hit){tip.style.display='none';_hoverTI=-1;return;}
-    const al=rv._spAlignGrid[hit.si];
-    const v=al?al[hit.pc]:0;
-    const l=rv._spSeq[hit.si];
-    const layerName=l>=_nRealLayers?(l===_nRealLayers?'emb':'lmh'):`L${l}`;
-    tip.textContent=`PC${hit.pc}  ${layerName}\nalignment: ${(v*100).toFixed(1)}%`;
-    tip.style.left=(e.clientX+12)+'px';tip.style.top=(e.clientY-8)+'px';
-    tip.style.display='block';_hoverTI=hit.ti;
-    _markDirty();
-  });
-  rv.el.addEventListener('mouseleave',()=>{
-    _spGetTooltip().style.display='none';_hoverTI=-1;_markDirty();
-  });
-  rv.el.addEventListener('click',e=>{
-    const hit=_spHitTest(rv,e);if(!hit)return;
-    // Navigate cloud A to use this PC as X axis
-    const pc=hit.pc;
-    // Find second-best PC for Y axis
-    const tracked=rv._spTracked;
-    const pc2=tracked.find(p=>p!==pc)||0;
-    vpPairs[0]=[pc,pc2];
-    _precomputeCloud(0);updateVP(0,pc,pc2,0,cL);
-    buildTraj(3,pc,pc2);updateVP(3,pc,pc2,0,cL);
-    // Also navigate to the layer
-    const l=rv._spSeq[hit.si];
-    setLayer(l);
-    _markDirty();_saveState();
-  });
-})()
 
 // === PC Spectrum in br0bot ===
 // X = PC index, Y = score (signed), Z = layer (time)
@@ -2908,6 +2743,9 @@ let _pcsHoverPC=-1;
 let _pcsLayerLine=null;// current-layer indicator line
 let _pcsVarLine=null;// variance envelope line
 let _pcsTicks=null;// PC index tick marks
+let _pcsSuperLines=null;// Superposition overlay: vertical spikes at (pc,layer) carrying the concept direction
+let _pcsSuperLegend=null;// Tracked PCs for the overlay legend/tooltip
+let _pcsSuperTracked=[];// [pc_indices], top-N direction PCs (colors assigned here)
 let _pcsHoverMesh=null;// hover token spectrum (current layer only)
 let _pcsHoverTok=-1;// which token the hover mesh shows
 const _pcsHoverCache=new Map();// tokIdx → {nL, fK, data: Float32Array}
@@ -3184,9 +3022,84 @@ function _buildPCSSpectrum(){
     mesh.geometry.attributes.color.needsUpdate=true;
   });
 
+  // --- Superposition overlay: vertical "spikes" at (pc, layer) where that PC
+  // carries a non-trivial share of the concept direction (A - B). Subset of
+  // the spectrum, color-coded per tracked PC. Activates only when both pins
+  // are set and direction-depth data has loaded. Does not displace or dim
+  // the spectrum itself — the spectrum retains its full detail and scale.
+  if(_pcsSuperLines){
+    _pcsSc.remove(_pcsSuperLines);
+    _pcsSuperLines.geometry.dispose();_pcsSuperLines.material.dispose();
+    _pcsSuperLines=null;
+  }
+  _pcsSuperTracked=[];
+  if(pinnedToken>=0&&pinnedTokenB>=0&&_dirDepthData&&_dirDepthData.layers&&_dirDepthData.layers.length){
+    const dd=_dirDepthData;
+    // Global rank across all layers: sum of share per PC → top-N chosen once
+    // so colors stay stable as the user scrubs layers.
+    const pcScore={};
+    dd.layers.forEach(d=>{if(!d.top_pcs)return;d.top_pcs.forEach(({pc,share})=>{pcScore[pc]=(pcScore[pc]||0)+share;});});
+    const pcEntries=Object.entries(pcScore).map(([k,v])=>({k:parseInt(k),v}));
+    pcEntries.sort((a,b)=>b.v-a.v);
+    const tracked=pcEntries.slice(0,8).map(p=>p.k);
+    const maxPC=Math.max(1,...tracked);
+    _pcsSuperTracked=tracked.map(pc=>({pc,total:pcScore[pc]||0}));
+    // Map each tracked PC to a stable color (HSL by PC index, matches rv2 palette)
+    const colorMap={};
+    tracked.forEach(pc=>{
+      const hue=pc/(maxPC+1);
+      const col=new THREE.Color().setHSL(hue,0.7,0.55);
+      colorMap[pc]=[col.r,col.g,col.b];
+    });
+    // Share → y scale. share is a fraction of direction variance (0-1).
+    // Scale by 1.5 so a share of 1 matches the spectrum's nominal max (1.2).
+    const _shareScale=1.5;
+    const _pts=[];const _cols=[];
+    const layerMap={};dd.layers.forEach(d=>{layerMap[d.layer]=d;});
+    const _seq=_layerSeq.length&&_layerSeq.length<=nL_pcs?_layerSeq:[...Array(nL_pcs).keys()];
+    for(let si=0;si<_seq.length;si++){
+      const l=_seq[si];const d=layerMap[l];
+      if(!d||!d.top_pcs)continue;
+      const z=_layerZ[l]!==undefined?_layerZ[l]*zSpan/2:(si/(_seq.length-1||1))*zSpan-zSpan/2;
+      d.top_pcs.forEach(({pc,share})=>{
+        if(!(pc in colorMap))return;
+        if(pc>=_pcsNK)return;// PC outside spectrum X range
+        const x=(pc/(_pcsNK-1||1))*xSpan-xSpan/2;
+        const h=share*_shareScale;
+        // Vertical line from baseline to spike top
+        _pts.push(x,0,z, x,h,z);
+        const c=colorMap[pc];
+        _cols.push(c[0],c[1],c[2], c[0],c[1],c[2]);
+      });
+    }
+    if(_pts.length){
+      const _g=new THREE.BufferGeometry();
+      _g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(_pts),3));
+      _g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(_cols),3));
+      _pcsSuperLines=new THREE.LineSegments(_g,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.9,depthWrite:false}));
+      _pcsSuperLines.frustumCulled=false;
+      _pcsSuperLines.renderOrder=8;
+      _pcsSc.add(_pcsSuperLines);
+    }
+  }
+
   _updatePCSDots();
   const lbl=document.getElementById('pcsLabel');
-  if(lbl)lbl.textContent=`PC Spectrum · ${_pcsNK} PCs · click=set A, shift=set B`;
+  if(lbl){
+    const base=`PC Spectrum · ${_pcsNK} PCs · click=set A, shift=set B`;
+    if(_pcsSuperTracked.length){
+      // Append a small inline legend: colored squares + PC indices
+      lbl.innerHTML=`${base} <span style="color:#666">·</span> <span style="color:#888">Superposition:</span> `+
+        _pcsSuperTracked.map(({pc,total})=>{
+          const maxPC=Math.max(1,..._pcsSuperTracked.map(x=>x.pc));
+          const col=new THREE.Color().setHSL(pc/(maxPC+1),0.7,0.55);
+          const rgb=`rgb(${Math.round(col.r*255)},${Math.round(col.g*255)},${Math.round(col.b*255)})`;
+          return `<span style="color:${rgb}">■</span><span style="color:#aaa">PC${pc}</span>`;
+        }).join(' ');
+    }else{
+      lbl.textContent=base;
+    }
+  }
   _markDirty();
 }
 
@@ -3297,10 +3210,17 @@ function _updateRVLayer(){
       mesh.material.opacity=d===0?0.9:d===1?0.4:d===2?0.2:d<=5?0.08:0.03;
       mesh.visible=true;
     });
-    // Move direction depth cursor
+    // Move direction depth cursor — on which axis depends on the view:
+    // rv0 plots layer on X (2D chart), rv2 plots layer on Z (3D column grid).
     if(rv._dirCursor&&rv._dirSeq){
       const si=rv._dirSeq.indexOf(cL);
-      if(si>=0){const x=(si/((rv._dirNSteps-1)||1))*2-1;rv._dirCursor.position.x=x;rv._dirCursor.visible=true;}
+      if(si>=0){
+        const t=(si/((rv._dirNSteps-1)||1))*2-1;
+        const axis=rv._dirCursorAxis||'x';
+        if(axis==='z'){rv._dirCursor.position.z=t;rv._dirCursor.position.x=0;}
+        else{rv._dirCursor.position.x=t;rv._dirCursor.position.z=0;}
+        rv._dirCursor.visible=true;
+      }
       else{rv._dirCursor.visible=false;}
     }
   });
@@ -3881,6 +3801,7 @@ function _drawOverlay(ctx,w,h,vi,layer){
     }
   }
 }
+
 
 function captureViewport(sc,cam,el,vi,scale){
   scale=scale||3;
