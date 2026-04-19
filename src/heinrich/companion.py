@@ -3371,27 +3371,36 @@ class CompanionHandler(SimpleHTTPRequestHandler):
 
     def _send_json(self, data: Any):
         body = json.dumps(data, default=str).encode()
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/json')
-        self.send_header('Content-Length', len(body))
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Cache-Control', 'no-cache')
-        self.end_headers()
-        self.wfile.write(body)
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.send_header('Content-Length', len(body))
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Cache-Control', 'no-cache')
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            # Browser closed the socket mid-response (navigation, abort,
+            # poll cancellation). Normal HTTP lifecycle event — don't
+            # let it bubble up and crash the request thread.
+            pass
 
     def _send_bytes(self, data: bytes):
-        self.send_response(200)
-        self.send_header('Content-Type', 'application/octet-stream')
-        self.send_header('Content-Length', len(data))
-        self.send_header('Access-Control-Allow-Origin', '*')
-        self.send_header('Cache-Control', 'no-cache')
-        self.end_headers()
-        # Chunk writes to avoid broken pipe on large responses
-        offset = 0
-        while offset < len(data):
-            chunk = data[offset:offset + 65536]
-            self.wfile.write(chunk)
-            offset += 65536
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Length', len(data))
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.send_header('Cache-Control', 'no-cache')
+            self.end_headers()
+            # Chunk writes to avoid broken pipe on large responses
+            offset = 0
+            while offset < len(data):
+                chunk = data[offset:offset + 65536]
+                self.wfile.write(chunk)
+                offset += 65536
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def _send_file(self, path: Path):
         """Stream a binary file without loading it all into memory."""
