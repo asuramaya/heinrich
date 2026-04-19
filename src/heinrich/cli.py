@@ -443,6 +443,20 @@ def build_parser() -> argparse.ArgumentParser:
     p_cb_reproduce.add_argument("--result-json", default=None, help="Path to result.json")
     p_cb_reproduce.add_argument("--tokenizer-path", default=None, help="Path to tokenizer model")
 
+    p_cb_effctx = sub.add_parser("profile-cb-effective-context",
+                                  help="Context-knee test: per-position bpb on random-prefix sequences, identifies effective context length")
+    p_cb_effctx.add_argument("--model", required=True, help="Checkpoint path (.checkpoint.pt)")
+    p_cb_effctx.add_argument("--val", default=None, help="Val bytes file (optional; random tokens used if omitted)")
+    p_cb_effctx.add_argument("--seqlen", type=int, default=512, help="Sequence length (default: 512)")
+    p_cb_effctx.add_argument("--n-trials", type=int, default=30, help="Number of trial sequences (default: 30)")
+    p_cb_effctx.add_argument("--buckets", type=str,
+                              default="1,2,4,8,16,32,64,128,256,512",
+                              help="Comma-separated bucket bounds (default: 1,2,4,8,16,32,64,128,256,512)")
+    p_cb_effctx.add_argument("--knee-threshold", type=float, default=0.01,
+                              help="bpb delta below which adjacent buckets count as saturated (default: 0.01)")
+    p_cb_effctx.add_argument("--result-json", default=None, help="Path to result.json for model config")
+    p_cb_effctx.add_argument("--tokenizer-path", default=None, help="Path to tokenizer model")
+
     p_lookup = sub.add_parser("profile-lookup-fraction", help="How much of language modeling is a table lookup vs computation?")
     p_lookup.add_argument("--mri", required=True, help=".mri directory")
     p_lookup.add_argument("--n-sample", type=int, default=5000, help="Tokens to sample (default: 5000)")
@@ -847,6 +861,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_cb_causality(args)
     elif args.command == "profile-cb-reproduce":
         _cmd_cb_reproduce(args)
+    elif args.command == "profile-cb-effective-context":
+        _cmd_cb_effective_context(args)
     elif args.command == "profile-lookup-fraction":
         _cmd_lookup_fraction(args)
     elif args.command == "profile-distribution-drift":
@@ -3515,6 +3531,42 @@ def _cmd_cb_reproduce(args: argparse.Namespace) -> None:
     print(f"\n=== Reproducibility Check ===\n")
     print(f"  {result['verdict']}")
     print(f"  max_diff={result['max_diff']}, mean_diff={result['mean_diff']}")
+
+
+def _cmd_cb_effective_context(args: argparse.Namespace) -> None:
+    """Per-position bpb curve; identify the effective-context knee."""
+    from .profile.compare import _cb_effective_context
+
+    buckets = [int(x) for x in args.buckets.split(",") if x.strip()]
+    result = _cb_effective_context(
+        model_path=args.model,
+        val=args.val,
+        seqlen=args.seqlen,
+        n_trials=args.n_trials,
+        buckets=buckets,
+        knee_threshold=args.knee_threshold,
+        result_json=getattr(args, "result_json", None),
+        tokenizer_path=getattr(args, "tokenizer_path", None),
+    )
+
+    def _fmt(r: dict) -> None:
+        print(f"\n=== Effective-context for {r['model']} ===\n")
+        print(f"  val_data: {r['val_data']}")
+        print(f"  n_trials={r['n_trials']}  seqlen={r['seqlen']}  "
+              f"threshold={r['knee_threshold']}\n")
+        print(f"  {'bucket':<16} {'n':>6}  {'bpb_mean':>8}  {'bpb_sem':>8}")
+        for b in r["buckets"]:
+            label = f"[{b['min']},{b['max']})"
+            print(f"  {label:<16} {b['n']:>6}  {b['bpb_mean']:>8.4f}  "
+                  f"{b['bpb_sem']:>8.4f}")
+        print()
+        if r["knee_bucket_min"] is None:
+            print(f"  knee: NOT DETECTED (curve still decreasing)")
+        else:
+            print(f"  knee: [{r['knee_bucket_min']},{r['knee_bucket_max']})")
+        print(f"  saturation_bpb: {r['saturation_bpb']:.4f}\n")
+
+    _json_or(args, result, _fmt)
 
 
 def _cmd_lookup_fraction(args: argparse.Namespace) -> None:
