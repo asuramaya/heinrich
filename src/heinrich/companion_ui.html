@@ -1905,30 +1905,29 @@ function _rebuildInternals(vi,pair,needsRebuild){
   // Pre-index direction data by layer for O(1) lookup per call.
   // Reuse the module-level _WL_MAT_LOOKUP — local duplicate removed.
   const _dirByLayer={};
-  // DIR-mode magnitudes are in raw weight-norm units: scale varies wildly
-  // across matrices (k_proj can be 200+ while o_proj is <1), so a single
-  // global max crushes 5 of 7 petals to invisibility. Normalize PER MATRIX
-  // by its own max across layers, keeping every matrix visually present.
-  const _dirScalePerMat=new Array(nMat).fill(1);
+  // DIR-mode magnitudes span orders of magnitude across matrices (k_proj
+  // hits 200+ while o_proj / v_proj / down_proj live in 0.1-5). Linear
+  // global normalization crushes the small matrices to invisibility.
+  // Per-matrix normalization preserves within-matrix shape but destroys
+  // the cross-matrix importance comparison. Use log(raw+1) so "big vs
+  // small" (multiplicative) reads correctly while no matrix collapses.
+  let _dirScale=1;
   if(_useDirFlower){
-    const maxByMat=new Array(nMat).fill(0);
+    let maxLog=0;
     _wlDirData.layers.forEach(ld=>{
       _dirByLayer[ld.layer]=ld.matrices||{};
-      for(let mi=0;mi<nMat;mi++){
-        const v=(ld.matrices||{})[_WL_MAT_LOOKUP[_WL_NAMES[mi]]]||0;
-        if(v>maxByMat[mi])maxByMat[mi]=v;
+      for(const k in (ld.matrices||{})){
+        const v=Math.log1p(ld.matrices[k]||0);
+        if(v>maxLog)maxLog=v;
       }
     });
-    // Each matrix's max petal ≈ 1; relative within-matrix shape preserved.
-    for(let mi=0;mi<nMat;mi++){
-      _dirScalePerMat[mi]=maxByMat[mi]>0?(1.0/maxByMat[mi]):1;
-    }
+    _dirScale=maxLog>0?(1.0/maxLog):1;
   }
   function _petalLen(l,mi){
     const rl=l>=_nRealLayers?(l===_nRealLayers?0:_nRealLayers-1):l;
     if(_useDirFlower){
       const raw=_dirByLayer[rl]?.[_WL_MAT_LOOKUP[_WL_NAMES[mi]]]||0;
-      return raw*_dirScalePerMat[mi];
+      return Math.log1p(raw)*_dirScale;
     }
     const al=_wlData[rl]?.matrices?.[mi]?.alignment||[];
     const vA=al[pcA]||0,vB=al[pcB]||0;
