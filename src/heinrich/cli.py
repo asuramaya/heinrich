@@ -401,6 +401,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_cb_add.add_argument("--pos-r2-floor", type=float, default=0.005)
     p_cb_add.add_argument("--cont-r2-floor", type=float, default=0.010)
     p_cb_add.add_argument("--active-frac-floor", type=float, default=0.010)
+    p_cb_add.add_argument("--svd-samples", type=int, default=5000,
+                           help="Rows sampled per SVD for tail-PC position R² (default: 5000)")
 
     p_cb_pcb = sub.add_parser("profile-cb-pc-bands",
                                help="PC-band decomposition: reports variance %, position R², byte R² per PC band on a CB substrate. Detects two-band (content + position) partitions that EffDim undercounts.")
@@ -3173,6 +3175,7 @@ def _cmd_cb_additivity(args: argparse.Namespace) -> None:
             noise_floor=args.noise_floor,
             metrics=tuple(args.metrics),
             noise_floors=noise_floors,
+            svd_samples=args.svd_samples,
         )
     except ValueError as e:
         print(f"Error: {e}")

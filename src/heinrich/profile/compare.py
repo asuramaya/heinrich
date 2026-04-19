@@ -5291,12 +5291,15 @@ def causal_bank_omega_forensics(checkpoint_path: str) -> dict:
     }
 
 
-def _cb_additivity_metrics(mri_path: str) -> dict:
+def _cb_additivity_metrics(mri_path: str, *, svd_samples: int = 5000) -> dict:
     """Compute the metrics an additivity check runs over for one MRI.
 
     Returns bpb plus the substrate-geometry metrics used by
     `causal_bank_trajectory` (EffDim, PosR², ConR², active_frac). Sequence-mode
     MRIs only — impulse-mode captures have no position axis or loss stream.
+
+    ``svd_samples`` caps the rows fed into the tail-PC SVD; default 5000
+    matches session-11 behavior. Raise for publication-grade measurement.
 
     Kept in one place so the bpb-only `causal_bank_additivity` tool and any
     trajectory-level analysis stay in agreement on how each metric is computed.
@@ -5322,7 +5325,8 @@ def _cb_additivity_metrics(mri_path: str) -> dict:
         flat_pos = np.arange(flat_sub.shape[0], dtype=np.float32)
 
     sub_c = flat_sub - flat_sub.mean(axis=0)
-    _, S, _ = np.linalg.svd(sub_c[:5000], full_matrices=False)
+    svd_n = max(1, min(int(svd_samples), len(sub_c)))
+    _, S, _ = np.linalg.svd(sub_c[:svd_n], full_matrices=False)
     var_exp = (S ** 2) / (S ** 2).sum()
     eff_dim = float(np.exp(-(var_exp * np.log(var_exp + 1e-10)).sum()))
 
@@ -5346,6 +5350,7 @@ def _cb_additivity_metrics(mri_path: str) -> dict:
         "pos_r2": pos_r2,
         "cont_r2": cont_r2,
         "active_frac": active_frac,
+        "svd_samples_used": svd_n,
     }
 
 
@@ -5367,7 +5372,8 @@ def causal_bank_additivity(baseline_mri: str,
                             combination_mri: str,
                             *, noise_floor: float = 0.004,
                             metrics: tuple[str, ...] | None = None,
-                            noise_floors: dict[str, float] | None = None) -> dict:
+                            noise_floors: dict[str, float] | None = None,
+                            svd_samples: int = 5000) -> dict:
     """Check whether a combined mutation's measurements match the additive-law
     prediction on one or more metrics.
 
@@ -5401,7 +5407,7 @@ def causal_bank_additivity(baseline_mri: str,
     # Compute all metrics for every MRI once. bpb-only callers still pay for
     # a single SVD per MRI; acceptable (the MRIs are already loaded).
     def _metrics_for(mri: str) -> dict:
-        return _cb_additivity_metrics(mri)
+        return _cb_additivity_metrics(mri, svd_samples=svd_samples)
 
     base = _metrics_for(baseline_mri)
     mutations_metrics = [_metrics_for(m) for m in mutation_mris]

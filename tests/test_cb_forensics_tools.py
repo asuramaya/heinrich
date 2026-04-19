@@ -214,3 +214,41 @@ def test_cb_ablations_dispatches_and_computes_delta(monkeypatch):
     assert "ablated_bpb" in result
     assert result["delta_bpb"] == round(
         result["ablated_bpb"] - result["baseline_bpb"], 4)
+
+
+def test_cb_additivity_metrics_accepts_svd_samples(monkeypatch):
+    """_cb_additivity_metrics passes svd_samples through to the SVD call."""
+    from heinrich.profile import compare as cmp_mod
+
+    observed_sample_sizes = []
+    orig_svd = cmp_mod.np.linalg.svd
+
+    def _tracking_svd(x, *a, **kw):
+        observed_sample_sizes.append(x.shape[0])
+        return orig_svd(x, *a, **kw)
+
+    monkeypatch.setattr(cmp_mod.np.linalg, "svd", _tracking_svd)
+
+    def _fake_causal_bank_loss(mri_path):
+        return {"overall_bpb": 1.78}
+
+    def _fake_load_mri(mri_path):
+        rng = np.random.default_rng(0)
+        return {
+            "substrate_states": rng.standard_normal(
+                (10, 20, 8)).astype(np.float32),
+            "loss": None,
+        }
+
+    monkeypatch.setattr(cmp_mod, "causal_bank_loss", _fake_causal_bank_loss)
+    import heinrich.profile.mri as mri_mod
+    monkeypatch.setattr(mri_mod, "load_mri", _fake_load_mri)
+
+    _ = cmp_mod._cb_additivity_metrics("IGNORED", svd_samples=100)
+    assert any(n <= 100 for n in observed_sample_sizes), \
+        f"expected an SVD call on ≤100 rows; saw {observed_sample_sizes}"
+
+    observed_sample_sizes.clear()
+    _ = cmp_mod._cb_additivity_metrics("IGNORED", svd_samples=5000)
+    assert all(n <= 5000 for n in observed_sample_sizes), \
+        f"SVD calls exceeded 5000 rows: {observed_sample_sizes}"
