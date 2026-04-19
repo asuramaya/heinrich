@@ -551,6 +551,17 @@ TOOLS = {
             "seq_len": {"type": "integer", "description": "Sequence length (default: 256)"},
         },
     },
+    "heinrich_cb_effective_context": {
+        "description": "Context-knee test: per-position bpb on random-prefix sequences. Identifies the effective context length. Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Checkpoint path (.checkpoint.pt)", "required": True},
+            "val": {"type": "string", "description": "Val bytes file (optional)"},
+            "seqlen": {"type": "integer", "description": "Sequence length (default: 512)"},
+            "n_trials": {"type": "integer", "description": "Number of trial sequences (default: 30)"},
+            "buckets": {"type": "string", "description": "Comma-separated bucket bounds (default: 1,2,4,8,16,32,64,128,256,512)"},
+            "knee_threshold": {"type": "number", "description": "bpb delta threshold for saturation (default: 0.01)"},
+        },
+    },
     "heinrich_profile_shart_anatomy": {
         "description": "What makes a shart: crystal neuron, gradient sensitivity, frozen zone, bandwidth analysis.",
         "parameters": {
@@ -1047,6 +1058,13 @@ class ToolServer:
             return self._do_subprocess(arguments, "profile-cb-reproduce",
                 ["--model", arguments["model"]],
                 optional={"seq_len": "--seq-len"}, timeout=120)
+        if name == "heinrich_cb_effective_context":
+            return self._do_subprocess(arguments, "profile-cb-effective-context",
+                ["--model", arguments["model"]],
+                optional={"val": "--val", "seqlen": "--seqlen",
+                          "n_trials": "--n-trials", "buckets": "--buckets",
+                          "knee_threshold": "--knee-threshold"},
+                timeout=1800)
         if name == "heinrich_profile_shart_anatomy":
             return self._do_subprocess(arguments, "profile-shart-anatomy",
                 ["--mri", arguments["mri"]],
