@@ -16,13 +16,29 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .rvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .rvp .rlbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
 #tokpanel{position:fixed;right:8px;top:8px;width:560px;max-height:85vh;overflow-y:auto;background:rgba(10,10,10,0.95);border:1px solid #222;border-radius:4px;padding:8px;z-index:20;font-size:9px;backdrop-filter:blur(4px);cursor:default}
+#tokpanel.minimized{max-height:auto;overflow:hidden}
+#tokpanel.minimized #tokBody{display:none}
 #tokAB{display:flex;gap:8px}
 #tokAB>div{flex:1;min-width:0}
-#tokChat{border-top:1px solid #222;margin-top:6px;padding-top:4px}
-#tokChat.collapsed #chatBody{display:none}
 #chatBody{max-height:150px;overflow-y:auto;margin-top:4px;font-size:8px}
 #chatInput{width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:8px;font-family:inherit;border-radius:2px;margin-top:4px}
-#tokpanel .drag-handle{cursor:move;padding:2px 0;margin-bottom:4px;border-bottom:1px solid #222;color:#444;font-size:7px;user-select:none}
+#tokpanel .drag-handle{cursor:move;padding:2px 4px;margin-bottom:4px;border-bottom:1px solid #222;color:#444;font-size:7px;user-select:none;display:flex;align-items:center;gap:6px}
+#tokpanel .drag-handle .drag-mid{flex:1;text-align:center;opacity:0.6}
+#tokpanel .tok-min{background:transparent;border:1px solid #333;color:#666;padding:0 4px;font-size:9px;font-family:inherit;cursor:pointer;border-radius:2px;line-height:12px}
+#tokpanel .tok-min:hover{color:#ccc;border-color:#666}
+#tokpanel .tok-header{margin-bottom:4px}
+#tokpanel .legend-compact{cursor:pointer;color:#666;font-size:8px;padding:2px 0;user-select:none}
+#tokpanel .legend-compact:hover{color:#aaa}
+#tokpanel .legend-compact.open{color:#aaa}
+#tokpanel .search-row{display:flex;gap:4px;margin-bottom:4px;align-items:center}
+#tokpanel .search-row input{flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:8px;font-family:inherit;border-radius:2px}
+#tokpanel .search-row button{background:#1a2a1a;border:1px solid #333;color:#6c6;padding:2px 6px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer;white-space:nowrap}
+#tokpanel .tok-tabs{display:flex;gap:1px;border-bottom:1px solid #222;margin-top:6px}
+#tokpanel .tok-tabs .tab-btn{background:transparent;border:none;border-bottom:2px solid transparent;color:#666;padding:3px 8px;font-size:8px;font-family:inherit;cursor:pointer}
+#tokpanel .tok-tabs .tab-btn:hover{color:#aaa}
+#tokpanel .tok-tabs .tab-btn.active{color:#ccc;border-bottom-color:#6c6}
+#tokpanel .tab-pane{display:none;padding:4px 0;min-height:40px}
+#tokpanel .tab-pane.active{display:block}
 .lvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .lvp .llbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
 /* lv-btn/lv-top/lv-bot removed — .cbtn handles all positioning (bottom-right) */
@@ -38,7 +54,6 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .cbtn button:hover{color:#ccc;border-color:#666}
 .browse{position:relative;overflow:hidden;background:transparent}
 .browse .blbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
-#tokpanel{background:#0a0a0a;overflow-y:auto;padding:6px 8px;border-top:1px solid #1a1a1a;font-size:9px}
 #tokpanel .th{font-size:8px;color:#555;margin-bottom:4px}
 #tokpanel .ta,.tokpanel .tb{margin-bottom:6px}
 #tokpanel .tn{font-size:18px;font-weight:bold;margin-bottom:4px}
@@ -86,85 +101,89 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   </div>
 </div>
 <div id="tokpanel">
-  <div class="drag-handle" id="tokDrag"><span id="fpsDisplay" style="color:#555">--fps</span> :: drag ::</div>
-  <div id="ctrlbar" style="margin-bottom:4px">
-    <div style="display:flex;gap:3px;align-items:center;margin-bottom:2px">
-      <select id="sm" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px;max-width:90px"></select>
-      <select id="smd" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"><option>raw</option><option>naked</option><option>template</option></select>
-      <button id="bl" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">Go</button>
-      <span style="flex:1"></span>
-      <span id="ntok" style="color:#444;font-size:7px"></span>
-    </div>
-    <div style="display:flex;gap:3px;align-items:center">
-      <button id="lprev" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9664;</button>
-      <span id="llbl" style="color:#aaa;font-size:9px;min-width:24px;text-align:center">L00</span>
-      <button id="lplay" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9654;</button>
-      <button id="lnext" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9654;</button>
-      <button id="lrec" style="background:#1a1a1a;border:1px solid #333;color:#664444;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9679;</button>
-      <button id="lemb" style="background:#1a1a1a;border:1px solid #333;color:#666;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">emb</button>
-      <button id="llmh" style="background:#1a1a1a;border:1px solid #333;color:#666;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">lmh</button>
-      <span style="flex:1"></span>
-      <div class="cbtn" data-v="all" style="position:static;bottom:auto;right:auto"><button data-a="x" style="border-color:#444;color:#666">X</button><button data-a="y" style="border-color:#444;color:#666">Y</button><button data-a="z" style="border-color:#444;color:#666">Z</button><button data-a="r" style="border-color:#444;color:#666">R</button></div>
-    </div>
+  <div class="drag-handle" id="tokDrag">
+    <span id="fpsDisplay" style="color:#555">--fps</span>
+    <span class="drag-mid">:: drag ::</span>
+    <button id="tokMin" class="tok-min" title="Minimize panel (show only this bar)">&minus;</button>
   </div>
-  <div id="loadStatus" style="font-size:7px;color:#555;margin-bottom:2px;min-height:9px"></div>
-  <div style="margin-bottom:4px"><span id="ht" style="font-weight:bold;font-size:10px"></span> <span id="hs" style="font-weight:bold;font-size:10px"></span><div style="color:#555;font-size:7px" id="hst"></div><span id="st" style="color:#444;font-size:7px"></span><div id="legend2" style="font-size:7px;color:#555;margin-top:2px"></div></div>
-  <hr style="border:none;border-top:1px solid #1a1a1a;margin:4px 0">
-  <div style="margin-bottom:4px"><input id="tsearch" type="text" placeholder="search tokens..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:8px;font-family:inherit;border-radius:2px"><div id="tsresults" style="max-height:80px;overflow-y:auto;font-size:8px;color:#555"></div></div>
-  <button id="discoverBtn" style="width:100%;background:#1a2a1a;border:1px solid #333;color:#6c6;padding:2px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer;margin-top:2px">Discover features</button>
-  <div id="discoverResults" style="max-height:200px;overflow-y:auto;font-size:7px;color:#555;margin-top:2px"></div>
-  <hr style="border:none;border-top:1px solid #1a1a1a;margin:4px 0">
-  <div id="tokAB">
-    <div id="tokA"><div style="color:#555;font-size:7px;margin-bottom:2px">Token A (click)</div><div class="tn" id="taName" style="color:#FF6644">—</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarA" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="taMeta" style="font-size:8px">click a token to pin</div><div id="predsA" style="font-size:7px;color:#555;margin-top:3px"></div></div>
-    <div id="tokB"><div style="color:#555;font-size:7px;margin-bottom:2px">Token B (R-click)</div><div class="tn" id="tbName" style="color:#4477AA">—</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarB" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="tbMeta" style="font-size:8px">R-click for comparison</div><div id="predsB" style="font-size:7px;color:#555;margin-top:3px"></div></div>
-  </div>
-  <div id="dirColorStatus" class="dcs" style="display:none">projecting direction…</div>
-  <div id="sepPanel" style="display:none;margin:6px 0;cursor:pointer" title="Hover to load direction-quality analysis"><div style="color:#555;font-size:7px;margin-bottom:2px">Max separation PCs <span id="sepDist" style="color:#888"></span></div><div id="sepList" style="font-size:8px"></div></div>
-  <hr style="border:none;border-top:1px solid #1a1a1a;margin:6px 0">
-  <div id="attnPanel" style="display:none"><div style="color:#555;font-size:7px;margin-bottom:2px">Attention (Token A, current layer)</div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
-  <div id="tokChat" class="collapsed">
-    <div style="display:flex;align-items:center;cursor:pointer" id="chatToggle">
-      <span style="color:#555;font-size:7px;flex:1">MCP Collaboration</span>
-      <span id="chatArrow" style="color:#444;font-size:10px">&#9654;</span>
-    </div>
-    <div id="chatBody">
-      <div id="chatLog" style="color:#666;font-size:8px;line-height:1.5"></div>
-      <input id="chatInput" type="text" placeholder="ask about this direction...">
-    </div>
-  </div>
-  <div id="tokCross" class="collapsed" style="margin-top:4px">
-    <div style="display:flex;align-items:center;cursor:pointer" id="crossToggle">
-      <span style="color:#555;font-size:7px;flex:1">Cross-Model Compare</span>
-      <span id="crossArrow" style="color:#444;font-size:10px">&#9654;</span>
-    </div>
-    <div id="crossBody">
-      <div style="display:flex;gap:3px;margin-top:4px;align-items:center">
-        <select id="crossModel" style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"></select>
-        <select id="crossMode" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"><option>raw</option><option>naked</option><option>template</option></select>
-        <button id="crossRun" style="background:#1a1a1a;border:1px solid #333;color:#6c6;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">Run</button>
+  <div id="tokBody">
+    <div id="ctrlbar" style="margin-bottom:4px">
+      <div style="display:flex;gap:3px;align-items:center;margin-bottom:2px">
+        <select id="sm" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px;max-width:90px"></select>
+        <select id="smd" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"><option>raw</option><option>naked</option><option>template</option></select>
+        <button id="bl" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">Go</button>
+        <span style="flex:1"></span>
+        <span id="ntok" style="color:#444;font-size:7px"></span>
       </div>
-      <div id="crossStatus" style="color:#555;font-size:7px;margin-top:3px">pin A and B; pick a second model; Run</div>
-      <div id="crossResult" style="font-size:7px;color:#888;margin-top:4px"></div>
+      <div style="display:flex;gap:3px;align-items:center">
+        <button id="lprev" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9664;</button>
+        <span id="llbl" style="color:#aaa;font-size:9px;min-width:24px;text-align:center">L00</span>
+        <button id="lplay" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9654;</button>
+        <button id="lnext" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9654;</button>
+        <button id="lrec" style="background:#1a1a1a;border:1px solid #333;color:#664444;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9679;</button>
+        <button id="lemb" style="background:#1a1a1a;border:1px solid #333;color:#666;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">emb</button>
+        <button id="llmh" style="background:#1a1a1a;border:1px solid #333;color:#666;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">lmh</button>
+        <span style="flex:1"></span>
+        <div class="cbtn" data-v="all" style="position:static;bottom:auto;right:auto"><button data-a="x" style="border-color:#444;color:#666">X</button><button data-a="y" style="border-color:#444;color:#666">Y</button><button data-a="z" style="border-color:#444;color:#666">Z</button><button data-a="r" style="border-color:#444;color:#666">R</button></div>
+      </div>
     </div>
-  </div>
-  <div id="tokLive" class="collapsed" style="margin-top:4px">
-    <div style="display:flex;align-items:center;cursor:pointer" id="liveToggle">
-      <span style="color:#555;font-size:7px;flex:1">Live Forward</span>
-      <span id="liveArrow" style="color:#444;font-size:10px">&#9654;</span>
+    <div id="loadStatus" style="font-size:7px;color:#555;margin-bottom:2px;min-height:9px"></div>
+    <div class="tok-header">
+      <span id="ht" style="font-weight:bold;font-size:10px"></span>
+      <span id="hs" style="font-weight:bold;font-size:10px"></span>
+      <div id="hst" style="color:#555;font-size:7px"></div>
+      <span id="st" style="color:#444;font-size:7px"></span>
+      <div id="legendWrap" style="margin-top:2px">
+        <div id="legendToggle" class="legend-compact">scripts &#9656;</div>
+        <div id="legend2" style="font-size:7px;color:#555;display:none;margin-top:2px"></div>
+      </div>
     </div>
-    <div id="liveBody">
-      <input id="liveModelId" type="text" placeholder="HF model id (optional, e.g. HuggingFaceTB/SmolLM2-135M)" style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:7px;font-family:inherit;border-radius:2px;margin-top:4px">
-      <input id="liveInput" type="text" placeholder="type a prompt, Enter to run..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:8px;font-family:inherit;border-radius:2px;margin-top:4px">
-      <div id="liveStatus" style="color:#555;font-size:7px;margin-top:3px">set HF id above; model load on first run ~5-30s</div>
-      <div id="liveResult" style="font-size:7px;color:#888;margin-top:4px"></div>
+    <div class="search-row">
+      <input id="tsearch" type="text" placeholder="search tokens...">
+      <button id="discoverBtn" title="Find the layer with the strongest A/B separation across PCs">Discover</button>
+    </div>
+    <div id="tsresults" style="max-height:80px;overflow-y:auto;font-size:8px;color:#555;margin-bottom:4px"></div>
+    <div id="tokAB">
+      <div id="tokA"><div style="color:#555;font-size:7px;margin-bottom:2px">Token A (click)</div><div class="tn" id="taName" style="color:#FF6644">&mdash;</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarA" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="taMeta" style="font-size:8px">click a token to pin</div><div id="predsA" style="font-size:7px;color:#555;margin-top:3px"></div></div>
+      <div id="tokB"><div style="color:#555;font-size:7px;margin-bottom:2px">Token B (R-click)</div><div class="tn" id="tbName" style="color:#4477AA">&mdash;</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarB" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="tbMeta" style="font-size:8px">R-click for comparison</div><div id="predsB" style="font-size:7px;color:#555;margin-top:3px"></div></div>
+    </div>
+    <div id="dirColorStatus" class="dcs" style="display:none">projecting direction&hellip;</div>
+    <div id="sepPanel" style="display:none;margin:6px 0;cursor:pointer" title="Hover to load direction-quality analysis"><div style="color:#555;font-size:7px;margin-bottom:2px">Max separation PCs <span id="sepDist" style="color:#888"></span></div><div id="sepList" style="font-size:8px"></div></div>
+    <div id="attnPanel" style="display:none"><div style="color:#555;font-size:7px;margin-bottom:2px">Attention (Token A, current layer)</div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
+    <!-- Workspace tabs: Discover results + three formerly-separate accordions merged into one switcher -->
+    <div class="tok-tabs" id="tokTabs">
+      <button class="tab-btn active" data-tab="discover">Discover</button>
+      <button class="tab-btn" data-tab="chat">Chat</button>
+      <button class="tab-btn" data-tab="cross">Cross-Model</button>
+      <button class="tab-btn" data-tab="live">Live Forward</button>
+    </div>
+    <div id="tokTabContent">
+      <div class="tab-pane active" data-pane="discover">
+        <div id="discoverResults" style="max-height:300px;overflow-y:auto;font-size:7px;color:#555"></div>
+      </div>
+      <div class="tab-pane" data-pane="chat">
+        <div id="chatLog" style="color:#666;font-size:8px;line-height:1.5;max-height:200px;overflow-y:auto"></div>
+        <input id="chatInput" type="text" placeholder="ask about this direction...">
+      </div>
+      <div class="tab-pane" data-pane="cross">
+        <div style="display:flex;gap:3px;align-items:center">
+          <select id="crossModel" style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"></select>
+          <select id="crossMode" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"><option>raw</option><option>naked</option><option>template</option></select>
+          <button id="crossRun" style="background:#1a1a1a;border:1px solid #333;color:#6c6;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">Run</button>
+        </div>
+        <div id="crossStatus" style="color:#555;font-size:7px;margin-top:3px">pin A and B; pick a second model; Run</div>
+        <div id="crossResult" style="font-size:7px;color:#888;margin-top:4px"></div>
+      </div>
+      <div class="tab-pane" data-pane="live">
+        <input id="liveModelId" type="text" placeholder="HF model id (optional, e.g. HuggingFaceTB/SmolLM2-135M)" style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:7px;font-family:inherit;border-radius:2px">
+        <input id="liveInput" type="text" placeholder="type a prompt, Enter to run..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:8px;font-family:inherit;border-radius:2px;margin-top:4px">
+        <div id="liveStatus" style="color:#555;font-size:7px;margin-top:3px">set HF id above; model load on first run ~5-30s</div>
+        <div id="liveResult" style="font-size:7px;color:#888;margin-top:4px"></div>
+      </div>
     </div>
   </div>
 </div>
 <style>
-  #tokLive.collapsed #liveBody{display:none !important}
-  #tokLive #liveBody{display:block}
-  #tokCross.collapsed #crossBody{display:none !important}
-  #tokCross #crossBody{display:block}
   #crossResult .cm-row{display:flex;gap:6px;padding:2px 4px;margin:1px 0;border-radius:2px;background:#1a1a2a}
   #crossResult .cm-lbl{color:#aaa;width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
   #crossResult .cm-stat{color:#6c8;font-family:monospace}
@@ -4303,13 +4322,40 @@ async function _captureGifRemote(sc,cam,el,vi,rid){
 // Start polling after initial load completes
 setTimeout(_pollLoop,1000);
 
-// --- MCP Chat toggle ---
-document.getElementById('chatToggle')?.addEventListener('click',()=>{
-  const chat=document.getElementById('tokChat');
-  const arrow=document.getElementById('chatArrow');
-  chat.classList.toggle('collapsed');
-  arrow.textContent=chat.classList.contains('collapsed')?'\u25B6':'\u25BC';
+// --- Tokpanel tab switcher (merged from 3 former accordions: chat/cross/live) ---
+(function(){
+  const tabs=document.getElementById('tokTabs');if(!tabs)return;
+  tabs.addEventListener('click',e=>{
+    const btn=e.target.closest('.tab-btn');if(!btn)return;
+    const name=btn.dataset.tab;
+    tabs.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b===btn));
+    document.querySelectorAll('#tokTabContent .tab-pane').forEach(p=>{
+      p.classList.toggle('active',p.dataset.pane===name);
+    });
+    // Lazy-populate the cross-model dropdown the first time that tab opens.
+    if(name==='cross')_populateCrossModels();
+  });
+})();
+
+// --- Minimize / expand tokpanel ---
+document.getElementById('tokMin')?.addEventListener('click',()=>{
+  const p=document.getElementById('tokpanel');if(!p)return;
+  const min=p.classList.toggle('minimized');
+  document.getElementById('tokMin').textContent=min?'+':'\u2212';
 });
+
+// --- Script legend expand/collapse (compressed by default — was taking 2 rows) ---
+(function(){
+  const toggle=document.getElementById('legendToggle');
+  const leg=document.getElementById('legend2');
+  if(!toggle||!leg)return;
+  toggle.addEventListener('click',()=>{
+    const open=leg.style.display==='block';
+    leg.style.display=open?'none':'block';
+    toggle.classList.toggle('open',!open);
+    toggle.innerHTML=open?'scripts &#9656;':'scripts &#9662;';
+  });
+})();
 document.getElementById('chatInput')?.addEventListener('keydown',e=>{
   if(e.key!=='Enter')return;
   const input=e.target;const msg=input.value.trim();if(!msg)return;
@@ -4346,12 +4392,15 @@ async function _chatPollLoop(){
   const MAX_BACKOFF=60000;
   let badgeEl=null;
   const _setBadge=(disconnected)=>{
-    const arrow=document.getElementById('chatArrow');if(!arrow)return;
+    // Old badge host was #chatArrow (inside the former accordion). After
+    // accordion → tab merge, the Chat tab button is the live element.
+    const anchor=document.querySelector('#tokTabs .tab-btn[data-tab="chat"]');
+    if(!anchor)return;
     if(disconnected){
       if(!badgeEl){badgeEl=document.createElement('span');
         badgeEl.style.cssText='color:#d66;font-size:7px;margin-left:4px';
         badgeEl.textContent='(disconnected)';
-        arrow.parentNode?.insertBefore(badgeEl,arrow);}
+        anchor.appendChild(badgeEl);}
     }else if(badgeEl){badgeEl.remove();badgeEl=null;}
   };
   while(true){
@@ -4415,13 +4464,11 @@ function _liveSaveModelId(){
     localStorage.setItem('heinrich.liveModelId',JSON.stringify(saved));
   }catch(e){}
 }
-document.getElementById('liveToggle')?.addEventListener('click',()=>{
-  const box=document.getElementById('tokLive');
-  const arrow=document.getElementById('liveArrow');
-  box.classList.toggle('collapsed');
-  arrow.textContent=box.classList.contains('collapsed')?'\u25B6':'\u25BC';
-  if(!box.classList.contains('collapsed'))_liveSuggestModelId();
-});
+// Former liveToggle: now driven by tab switcher. Suggest model ID on pane activation.
+(function(){
+  const liveTabBtn=document.querySelector('#tokTabs .tab-btn[data-tab="live"]');
+  if(liveTabBtn)liveTabBtn.addEventListener('click',()=>_liveSuggestModelId());
+})();
 document.getElementById('liveModelId')?.addEventListener('change',_liveSaveModelId);
 document.getElementById('liveModelId')?.addEventListener('blur',_liveSaveModelId);
 let _liveBusy=false;
@@ -4495,14 +4542,9 @@ async function _populateCrossModels(){
     });
   }catch(e){}
 }
+// Former crossToggle: tab switcher handles visibility; initial population happens
+// lazily on first activation via the tab-switcher handler above.
 _populateCrossModels();
-document.getElementById('crossToggle')?.addEventListener('click',()=>{
-  const box=document.getElementById('tokCross');
-  const arrow=document.getElementById('crossArrow');
-  box.classList.toggle('collapsed');
-  arrow.textContent=box.classList.contains('collapsed')?'\u25B6':'\u25BC';
-  if(!box.classList.contains('collapsed'))_populateCrossModels();
-});
 // When the cross-model dropdown changes, sync the mode selector to match.
 document.getElementById('crossModel')?.addEventListener('change',e=>{
   const sel=e.target.selectedOptions[0];
