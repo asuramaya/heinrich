@@ -397,6 +397,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_cb_add.add_argument("--cont-r2-floor", type=float, default=0.010)
     p_cb_add.add_argument("--active-frac-floor", type=float, default=0.010)
 
+    p_cb_pcb = sub.add_parser("profile-cb-pc-bands",
+                               help="PC-band decomposition: reports variance %, position R², byte R² per PC band on a CB substrate. Detects two-band (content + position) partitions that EffDim undercounts.")
+    p_cb_pcb.add_argument("--mris", nargs="+", required=True, help="One or more .seq.mri directories")
+
     p_cb_traj = sub.add_parser("profile-cb-trajectory", help="Trajectory analysis across multiple checkpoints: EffDim, R², mode utilization derivatives")
     p_cb_traj.add_argument("--mris", nargs="+", required=True, help="Ordered MRI paths (by training step)")
 
@@ -816,6 +820,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_cb_rotation_forensics(args)
     elif args.command == "profile-cb-additivity":
         _cmd_cb_additivity(args)
+    elif args.command == "profile-cb-pc-bands":
+        _cmd_cb_pc_bands(args)
     elif args.command == "profile-cb-trajectory":
         _cmd_cb_trajectory(args)
     elif args.command == "profile-cb-invertibility":
@@ -3161,6 +3167,57 @@ def _cmd_cb_rotation_forensics(args: argparse.Namespace) -> None:
               f"{info.get('bias_l2', 0):>8.3f} "
               f"{info.get('effective_rank', 0):>9.2f} "
               f"{info.get('top_sv', 0):>8.3f}")
+
+
+def _cmd_cb_pc_bands(args: argparse.Namespace) -> None:
+    """Per-PC-band content / position decomposition for one or more MRIs."""
+    from .profile.compare import causal_bank_pc_bands
+
+    reports = []
+    for mri in args.mris:
+        r = causal_bank_pc_bands(mri)
+        if "error" in r:
+            print(f"Error on {mri}: {r['error']}")
+            continue
+        reports.append(r)
+
+    result = {"reports": reports}
+
+    def _fmt(res):
+        print(f'\n=== CB PC-band decomposition: {len(res["reports"])} MRI(s) ===\n')
+        # Per-band table across MRIs
+        # Header
+        band_labels = [b["range"] for b in res["reports"][0]["bands"]] if res["reports"] else []
+        band_header = "  ".join(f'PC{l:>8s}'.rjust(26) for l in band_labels)
+        print(f'  {"mri":<55} {"EffDim":>7} {"2band":>6}  '
+              + "  ".join(f'{"PC " + l:>24}' for l in band_labels))
+        sub_header = (" " * (55 + 1)) + (" " * 7) + "        " + \
+                      "  ".join(f'{"var% pos_r2 byte_r2":>24}' for _ in band_labels)
+        print(sub_header)
+        print('-' * max(120, 65 + 26 * len(band_labels)))
+        for r in res["reports"]:
+            name = r["mri"].split("/")[-1].replace(".seq.mri", "").replace(".mri", "")[-55:]
+            row = [f'  {name:<55}',
+                   f'{r["eff_dim"]:>7.1f}',
+                   f'{"YES" if r["two_band_partition"] else "no":>6}']
+            for b in r["bands"]:
+                row.append(f' {b["var_pct"]:>5.1f}% {b["pos_r2"]:>6.3f} {b["byte_r2"]:>6.3f}'.rjust(24))
+            print("  ".join(row))
+
+        print(f'\n  Cumulative position R² vs top-k PCs:')
+        print(f'  {"mri":<55} ' + "  ".join(f'{"k=" + str(e["top_k"]):>8}' for e in res["reports"][0]["cumulative_pos_r2"]))
+        for r in res["reports"]:
+            name = r["mri"].split("/")[-1].replace(".seq.mri", "").replace(".mri", "")[-55:]
+            vals = "  ".join(f'{e["pos_r2"]:>8.3f}' for e in r["cumulative_pos_r2"])
+            print(f'  {name:<55} {vals}')
+
+        # Flag any two-band partitions
+        flags = [r for r in res["reports"] if r["two_band_partition"]]
+        if flags:
+            print(f'\n  ⚠ {len(flags)} MRI(s) show a two-band partition. '
+                  f'EffDim undercounts their working dimensionality.')
+
+    _json_or(args, result, _fmt)
 
 
 def _cmd_cb_trajectory(args: argparse.Namespace) -> None:

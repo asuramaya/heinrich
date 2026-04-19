@@ -5256,6 +5256,138 @@ def _ridge_r2(X: np.ndarray, y: np.ndarray, *, n_train_frac: float = 0.5,
     return max(0.0, float(1.0 - ss_res / ss_tot))
 
 
+def causal_bank_pc_bands(mri_path: str, *,
+                          bands: tuple[tuple[int, int], ...] = ((0, 8), (8, 20), (20, 50), (50, 100)),
+                          n_fit: int = 6000) -> dict:
+    """Per-PC-band content / position decomposition of a causal-bank substrate.
+
+    EffDim (entropy of the variance spectrum) measures one-dimensional
+    spread, but substrates with independent factors (content + position)
+    partition their PC spectrum into orthogonal bands with different
+    variance scales. A band occupying 20% of variance and encoding
+    position-only is invisible to EffDim and collapses content-coded full-
+    substrate ridge R². This tool reports variance %, position R², and
+    byte R² per band separately, so a two-band substrate stops getting
+    mis-read as a 1-dim collapse.
+
+    Requires a sequence-mode MRI with a ``substrate_states`` tensor of
+    shape ``[n_seqs, seq_len, D]`` and a ``tokens.npz`` sidecar holding
+    ``token_ids``.
+
+    The band structure was first observed in session-12 on
+    ``s12w1-lasso-pos-b2-s12-b4-step20k``: content in PCs 0-7 (85%
+    variance, zero position), position in PCs 8-19 (14% variance,
+    pos_r2=0.29). The same pattern appears on any position-enabled
+    non-abelian-rotation substrate beyond ~step 10-20k.
+    """
+    from .mri import load_mri
+
+    mri = load_mri(mri_path)
+    sub = mri['substrate_states'].astype(np.float32)
+    tok_path = Path(mri_path) / "tokens.npz"
+    if not tok_path.exists():
+        return {"error": f"tokens.npz missing at {tok_path}"}
+    tok = np.load(tok_path)['token_ids']
+
+    if sub.ndim != 3:
+        return {"error": f"expected 3-D substrate [seq, pos, D], got {sub.shape}"}
+
+    n_seqs, seq_len, D = sub.shape
+    flat = sub.reshape(-1, D)
+    flat_pos = np.tile(np.arange(seq_len, dtype=np.float32), n_seqs)
+    flat_tok = tok.reshape(-1)[:len(flat)]
+
+    flat_c = flat - flat.mean(0)
+    # SVD on a sample, project all data. Sample size is a compromise
+    # between PC-stability and runtime.
+    fit_size = min(n_fit, len(flat_c))
+    _, S, Vt = np.linalg.svd(flat_c[:fit_size], full_matrices=False)
+    n_pc = min(len(S), max(b[1] for b in bands), 200)
+    proj = flat_c @ Vt[:n_pc].T
+
+    rng = np.random.default_rng(0)
+    idx = rng.permutation(len(flat_c))
+    tr, te = idx[:len(flat_c) // 2], idx[len(flat_c) // 2:]
+
+    def r2(y: np.ndarray, yhat: np.ndarray) -> float:
+        ss_r = ((y - yhat) ** 2).sum()
+        ss_t = ((y - y.mean()) ** 2).sum()
+        return float(max(0.0, 1 - ss_r / max(ss_t, 1e-12)))
+
+    def band_pos_r2(lo: int, hi: int) -> tuple[float, float]:
+        hi = min(hi, n_pc)
+        if lo >= hi:
+            return 0.0, 0.0
+        X = proj[:, lo:hi]
+        A = np.column_stack([X[tr], np.ones(len(tr))])
+        coef, *_ = np.linalg.lstsq(A, flat_pos[tr], rcond=None)
+        pred = X[te] @ coef[:-1] + coef[-1]
+        var_pct = 100 * (S[lo:hi] ** 2).sum() / (S ** 2).sum()
+        return r2(flat_pos[te], pred), float(var_pct)
+
+    def band_byte_r2(lo: int, hi: int) -> float:
+        hi = min(hi, n_pc)
+        if lo >= hi:
+            return 0.0
+        X = proj[:, lo:hi]
+        byte_means = np.zeros((256, hi - lo), dtype=np.float32)
+        for b in range(256):
+            m = flat_tok[tr] == b
+            if m.sum() > 3:
+                byte_means[b] = X[tr][m].mean(0)
+        pred = byte_means[flat_tok[te]]
+        ss_r = ((X[te] - pred) ** 2).sum()
+        ss_t = ((X[te] - X[te].mean(0)) ** 2).sum()
+        return float(max(0.0, 1 - ss_r / max(ss_t, 1e-12)))
+
+    band_results = []
+    for lo, hi in bands:
+        pos_r2, var_pct = band_pos_r2(lo, hi)
+        byte_r2 = band_byte_r2(lo, hi)
+        band_results.append({
+            "range": f"{lo}-{min(hi, n_pc) - 1}",
+            "lo": lo,
+            "hi": min(hi, n_pc),
+            "var_pct": round(var_pct, 4),
+            "pos_r2": round(pos_r2, 6),
+            "byte_r2": round(byte_r2, 6),
+        })
+
+    # Cumulative position R² vs top-k PCs (standard checkpoints)
+    cum = []
+    for k_top in [8, 20, 50, 100]:
+        if k_top > n_pc:
+            continue
+        pos_r2, _ = band_pos_r2(0, k_top)
+        cum.append({"top_k": k_top, "pos_r2": round(pos_r2, 6)})
+
+    # Reference metrics on the full substrate
+    var_exp = (S ** 2) / (S ** 2).sum()
+    eff_dim = float(np.exp(-(var_exp * np.log(var_exp + 1e-12)).sum()))
+
+    # "Undercount" flag: two-band detected when at least one low-variance
+    # band carries significantly more position or byte signal than the
+    # top band would suggest. Heuristic: top-8 pos_r2 < 0.01 but some
+    # later band has pos_r2 > 0.05 → two-band partition present.
+    top8_pos = band_results[0]["pos_r2"] if band_results else 0.0
+    max_tail_pos = max((b["pos_r2"] for b in band_results[1:]), default=0.0)
+    two_band = top8_pos < 0.01 and max_tail_pos > 0.05
+
+    return {
+        "mri": mri_path,
+        "n_tokens": int(n_seqs * seq_len),
+        "substrate_dim": int(D),
+        "eff_dim": round(eff_dim, 1),
+        "bands": band_results,
+        "cumulative_pos_r2": cum,
+        "two_band_partition": bool(two_band),
+        "two_band_note": (
+            "content-only top-8 + position-carrying mid-spectrum band detected; "
+            "EffDim likely undercounts working dimensionality" if two_band else None
+        ),
+    }
+
+
 def causal_bank_trajectory(mri_paths: list[str]) -> dict:
     """Forensic trajectory analysis across multiple checkpoints from the same run.
 
