@@ -2111,6 +2111,45 @@ def _resolve_recapture_source(mri_dir, md):
     result_json = prov.get("result_json")
     if model_path and _P(model_path).exists():
         return model_path, result_json, None
+
+    # Path-relative-to-sharts fallback. If the recorded absolute path is
+    # gone (volume remounted at a different mount point / different host),
+    # try to find the same checkpoint under the MRI's current sharts root.
+    # Works when both the recorded path and the MRI directory share a
+    # "sharts" component — we peel the old path at that component and
+    # re-root at the MRI's sharts.
+    def _sharts_split(p: _P) -> tuple[_P, _P] | None:
+        """Split path at the last component whose name contains 'sharts'
+        (case-insensitive). Returns (root-inclusive-of-sharts, rest).
+        """
+        parts = p.parts
+        for i in range(len(parts) - 1, -1, -1):
+            if "sharts" in parts[i].lower():
+                root = _P(*parts[: i + 1])
+                rest = _P(*parts[i + 1:]) if i + 1 < len(parts) else _P()
+                return root, rest
+        return None
+
+    if model_path:
+        old_split = _sharts_split(_P(model_path))
+        cur_split = _sharts_split(mri_dir.resolve())
+        if old_split and cur_split:
+            _, old_rest = old_split
+            new_root, _ = cur_split
+            candidate = new_root / old_rest
+            if candidate.exists():
+                import sys as _sys
+                print(f"model_path rewritten: {model_path} → {candidate}",
+                      file=_sys.stderr)
+                new_rj = result_json
+                if result_json:
+                    rj_split = _sharts_split(_P(result_json))
+                    if rj_split:
+                        _, rj_rest = rj_split
+                        rj_cand = new_root / rj_rest
+                        if rj_cand.exists():
+                            new_rj = str(rj_cand)
+                return str(candidate), new_rj, None
     # Legacy fallback: <mri_dir>/<base>.{seq.mri,mri} → <mri_dir>/<base>.checkpoint.pt
     name = mri_dir.name
     for suffix in (".seq.mri", ".mri"):
