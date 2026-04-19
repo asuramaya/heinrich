@@ -252,3 +252,63 @@ def test_cb_additivity_metrics_accepts_svd_samples(monkeypatch):
     _ = cmp_mod._cb_additivity_metrics("IGNORED", svd_samples=5000)
     assert all(n <= 5000 for n in observed_sample_sizes), \
         f"SVD calls exceeded 5000 rows: {observed_sample_sizes}"
+
+
+def test_causal_bank_pc_bands_bootstrap_reports_sem(monkeypatch, tmp_path):
+    """n_bootstrap > 0 adds pos_r2_sem and pos_r2_samples to band reports."""
+    from heinrich.profile import compare as cmp_mod
+
+    rng = np.random.default_rng(0)
+    n_seq, seq_len, D = 20, 64, 16
+    sub = rng.standard_normal((n_seq, seq_len, D)).astype(np.float32)
+    pos = np.tile(np.arange(seq_len, dtype=np.float32),
+                   n_seq).reshape(n_seq, seq_len)
+    sub[:, :, 8:12] += 5.0 * pos[:, :, None]
+
+    mri_dir = tmp_path / "fake.seq.mri"
+    mri_dir.mkdir()
+    np.savez(str(mri_dir / "tokens.npz"),
+              token_ids=rng.integers(0, 256, (n_seq, seq_len)).astype(np.int64))
+
+    def _fake_load_mri(path):
+        return {"substrate_states": sub}
+
+    import heinrich.profile.mri as mri_mod
+    monkeypatch.setattr(mri_mod, "load_mri", _fake_load_mri)
+
+    result = cmp_mod.causal_bank_pc_bands(str(mri_dir), n_bootstrap=5)
+    fitted = [b for b in result["bands"] if b["lo"] < b["hi"]]
+    assert fitted, "no bands fitted for bootstrap"
+    for band in fitted:
+        assert "pos_r2_sem" in band
+        assert "pos_r2_samples" in band
+        assert band["pos_r2_samples"] == 5
+    for band in result["bands"]:
+        # All bands expose the fields even when they weren't fitted.
+        assert "pos_r2_sem" in band
+        assert "pos_r2_samples" in band
+
+
+def test_causal_bank_pc_bands_bootstrap_off_by_default(monkeypatch, tmp_path):
+    """With no --n-bootstrap, legacy fields unchanged (no sem reported)."""
+    from heinrich.profile import compare as cmp_mod
+
+    rng = np.random.default_rng(1)
+    sub = rng.standard_normal((10, 32, 8)).astype(np.float32)
+
+    mri_dir = tmp_path / "fake.seq.mri"
+    mri_dir.mkdir()
+    np.savez(str(mri_dir / "tokens.npz"),
+              token_ids=rng.integers(0, 256, (10, 32)).astype(np.int64))
+
+    def _fake_load_mri(path):
+        return {"substrate_states": sub}
+
+    import heinrich.profile.mri as mri_mod
+    monkeypatch.setattr(mri_mod, "load_mri", _fake_load_mri)
+
+    result = cmp_mod.causal_bank_pc_bands(str(mri_dir))
+    for band in result["bands"]:
+        # New fields are always present but flat/zero when bootstrap is off.
+        assert band["pos_r2_samples"] == 0
+        assert band["pos_r2_sem"] == 0.0

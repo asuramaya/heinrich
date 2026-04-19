@@ -5599,7 +5599,8 @@ def _ridge_r2(X: np.ndarray, y: np.ndarray, *, n_train_frac: float = 0.5,
 
 def causal_bank_pc_bands(mri_path: str, *,
                           bands: tuple[tuple[int, int], ...] = ((0, 8), (8, 20), (20, 50), (50, 100)),
-                          n_fit: int = 6000) -> dict:
+                          n_fit: int = 6000,
+                          n_bootstrap: int = 0) -> dict:
     """Per-PC-band content / position decomposition of a causal-bank substrate.
 
     EffDim (entropy of the variance spectrum) measures one-dimensional
@@ -5681,18 +5682,49 @@ def causal_bank_pc_bands(mri_path: str, *,
         ss_t = ((X[te] - X[te].mean(0)) ** 2).sum()
         return float(max(0.0, 1 - ss_r / max(ss_t, 1e-12)))
 
+    def band_pos_r2_bootstrap(lo: int, hi: int, K: int) -> tuple[float, float, int]:
+        """Run band_pos_r2 K times with different permutation seeds; return
+        (mean_pos_r2, sem_pos_r2, K_used)."""
+        hi_c = min(hi, n_pc)
+        if lo >= hi_c or K <= 0:
+            return 0.0, 0.0, 0
+        X = proj[:, lo:hi_c]
+        samples = []
+        for seed in range(K):
+            rng_b = np.random.default_rng(seed + 1)
+            idx_b = rng_b.permutation(len(flat_c))
+            tr_b = idx_b[:len(flat_c) // 2]
+            te_b = idx_b[len(flat_c) // 2:]
+            A = np.column_stack([X[tr_b], np.ones(len(tr_b))])
+            coef, *_ = np.linalg.lstsq(A, flat_pos[tr_b], rcond=None)
+            pred = X[te_b] @ coef[:-1] + coef[-1]
+            samples.append(r2(flat_pos[te_b], pred))
+        arr = np.asarray(samples, dtype=np.float64)
+        mean = float(arr.mean())
+        sem = float(arr.std(ddof=1) / np.sqrt(K)) if K > 1 else 0.0
+        return mean, sem, K
+
     band_results = []
     for lo, hi in bands:
         pos_r2, var_pct = band_pos_r2(lo, hi)
         byte_r2 = band_byte_r2(lo, hi)
-        band_results.append({
+        entry = {
             "range": f"{lo}-{min(hi, n_pc) - 1}",
             "lo": lo,
             "hi": min(hi, n_pc),
             "var_pct": round(var_pct, 4),
             "pos_r2": round(pos_r2, 6),
             "byte_r2": round(byte_r2, 6),
-        })
+        }
+        if n_bootstrap > 0:
+            mean_br, sem_br, K = band_pos_r2_bootstrap(lo, hi, n_bootstrap)
+            entry["pos_r2_mean"] = round(mean_br, 4)
+            entry["pos_r2_sem"] = round(sem_br, 4)
+            entry["pos_r2_samples"] = K
+        else:
+            entry["pos_r2_sem"] = 0.0
+            entry["pos_r2_samples"] = 0
+        band_results.append(entry)
 
     # Cumulative position R² vs top-k PCs (standard checkpoints)
     cum = []

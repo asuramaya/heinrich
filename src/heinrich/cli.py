@@ -407,6 +407,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_cb_pcb = sub.add_parser("profile-cb-pc-bands",
                                help="PC-band decomposition: reports variance %, position R², byte R² per PC band on a CB substrate. Detects two-band (content + position) partitions that EffDim undercounts.")
     p_cb_pcb.add_argument("--mris", nargs="+", required=True, help="One or more .seq.mri directories")
+    p_cb_pcb.add_argument("--n-bootstrap", type=int, default=0,
+                           help="Bootstrap K train/test splits for per-band pos_r2 ± SEM (default: 0 = off)")
 
     p_cb_traj = sub.add_parser("profile-cb-trajectory", help="Trajectory analysis across multiple checkpoints: EffDim, R², mode utilization derivatives")
     p_cb_traj.add_argument("--mris", nargs="+", required=True, help="Ordered MRI paths (by training step)")
@@ -3239,7 +3241,7 @@ def _cmd_cb_pc_bands(args: argparse.Namespace) -> None:
 
     reports = []
     for mri in args.mris:
-        r = causal_bank_pc_bands(mri)
+        r = causal_bank_pc_bands(mri, n_bootstrap=args.n_bootstrap)
         if "error" in r:
             print(f"Error on {mri}: {r['error']}")
             continue
