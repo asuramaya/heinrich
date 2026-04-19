@@ -1,0 +1,994 @@
+\documentclass[11pt,openany]{book}
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{booktabs}
+\usepackage{longtable}
+\usepackage{listings}
+\usepackage{hyperref}
+\usepackage[margin=1in]{geometry}
+\usepackage{xcolor}
+\usepackage{enumitem}
+\usepackage{fancyvrb}
+\usepackage{microtype}
+\usepackage{parskip}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=black,
+  urlcolor=blue!60!black,
+  citecolor=black,
+}
+
+\definecolor{codebg}{RGB}{248,248,248}
+\lstset{
+  basicstyle=\ttfamily\small,
+  backgroundcolor=\color{codebg},
+  frame=single,
+  breaklines=true,
+  keepspaces=true,
+  columns=flexible,
+}
+
+\newtheorem{finding}{Finding}[chapter]
+\newtheorem{retraction}{Retraction}[chapter]
+\newtheorem{ceiling}{Ceiling}[chapter]
+
+\title{\vspace{-2em}
+  The Architectural Dichotomy and the Context Ceiling\\
+  \vspace{0.3em}
+  \large{Session 12 Findings from the Heinrich Forensics Toolkit}\\
+  \vspace{0.2em}
+  \normalsize{Forensic decomposition of the causal-bank family, the discovery
+              that ``speed arm'' is two architectures with different prediction
+              machinery, and why the 1.0 bpb target is a context-mechanism
+              problem, not a scale problem.}
+}
+\author{Heinrich Measurement System\\
+\textit{With chronohorn and decepticons}\\
+April 18--19, 2026}
+\date{}
+
+\begin{document}
+\frontmatter
+\maketitle
+
+\chapter*{Abstract}
+\addcontentsline{toc}{chapter}{Abstract}
+
+We document Session 12 of the Heinrich measurement program: a session built
+on session-11's discovery of the MDL-optimal two-band substrate partition, and
+one that ended by overturning several early interpretations of that finding.
+Three threads run through the session.
+
+First, \emph{architectural}: the Heinrich library contains two distinct
+causal-bank families that had been lumped together as ``the speed arm.'' They
+are \emph{substrate-primary} (local path disabled, adaptive substrate carries
+the prediction) and \emph{local-primary} (local convolution dominates the
+prediction, substrate is a small augment). The two families have different
+bpb ceilings, different effective-context behavior, and respond to different
+architectural levers. Every session-11 finding that mixed them needs revisiting.
+
+Second, \emph{mechanistic}: the substrate-primary family has a structural
+context ceiling around 16 bytes regardless of scan half-life. Increasing the
+EMA half-life from 2 to 512 moves the effective context only from 8 to 16
+bytes---256$\times$ more theoretical memory buys 2$\times$ more actual
+context. The saturation bpb is roughly 1.78, corresponding to byte-level
+$n$-gram entropy at $n\approx8$. Neither longer training, more modes, nor
+richer $\omega$ parameterization breaks through this ceiling in the current
+codebase. Hash memory, despite session-11's plumbing fix, does not extend it
+either. \emph{Experiment A from the chronohorn planning deck---``substrate
+with longer half-life''---is already in the library and already negative.}
+
+Third, \emph{methodological}: the session-11 ``MDL-optimal two-band partition''
+finding was a mid-training snapshot, not a stable architectural feature.
+Extending the same model (M4 $\to$ W2-B) from 20k to 50k training steps
+shows the partition initially intensifies, then leaks into the content band.
+The binary \texttt{two\_band\_partition} flag from the session-11-pass tooling
+was too strict and was replaced with a continuous \texttt{partition\_score}
+and four-way categorical verdict (\texttt{absent}, \texttt{leaky},
+\texttt{partial}, \texttt{partitioned}). The EffDim metric still undercounts
+working dimensionality on any model with a two-band partition---a class that
+now appears to cover the entire pos-signal-enabled lasso/cr family.
+
+The central claim is narrow but consequential: the 0.8 bpb gap between the
+current byte-level frontier (1.785) and the 1.0 bpb target is almost entirely
+a \emph{context-mechanism} problem. The substrate mechanism cannot use
+information more than 16 bytes past. Scaling the mechanism doesn't help; it
+needs replacement.
+
+The untested experiment that remains: \texttt{substrate\_mode=gated\_delta} with
+\texttt{local\_scale=0.0}. Every existing gated-delta model in the library runs
+with \texttt{local\_scale=0.25}, and local conv dominates, hiding what gated-delta
+would do alone. This is the single-flag pilot that determines whether
+Mamba-class selective gating escapes the substrate ceiling.
+
+\tableofcontents
+
+\chapter*{Preface}
+\addcontentsline{toc}{chapter}{Preface}
+
+This book continues the session record begun with \texttt{session11\_book.tex}.
+Where session 11 was an empirical survey and plumbing-hardening pass, session
+12 is a forensic-decomposition session. The inputs were mostly existing
+model checkpoints in the \texttt{/Volumes/Sharts/heinrich} library; the new
+tooling was small; the compute spent on training was zero. Nearly every
+finding here is the result of reading state off of already-trained weights or
+running inference-time experiments.
+
+The session structure reflects the question-answer cadence chronohorn and
+Heinrich developed through the night: chronohorn asks five sharp questions,
+Heinrich answers them with forensic measurements, both sides then refine
+understanding, and chronohorn asks five more. We retain that shape here
+because many of the findings are only legible as responses to specific
+questions. The chapters are organized by question-theme rather than
+strictly chronologically.
+
+Where we disagree with session-11 claims, we say so explicitly in
+retraction boxes. Where an interpretation we held at the start of session 12
+turned out to be wrong by session end, we document both the original and the
+correction. The goal is a record that a future reader can walk into cold and
+trust.
+
+\mainmatter
+
+\part{The Architectural Dichotomy}
+
+\chapter{Substrate-primary vs local-primary}
+\label{ch:dichotomy}
+
+\section{The two families}
+
+The Heinrich library and the session-11 narrative used the term ``speed arm''
+as if it referred to a single architectural family. Session 12 establishes
+that it refers to two families sharing tokens-per-second-per-parameter
+characteristics but doing prediction via structurally different machinery.
+
+\begin{finding}[Two-family architectural dichotomy]
+Models in the causal-bank speed arm decompose into:
+\begin{itemize}
+  \item \textbf{Substrate-primary}: \texttt{local\_scale=0.0}; the adaptive
+  substrate plus learnable-$\omega$ carries essentially all of the prediction.
+  Ablating the local conv at inference has zero bpb effect.
+  \item \textbf{Local-primary}: \texttt{local\_scale>0} (typically 0.25); the
+  local convolution is the primary predictor, and the substrate provides a
+  small additive augment. Ablating the local conv at inference drives bpb
+  from $\sim 2.0$ to $\sim 4.9$---the substrate alone is insufficient.
+\end{itemize}
+\end{finding}
+
+Both families plateau in the $1.8$--$2.0$ bpb range on byte-level FineWeb-10B
+at speed-arm scales, but they do so via mechanistically different prediction.
+The dichotomy was invisible at the bpb level; it was only visible in
+ablation-at-inference.
+
+\section{Diagnostic: local-ablation at inference}
+
+The cleanest test is to monkey-patch \texttt{\_local\_logits} on the model to
+return zeros, then measure the bpb change on a held-out sequence. A
+substrate-primary model has zero bpb change (local wasn't used). A
+local-primary model shows a catastrophic jump (local was load-bearing).
+
+\begin{longtable}{lrrr}
+\toprule
+model & bpb (default) & bpb (local ablated) & $\Delta$ \\
+\midrule
+byte-hrr-learnable-s8-50k           & 1.814 & 1.814 & 0.000 \\
+scan-ablation-s8-50k                & 1.797 & 1.797 & 0.000 \\
+mut-hashmem-fixed-20k               & 2.110 & 2.110 & 0.000 \\
+\midrule
+byte-lasso-pos-b2-s12-50k           & 2.022 & 4.890 & +2.868 \\
+cr-s8-scandead-20k                  & 2.074 & 4.890 & +2.816 \\
+\bottomrule
+\end{longtable}
+
+The top three are substrate-primary, confirmed by \texttt{local\_scale=0.0}
+in their configs and by the complete invariance to local ablation. The
+bottom two are local-primary, confirmed by the catastrophic jump.
+
+\section{Why this matters}
+
+Every claim in session-11 and early session-12 notes that compares bpb across
+``speed arm'' models is mixing apples and oranges. Three examples:
+
+\begin{enumerate}
+  \item ``Scan-ablation beats learnable-s8 by 0.03 bpb'' reads as ``scan-dead is
+  a small win.'' But scan-ablation and learnable-s8 are \emph{both}
+  substrate-primary, so the comparison is valid and the 0.03 bpb difference
+  comes from half-life choice (2 vs 512).
+  \item ``Byte-lasso-pos-b2 at s12 achieves 2.02 bpb, worse than scan-ablation''
+  reads as a failure of lasso. But byte-lasso-pos-b2 is local-primary; its
+  substrate contributes almost nothing to prediction. The comparison is
+  actually between ``sophisticated substrate over $\omega$-projected bytes''
+  (scan-ablation) and ``local conv over bytes plus a small substrate
+  coherence augment'' (lasso-pos-b2). They are different architectures.
+  \item ``Longer half-life gives better bpb'' was inferred from local-primary
+  models where local dominates; the substrate-mode half-life setting was
+  decorative.
+\end{enumerate}
+
+The dichotomy recasts what the 1 bpb target looks like from each family:
+
+\begin{itemize}
+  \item Local-primary: context ceiling = \texttt{local\_window} + small EMA.
+  At \texttt{local\_window=8}, the effective window is $\sim 16$ bytes and
+  saturation sits near 2.0 bpb. At \texttt{local\_window=32}, projected
+  saturation is $\sim 1.5$ bpb (still bounded below transformer).
+  \item Substrate-primary: ceiling depends on whether the substrate
+  mechanism can propagate long-range information. As Chapter 2 will show,
+  the current EMA-based substrate cannot; it caps around 16-byte effective
+  context and 1.78 bpb.
+\end{itemize}
+
+\part{The Context Ceiling}
+
+\chapter{Effective context by prefix corruption}
+\label{ch:context-ceiling}
+
+\section{Methodology}
+
+The prefix-corruption test measures how much of a prediction's quality
+depends on real versus random prefix bytes. For a sequence of length
+$L$, prepend $N$ random bytes and append $M = L - N$ real bytes from the
+validation corpus. Measure cross-entropy at the final position as a function
+of $M$. The ``knee'' is the smallest $M$ at which bpb first approaches its
+saturation value.
+
+An alternative measurement is the per-position bpb curve on a
+fully-real-prefix sequence. A position at index $k$ has access to $k$ real
+prior bytes. The bpb at position $k$ as a function of $k$ traces the
+effective-context curve directly, giving $L-1$ samples per trial rather than
+one.
+
+Both methods produce the same knee in practice. The per-position method has
+tighter noise bars and was used in session 12 for the tighter comparisons.
+
+\section{The core measurement}
+
+\begin{longtable}{lrrr}
+\toprule
+model & knee (bytes) & saturation bpb & config \\
+\midrule
+scan-ablation-s8-50k        & 8    & 1.80 & hl=2,   ls=0.0 \\
+byte-hrr-learnable-s8-50k   & 16   & 1.78 & hl=512, ls=0.0 \\
+byte-hrr-learnable-s12-50k  & 16   & 1.78 & hl=512, ls=0.0 \\
+mut-hashmem-fixed-20k       & 16   & 2.09 & hl=512, ls=0.0 \\
+mut-control-mlp-20k         & 16   & 2.08 & hl=512, ls=0.0 \\
+\midrule
+byte-lasso-pos-b2-s12-50k   & 16   & 2.02 & hl=512, ls=0.25, local-primary \\
+cr-s8-scandead-20k          & 4    & 2.05 & hl=2,   ls=0.25, local-primary \\
+\bottomrule
+\end{longtable}
+
+(hl = linear\_half\_life\_max; ls = local\_scale.)
+
+Two observations immediately:
+
+\begin{ceiling}[The EMA scan is structurally broken for long context]
+The substrate-primary models at \texttt{hl=512} all have an effective
+context of 16 bytes. Increasing \texttt{half\_life\_max} from 2 to 512
+(a $256\times$ change in theoretical memory horizon) moves the knee from
+8 to 16 bytes ($2\times$). Saturation bpb drops by $0.02$. The
+substrate's EMA does not propagate long-range dependency into the readout
+in any way that training exploits.
+\end{ceiling}
+
+\begin{finding}[Hash memory does not extend context]
+\texttt{mut-hashmem-fixed-20k}, the post-fix hash-memory variant that
+actually trains the hash module (session-11 book confirmed this), has the
+same 16-byte knee and same 2.09 bpb saturation as its hash-less sibling
+\texttt{mut-control-mlp-20k} (2.08 saturation). Retrieved context is either
+too noisy or too weakly-gradient-connected to the prediction.
+\end{finding}
+
+The apparent ``speed arm ceiling at 1.8 bpb'' is actually the English byte
+$n$-gram entropy at $n\approx 8$. Current architectures are sophisticated
+$n$-gram predictors, not long-context models.
+
+\section{Why EMA fails at long context}
+
+The EMA update rule is:
+\[
+    h_t = \alpha \odot h_{t-1} + (1 - \alpha) \odot W_{\mathrm{in}} x_t, \quad
+    \alpha = \exp(-\ln 2 / \tau)
+\]
+At half-life $\tau=512$, $\alpha \approx 0.9986$. The state at position $t$
+theoretically retains a small but nonzero contribution from positions up to
+several hundred steps past. But that retention is additive and undifferentiated:
+every past token is blurred into a single running average. The readout has no
+way to tell what happened 30 tokens ago versus what happened 3 tokens ago.
+
+The relevant comparison: in Mamba-class models, the update gate is
+\emph{input-dependent}, and the state accumulation is selective rather
+than summary. A selective-gated model can choose to remember one specific
+past event and discard the intervening ones. The EMA cannot.
+
+This is what it means for the EMA to be ``structurally broken for long
+context.'' It's not that the memory horizon is too short. It's that the
+integration is lossy in a way training cannot repair.
+
+\chapter{Substrate-ablation tests}
+\label{ch:substrate-ablation}
+
+\section{The substrate is doing real work}
+
+The feedforward hypothesis---that scan-ablation is a scan-dressed
+feedforward model whose prediction comes entirely from per-token
+$\omega$-modulation---can be tested directly by zeroing the substrate state
+contribution to the readout features.
+
+\begin{longtable}{lr}
+\toprule
+condition & bpb \\
+\midrule
+full (normal inference) & 1.797 \\
+substrate-modes zeroed (only $x_{\mathrm{embed}}$ tail passes) & 6.651 \\
+$x_{\mathrm{embed}}$-tail zeroed (only substrate modes pass) & 1.850 \\
+seq\_len$=1$ (no prior context) & 3.820 \\
+\bottomrule
+\end{longtable}
+
+\begin{finding}[Substrate carries the prediction on substrate-primary models]
+On scan-ablation-s8-50k, zeroing the substrate contribution to readout
+features drives bpb from 1.80 to 6.65. Zeroing the \texttt{x\_embed} tail
+alone only moves bpb from 1.80 to 1.85. The substrate is responsible for
+essentially all the prediction quality; the concat-tail contribution is
+decorative.
+\end{finding}
+
+The seq\_len$=1$ measurement is the cleanest feedforward test. With no
+prior context, the model predicts 3.82 bpb---bigram-quality on English
+bytes. The gap from 3.82 (1-byte context, feedforward) to 1.80 (full context,
+normal) is 2.02 bpb. That is the substrate's context contribution.
+
+The seq\_len$=1$ measurement also falsifies the feedforward hypothesis:
+if scan-ablation were feedforward, bpb would be unchanged at 1.80 regardless
+of context length. It is not. The substrate propagates information across
+roughly 8--16 positions and that propagation accounts for 2 bpb of
+improvement.
+
+\section{Substrate dimensionality sensitivity}
+
+The $\omega$ projection was found in session 11 to have effective rank
+$\approx 28$ out of 256 input dimensions. A natural hypothesis: if the
+projection is low-rank, the substrate itself may also be over-parameterized.
+Zero out the modes beyond rank-$K$ and measure bpb:
+
+\begin{longtable}{lrr}
+\toprule
+$K$ & bpb & $\Delta$ vs full (2048 modes) \\
+\midrule
+2048 (full) & 1.797 & --- \\
+1024        & 1.797 & +0.000 \\
+512         & 1.813 & +0.017 \\
+256         & 2.009 & +0.212 \\
+128         & 2.511 & +0.714 \\
+64          & 3.053 & +1.256 \\
+32          & 3.533 & +1.736 \\
+16          & 3.965 & +2.168 \\
+\bottomrule
+\end{longtable}
+
+\begin{finding}[Substrate supports 50\% free dimensionality reduction, no more]
+Truncating scan-ablation-s8-50k's substrate to $K=1024$ modes at inference
+produces identical bpb (1.797). Truncating to $K=512$ costs 0.017 bpb.
+Below $K=256$ the model degrades sharply. This is not the $10\times$
+efficiency lever the low-rank $\omega$ finding suggested; it is a
+straightforward $2\times$ width reduction with no penalty.
+\end{finding}
+
+The $\omega$ projection's low rank (28) refers to the \emph{input} side of
+the projection, not the output side. The output (substrate modes) uses
+roughly 500--1000 dimensions genuinely, not 28. Future scaling should
+budget $\sim$1024 modes as the minimum viable width.
+
+\section{$\omega$ encodes byte-category structure}
+
+A companion analysis: per-byte $\omega$ vectors (running all 256 bytes as
+single-token inputs and extracting the captured $\omega$ tensor) form a
+$256 \times 2048$ matrix. PCA of this matrix reveals what $\omega$ learns.
+
+\begin{longtable}{lrr}
+\toprule
+metric & value & note \\
+\midrule
+effective rank of per-byte $\omega$ & 27.5 & (out of 256, low-rank) \\
+top-10 PCs variance & 63.9\% & \\
+top-32 PCs variance & 94.7\% & \\
+\midrule
+byte-category classification (top-10 PCs) & & (nearest centroid) \\
+\quad digit & 100\% & (10 classes, perfect) \\
+\quad whitespace & 100\% & \\
+\quad punct & 84\% & \\
+\quad letter & 73\% & \\
+\quad control & 72\% & \\
+\quad non-ASCII & 53\% & (chance) \\
+\bottomrule
+\end{longtable}
+
+Nearest-neighbor pairs in the PC space:
+\texttt{a}$\leftrightarrow$\texttt{A}, \texttt{e}$\leftrightarrow$\texttt{E},
+\texttt{z}$\leftrightarrow$\texttt{Z}, \texttt{0}$\leftrightarrow$\texttt{1}.
+$\omega$ groups case pairs and digit adjacency, both of which are
+linguistically meaningful byte-category clusters in English.
+
+\begin{finding}[$\omega$ is a sophisticated byte-category embedding, not a
+lookup or an $n$-gram predictor]
+The per-byte $\omega$ projection on scan-ablation-s8-50k has effective rank
+$\approx 28$ and achieves 100\% classification accuracy on digits and
+whitespace, 73--84\% on letter/punctuation sub-categories, and chance on
+non-ASCII bytes. Case pairs are co-located in PC space. Since scan-ablation
+has dead EMA (half-life 2), $\omega$ cannot encode $n$-gram context from
+past tokens; what it learns is \emph{per-token} byte-category structure
+with enough linguistic information to distinguish ASCII sub-classes.
+\end{finding}
+
+\part{Partition Analysis and the M4 Retraction}
+
+\chapter{The M4 partition is a mid-training shape, not a stable feature}
+\label{ch:m4-retraction}
+
+\section{Original claim}
+
+Session 12 day 1 analyzed \texttt{s12w1-lasso-pos-b2-s12-b4-20k} (M4) and
+found a clean orthogonal partition: content in top-8 PCs (85\% variance,
+zero position), position in PCs 8--19 (14\% variance, pos R$^2=0.29$). The
+partition looked MDL-optimal---independent factors (content, position)
+placed on orthogonal principal components with the larger factor on
+higher-variance directions.
+
+The initial reading: this is a stable architectural signature worth scaling
+up.
+
+\section{What W2-B showed}
+
+\texttt{s12w2-lasso-pos-b2-s12-b4-50k} (W2-B) is the same architecture trained
+to 50k steps. Its trajectory:
+
+\begin{longtable}{rrrrr}
+\toprule
+step & EffDim & PC0-7 pos R$^2$ & PC8-19 pos R$^2$ & PC20-49 byte R$^2$ \\
+\midrule
+10k & 6.9 & 0.011 & 0.276 & 0.914 \\
+20k & 5.8 & 0.071 & 0.294 & 0.560 \\
+30k & 5.4 & 0.050 & 0.395 & 0.519 \\
+40k & 5.5 & 0.040 & 0.386 & 0.534 \\
+50k & 5.7 & 0.030 & 0.415 & 0.455 \\
+\bottomrule
+\end{longtable}
+
+Three dynamics are visible:
+\begin{enumerate}
+  \item PC8-19 position R$^2$ grows monotonically from 0.276 at step 10k
+  to 0.415 at step 50k. Position concentration in the mid-band intensifies
+  with training.
+  \item PC0-7 position R$^2$ leaks from near-zero to 0.07 at step 20k, then
+  settles at 0.03--0.05. The ``orthogonal partition'' leaks slightly into
+  the content band.
+  \item PC20-49 byte-fingerprint R$^2$ decays from 0.914 to 0.455. The
+  substrate trades byte-identity capacity in the tail for position
+  representation.
+\end{enumerate}
+
+Comparing W2-B at step 50k to the single-band kin
+\texttt{byte-lasso-pos-b2-s12-50k}:
+
+\begin{longtable}{lrrr}
+\toprule
+metric & W2-B (b=4, 50k) & kin (b=1, 50k) & winner \\
+\midrule
+bpb (training log)  & 2.087 & 2.022 & kin ($-0.065$) \\
+PC8-19 pos R$^2$    & 0.415 & 0.268 & W2-B (concentrated) \\
+cum top-100 pos R$^2$ & 0.631 & 0.677 & kin (distributed) \\
+EffDim               & 5.7  & 8.8   & kin \\
+two-band flag        & NO/partial   & YES & kin \\
+\bottomrule
+\end{longtable}
+
+\begin{retraction}[The M4 step-20k partition is a mid-training snapshot, not
+a stable architecture]
+The ``MDL-optimal two-band partition'' claim from session 12 day 1 described
+a specific step-20k shape. With extended training the partition loses its
+clean property: position leaks into the content band, content-fingerprint
+capacity in deep PCs decays, and bpb underperforms the single-band kin. The
+partition persists as a statistical feature but loses its clean orthogonal
+structure. The single-band lasso-pos-b2-s12 family preserves a cleaner
+partition at matched training.
+\end{retraction}
+
+The bpb gap is the operational decision: b=4 hits 2.087 at 50k, b=1 hits
+2.022. Extending b=4 training further is unlikely to close the gap.
+
+\section{Cross-check: cr-s12-pos-b2 at 50k shows the same pattern}
+
+To verify this is not a b=4-specific anomaly, we ran the full step
+trajectory of \texttt{s12w2-cr-s12-pos-b2-50k} (same complex-rotation family
+at b=2):
+
+\begin{longtable}{rrrrrr}
+\toprule
+step & k=8 & k=20 & k=50 & k=100 & PC8-19 \\
+\midrule
+10k & 0.000 & 0.057 & 0.285 & 0.402 & 0.057 \\
+20k & 0.005 & 0.186 & 0.414 & 0.480 & 0.179 \\
+30k & 0.004 & 0.251 & 0.473 & 0.512 & 0.245 \\
+40k & 0.012 & 0.151 & 0.479 & 0.525 & 0.139 \\
+50k & 0.014 & 0.122 & 0.450 & 0.481 & 0.108 \\
+\bottomrule
+\end{longtable}
+
+PC8-19 position R$^2$ peaks at step 30k and decays afterward; cumulative
+top-100 position R$^2$ peaks at step 40k and regresses slightly by 50k. Same
+peak-and-regress pattern. The pos-b2 family's partition is
+training-phase-dependent, not an architectural fixed point.
+
+\chapter{The partition-score refinement}
+
+\section{Binary flag failure mode}
+
+Session 12 day 1's \texttt{two\_band\_partition} flag used the rule
+\texttt{top8\_pos < 0.01 AND max\_tail\_pos > 0.05}. W2-B at step 50k has
+\texttt{top8\_pos = 0.030} (above threshold) and \texttt{PC8-19 = 0.415}.
+The flag flipped to NO despite a clearly partitioned substrate with a
+$14\times$ tail/top ratio.
+
+\begin{finding}[Binary partition-flag was too strict]
+The session-12-day-1 \texttt{two\_band\_partition} flag missed partitions
+that had any top-band leak, including well-established cases. Needed
+replacement by a continuous score.
+\end{finding}
+
+\section{Continuous score and categorical verdict}
+
+The replacement is a regularized ratio and a four-way verdict:
+
+\begin{align*}
+    \mathrm{score} &= \frac{\max_{\mathrm{tail}}\mathrm{pos\_r2}}%
+                          {\max(\mathrm{top8\_pos\_r2}, 0.005)} \\
+    \mathrm{verdict} &= \begin{cases}
+        \text{absent}      & \max_{\mathrm{tail}} < 0.02 \\
+        \text{leaky}       & \text{score} < 2 \\
+        \text{partial}     & 2 \leq \text{score} < 5 \\
+        \text{partitioned} & \text{score} \geq 5
+    \end{cases}
+\end{align*}
+
+A regularization floor of 0.005 in the denominator prevents division by
+zero when the top band is perfectly content-only; in that case the score
+caps at $\max_{\mathrm{tail}}/0.005 \approx 200$ for a clean partition and
+grows with tail strength.
+
+Verdicts on the session-12 cohort:
+
+\begin{longtable}{lrl}
+\toprule
+model & score & verdict \\
+\midrule
+s12w2-lasso-pos-b2-s12-b4 step 10k  &  24.5 & partitioned \\
+s12w2-lasso-pos-b2-s12-b4 step 20k  &   4.1 & partial \\
+s12w2-lasso-pos-b2-s12-b4 step 30k  &   7.9 & partitioned \\
+s12w2-lasso-pos-b2-s12-b4 step 50k  &  13.9 & partitioned \\
+s12w1-cr-s12-pos-b2 20k             &  59.9 & partitioned \\
+s12w1-lasso-pos-b2-s8 20k           &  45.1 & partitioned \\
+byte-lasso-pos-b2-s12-50k (kin)     &  53.7 & partitioned \\
+byte-cr-hrrangle-s12-50k            &   0.0 & absent \\
+cr-s8-scandead-20k                  &   0.0 & absent \\
+\bottomrule
+\end{longtable}
+
+The back-compat \texttt{two\_band\_partition} boolean now triggers on
+\texttt{partial OR partitioned}, which preserves its original intent
+(``EffDim undercounts working dimensionality here'') while including the
+leaky-but-real partition cases.
+
+Four regression tests cover the verdict ranges: absent (content-only synthetic
+substrate), partitioned (synthetic with orthogonal content/position bands),
+leaky (synthetic with entangled content+position), and score-regularization
+(edge case with exactly-zero top band). All pass. Commit \texttt{3a404f0}.
+
+\chapter{The EffDim undercount, revisited}
+
+Session 11 reported EffDim values that, we now know, substantially under-count
+working dimensionality on any substrate that has two-band structure. The
+partition analysis makes the mechanism specific:
+
+\begin{itemize}
+  \item EffDim is the entropy of the variance spectrum: $\exp(-\sum_i p_i \ln
+  p_i)$ where $p_i$ is the $i$-th PC's fraction of variance. It describes
+  the effective number of dimensions doing variance-weighted work.
+  \item A two-band substrate places independent factors (content, position,
+  byte-fingerprint) on disjoint PC ranges with different variance scales.
+  Content occupies the high-variance head, position a mid-variance band,
+  byte-fingerprint a low-variance tail with high selectivity but small overall
+  contribution.
+  \item EffDim sees the top band's eight modes and reports EffDim $\sim 8$.
+  It doesn't count the position band because its variance share is small;
+  it doesn't count the byte-fingerprint tail because their variance share is
+  smaller still.
+\end{itemize}
+
+For the lasso-pos-b2 family, the working dimensionality is at least
+$\sim$50 (head for content, mid-band for position, tail for
+byte-fingerprint). EffDim reports values of 5--15. \emph{On any model
+with simultaneously-nonzero content and position R$^2$, the EffDim
+undercount is 3--10$\times$.}
+
+\begin{retraction}[Session-11 quoted EffDim values on multi-factor substrates]
+EffDim values reported in session 11 for the lasso-pos-b2 family, the
+cr-hrrangle family, and the mut-persistent-s12 variants are
+under-counts of working dimensionality by 3--10$\times$ whenever
+ConR$^2 > 0.1$ and PosR$^2 > 0.01$ simultaneously. The replacement tool
+is \texttt{heinrich profile-cb-pc-bands}, which reports per-band variance
+and R$^2$ values separately and flags two-band partitions explicitly.
+\end{retraction}
+
+\part{Tools}
+
+\chapter{New tools and plumbing added in session 12}
+\label{ch:tools}
+
+\section{\texttt{heinrich profile-cb-pc-bands}}
+
+The primary new measurement tool. For a sequence-mode MRI, it reports
+per-PC-band variance, per-band position R$^2$, per-band byte R$^2$, a
+partition score, and a categorical verdict. See Chapter 5 for the score
+definition. The tool handles substrate-primary and local-primary substrates
+identically.
+
+\begin{lstlisting}[caption={Example invocation},basicstyle=\ttfamily\small]
+heinrich profile-cb-pc-bands --mris \
+  /Volumes/Sharts/heinrich/session12/s12w1-lasso-pos-b2-s12-b4-20k.seq.mri \
+  /Volumes/Sharts/heinrich/session11/byte-lasso-pos-b2-s12-50k.seq.mri
+
+heinrich --json profile-cb-pc-bands --mris ... \
+  | jq '.reports[] | {mri, partition_verdict, partition_score}'
+\end{lstlisting}
+
+\section{\texttt{heinrich mri-recapture}}
+
+Bulk-recapture of stale MRIs. Reads \texttt{metadata.provenance.model\_path}
+from each MRI's metadata JSON; falls back to naming convention if absent
+(handles step-checkpoint patterns
+\texttt{\{run\}-step\{N\}k.seq.mri $\leftarrow$ \{run\}-\{M\}k\_step\{N000\}.checkpoint.pt}).
+Auto-corrects byte-level models whose recorded val\_data points to a
+non-byte shard.
+
+Dry-run by default; \texttt{--execute} triggers the actual captures.
+Operational pass on \texttt{session11} took 94 stale MRIs to
+\texttt{fix\_level=2} in one pass; 3 MRIs with idiosyncratic names were
+skipped with clear reasons.
+
+\section{MRI provenance and fingerprint}
+
+Every MRI captured during session 12 records:
+
+\begin{itemize}
+  \item \texttt{metadata.provenance.model\_path}: absolute path to the
+  source checkpoint.
+  \item \texttt{metadata.provenance.result\_json}: path to the chronohorn
+  result JSON (empty for non-decepticon backends).
+  \item \texttt{metadata.provenance.tokenizer\_path}.
+  \item \texttt{metadata.provenance.tool\_fingerprint}: a small dict with
+  \texttt{heinrich\_sha} and \texttt{decepticons\_sha}---short git SHAs of
+  both repositories at capture time.
+\end{itemize}
+
+Commits: \texttt{057707e} (provenance plumbing, fingerprint, raw-mode shape
+fix, \texttt{mri-recapture}, additivity extension).
+
+\section{Non-adaptive forward-path collapse}
+
+The session-11 P2 deferred item. The non-adaptive branch of
+\texttt{CausalBankInference.forward\_captured} reimplemented the model's
+forward inline. Now collapsed: runs \texttt{self.\_model(x)} once and reads
+stashed intermediates. Model-side stashes were added to
+\texttt{\_linear\_logits} (non-adaptive branch) and \texttt{\_local\_logits}:
+
+\begin{itemize}
+  \item \texttt{\_last\_states\_nonadaptive} (after transforms + hash memory)
+  \item \texttt{\_last\_x\_embed\_nonadaptive}
+  \item \texttt{\_last\_band\_logits\_list} (if multi-band)
+  \item \texttt{\_last\_local\_logits}
+\end{itemize}
+
+New regression fixture
+\texttt{test\_forward\_captured\_matches\_training\_forward\_nonadaptive}
+asserts max$|\Delta|$ = 0 between \texttt{model(x)} and
+\texttt{forward\_captured(x).logits} on a non-adaptive config with local
+path enabled. Verified bit-identical on three substrate-family variants
+(gated\_delta, lasso, standard with bands). Decepticons commit
+\texttt{a3fb77e}.
+
+\section{Raw-mode substrate-shape bug}
+
+\texttt{\_capture\_mri\_causal\_bank} pre-allocated \texttt{substrate\_states}
+at \texttt{cfg.n\_modes}, but adaptive-substrate models return
+\texttt{\_last\_features = concat(substrate\_modes, x\_embed)} whose trailing
+axis is \texttt{n\_modes + embed\_dim}. Raw-mode captures of these models
+errored. Fixed by probing shape from the first forward call and allocating
+actual shape; metadata \texttt{hidden\_size} now reflects the captured width
+rather than \texttt{n\_modes}. This matches how the sequence-mode path was
+already written.
+
+\section{Extended \texttt{profile-cb-additivity}}
+
+The bpb-only additivity tool now optionally runs on EffDim / PosR$^2$ /
+ConR$^2$ / \texttt{active\_frac} with per-metric noise floors (defaulted
+from session-11 seed spreads, overridable via CLI flags). Reveals cases
+where a mutation combination is bpb-additive but geometry-non-additive, or
+vice versa. Default behavior (bpb only) unchanged for back-compat.
+
+\part{Negative Results}
+
+\chapter{What doesn't work for context extension}
+\label{ch:negative}
+
+\section{Extending EMA half-life}
+
+Tested range: half-life from 2 to 512. Knee moves from 8 to 16 bytes;
+saturation bpb drops 0.02. See Chapter 2.
+
+\section{Adding position signal to scan-dead architectures}
+
+\texttt{s12w2-scanablate-possig-s8-20k} adds a position-signal input
+(concatenation of $\log(1+t)$ to gate inputs) to the scan-ablation recipe.
+Expected: extended effective context via position-aware gating.
+
+Measured:
+\begin{itemize}
+  \item Effective context: $\sim 8$ bytes (same as scan-ablation).
+  \item Partition verdict: absent (no position structure in the substrate).
+  \item bpb at 20k: 1.849 (vs scan-ablation 50k: 1.806).
+\end{itemize}
+
+\begin{finding}[Position signal without a working scan does not extend
+context]
+Position signal input needs an integrating mechanism to turn into position
+structure in the substrate. With half-life 2, there is no such mechanism;
+the position input is absorbed as a per-token modulation only. bpb improves
+slightly because the pos input provides a fast per-token signal, but
+effective context stays at 8 bytes.
+\end{finding}
+
+\section{Hash memory}
+
+See Chapter 2. \texttt{mut-hashmem-fixed-20k} shows identical knee (16 bytes)
+and similar saturation bpb (2.09) to \texttt{mut-control-mlp-20k} (no hash,
+saturation 2.08). Hash memory is decorative for context extension.
+
+\section{Local conv width (for local-primary family)}
+
+Not directly tested (requires retraining; inference-time conv width change
+is not supported). However, local-primary models at
+\texttt{local\_window=8} show a 16-byte effective context; bumping to
+\texttt{local\_window=32} would likely push the knee to 32--40 bytes and
+drop bpb by $\sim 0.1$. Saturation ceiling would still be bounded by the
+local-primary family at roughly 1.3--1.5 bpb at $k=32$.
+
+\section{Feedforward conversion}
+
+Tested: zero the substrate's contribution to readout features, measure
+bpb. Result: bpb jumps from 1.80 to 6.65. The substrate is doing real
+context work; scan-ablation is not a feedforward model in disguise. See
+Chapter 3.
+
+\section{Mode truncation}
+
+Tested: zero modes beyond rank-$K$ at inference. Result: free $2\times$
+reduction (2048 $\to$ 1024 modes at identical bpb); sharp degradation
+below $K=256$. Low-rank $\omega$ (rank 28) does not imply low-rank
+substrate. Useful efficiency lever but not a $10\times$ jump. See Chapter 3.
+
+\part{The One Remaining Experiment}
+
+\chapter{Substrate-primary gated-delta}
+
+\section{What hasn't been tested}
+
+Every gated-delta model in the library has \texttt{local\_scale=0.25}
+(local-primary). Every substrate-primary model has
+\texttt{substrate\_mode=frozen} (adaptive HRR basis). The union has never
+been run:
+
+\begin{lstlisting}[caption={The untested recipe},basicstyle=\ttfamily\small]
+--substrate-mode gated_delta
+--adaptive-substrate
+--local-scale-override 0.0
+--linear-half-life-max 512
+--hrr-omega-init
+--linear-readout-kind routed_sqrelu_experts
+--linear-readout-num-experts 2
+--scale 8.0
+--steps 50000
+\end{lstlisting}
+
+This is scan-ablation's recipe with \texttt{substrate\_mode} swapped from
+frozen to gated\_delta. One flag change. It tests whether the Mamba-class
+selective gating mechanism (per-position input-dependent retain/write/erase
+gates) breaks the substrate-primary context ceiling that the frozen-HRR
+substrate hits at 16 bytes.
+
+\section{What the outcome decides}
+
+The decision tree:
+
+\begin{itemize}
+  \item \textbf{If knee $\leq 16$ bytes and saturation $\geq 1.78$ bpb}:
+  gated-delta selective gating does not escape the substrate-primary
+  ceiling. The causal-bank architecture family is context-ceilinged at
+  $\sim 16$ bytes regardless of mechanism. Pursuit shifts to hybrid
+  architectures---specifically, windowed attention with $k \leq 64$ (still
+  $O(n\cdot k)$ but not $O(n^2)$) or a substantially different integrative
+  mechanism.
+  \item \textbf{If knee $\geq 32$ bytes or saturation below 1.5 bpb}:
+  gated-delta selective gating escapes the ceiling. The causal-bank family
+  has genuine long-context capacity. Scale it up; pursue scale-14
+  architectures; the 1.0 bpb target is reachable within this family.
+  \item \textbf{If something in between}: partial lift. Characterize the
+  gain per param and decide whether the family is worth further investment
+  vs hybrid-architecture exploration.
+\end{itemize}
+
+\section{Prior on the outcome}
+
+Honest estimate: 50/50.
+
+Arguments for escape: gated-delta has per-position input-dependent gates
+that can selectively retain specific past events rather than blur them into
+an EMA summary. Gradient routing through such gates is known
+(Mamba-literature) to propagate long-range dependency.
+
+Arguments against escape: decepticons' \texttt{\_gated\_delta\_states}
+implementation uses sigmoid-gated retain/write/erase with a chunked parallel
+scan. Already tested in local-primary configuration; that configuration
+has the same 16-byte ceiling as frozen-HRR substrate. The ceiling may be
+intrinsic to the gradient-routing story regardless of the specific gating
+parameterization.
+
+A reasonable bet: if chronohorn runs this pilot at 50k steps on s8, the
+outcome is knowable in roughly 30 minutes of A4000 compute. It is the only
+remaining scoped experiment that would unambiguously decide the future of
+the causal-bank architecture family for long-context byte modeling.
+
+\part{Retrospective}
+
+\chapter{Retractions}
+
+\begin{retraction}[``M4's step-20k partition is the architectural target'']
+See Chapter 4. The M4 partition is a mid-training shape, not a stable
+feature. b=4 factorization underperforms b=1 at matched training.
+\end{retraction}
+
+\begin{retraction}[``Longer EMA half-life translates to longer effective context'']
+Tested: half-life 2 gives 8-byte knee; half-life 512 gives 16-byte knee.
+256$\times$ more theoretical memory buys 2$\times$ actual context. See
+Chapter 2.
+\end{retraction}
+
+\begin{retraction}[``Speed arm is one architecture'']
+Speed arm is two architectures with structurally different prediction
+machinery. See Chapter 1.
+\end{retraction}
+
+\begin{retraction}[``Hash memory's session-11 training fix may extend context'']
+Hash memory, post-fix, has the same 16-byte knee as the hash-less control.
+Retrieved context is too noisy to extend the effective window.
+\end{retraction}
+
+\begin{retraction}[``Scan-ablation might be feedforward and $\omega$-dominated'']
+Zeroing substrate drives bpb 1.80 $\to$ 6.65. The substrate is doing real
+context work. See Chapter 3.
+\end{retraction}
+
+\begin{retraction}[``$\omega$ low rank implies substrate low rank'']
+$\omega$'s rank-28 projection is input-side. The substrate itself uses
+$\sim$1024 modes meaningfully. Truncating beyond $K=256$ degrades bpb.
+See Chapter 3.
+\end{retraction}
+
+\chapter{What's still unknown}
+
+\begin{itemize}
+  \item Whether gated-delta substrate-primary breaks the 16-byte ceiling
+  (Chapter 8). The single experiment that remains.
+  \item Whether sliding-window attention at $k \in \{32, 64\}$ would give
+  a better bpb/FLOP tradeoff than the above. Not piloted; estimated by
+  scaling laws.
+  \item What the byte-level transformer baseline at matched params actually
+  is on FineWeb-10B. Literature prior 1.1--1.3 bpb at 36M params; not
+  directly measured in this library.
+  \item Whether the substrate-primary bpb ceiling at 1.78 is tight against
+  the English 8-gram entropy bound, or whether there's still headroom in
+  per-token encoding capacity. Can be tested by swapping the routed-experts
+  readout for a richer parameterization at matched FLOPs.
+\end{itemize}
+
+\chapter{The plumbing register}
+
+Fixes and additions landed in session 12:
+
+\begin{description}
+  \item[Heinrich \texttt{057707e}] Raw-mode substrate-shape bug, MRI provenance
+  (model\_path / result\_json / tokenizer\_path), tool fingerprint
+  (heinrich + decepticons SHAs), \texttt{heinrich mri-recapture} CLI,
+  extended \texttt{profile-cb-additivity} (bpb + EffDim + PosR$^2$ + ConR$^2$
+  + active\_frac metrics).
+  \item[Heinrich \texttt{e160516}] \texttt{heinrich profile-cb-pc-bands} CLI
+  with per-band variance, position R$^2$, byte R$^2$ reporting.
+  \item[Heinrich \texttt{3a404f0}] Partition-score refactor: binary
+  \texttt{two\_band\_partition} replaced with continuous
+  \texttt{partition\_score} and categorical \texttt{partition\_verdict};
+  four new regression tests.
+  \item[Decepticons \texttt{a3fb77e}] Non-adaptive forward-path collapse
+  (session-11 P2 deferred). Model-side stashes for substrate /
+  x\_embed / band\_logits / local\_logits in eval mode; loader reads them.
+  Regression fixture asserts bit-identical.
+\end{description}
+
+\chapter{Recommendations for chronohorn}
+
+\begin{enumerate}
+  \item \textbf{Retire the ``speed arm'' nomenclature} until architecture-family
+  tagging is in place. Every cross-model comparison needs to distinguish
+  substrate-primary from local-primary.
+
+  \item \textbf{Add \texttt{architectural\_family} tag at training time}.
+  Set to \texttt{substrate-primary} if \texttt{local\_scale == 0}, else
+  \texttt{local-primary}. Persist in both result JSON and checkpoint
+  metadata.
+
+  \item \textbf{Run the substrate-primary gated-delta pilot} (Chapter 8).
+  One flag change from scan-ablation; $\sim$30 min on A4000; resolves the
+  largest remaining architectural question.
+
+  \item \textbf{Retrain scan-ablation-s8 at
+  \texttt{--linear-modes=1024}} (Chapter 3). Free 2$\times$ param reduction
+  at identical bpb; 92k $\to$ $\sim$150--180k tok/s. No architectural
+  change.
+
+  \item \textbf{Enforce \texttt{test\_bytes\_per\_token} non-null in result
+  JSON ingestion}. Prevents frontier-class contamination (sp-tokenized models
+  appearing on the byte-level frontier table under hardcoded conversion).
+
+  \item \textbf{Add NaN tripwire at checkpoint save}. Prevents
+  NaN-diverged runs from polluting the library. See
+  \texttt{byte-hrr-frozen-s12-50k.checkpoint.pt} (session 11) for an
+  example---21 of 30 tensors NaN-saturated, captured cleanly but the
+  model is cooked.
+
+  \item \textbf{Add chronohorn commit SHA to result JSON} at train time.
+  Heinrich records its own + decepticons' SHA on every MRI; the training
+  pipeline's SHA should propagate too for full reproducibility.
+
+  \item \textbf{Drop the local-window experiment} (bumping local-conv window
+  on local-primary) until it becomes the critical path. The local-primary
+  family caps at 1.3--1.5 bpb and is bounded below the transformer target
+  by construction. Useful for deployment efficiency, not the 1.0 bpb target.
+\end{enumerate}
+
+\chapter{What this book is not}
+
+A tutorial on Heinrich, chronohorn, or decepticons. A survey of the
+causal-bank architecture family. An introduction to the EMA substrate, the
+HRR basis, or the gated-delta mechanism. A statement about whether the
+1.0 bpb byte-level target is reachable in general.
+
+It is a record of one session's forensic work. The central finding is an
+architectural distinction that had been hiding in plain sight; the
+secondary finding is a structural context ceiling that kills a family of
+proposed mutations; the tertiary finding is a methodological clarification
+(continuous partition score, EffDim undercount) that rescues analysis
+tooling from false negatives.
+
+The big thread across session 11 and session 12: measurement apparatus
+failure modes are most dangerous when they agree with the interpretation
+you'd like to report. A 16-byte ceiling that looks architectural could be a
+measurement artifact; a measurement artifact that looks architectural will
+ship as a published finding. Both happened at different scales in this
+session. The discipline is to keep asking ``what would prove this wrong''
+until the answer is ``one pilot at 30 minutes of compute, and we'll know.''
+
+We leave that pilot for chronohorn.
+
+\end{document}
