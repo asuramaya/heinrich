@@ -62,3 +62,9 @@ security/
 
 # Verification PNGs from companion QA
 verify_*.png
+
+# Vendored third-party source (mast3r, mlx_lm) — multi-GB, fetched per-machine
+.vendor/
+
+# Top-level runs/ — splat builds, FLUX.2 inject outputs, training artefacts (multi-GB)
+runs/
