@@ -4451,12 +4451,23 @@ def causal_bank_modes(mri_path: str, *, _mri=None) -> dict:
 
     substrate = mri['substrate_states'].astype(np.float32)
     half_lives = mri.get('half_lives')
-    n_seqs, seq_len, n_modes = substrate.shape
+    n_seqs, seq_len, n_features = substrate.shape
 
+    # Adaptive-substrate models concat [modes, x_embed] in the trailing axis,
+    # so n_features = n_modes + embed_dim. half_lives applies only to the
+    # leading modes; the embed tail has no half-life. Restrict mode-axis
+    # analysis to the half-life-bearing prefix.
     if half_lives is not None:
         half_lives = np.asarray(half_lives, dtype=np.float32)
+        n_modes = half_lives.shape[0]
+        if n_modes != n_features:
+            substrate_modes = substrate[:, :, :n_modes]
+        else:
+            substrate_modes = substrate
         quartile_edges = np.percentile(half_lives, [0, 25, 50, 75, 100])
     else:
+        n_modes = n_features
+        substrate_modes = substrate
         quartile_edges = None
 
     ranges = [(0, 4), (4, 64), (64, 256), (256, seq_len)]
@@ -4468,7 +4479,7 @@ def causal_bank_modes(mri_path: str, *, _mri=None) -> dict:
                    (half_lives >= lo_hl) & (half_lives < hi_hl)
             if not mask.any():
                 continue
-            sub_q = substrate[:, :, mask]
+            sub_q = substrate_modes[:, :, mask]
             row = {
                 "quartile": q,
                 "hl_range": f"{lo_hl:.1f}-{hi_hl:.1f}",
@@ -4489,11 +4500,12 @@ def causal_bank_modes(mri_path: str, *, _mri=None) -> dict:
             row["ramp_ratio"] = round(float(late / (early + 1e-10)), 2)
             by_quartile.append(row)
 
-    max_activation = np.abs(substrate).max(axis=(0, 1))
+    # Mode-level stats use the modes-only slice when adaptive concat is detected.
+    max_activation = np.abs(substrate_modes).max(axis=(0, 1))
     mean_act = max_activation.mean()
     dead_modes = int((max_activation < mean_act * 0.01).sum())
 
-    pos_std = np.abs(substrate).mean(axis=0).std(axis=0)
+    pos_std = np.abs(substrate_modes).mean(axis=0).std(axis=0)
     top_varying = np.argsort(pos_std)[-5:][::-1]
     most_varying = [{"mode": int(m), "std": round(float(pos_std[m]), 4),
                      "hl": round(float(half_lives[m]), 1) if half_lives is not None else None}
@@ -4731,6 +4743,13 @@ def _find_knee_bucket(bucket_bpbs: list[float], threshold: float) -> int | None:
 
     Returns None if no such index exists (curve is strictly decreasing at every
     step by at least ``threshold`` — no saturation observed yet).
+
+    Caveat: this returns the first bucket where IMPROVEMENT slows below
+    threshold, which on a U-shape (bpb decreases then INCREASES) is the
+    bottom-of-U (the optimum), NOT the saturation-onset point. Per session-13
+    findings, the causal-bank family has universal U-shape effective-context
+    curves. For unambiguous reporting, the caller also returns
+    `optimum_bucket` and `u_shape_detected`.
     """
     for i in range(len(bucket_bpbs) - 1):
         if bucket_bpbs[i] - bucket_bpbs[i + 1] < threshold:
@@ -4850,6 +4869,15 @@ def _cb_effective_context(model_path: str,
 
     bucket_bpbs = [b["bpb_mean"] for b in bucket_reports]
     knee_idx = _find_knee_bucket(bucket_bpbs, threshold=knee_threshold)
+    saturation_bpb = bucket_reports[-1]["bpb_mean"]
+
+    # Optimum: bucket with the lowest bpb. For monotonic-then-flat curves
+    # this matches the saturation point. For U-shape curves (universal in
+    # causal-bank family per session 13) this is below saturation.
+    optimum_idx = int(min(range(len(bucket_bpbs)), key=lambda i: bucket_bpbs[i]))
+    optimum_bpb = bucket_bpbs[optimum_idx]
+    # U-shape: optimum is meaningfully below the long-context saturation.
+    u_shape_detected = (saturation_bpb - optimum_bpb) > knee_threshold and optimum_idx < len(bucket_bpbs) - 1
 
     return {
         "model": model_path,
@@ -4860,7 +4888,13 @@ def _cb_effective_context(model_path: str,
         "buckets": bucket_reports,
         "knee_bucket_min": bucket_reports[knee_idx]["min"] if knee_idx is not None else None,
         "knee_bucket_max": bucket_reports[knee_idx]["max"] if knee_idx is not None else None,
-        "saturation_bpb": bucket_reports[-1]["bpb_mean"],
+        "saturation_bpb": saturation_bpb,
+        # New session-13 fields: explicit optimum + U-shape detection.
+        "optimum_bucket_min": bucket_reports[optimum_idx]["min"],
+        "optimum_bucket_max": bucket_reports[optimum_idx]["max"],
+        "optimum_bpb": optimum_bpb,
+        "u_shape_detected": u_shape_detected,
+        "u_shape_depth_bpb": saturation_bpb - optimum_bpb,
     }
 
 

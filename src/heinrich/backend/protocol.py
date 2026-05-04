@@ -1,6 +1,10 @@
 """Backend protocol, ForwardResult, and load_backend factory."""
 from __future__ import annotations
 from dataclasses import dataclass
+from pathlib import Path
+import os
+import subprocess
+import sys
 from typing import Protocol, runtime_checkable
 import numpy as np
 
@@ -47,6 +51,7 @@ class Backend(Protocol):
         prompt: str,
         *,
         steer_dirs: dict[int, tuple[np.ndarray, float]] | None = None,
+        project_out_dirs: dict[int, np.ndarray] | None = None,
         alpha: float = 0.0,
         return_residual: bool = False,
         residual_layer: int = -1,
@@ -57,6 +62,7 @@ class Backend(Protocol):
         prompt: str,
         *,
         steer_dirs: dict[int, tuple[np.ndarray, float]] | None = None,
+        project_out_dirs: dict[int, np.ndarray] | None = None,
         alpha: float = 0.0,
         max_tokens: int = 30,
     ) -> str: ...
@@ -66,6 +72,7 @@ class Backend(Protocol):
         prompt: str,
         *,
         steer_dirs: dict[int, tuple[np.ndarray, float]] | None = None,
+        project_out_dirs: dict[int, np.ndarray] | None = None,
         alpha: float = 0.0,
         max_tokens: int = 30,
         safety_direction: np.ndarray | None = None,
@@ -196,6 +203,68 @@ class Backend(Protocol):
     def generation_context(self, prompt: str) -> "GenerationContext": ...  # noqa: F821
 
 
+def vendored_mlx_dir() -> Path | None:
+    """Return the repo-local ``.vendor`` dir when it contains ``mlx_lm``."""
+    root = Path(__file__).resolve().parents[3]
+    vendor = root / ".vendor"
+    if (vendor / "mlx_lm").exists():
+        return vendor
+    return None
+
+
+def prepend_vendored_mlx_dir() -> Path | None:
+    """Prepend repo-local ``.vendor`` to ``sys.path`` when available."""
+    vendor = vendored_mlx_dir()
+    if vendor is None:
+        return None
+    vendor_str = str(vendor)
+    if vendor_str not in sys.path:
+        sys.path.insert(0, vendor_str)
+    return vendor
+
+
+def probe_mlx_runtime(*, python_executable: str | None = None) -> tuple[bool, str]:
+    """Check whether importing MLX aborts the process on this host.
+
+    MLX can crash the interpreter during native Metal initialization. We probe
+    it in a subprocess so Heinrich can fall back cleanly instead of dying.
+    """
+    vendor = vendored_mlx_dir()
+    probe_lines = ["import sys"]
+    if vendor is not None:
+        probe_lines.append(f"sys.path.insert(0, {str(vendor)!r})")
+    probe_lines.extend([
+        "import mlx",
+        "import mlx.core as mx",
+        "print('MLX_OK')",
+    ])
+    env = os.environ.copy()
+    if vendor is not None:
+        existing = env.get("PYTHONPATH")
+        env["PYTHONPATH"] = f"{vendor}{os.pathsep}{existing}" if existing else str(vendor)
+    try:
+        proc = subprocess.run(
+            [python_executable or sys.executable, "-c", "\n".join(probe_lines)],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=20,
+        )
+    except Exception as exc:
+        return False, f"failed to launch MLX probe: {exc}"
+
+    if proc.returncode == 0 and "MLX_OK" in proc.stdout:
+        return True, ""
+
+    detail = (proc.stderr or proc.stdout or "").strip()
+    if detail:
+        lines = detail.splitlines()
+        if len(lines) > 20:
+            detail = "\n".join(lines[:20]) + "\n..."
+        return False, detail
+    return False, f"MLX probe exited with code {proc.returncode}"
+
+
 def load_backend(model_id: str, *, backend: str = "auto", **kwargs):
     """Load a model with the appropriate backend.
 
@@ -205,6 +274,14 @@ def load_backend(model_id: str, *, backend: str = "auto", **kwargs):
         from .decepticon import DecepticonBackend
         return DecepticonBackend(model_id, **kwargs)
     elif backend == "mlx":
+        ok, detail = probe_mlx_runtime()
+        if not ok:
+            raise RuntimeError(
+                "MLX runtime unavailable on this host. "
+                "The MLX probe crashed before Python regained control. "
+                "Use backend='hf' or repair the local MLX install.\n"
+                f"{detail}"
+            )
         from .mlx import MLXBackend
         return MLXBackend(model_id)
     elif backend == "hf":
@@ -213,11 +290,13 @@ def load_backend(model_id: str, *, backend: str = "auto", **kwargs):
     elif backend == "auto":
         import platform
         if platform.system() == "Darwin":
-            try:
-                from .mlx import MLXBackend
-                return MLXBackend(model_id)
-            except (ImportError, Exception):
-                pass
+            ok, _detail = probe_mlx_runtime()
+            if ok:
+                try:
+                    from .mlx import MLXBackend
+                    return MLXBackend(model_id)
+                except (ImportError, Exception):
+                    pass
         from .hf import HFBackend
         return HFBackend(model_id, **kwargs)
     else:

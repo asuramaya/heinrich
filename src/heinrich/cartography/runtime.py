@@ -7,6 +7,7 @@ and refusal probability computation.
 from __future__ import annotations
 from typing import Any
 import numpy as np
+from heinrich.backend.protocol import prepend_vendored_mlx_dir, probe_mlx_runtime
 from .metrics import softmax
 
 
@@ -24,8 +25,34 @@ def _lm_head(model, h):
     return inner.embed_tokens.as_linear(h)
 
 
+def _normalize_direction(direction: np.ndarray) -> np.ndarray | None:
+    """Return a float32 unit vector, or ``None`` if the direction is degenerate."""
+    d = np.asarray(direction, dtype=np.float32).reshape(-1)
+    norm = float(np.linalg.norm(d))
+    if not np.isfinite(norm) or norm <= 1e-12:
+        return None
+    return d / norm
+
+
+def _project_out_hidden(h_np: np.ndarray, direction: np.ndarray) -> np.ndarray:
+    """Remove the component of ``h_np`` along ``direction`` at every position."""
+    unit = _normalize_direction(direction)
+    if unit is None:
+        return h_np
+    coeff = np.tensordot(h_np, unit, axes=([-1], [0]))
+    return h_np - coeff[..., None] * unit
+
+
 def load_model(model_id: str) -> tuple[Any, Any]:
     """Load an MLX model and tokenizer."""
+    ok, detail = probe_mlx_runtime()
+    if not ok:
+        raise RuntimeError(
+            "MLX runtime unavailable on this host. "
+            "The MLX probe crashed before Python regained control.\n"
+            f"{detail}"
+        )
+    prepend_vendored_mlx_dir()
     import mlx_lm
     return mlx_lm.load(model_id)
 
@@ -122,6 +149,7 @@ def forward_pass(
     *,
     token_ids: list[int] | None = None,
     steer_dirs: dict[int, tuple[np.ndarray, float]] | None = None,
+    project_out_dirs: dict[int, np.ndarray] | None = None,
     alpha: float = 0.0,
     ablate_layers: set[int] | None = None,
     ablate_mode: str = "zero",
@@ -213,6 +241,10 @@ def forward_pass(
             h = ly(h, mask=mask, cache=None)
             if isinstance(h, tuple):
                 h = h[0]
+        if project_out_dirs and i in project_out_dirs:
+            h_np = np.array(h.astype(mx.float32))
+            h_np = _project_out_hidden(h_np, project_out_dirs[i])
+            h = mx.array(h_np.astype(np.float16))
         if steer_dirs and i in steer_dirs and alpha != 0:
             direction, mean_gap = steer_dirs[i]
             h_np = np.array(h.astype(mx.float32))
@@ -256,6 +288,7 @@ def generate(
     prompt: str,
     *,
     steer_dirs: dict[int, tuple[np.ndarray, float]] | None = None,
+    project_out_dirs: dict[int, np.ndarray] | None = None,
     alpha: float = 0.0,
     max_tokens: int = 30,
 ) -> dict[str, Any]:
@@ -280,6 +313,10 @@ def generate(
             h = ly(h, mask=mask, cache=None)
             if isinstance(h, tuple):
                 h = h[0]
+            if project_out_dirs and i in project_out_dirs:
+                h_np = np.array(h.astype(mx.float32))
+                h_np = _project_out_hidden(h_np, project_out_dirs[i])
+                h = mx.array(h_np.astype(np.float16))
             if steer_dirs and i in steer_dirs and alpha != 0:
                 direction, mean_gap = steer_dirs[i]
                 h_np = np.array(h.astype(mx.float32))
@@ -310,6 +347,7 @@ def refuse_prob(
     prompt: str,
     *,
     steer_dirs: dict[int, tuple[np.ndarray, float]] | None = None,
+    project_out_dirs: dict[int, np.ndarray] | None = None,
     alpha: float = 0.0,
     refusal_set: set[int] | None = None,
 ) -> float:
@@ -321,7 +359,9 @@ def refuse_prob(
         refusal_set = build_refusal_set(tokenizer)
 
     result = forward_pass(model, tokenizer, prompt,
-                          steer_dirs=steer_dirs, alpha=alpha)
+                          steer_dirs=steer_dirs,
+                          project_out_dirs=project_out_dirs,
+                          alpha=alpha)
     probs = result["probs"]
     return sum(float(probs[t]) for t in refusal_set if t < len(probs))
 

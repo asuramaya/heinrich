@@ -168,6 +168,32 @@ class TestMLXBackend:
 
     @patch("heinrich.backend.mlx.detect_config")
     @patch("mlx_lm.load")
+    def test_forward_passes_project_out_dirs(self, mock_load, mock_detect):
+        mock_model = MagicMock()
+        mock_tokenizer = MagicMock()
+        mock_load.return_value = (mock_model, mock_tokenizer)
+        mock_detect.return_value = MagicMock()
+
+        backend = MLXBackend("test/model")
+        runtime_result = {
+            "logits": np.zeros(10),
+            "probs": np.ones(10) / 10,
+            "top_id": 0,
+            "top_token": "hello",
+            "entropy": 2.0,
+            "n_tokens": 5,
+        }
+        direction = np.ones(8, dtype=np.float32)
+
+        with patch("heinrich.cartography.runtime.forward_pass", return_value=runtime_result) as mock_forward:
+            backend.forward("test prompt", project_out_dirs={3: direction})
+
+        project_out_dirs = mock_forward.call_args.kwargs["project_out_dirs"]
+        assert set(project_out_dirs) == {3}
+        np.testing.assert_allclose(project_out_dirs[3], direction)
+
+    @patch("heinrich.backend.mlx.detect_config")
+    @patch("mlx_lm.load")
     def test_generate_delegates_to_runtime(self, mock_load, mock_detect):
         mock_model = MagicMock()
         mock_tokenizer = MagicMock()

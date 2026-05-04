@@ -16,6 +16,7 @@ import subprocess
 import sys
 import threading
 import time
+import gc
 from collections import OrderedDict
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -2060,10 +2061,10 @@ def _live_forward(mri_path: str, prompt: str, model_id: str = "") -> dict:
     meta = json.loads(meta_path.read_text())
     n_layers = meta.get("n_real_layers", len(meta["layers"]))
 
-    # Get model ID from MRI metadata
+    started = time.perf_counter()
+    model_id = _resolve_live_model_id(mri_path, model_id)
     if not model_id:
-        mri_meta = json.loads((Path(mri_path) / "metadata.json").read_text())
-        model_id = mri_meta["model"]["name"]
+        return {"error": "No live model id available"}
 
     # Load model
     try:
@@ -2107,12 +2108,16 @@ def _live_forward(mri_path: str, prompt: str, model_id: str = "") -> dict:
 
     return {
         "prompt": prompt,
-        "model_id": model_id,
+        "requested_model_id": model_id,
+        "resolved_model_id": model_id,
+        "backend_type": type(backend).__name__,
+        "latency_ms": round((time.perf_counter() - started) * 1000.0, 1),
         "n_layers": n_layers,
         "token_texts": token_texts,
         "scores": live_scores,
         "logits_top5": [
             {"id": int(result.probs.argsort()[-1-i]),
+             "token": str(backend.tokenizer.decode([int(result.probs.argsort()[-1-i])])) if getattr(backend, "tokenizer", None) is not None else str(int(result.probs.argsort()[-1-i])),
              "prob": float(result.probs[result.probs.argsort()[-1-i]])}
             for i in range(min(5, len(result.probs)))
         ],
@@ -2161,6 +2166,188 @@ def _get_steer_backend(model_id: str):
         return backend
     finally:
         _cache_finish_fill(_steer_backend_lock, _steer_backend_pending, model_id)
+
+
+def _resolve_live_model_id(mri_path: str, model_id: str = "") -> str:
+    """Resolve the live model id from explicit input or MRI metadata."""
+    model_id = (model_id or "").strip()
+    if model_id:
+        return model_id
+    meta_path = Path(mri_path) / "metadata.json"
+    if not meta_path.exists():
+        return ""
+    try:
+        meta = json.loads(meta_path.read_text())
+    except Exception:
+        return ""
+    return str(meta.get("model", {}).get("name", "") or "").strip()
+
+
+def _backend_supports_generate(backend: Any) -> bool:
+    mod = type(backend).__module__
+    return callable(getattr(backend, "generate", None)) and not mod.endswith(".decepticon")
+
+
+def _backend_supports_geometry(backend: Any) -> bool:
+    mod = type(backend).__module__
+    return callable(getattr(backend, "generate_with_geometry", None)) and not mod.endswith(".decepticon")
+
+
+def _live_session_status(mri_path: str, model_id: str = "") -> dict:
+    """Report current live-backend cache status without loading a model."""
+    resolved = _resolve_live_model_id(mri_path, model_id)
+    with _steer_backend_lock:
+        backend = _steer_backend_cache.get(resolved) if resolved else None
+        loaded_models = list(_steer_backend_cache.keys())
+    result = {
+        "requested_model_id": (model_id or "").strip(),
+        "resolved_model_id": resolved,
+        "loaded": backend is not None,
+        "loaded_count": len(loaded_models),
+        "loaded_models": loaded_models,
+    }
+    if backend is None:
+        return result
+    result.update({
+        "backend_type": type(backend).__name__,
+        "supports_generate": _backend_supports_generate(backend),
+        "supports_geometry": _backend_supports_geometry(backend),
+        "has_tokenizer": getattr(backend, "tokenizer", None) is not None,
+    })
+    return result
+
+
+def _live_backend_unload(mri_path: str, model_id: str = "", *, unload_all: bool = False) -> dict:
+    """Drop one or all cached live backends."""
+    resolved = _resolve_live_model_id(mri_path, model_id)
+    removed: list[tuple[str, Any]] = []
+    with _steer_backend_lock:
+        if unload_all:
+            removed = list(_steer_backend_cache.items())
+            _steer_backend_cache.clear()
+        elif resolved:
+            backend = _steer_backend_cache.pop(resolved, None)
+            if backend is not None:
+                removed = [(resolved, backend)]
+    for _, backend in removed:
+        closer = getattr(backend, "close", None)
+        if callable(closer):
+            try:
+                closer()
+            except Exception:
+                pass
+    if removed:
+        gc.collect()
+    status = _live_session_status(mri_path, model_id)
+    status.update({
+        "ok": True,
+        "unloaded": [mid for mid, _ in removed],
+        "unloaded_all": bool(unload_all),
+    })
+    return status
+
+
+def _decode_live_token_texts(backend: Any, text: str) -> list[str]:
+    tokenizer = getattr(backend, "tokenizer", None)
+    if tokenizer is None or not text:
+        return []
+    try:
+        ids = tokenizer.encode(text)
+        return [str(tokenizer.decode([int(tid)])) for tid in ids]
+    except Exception:
+        return []
+
+
+def _build_live_chat_prompt(backend: Any, history: list[dict], message: str) -> tuple[str, list[dict]]:
+    turns: list[dict] = []
+    for item in history[-8:]:
+        role = "assistant" if item.get("role") == "assistant" else "user"
+        content = str(item.get("content", "") or "").strip()
+        if content:
+            turns.append({"role": role, "content": content})
+    turns.append({"role": "user", "content": message})
+
+    tokenizer = getattr(backend, "tokenizer", None)
+    if tokenizer is not None and hasattr(tokenizer, "apply_chat_template"):
+        try:
+            prompt = tokenizer.apply_chat_template(turns, tokenize=False, add_generation_prompt=True)
+            if isinstance(prompt, str) and prompt.strip():
+                return prompt, turns
+        except TypeError:
+            try:
+                prompt = tokenizer.apply_chat_template(turns, tokenize=False)
+                if isinstance(prompt, str) and prompt.strip():
+                    return prompt, turns
+            except Exception:
+                pass
+        except Exception:
+            pass
+
+    transcript = ["System: You are the live model inside Heinrich. Answer directly and concisely."]
+    for turn in turns[:-1]:
+        speaker = "Assistant" if turn["role"] == "assistant" else "User"
+        transcript.append(f"{speaker}: {turn['content']}")
+    transcript.append(f"User: {message}")
+    transcript.append("Assistant:")
+    return "\n".join(transcript), turns
+
+
+def _live_chat(mri_path: str, message: str, *, history: list[dict] | None = None,
+               model_id: str = "", max_tokens: int = 120) -> dict:
+    """Chat directly with the loaded live model backend."""
+    msg = (message or "").strip()
+    if not msg:
+        return {"error": "message required"}
+    resolved = _resolve_live_model_id(mri_path, model_id)
+    if not resolved:
+        return {"error": "No live model id available"}
+    started = time.perf_counter()
+    try:
+        backend = _get_steer_backend(resolved)
+    except Exception as e:
+        return {"error": f"Cannot load model {resolved}: {e}"}
+    if not _backend_supports_generate(backend):
+        return {"error": f"{type(backend).__name__} does not support text generation"}
+
+    prompt, used_history = _build_live_chat_prompt(backend, history or [], msg)
+    try:
+        top_k: list[dict] = []
+        first_token = ""
+        entropy = None
+        if _backend_supports_geometry(backend):
+            geom = backend.generate_with_geometry(prompt, max_tokens=max_tokens, top_k=5)
+            reply = str(getattr(geom, "text", "") or "")
+            top_k = [
+                {"id": int(tid), "token": str(tok), "prob": float(prob)}
+                for tid, tok, prob in getattr(geom, "top_k", []) or []
+            ]
+            first_token = str(getattr(geom, "first_token", "") or "")
+            entropy_val = getattr(geom, "entropy", None)
+            entropy = float(entropy_val) if entropy_val is not None else None
+        else:
+            reply = str(backend.generate(prompt, max_tokens=max_tokens) or "")
+    except NotImplementedError as e:
+        return {"error": str(e)}
+    except Exception as e:
+        return {"error": f"Chat generation failed: {e}"}
+
+    if reply.startswith(prompt):
+        reply = reply[len(prompt):].lstrip()
+    latency_ms = round((time.perf_counter() - started) * 1000.0, 1)
+    return {
+        "reply": reply,
+        "reply_token_texts": _decode_live_token_texts(backend, reply),
+        "requested_model_id": (model_id or "").strip(),
+        "resolved_model_id": resolved,
+        "backend_type": type(backend).__name__,
+        "loaded": True,
+        "latency_ms": latency_ms,
+        "prompt_used": prompt,
+        "history_used": used_history,
+        "first_token": first_token,
+        "entropy": entropy,
+        "top_k": top_k,
+    }
 
 
 def _direction_steer_test(mri_path: str, a: int, b: int, layer: int,
@@ -3094,6 +3281,12 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             self._send_html(ui_path.read_text())
         elif path == '/api/models':
             self._send_json(_list_models())
+        elif path == '/api/live-status':
+            mri_model = qs.get('mri_model', [''])[0]
+            mode_name = qs.get('mode', ['raw'])[0]
+            model_id = qs.get('model_id', [''])[0]
+            mri_path = self._mri_path(mri_model, mode_name) if mri_model else ""
+            self._send_json(_live_session_status(mri_path, model_id))
         elif path.startswith('/api/pca/'):
             parts = path.split('/')
             if len(parts) >= 5:
@@ -3820,6 +4013,32 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             mri_path = self._mri_path(mri_model, mode_name)
             result = _live_forward(mri_path, prompt, model_id=model_id)
             self._send_json(result)
+
+        elif path == '/api/live-chat':
+            message = args.get("message", "")
+            model_id = args.get("model_id", "")
+            mri_model = args.get("mri_model", "")
+            mode_name = args.get("mode", "raw")
+            history = args.get("history") or []
+            max_tokens = int(args.get("max_tokens", 120))
+            if not message:
+                self._send_json({"error": "message required"})
+                return
+            if not mri_model:
+                self._send_json({"error": "mri_model required"})
+                return
+            mri_path = self._mri_path(mri_model, mode_name)
+            self._send_json(_live_chat(
+                mri_path, message, history=history, model_id=model_id, max_tokens=max_tokens))
+
+        elif path == '/api/live-reset':
+            model_id = args.get("model_id", "")
+            mri_model = args.get("mri_model", "")
+            mode_name = args.get("mode", "raw")
+            unload_all = str(args.get("all", "")).lower() in {"1", "true", "yes", "all"}
+            mri_path = self._mri_path(mri_model, mode_name) if mri_model else ""
+            self._send_json(_live_backend_unload(
+                mri_path, model_id=model_id, unload_all=unload_all))
 
         elif path == '/api/direction-steer':
             model_name = args.get("model", "")

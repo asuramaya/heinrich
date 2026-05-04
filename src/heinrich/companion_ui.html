@@ -15,15 +15,17 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #rightcol{grid-column:5;grid-row:1/4;display:flex;flex-direction:column;gap:1px;overflow:hidden}
 .rvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .rvp .rlbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
-#tokpanel{position:fixed;right:8px;top:8px;width:560px;max-height:85vh;overflow-y:auto;background:rgba(10,10,10,0.95);border:1px solid #222;border-radius:4px;padding:8px;z-index:20;font-size:9px;backdrop-filter:blur(4px);cursor:default}
+#tokpanel{position:fixed;right:8px;top:8px;width:620px;max-height:85vh;overflow-y:auto;background:rgba(10,10,10,0.95);border:1px solid #222;border-radius:4px;padding:8px;z-index:20;font-size:9px;backdrop-filter:blur(4px);cursor:default}
 #tokpanel.minimized{max-height:auto;overflow:hidden}
 #tokpanel.minimized #tokBody{display:none}
+#tokpanel.minimized #tokMiniSummary{display:block}
 #tokAB{display:flex;gap:8px}
 #tokAB>div{flex:1;min-width:0}
 #chatBody{max-height:150px;overflow-y:auto;margin-top:4px;font-size:8px}
 #chatInput{width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:8px;font-family:inherit;border-radius:2px;margin-top:4px}
 #tokpanel .drag-handle{cursor:move;padding:2px 4px;margin-bottom:4px;border-bottom:1px solid #222;color:#444;font-size:7px;user-select:none;display:flex;align-items:center;gap:6px}
 #tokpanel .drag-handle .drag-mid{flex:1;text-align:center;opacity:0.6}
+#tokMiniSummary{display:none;flex:1;min-width:0;color:#777;font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
 #tokpanel .tok-min{background:transparent;border:1px solid #333;color:#666;padding:0 4px;font-size:9px;font-family:inherit;cursor:pointer;border-radius:2px;line-height:12px}
 #tokpanel .tok-min:hover{color:#ccc;border-color:#666}
 #tokpanel .tok-header{margin-bottom:4px}
@@ -39,6 +41,36 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #tokpanel .tok-tabs .tab-btn.active{color:#ccc;border-bottom-color:#6c6}
 #tokpanel .tab-pane{display:none;padding:4px 0;min-height:40px}
 #tokpanel .tab-pane.active{display:block}
+#tokpanel .pane-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}
+#tokpanel .pane-title{color:#777;font-size:7px;letter-spacing:0.08em;text-transform:uppercase}
+#tokpanel .pane-note{color:#555;font-size:7px}
+#tokpanel .inspect-stack,#tokpanel .find-stack,#tokpanel .run-stack{display:flex;flex-direction:column;gap:8px}
+#tokpanel .panel-card{background:rgba(18,18,18,0.85);border:1px solid #222;border-radius:4px;padding:6px}
+#tokpanel .token-card{background:rgba(18,18,18,0.85);border:1px solid #222;border-radius:4px;padding:6px}
+#tokpanel .section-row{display:flex;gap:8px;align-items:flex-start}
+#tokpanel .section-row>div{flex:1;min-width:0}
+#tokpanel .subhead{color:#555;font-size:7px;margin-bottom:3px;text-transform:uppercase;letter-spacing:0.06em}
+#tokpanel .compact-note{color:#666;font-size:7px;line-height:1.4}
+#tokpanel .mini-btn{background:#1a1a1a;border:1px solid #333;color:#6c6;padding:2px 6px;font-size:7px;font-family:inherit;border-radius:2px;cursor:pointer;white-space:nowrap}
+#tokpanel .mini-btn:hover{border-color:#555;color:#9f9}
+#tokpanel .mini-btn[disabled]{color:#555;border-color:#222;cursor:default}
+#tokpanel .live-status-row{display:flex;gap:4px;align-items:center;flex-wrap:wrap}
+#tokpanel .live-status-text{color:#777;font-size:7px;line-height:1.5}
+#tokpanel .live-log{max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:6px}
+#tokpanel .live-msg{border:1px solid #222;border-radius:3px;padding:4px;background:#141414}
+#tokpanel .live-msg.user{border-color:#243224;background:#121812}
+#tokpanel .live-msg.assistant{border-color:#223033;background:#121619}
+#tokpanel .live-msg .role{font-size:7px;color:#666;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:2px}
+#tokpanel .live-msg .body{font-size:8px;color:#bbb;white-space:pre-wrap;line-height:1.5}
+#tokpanel .live-msg .meta{font-size:7px;color:#666;margin-top:3px}
+#tokpanel .live-actions{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
+#tokpanel .live-chip-grid{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
+#tokpanel .live-chip{background:#1a1a1a;border:1px solid #333;color:#aaa;padding:1px 5px;font-size:7px;font-family:inherit;border-radius:999px;cursor:pointer}
+#tokpanel .live-chip:hover{border-color:#666;color:#ddd}
+#tokpanel .live-chip.unmatched{color:#555;border-color:#252525;cursor:default}
+#tokpanel .live-chip.pred{color:#9cd;border-color:#355}
+#tokpanel .live-chip.action{color:#9d9;border-color:#353}
+.live-subtle{color:#555;font-size:7px;margin-top:4px}
 .lvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .lvp .llbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
 /* lv-btn/lv-top/lv-bot removed — .cbtn handles all positioning (bottom-right) */
@@ -104,6 +136,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   <div class="drag-handle" id="tokDrag">
     <span id="fpsDisplay" style="color:#555">--fps</span>
     <span class="drag-mid">:: drag ::</span>
+    <span id="tokMiniSummary">no pair selected</span>
     <button id="tokMin" class="tok-min" title="Minimize panel (show only this bar)">&minus;</button>
   </div>
   <div id="tokBody">
@@ -138,47 +171,82 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
         <div id="legend2" style="font-size:7px;color:#555;display:none;margin-top:2px"></div>
       </div>
     </div>
-    <div class="search-row">
-      <input id="tsearch" type="text" placeholder="search tokens...">
-      <button id="discoverBtn" title="Find the layer with the strongest A/B separation across PCs">Discover</button>
+    <div id="tokInspect" class="inspect-stack">
+      <div id="tokAB">
+        <div id="tokA" class="token-card"><div class="subhead">Token A · click</div><div class="tn" id="taName" style="color:#FF6644">&mdash;</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarA" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="taMeta" style="font-size:8px">click a token to pin</div><div id="predsA" style="font-size:7px;color:#555;margin-top:3px"></div></div>
+        <div id="tokB" class="token-card"><div class="subhead">Token B · right click</div><div class="tn" id="tbName" style="color:#4477AA">&mdash;</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarB" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="tbMeta" style="font-size:8px">R-click for comparison</div><div id="predsB" style="font-size:7px;color:#555;margin-top:3px"></div></div>
+      </div>
+      <div id="dirColorStatus" class="dcs" style="display:none">projecting direction&hellip;</div>
+      <div id="sepPanel" class="panel-card" style="display:none" title="Run exact direction analysis for the pinned pair"><div class="pane-head"><div><div class="pane-title">Direction Analysis</div><div class="pane-note" id="sepNote">exact, on demand</div></div><button id="sepRun" class="mini-btn" type="button">Analyze</button></div><div style="color:#555;font-size:7px;margin-bottom:2px">Max separation PCs <span id="sepDist" style="color:#888"></span></div><div id="sepList" style="font-size:8px"></div></div>
+      <div id="attnPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Attention</div><div class="pane-note">Token A · current layer</div></div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
     </div>
-    <div id="tsresults" style="max-height:80px;overflow-y:auto;font-size:8px;color:#555;margin-bottom:4px"></div>
-    <div id="tokAB">
-      <div id="tokA"><div style="color:#555;font-size:7px;margin-bottom:2px">Token A (click)</div><div class="tn" id="taName" style="color:#FF6644">&mdash;</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarA" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="taMeta" style="font-size:8px">click a token to pin</div><div id="predsA" style="font-size:7px;color:#555;margin-top:3px"></div></div>
-      <div id="tokB"><div style="color:#555;font-size:7px;margin-bottom:2px">Token B (R-click)</div><div class="tn" id="tbName" style="color:#4477AA">&mdash;</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarB" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="tbMeta" style="font-size:8px">R-click for comparison</div><div id="predsB" style="font-size:7px;color:#555;margin-top:3px"></div></div>
-    </div>
-    <div id="dirColorStatus" class="dcs" style="display:none">projecting direction&hellip;</div>
-    <div id="sepPanel" style="display:none;margin:6px 0;cursor:pointer" title="Hover to load direction-quality analysis"><div style="color:#555;font-size:7px;margin-bottom:2px">Max separation PCs <span id="sepDist" style="color:#888"></span></div><div id="sepList" style="font-size:8px"></div></div>
-    <div id="attnPanel" style="display:none"><div style="color:#555;font-size:7px;margin-bottom:2px">Attention (Token A, current layer)</div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
-    <!-- Workspace tabs: Discover results + three formerly-separate accordions merged into one switcher -->
     <div class="tok-tabs" id="tokTabs">
-      <button class="tab-btn active" data-tab="discover">Discover</button>
-      <button class="tab-btn" data-tab="chat">Chat</button>
-      <button class="tab-btn" data-tab="cross">Cross-Model</button>
-      <button class="tab-btn" data-tab="live">Live Forward</button>
+      <button class="tab-btn" data-tab="find">Find</button>
+      <button class="tab-btn" data-tab="compare">Compare</button>
+      <button class="tab-btn active" data-tab="run">Run</button>
     </div>
     <div id="tokTabContent">
-      <div class="tab-pane active" data-pane="discover">
-        <div id="discoverResults" style="max-height:300px;overflow-y:auto;font-size:7px;color:#555"></div>
-      </div>
-      <div class="tab-pane" data-pane="chat">
-        <div id="chatLog" style="color:#666;font-size:8px;line-height:1.5;max-height:200px;overflow-y:auto"></div>
-        <input id="chatInput" type="text" placeholder="ask about this direction...">
-      </div>
-      <div class="tab-pane" data-pane="cross">
-        <div style="display:flex;gap:3px;align-items:center">
-          <select id="crossModel" style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"></select>
-          <select id="crossMode" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"><option>raw</option><option>naked</option><option>template</option></select>
-          <button id="crossRun" style="background:#1a1a1a;border:1px solid #333;color:#6c6;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">Run</button>
+      <div class="tab-pane" data-pane="find">
+        <div class="find-stack">
+          <div class="panel-card">
+            <div class="pane-head"><div class="pane-title">Token Search</div><div class="pane-note">search, pin, compare</div></div>
+            <div class="search-row" style="margin-bottom:0">
+              <input id="tsearch" type="text" placeholder="search tokens...">
+            </div>
+            <div id="tsresults" style="max-height:140px;overflow-y:auto;font-size:8px;color:#555;margin-top:6px"></div>
+          </div>
+          <div class="panel-card">
+            <div class="pane-head"><div class="pane-title">Discover Features</div><div class="pane-note">layer-local PCA candidates</div></div>
+            <div class="search-row" style="margin-bottom:0">
+              <button id="discoverBtn" title="Find the layer with the strongest A/B separation across PCs">Discover</button>
+              <div class="compact-note" style="flex:1">find candidate opposing token clusters for the current layer</div>
+            </div>
+            <div id="discoverResults" style="max-height:300px;overflow-y:auto;font-size:7px;color:#555;margin-top:6px"></div>
+          </div>
         </div>
-        <div id="crossStatus" style="color:#555;font-size:7px;margin-top:3px">pin A and B; pick a second model; Run</div>
-        <div id="crossResult" style="font-size:7px;color:#888;margin-top:4px"></div>
       </div>
-      <div class="tab-pane" data-pane="live">
-        <input id="liveModelId" type="text" placeholder="HF model id (optional, e.g. HuggingFaceTB/SmolLM2-135M)" style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:7px;font-family:inherit;border-radius:2px">
-        <input id="liveInput" type="text" placeholder="type a prompt, Enter to run..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:8px;font-family:inherit;border-radius:2px;margin-top:4px">
-        <div id="liveStatus" style="color:#555;font-size:7px;margin-top:3px">set HF id above; model load on first run ~5-30s</div>
-        <div id="liveResult" style="font-size:7px;color:#888;margin-top:4px"></div>
+      <div class="tab-pane" data-pane="compare">
+        <div class="panel-card">
+          <div class="pane-head"><div class="pane-title">Cross-Model Compare</div><div class="pane-note">same pair, second model</div></div>
+          <div style="display:flex;gap:3px;align-items:center">
+            <select id="crossModel" style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"></select>
+            <select id="crossMode" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"><option>raw</option><option>naked</option><option>template</option></select>
+            <button id="crossRun" style="background:#1a1a1a;border:1px solid #333;color:#6c6;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">Run</button>
+          </div>
+          <div id="crossStatus" style="color:#555;font-size:7px;margin-top:3px">pin A and B; pick a second model; Run</div>
+          <div id="crossResult" style="font-size:7px;color:#888;margin-top:4px"></div>
+        </div>
+      </div>
+      <div class="tab-pane active" data-pane="run">
+        <div class="run-stack">
+          <div class="panel-card">
+            <div class="pane-head"><div class="pane-title">Live Session</div><div class="pane-note">loaded backend for run/chat</div></div>
+            <div id="liveSessionStatus" class="live-status-text">session idle</div>
+            <div class="live-status-row" style="margin-top:6px">
+              <button id="liveStatusRefresh" class="mini-btn" type="button">Check</button>
+              <button id="liveStatusUnload" class="mini-btn" type="button">Unload</button>
+              <button id="liveUseSuggested" class="mini-btn" type="button">Use Current MRI</button>
+            </div>
+          </div>
+          <div class="panel-card">
+            <div class="pane-head"><div class="pane-title">Analysis Chat</div><div class="pane-note">MCP-backed notes and questions</div></div>
+            <div id="chatLog" style="color:#666;font-size:8px;line-height:1.5;max-height:200px;overflow-y:auto"></div>
+            <input id="chatInput" type="text" placeholder="ask about this direction...">
+          </div>
+          <div class="panel-card">
+            <div class="pane-head"><div class="pane-title">Model Chat</div><div class="pane-note">talk to the loaded model directly</div></div>
+            <div id="liveChatStatus" class="live-status-text">uses the same live backend as prompt MRI</div>
+            <div id="liveChatLog" class="live-log" style="margin-top:6px"></div>
+            <input id="liveChatInput" type="text" placeholder="ask the live model..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:8px;font-family:inherit;border-radius:2px;margin-top:6px">
+          </div>
+          <div class="panel-card">
+            <div class="pane-head"><div class="pane-title">Live Forward</div><div class="pane-note">run a prompt through the model</div></div>
+            <input id="liveModelId" type="text" placeholder="HF model id (optional, e.g. HuggingFaceTB/SmolLM2-135M)" style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:7px;font-family:inherit;border-radius:2px">
+            <input id="liveInput" type="text" placeholder="type a prompt, Enter to run..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:8px;font-family:inherit;border-radius:2px;margin-top:4px">
+            <div id="liveStatus" style="color:#555;font-size:7px;margin-top:3px">set HF id above; model load on first run ~5-30s</div>
+            <div id="liveResult" style="font-size:7px;color:#888;margin-top:4px"></div>
+          </div>
+        </div>
       </div>
     </div>
   </div>
@@ -214,6 +282,25 @@ const api=(p,timeoutMs=20000)=>{
     .then(r=>r.json())
     .finally(()=>clearTimeout(t));
 };
+async function _fetchJSON(url,options={},timeoutMs=20000){
+  const ctrl=new AbortController();
+  const t=setTimeout(()=>ctrl.abort(),timeoutMs);
+  try{
+    const resp=await fetch(url,{...options,signal:ctrl.signal});
+    const text=await resp.text();
+    let data={};
+    if(text){
+      try{data=JSON.parse(text);}
+      catch(e){throw new Error(resp.ok?`Invalid JSON from server`:`HTTP ${resp.status}`);}
+    }
+    if(!resp.ok){
+      throw new Error(data?.error||`HTTP ${resp.status}`);
+    }
+    return data;
+  }finally{
+    clearTimeout(t);
+  }
+}
 function f16(h){const s=(h>>15)&1,e=(h>>10)&0x1f,m=h&0x3ff;if(e===0)return m===0?0:(s?-1:1)*2**-14*(m/1024);if(e===31)return m?NaN:(s?-Infinity:Infinity);return(s?-1:1)*2**(e-15)*(1+m/1024);}
 
 const NV=6,NC=3,_DPR=Math.min(devicePixelRatio,1.5);// 0=cloudA,1=deltaCloud,2=cloudB,3=trajA,4=deltaTraj,5=trajB
@@ -766,6 +853,86 @@ function _fetchPredicts(tokIdx,containerId){
     });
   }).catch(()=>{el.textContent='';});
 }
+function _tokenLabel(idx){
+  return idx>=0?(texts[idx]||'?'):'';
+}
+function _sepKey(a,b,layer){
+  return (a>=0&&b>=0&&layer>=0)?`${a}:${b}:${layer}`:'';
+}
+function _setSepPanelIdle(message,key){
+  const panel=document.getElementById('sepPanel');
+  const dist=document.getElementById('sepDist');
+  const list=document.getElementById('sepList');
+  const note=document.getElementById('sepNote');
+  const run=document.getElementById('sepRun');
+  if(!panel||!dist||!list||!note||!run)return;
+  if(!key){
+    panel.style.display='none';
+    panel.dataset.stale='';
+    panel.dataset.analyzed='';
+    panel.dataset.loading='';
+    dist.textContent='';
+    dist.dataset.pair='';
+    list.textContent='';
+    note.textContent='exact, on demand';
+    run.disabled=true;
+    run.textContent='Analyze';
+    return;
+  }
+  panel.style.display='block';
+  panel.dataset.stale=key;
+  panel.dataset.analyzed='';
+  panel.dataset.loading='';
+  dist.textContent=message;
+  dist.dataset.pair=key;
+  list.textContent='';
+  note.textContent=`${_layerName(cL)} exact, on demand`;
+  run.disabled=false;
+  run.textContent='Analyze';
+}
+function _setSepPanelBusy(key){
+  const panel=document.getElementById('sepPanel');
+  const note=document.getElementById('sepNote');
+  const run=document.getElementById('sepRun');
+  if(!panel||!note||!run)return;
+  panel.dataset.loading=key||'';
+  panel.dataset.stale='';
+  note.textContent=`${_layerName(cL)} exact analysis`;
+  run.disabled=true;
+  run.textContent='Analyzing...';
+}
+function _setSepPanelReady(key){
+  const panel=document.getElementById('sepPanel');
+  const note=document.getElementById('sepNote');
+  const run=document.getElementById('sepRun');
+  const dist=document.getElementById('sepDist');
+  if(!panel||!note||!run||!dist)return;
+  panel.dataset.loading='';
+  panel.dataset.stale='';
+  panel.dataset.analyzed=key||'';
+  dist.dataset.pair=key||'';
+  note.textContent=`${_layerName(cL)} exact result`;
+  run.disabled=false;
+  run.textContent='Refresh';
+}
+function _triggerSeparationAnalysis(){
+  const a=pinnedToken,b=pinnedTokenB;
+  const key=_sepKey(a,b,cL);
+  if(!key||!model||!mode||!nN||cL>=_nRealLayers)return;
+  _setSepPanelBusy(key);
+  _updateSeparation(a,b);
+}
+function _updateTokMiniSummary(){
+  const el=document.getElementById('tokMiniSummary');if(!el)return;
+  if(!model){el.textContent='no pair selected';return;}
+  const parts=[`${model}/${mode}`,_layerName(cL)];
+  const a=_tokenLabel(pinnedToken),b=_tokenLabel(pinnedTokenB);
+  if(a&&b)parts.push(`A ${a} × B ${b}`);
+  else if(a)parts.push(`A ${a}`);
+  else if(b)parts.push(`B ${b}`);
+  else parts.push('no pair selected');
+  el.textContent=parts.join(' · ');
+}
 function showPinDetail(idx){
   // Synchronous UI updates only. The fetch-heavy work (predicts,
   // separation analysis, direction coloring) is consolidated into
@@ -781,6 +948,7 @@ function showPinDetail(idx){
   document.getElementById('tbName').style.color=pinnedTokenB>=0?(CLh[scripts[pinnedTokenB]]||'#aaa'):'#555';
   document.getElementById('tbMeta').textContent=pinnedTokenB>=0?_tokInfo(pinnedTokenB):'shift+click for comparison';
   renderPCBar(pinnedTokenB,'pcBarB','60,100,180');
+  _updateTokMiniSummary();
 }
 let _sepReqId=0;
 let _sepDebounceTimer=null;
@@ -797,29 +965,13 @@ function _updateSeparation(a,b){
   distEl.textContent='computing...';
   _sepDebounceTimer=setTimeout(()=>_updateSeparationNow(a,b),180);
 }
-// Hover-triggered sep analysis — keeps the 1-4s direction-quality fetch
-// out of the pin-change critical path. Delayed 400ms so drive-by mouse
-// crossings don't fire the expensive fetch; cancelled on mouseleave.
 (function(){
-  const panel=document.getElementById('sepPanel');if(!panel)return;
-  let hoverTimer=null;
-  panel.addEventListener('mouseenter',()=>{
-    const stale=panel.dataset.stale;if(!stale)return;
-    if(hoverTimer)clearTimeout(hoverTimer);
-    hoverTimer=setTimeout(()=>{
-      hoverTimer=null;
-      const [a,b]=stale.split(':').map(Number);
-      if(a>=0&&b>=0){
-        _updateSeparation(a,b);
-        panel.dataset.stale='';
-      }
-    },400);
-  });
-  panel.addEventListener('mouseleave',()=>{
-    if(hoverTimer){clearTimeout(hoverTimer);hoverTimer=null;}
-    // Also abort any in-flight fetch if the user leaves mid-request.
-    if(_sepAbort){_sepAbort.abort();_sepAbort=null;}
-    if(_sepDebounceTimer){clearTimeout(_sepDebounceTimer);_sepDebounceTimer=null;}
+  const panel=document.getElementById('sepPanel');
+  const run=document.getElementById('sepRun');
+  if(run)run.addEventListener('click',e=>{e.stopPropagation();_triggerSeparationAnalysis();});
+  if(panel)panel.addEventListener('click',e=>{
+    if(e.target.closest('#sepRun'))return;
+    if(panel.dataset.stale)_triggerSeparationAnalysis();
   });
 })();
 let _sepAbort=null;
@@ -830,6 +982,7 @@ async function _updateSeparationNow(a,b){
   panel.style.display='block';
   const list=document.getElementById('sepList');
   const distEl=document.getElementById('sepDist');
+  const key=_sepKey(a,b,cL);
   list.textContent='';
   // Abort any prior quality fetch — otherwise stale requests keep churning
   // the server and contend with the next pin change's critical path.
@@ -847,6 +1000,7 @@ async function _updateSeparationNow(a,b){
     const bmLabel=bm<0.3?'BIMODAL':bm<0.6?'partial':bm<0.85?'weak':'UNIMODAL';
     const bmColor=bm<0.3?'#4f4':bm<0.6?'#cc4':bm<0.85?'#c84':'#c44';
     distEl.textContent=`${r.K}D  mag=${r.magnitude.toFixed(1)}`;
+    _setSepPanelReady(key);
     // Feature quality summary
     const summary=document.createElement('div');
     summary.className='sep-metrics';
@@ -1078,17 +1232,20 @@ async function _updateSeparationNow(a,b){
       circDiv.appendChild(summaryDiv);
     }).catch(()=>{circDiv.textContent='circuit: failed';});
   }catch(e){
-    // Abort is the expected signal for "user moved on" — pin changed, layer
-    // scrubbed, or mouseleave. Don't surface it as a visible error; restore
-    // the "hover to analyze" placeholder so the panel can be re-triggered.
+    // Abort is the expected signal for "user moved on" — pin changed or
+    // layer scrubbed. Don't surface it as a visible error; restore the
+    // explicit analyze prompt for the current layer.
     if(e?.name==='AbortError'||/abort/i.test(e?.message||'')){
       if(_sepReqId===reqId){
-        distEl.textContent='hover to analyze';
-        const list=document.getElementById('sepList');if(list)list.textContent='';
+        _setSepPanelIdle('click Analyze',key);
       }
       return;
     }
-    if(_sepReqId===reqId)distEl.textContent='error: '+e.message;
+    if(_sepReqId===reqId){
+      distEl.textContent='error: '+e.message;
+      const run=document.getElementById('sepRun');
+      if(run){run.disabled=false;run.textContent='Retry';}
+    }
   }
 }
 function _navToSepPCs(px,py){
@@ -3505,23 +3662,9 @@ async function _onPinChange(){
       _buildRV2Attention();
       _buildPCSSpectrum();
       resolve();
-      // Mark sep-panel stale so the hover handler knows the current token
-      // pair's analysis needs re-fetching. The actual direction-quality
-      // request (1-4s on first touch) only fires when the user hovers the
-      // sep panel, so rapid pin-flicking never blocks the critical path.
-      const panel=document.getElementById('sepPanel');
-      if(panel){
-        panel.dataset.stale = (tokA>=0&&tokB>=0) ? `${tokA}:${tokB}` : '';
-        // Show the panel with a "hover to analyze" hint
-        if(tokA>=0&&tokB>=0){
-          panel.style.display='block';
-          const dist=document.getElementById('sepDist');
-          if(dist&&dist.dataset.pair!==panel.dataset.stale){
-            dist.textContent='hover to analyze';dist.dataset.pair=panel.dataset.stale;
-            const list=document.getElementById('sepList');if(list)list.textContent='';
-          }
-        }else panel.style.display='none';
-      }
+      const sepKey=_sepKey(tokA,tokB,cL);
+      if(sepKey)_setSepPanelIdle('click Analyze',sepKey);
+      else _setSepPanelIdle('', '');
     },40);// 40ms window catches rapid A+B sequence, imperceptible to user
   });
 }
@@ -3555,6 +3698,7 @@ function updateHUD(){
   const se=document.getElementById('hs');se.textContent=s;se.style.color=co;
   document.getElementById('hst').textContent=`PC1:${p1}% dim:${lm.intrinsic_dim||'?'}`;
   document.getElementById('llbl').textContent=ln;
+  _updateTokMiniSummary();
 }
 let _briefLayerTimer=null;
 function setLayer(l,light){cL=l;updateAllViewports();updateHUD();
@@ -3562,6 +3706,8 @@ function setLayer(l,light){cL=l;updateAllViewports();updateHUD();
   if(!light)_updateBrowserOverlay();
   updateLeftViewports();
   if(pinnedToken>=0||pinnedTokenB>=0){_syncAllPins(!play);if(!play)showPinDetail(pinnedToken);}
+  if(pinnedToken>=0&&pinnedTokenB>=0&&cL<_nRealLayers)_setSepPanelIdle('click Analyze',_sepKey(pinnedToken,pinnedTokenB,cL));
+  else _setSepPanelIdle('', '');
   // #7 — refresh falsification brief for the new layer, debounced so
   // rapid arrow-key scrubbing doesn't fire one request per layer.
   // Also re-apply direction coloring: /api/direction-project is
@@ -3599,6 +3745,9 @@ function _yieldFrame(){return new Promise(r=>requestAnimationFrame(r));}
 async function loadAll(){
   const newModel=document.getElementById('sm').value,newMode=document.getElementById('smd').value;
   const isSameModel=newModel===_prevModel;
+  const prevTexts=texts;
+  const prevPinTextA=pinnedToken>=0&&prevTexts[pinnedToken]!==undefined?prevTexts[pinnedToken]:null;
+  const prevPinTextB=pinnedTokenB>=0&&prevTexts[pinnedTokenB]!==undefined?prevTexts[pinnedTokenB]:null;
   const _ld=document.getElementById('loading');if(_ld)_ld.style.display='flex';
   document.getElementById('st').textContent='Loading...';
   const _ls=document.getElementById('loadStatus');
@@ -3666,14 +3815,18 @@ async function loadAll(){
   });
 
   // --- State preservation across model switches ---
-  // Save current pins by token text for cross-model matching
-  const prevPinTextA=pinnedToken>=0?texts[pinnedToken]:null;
-  const prevPinTextB=pinnedTokenB>=0?texts[pinnedTokenB]:null;
   const prevPairs=isSameModel?[vpPairs[0].slice(),vpPairs[2].slice()]:null;
   const prevLayer=isSameModel?cL:0;
 
   // Reset interaction state
   pinnedToken=-1;pinnedTokenB=-1;hoveredToken=-1;_lastDimState=-1;_trajCache={};_wlData=null;_wlBuiltKey='';
+  _setSepPanelIdle('', '');
+  _liveTokenResolveCache.clear();_liveChatHistory=[];
+  _clearNode(document.getElementById('liveChatLog'));
+  _clearNode(document.getElementById('liveResult'));
+  const _liveModelInput=document.getElementById('liveModelId');if(_liveModelInput)_liveModelInput.value='';
+  const _liveChatStatus=document.getElementById('liveChatStatus');if(_liveChatStatus){_liveChatStatus.style.color='#777';_liveChatStatus.textContent='uses the same live backend as prompt MRI';}
+  const _liveSessionStatus=document.getElementById('liveSessionStatus');if(_liveSessionStatus){_liveSessionStatus.style.color='#777';_liveSessionStatus.textContent='session idle';}
   const _tsEl=document.getElementById('tsearch');if(_tsEl)_tsEl.value='';
   const _tsR=document.getElementById('tsresults');if(_tsR)_tsR.textContent='';
 
@@ -3730,6 +3883,8 @@ async function loadAll(){
   _setLoad('loading PC data...');
   try{_brComputeCells();await _ensurePCData();buildBrowser();}catch(e){console.error('browser:',e);}
   _setLoad('');
+  _liveSuggestModelId();
+  _refreshLiveStatus();
   _markDirty();
 }
 async function init(){const models=await api('models');const sel=document.getElementById('sm');const tM=models.filter(m=>m.architecture==='transformer');const bm={};tM.forEach(m=>{if(!bm[m.model])bm[m.model]=[];bm[m.model].push(m.mode);});Object.keys(bm).sort().forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);});
@@ -4446,8 +4601,8 @@ setTimeout(_pollLoop,1000);
     document.querySelectorAll('#tokTabContent .tab-pane').forEach(p=>{
       p.classList.toggle('active',p.dataset.pane===name);
     });
-    // Lazy-populate the cross-model dropdown the first time that tab opens.
-    if(name==='cross')_populateCrossModels();
+    if(name==='compare')_populateCrossModels();
+    if(name==='run'){_liveSuggestModelId();_refreshLiveStatus();}
   });
 })();
 
@@ -4506,9 +4661,7 @@ async function _chatPollLoop(){
   const MAX_BACKOFF=60000;
   let badgeEl=null;
   const _setBadge=(disconnected)=>{
-    // Old badge host was #chatArrow (inside the former accordion). After
-    // accordion → tab merge, the Chat tab button is the live element.
-    const anchor=document.querySelector('#tokTabs .tab-btn[data-tab="chat"]');
+    const anchor=document.querySelector('#tokTabs .tab-btn[data-tab="run"]');
     if(!anchor)return;
     if(disconnected){
       if(!badgeEl){badgeEl=document.createElement('span');
@@ -4556,6 +4709,7 @@ const _LIVE_HF_MAP = {
   'phi-3.5':         'microsoft/Phi-3.5-mini-instruct',
   'mistral-7b':      'mistralai/Mistral-7B-Instruct-v0.3',
 };
+let _liveBusy=false,_liveChatBusy=false,_liveChatHistory=[],_liveTokenResolveCache=new Map();
 function _liveSuggestModelId(){
   // Respect previously-typed value if it's non-empty.
   const input=document.getElementById('liveModelId');if(!input)return;
@@ -4578,21 +4732,178 @@ function _liveSaveModelId(){
     localStorage.setItem('heinrich.liveModelId',JSON.stringify(saved));
   }catch(e){}
 }
-// Former liveToggle: now driven by tab switcher. Suggest model ID on pane activation.
-(function(){
-  const liveTabBtn=document.querySelector('#tokTabs .tab-btn[data-tab="live"]');
-  if(liveTabBtn)liveTabBtn.addEventListener('click',()=>_liveSuggestModelId());
-})();
+function _liveCurrentModelId(){
+  return document.getElementById('liveModelId')?.value.trim()||'';
+}
+function _clearNode(el){
+  if(!el)return;
+  while(el.firstChild)el.removeChild(el.firstChild);
+}
+function _liveResolveTokenToMRI(tokText){
+  const text=String(tokText||'');
+  if(!text)return-1;
+  if(_liveTokenResolveCache.has(text))return _liveTokenResolveCache.get(text);
+  const variants=[text];
+  const trimmed=text.trim();
+  if(trimmed&&trimmed!==text)variants.push(trimmed);
+  if(trimmed)variants.push(' '+trimmed);
+  if(trimmed)variants.push(trimmed.replace(/^▁+/,''));
+  let idx=-1;
+  for(const v of variants){
+    idx=texts.indexOf(v);
+    if(idx>=0)break;
+  }
+  _liveTokenResolveCache.set(text,idx);
+  return idx;
+}
+function _pinFromLiveToken(tokText,which){
+  const idx=_liveResolveTokenToMRI(tokText);
+  if(idx<0)return false;
+  if(which==='B'){pinnedTokenB=idx;}
+  else{pinnedToken=idx;loadAttnData(idx);}
+  updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();
+  return true;
+}
+function _makeLiveTokenChip(tokText,{kind='token',prob=null,title=''}={}){
+  const chip=document.createElement('button');
+  chip.type='button';
+  chip.className='live-chip';
+  const idx=_liveResolveTokenToMRI(tokText);
+  if(kind==='prediction'||kind==='topk')chip.classList.add('pred');
+  chip.textContent=String(tokText||'∅');
+  if(idx<0){
+    chip.classList.add('unmatched');
+    chip.disabled=true;
+    chip.title=title||'not matched in current MRI tokens';
+    return chip;
+  }
+  chip.title=title||`click pin A, right-click pin B · MRI #${idx}`;
+  if(prob!==null)chip.title+=` · ${(prob*100).toFixed(1)}%`;
+  chip.addEventListener('click',()=>{_pinFromLiveToken(tokText,'A');});
+  chip.addEventListener('contextmenu',e=>{e.preventDefault();_pinFromLiveToken(tokText,'B');});
+  return chip;
+}
+function _renderLiveChipRow(parent,label,tokens,kind){
+  if(!parent||!Array.isArray(tokens)||!tokens.length)return;
+  const hdr=document.createElement('div');
+  hdr.className='live-subtle';
+  hdr.textContent=label;
+  parent.appendChild(hdr);
+  const row=document.createElement('div');
+  row.className='live-chip-grid';
+  tokens.forEach(tok=>row.appendChild(_makeLiveTokenChip(kind==='topk'?(tok.token||tok.text||tok.id):tok,{kind,prob:tok.prob??null})));
+  parent.appendChild(row);
+}
+function _renderLiveSession(info){
+  const el=document.getElementById('liveSessionStatus');if(!el)return;
+  if(!info){el.textContent='session idle';return;}
+  const resolved=info.resolved_model_id||'(unset)';
+  if(info.error){el.textContent=`error · ${info.error}`;el.style.color='#f77';return;}
+  if(info.loaded){
+    el.style.color='#6c8';
+    const parts=[`loaded ${resolved}`,info.backend_type||'backend'];
+    if(info.supports_generate===false)parts.push('no generation');
+    if(info.loaded_count>1)parts.push(`${info.loaded_count} cached`);
+    el.textContent=parts.join(' · ');
+  }else{
+    el.style.color='#777';
+    el.textContent=`idle · ${resolved}${info.loaded_count?` · ${info.loaded_count} other cached`:''}`;
+  }
+}
+async function _refreshLiveStatus(){
+  const el=document.getElementById('liveSessionStatus');if(!el||!model)return;
+  el.style.color='#777';
+  el.textContent='checking live session...';
+  try{
+    const q=`/api/live-status?mri_model=${encodeURIComponent(model)}&mode=${encodeURIComponent(mode)}&model_id=${encodeURIComponent(_liveCurrentModelId())}`;
+    const d=await _fetchJSON(q,{},10000);
+    _renderLiveSession(d);
+    return d;
+  }catch(e){
+    el.style.color='#f77';
+    el.textContent='status failed: '+e.message;
+    return null;
+  }
+}
+async function _resetLiveSession(){
+  const el=document.getElementById('liveSessionStatus');if(!el||!model)return;
+  el.style.color='#a84';
+  el.textContent='unloading live backend...';
+  try{
+    const d=await _fetchJSON('/api/live-reset',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({mri_model:model,mode,model_id:_liveCurrentModelId()})},15000);
+    _renderLiveSession(d);
+  }catch(e){
+    el.style.color='#f77';
+    el.textContent='unload failed: '+e.message;
+  }
+}
+function _appendLiveChatEntry(role,text,meta={}){
+  const log=document.getElementById('liveChatLog');if(!log)return;
+  const box=document.createElement('div');
+  box.className=`live-msg ${role}`;
+  const roleEl=document.createElement('div');
+  roleEl.className='role';
+  roleEl.textContent=role==='assistant'?'Model':'You';
+  const body=document.createElement('div');
+  body.className='body';
+  body.textContent=text;
+  box.appendChild(roleEl);box.appendChild(body);
+  if(role==='assistant'&&Array.isArray(meta.reply_token_texts)&&meta.reply_token_texts.length){
+    _renderLiveChipRow(box,'reply tokens · click A / right-click B',meta.reply_token_texts,'reply');
+  }
+  if(role==='assistant'&&Array.isArray(meta.top_k)&&meta.top_k.length){
+    _renderLiveChipRow(box,'first-step top-k',meta.top_k,'topk');
+  }
+  if(role==='assistant'){
+    const actions=document.createElement('div');
+    actions.className='live-actions';
+    const useBtn=document.createElement('button');
+    useBtn.type='button';useBtn.className='live-chip action';useBtn.textContent='Use Reply';
+    useBtn.addEventListener('click',()=>{const input=document.getElementById('liveInput');if(input){input.value=text;input.focus();}});
+    const runBtn=document.createElement('button');
+    runBtn.type='button';runBtn.className='live-chip action';runBtn.textContent='Run MRI';
+    runBtn.addEventListener('click',()=>{const input=document.getElementById('liveInput');if(input)input.value=text;_runLiveForward(text);});
+    actions.appendChild(useBtn);actions.appendChild(runBtn);
+    box.appendChild(actions);
+  }
+  if(meta.latency_ms!==undefined||meta.backend_type){
+    const md=document.createElement('div');
+    md.className='meta';
+    const parts=[];
+    if(meta.backend_type)parts.push(meta.backend_type);
+    if(meta.latency_ms!==undefined)parts.push(`${meta.latency_ms} ms`);
+    md.textContent=parts.join(' · ');
+    box.appendChild(md);
+  }
+  log.appendChild(box);
+  log.scrollTop=log.scrollHeight;
+}
 document.getElementById('liveModelId')?.addEventListener('change',_liveSaveModelId);
 document.getElementById('liveModelId')?.addEventListener('blur',_liveSaveModelId);
-let _liveBusy=false;
+document.getElementById('liveModelId')?.addEventListener('change',()=>{_refreshLiveStatus();});
+document.getElementById('liveStatusRefresh')?.addEventListener('click',()=>{_refreshLiveStatus();});
+document.getElementById('liveStatusUnload')?.addEventListener('click',()=>{_resetLiveSession();});
+document.getElementById('liveUseSuggested')?.addEventListener('click',()=>{
+  const input=document.getElementById('liveModelId');if(!input)return;
+  input.value='';
+  _liveSuggestModelId();
+  _liveSaveModelId();
+  _refreshLiveStatus();
+});
 function _liveRender(res,d){
-  while(res.firstChild)res.removeChild(res.firstChild);
+  _clearNode(res);
   const head=document.createElement('div');
   head.style.marginBottom='3px';
   if(d.prediction!=null){
     const sp=document.createElement('span');sp.className='lk';
-    sp.textContent='\u2192 '+String(d.prediction);
+    sp.textContent='\u2192 ';
+    head.appendChild(sp);
+    head.appendChild(_makeLiveTokenChip(String(d.prediction),{kind:'prediction',title:'top prediction · click A / right-click B'}));
+  }
+  if(d.latency_ms!=null){
+    const sp=document.createElement('span');sp.className='lent';
+    sp.textContent=`${d.latency_ms} ms`;
     head.appendChild(sp);
   }
   if(d.entropy!=null){
@@ -4601,16 +4912,53 @@ function _liveRender(res,d){
     head.appendChild(sp);
   }
   res.appendChild(head);
-  const row=document.createElement('div');
-  (d.logits_top5||[]).slice(0,5).forEach(t=>{
-    const tok=document.createElement('span');tok.className='lt';
-    tok.textContent=String(t.id);tok.title='id '+t.id;
-    const pct=document.createElement('span');pct.className='lp';
-    pct.textContent=(t.prob*100).toFixed(1)+'%';
-    row.appendChild(tok);row.appendChild(pct);
-    row.appendChild(document.createTextNode(' '));
-  });
-  res.appendChild(row);
+  _renderLiveChipRow(res,'top-k next tokens',(d.logits_top5||[]).slice(0,5).map(t=>({token:t.token||String(t.id),prob:t.prob})), 'topk');
+  if(Array.isArray(d.token_texts)&&d.token_texts.length){
+    _renderLiveChipRow(res,'prompt tokens · click A / right-click B',d.token_texts,'prompt');
+  }
+  const meta=document.createElement('div');
+  meta.className='live-subtle';
+  meta.textContent=`${d.backend_type||'backend'} · ${d.n_layers||'?'} layers · ${((d.token_texts||[]).length)} tokens`;
+  res.appendChild(meta);
+}
+async function _runLiveChat(message){
+  if(_liveChatBusy||!message||!model)return;
+  _liveChatBusy=true;
+  const st=document.getElementById('liveChatStatus');
+  st.style.color='#a84';
+  st.textContent='thinking...';
+  _appendLiveChatEntry('user',message);
+  try{
+    const d=await _fetchJSON('/api/live-chat',{
+      method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({
+        message,
+        history:_liveChatHistory,
+        mri_model:model,
+        mode,
+        model_id:_liveCurrentModelId(),
+        max_tokens:120,
+      })
+    },45000);
+    if(d.error){
+      st.style.color='#f77';
+      st.textContent='error: '+d.error;
+      return;
+    }
+    _liveChatHistory.push({role:'user',content:message});
+    _liveChatHistory.push({role:'assistant',content:d.reply});
+    if(_liveChatHistory.length>16)_liveChatHistory=_liveChatHistory.slice(-16);
+    _appendLiveChatEntry('assistant',d.reply,d);
+    st.style.color='#6c8';
+    st.textContent=`${d.backend_type||'backend'} · ${d.latency_ms||'?'} ms`;
+    _renderLiveSession(d);
+  }catch(e){
+    st.style.color='#f77';
+    st.textContent='fetch failed: '+e.message;
+  }finally{
+    _liveChatBusy=false;
+    _refreshLiveStatus();
+  }
 }
 async function _runLiveForward(prompt){
   if(_liveBusy)return;
@@ -4621,26 +4969,32 @@ async function _runLiveForward(prompt){
   st.style.color='#a84';
   try{
     const model_id=document.getElementById('liveModelId')?.value.trim()||'';
-    const r=await fetch('/api/live-forward',{
+    const d=await _fetchJSON('/api/live-forward',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({prompt,mri_model:model,mode,model_id})
-    });
-    const d=await r.json();
+    },60000);
     if(d.error){
       st.style.color='#f77';st.textContent='error: '+d.error;
       while(res.firstChild)res.removeChild(res.firstChild);return;
     }
     st.style.color='#6c8';
-    st.textContent=(d.n_layers||'?')+' layers, '+((d.token_texts||[]).length)+' tokens';
+    st.textContent=(d.n_layers||'?')+' layers, '+((d.token_texts||[]).length)+' tokens · '+(d.latency_ms||'?')+' ms';
     _liveRender(res,d);
+    _renderLiveSession(d);
   }catch(e){
     st.style.color='#f77';st.textContent='fetch failed: '+e.message;
-  }finally{_liveBusy=false;}
+  }finally{_liveBusy=false;_refreshLiveStatus();}
 }
 document.getElementById('liveInput')?.addEventListener('keydown',e=>{
   if(e.key!=='Enter')return;
   const v=e.target.value.trim();if(!v)return;
   _runLiveForward(v);
+});
+document.getElementById('liveChatInput')?.addEventListener('keydown',e=>{
+  if(e.key!=='Enter')return;
+  const v=e.target.value.trim();if(!v)return;
+  e.target.value='';
+  _runLiveChat(v);
 });
 
 // --- Cross-Model Compare ---

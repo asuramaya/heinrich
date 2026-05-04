@@ -82,6 +82,12 @@ class SteerOp:
 
 
 @dataclass
+class ProjectOutOp:
+    layer: int
+    direction: np.ndarray
+
+
+@dataclass
 class NeuronMaskOp:
     layer: int
     neurons: list[int]
@@ -144,6 +150,7 @@ class ForwardContext:
     def __init__(self, backend: Any):
         self._backend = backend
         self._steers: list[SteerOp] = []
+        self._project_outs: list[ProjectOutOp] = []
         self._neuron_masks: list[NeuronMaskOp] = []
         self._capture_residuals: list[CaptureResidualOp] = []
         self._capture_attentions: list[CaptureAttentionOp] = []
@@ -152,6 +159,11 @@ class ForwardContext:
 
     def steer(self, layer: int, direction: np.ndarray, mean_gap: float = 1.0, alpha: float = 1.0):
         self._steers.append(SteerOp(layer, direction, mean_gap, alpha))
+        return self
+
+    def project_out(self, layer: int, direction: np.ndarray):
+        """Remove the component along ``direction`` at this layer."""
+        self._project_outs.append(ProjectOutOp(layer, direction))
         return self
 
     def zero_neurons(self, layer: int, neurons: list[int]):
@@ -202,12 +214,18 @@ class GenerationContext:
         self._backend = backend
         self._prompt = prompt
         self._steers: list[SteerOp] = []
+        self._project_outs: list[ProjectOutOp] = []
         self._one_shot_injections: list[tuple[int, np.ndarray]] = []
         self._capture_layer: int | None = None
 
     def steer(self, layer: int, direction: np.ndarray, mean_gap: float = 1.0, alpha: float = 1.0):
         """Add persistent steering (applied at every generated token)."""
         self._steers.append(SteerOp(layer, direction, mean_gap, alpha))
+        return self
+
+    def project_out(self, layer: int, direction: np.ndarray):
+        """Persistently remove the component along ``direction`` at this layer."""
+        self._project_outs.append(ProjectOutOp(layer, direction))
         return self
 
     def inject_once(self, layer: int, vector: np.ndarray):

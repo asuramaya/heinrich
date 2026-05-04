@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import numpy as np
 
-from .protocol import ForwardResult
+from .protocol import ForwardResult, prepend_vendored_mlx_dir
 from heinrich.cartography.model_config import detect_config
 
 
@@ -11,6 +11,7 @@ class MLXBackend:
     """MLX backend -- runs on Apple Silicon via mlx-lm."""
 
     def __init__(self, model_id: str):
+        prepend_vendored_mlx_dir()
         import mlx_lm
         self.model, self.tokenizer = mlx_lm.load(model_id)
         self.config = detect_config(self.model, self.tokenizer)
@@ -41,6 +42,7 @@ class MLXBackend:
         *,
         token_ids=None,
         steer_dirs=None,
+        project_out_dirs=None,
         alpha=0.0,
         return_residual=False,
         residual_layer=-1,
@@ -50,7 +52,9 @@ class MLXBackend:
         result = forward_pass(
             self.model, self.tokenizer, prompt,
             token_ids=token_ids,
-            steer_dirs=steer_dirs, alpha=alpha,
+            steer_dirs=steer_dirs,
+            project_out_dirs=project_out_dirs,
+            alpha=alpha,
             return_residual=return_residual,
             residual_layer=residual_layers if residual_layers else residual_layer,
         )
@@ -67,10 +71,11 @@ class MLXBackend:
             fwd.residuals = result["residuals"]
         return fwd
 
-    def generate(self, prompt, *, steer_dirs=None, alpha=0.0, max_tokens=30) -> str:
+    def generate(self, prompt, *, steer_dirs=None, project_out_dirs=None, alpha=0.0, max_tokens=30) -> str:
         """Generate text. Uses mlx_lm fast path when no steering needed."""
-        if not steer_dirs or alpha == 0:
+        if (not steer_dirs or alpha == 0) and not project_out_dirs:
             # Fast path: mlx_lm native generation (10-50x faster)
+            prepend_vendored_mlx_dir()
             import mlx_lm
             return mlx_lm.generate(
                 self.model, self.tokenizer, prompt=prompt,
@@ -79,14 +84,18 @@ class MLXBackend:
         # Slow path: manual loop with steering via GenerationContext
         tokens = []
         with self.generation_context(prompt) as gen:
-            for layer, (direction, mean_gap) in steer_dirs.items():
-                gen.steer(layer, direction, mean_gap, alpha)
+            if project_out_dirs:
+                for layer, direction in project_out_dirs.items():
+                    gen.project_out(layer, direction)
+            if steer_dirs and alpha:
+                for layer, (direction, mean_gap) in steer_dirs.items():
+                    gen.steer(layer, direction, mean_gap, alpha)
             for tok in gen.tokens(max_tokens=max_tokens):
                 tokens.append(tok.token_text)
         return "".join(tokens)
 
     def generate_with_geometry(
-        self, prompt, *, steer_dirs=None, alpha=0.0, max_tokens=30,
+        self, prompt, *, steer_dirs=None, project_out_dirs=None, alpha=0.0, max_tokens=30,
         safety_direction=None, safety_layers=None, top_k=5,
     ):
         """Generate text and capture first-token geometry in one pass.
@@ -109,6 +118,9 @@ class MLXBackend:
 
         with self.generation_context(prompt) as gen:
             # Set up steering
+            if project_out_dirs:
+                for layer, direction in project_out_dirs.items():
+                    gen.project_out(layer, direction)
             if steer_dirs and alpha:
                 for layer, (direction, mean_gap) in steer_dirs.items():
                     gen.steer(layer, direction, mean_gap, alpha)
@@ -364,6 +376,10 @@ class MLXBackend:
         for op in ctx._steers:
             steer_at[op.layer] = (op.direction, op.mean_gap, op.alpha)
 
+        project_out_at = {}
+        for op in ctx._project_outs:
+            project_out_at.setdefault(op.layer, []).append(op.direction)
+
         neuron_masks = {}
         for op in ctx._neuron_masks:
             neuron_masks.setdefault(op.layer, []).extend(op.neurons)
@@ -458,6 +474,13 @@ class MLXBackend:
                 if isinstance(h, tuple):
                     h = h[0]
 
+            if i in project_out_at:
+                from heinrich.cartography.runtime import _project_out_hidden
+                h_np = np.array(h.astype(mx.float32))
+                for direction in project_out_at[i]:
+                    h_np = _project_out_hidden(h_np, direction)
+                h = mx.array(h_np.astype(np.float16))
+
             # Steering
             if i in steer_at:
                 direction, mean_gap, alpha = steer_at[i]
@@ -517,6 +540,10 @@ class MLXBackend:
         for op in gen_ctx._steers:
             steer_at[op.layer] = (op.direction, op.mean_gap, op.alpha)
 
+        project_out_at = {}
+        for op in gen_ctx._project_outs:
+            project_out_at.setdefault(op.layer, []).append(op.direction)
+
         capture_layer = gen_ctx._capture_layer
 
         cache = make_prompt_cache(inner)
@@ -535,6 +562,13 @@ class MLXBackend:
                 h = ly(h, mask=mask, cache=cache[i])
                 if isinstance(h, tuple):
                     h = h[0]
+
+                if i in project_out_at:
+                    from heinrich.cartography.runtime import _project_out_hidden
+                    h_np = np.array(h.astype(mx.float32))
+                    for direction in project_out_at[i]:
+                        h_np = _project_out_hidden(h_np, direction)
+                    h = mx.array(h_np.astype(np.float16))
 
                 if i in steer_at:
                     direction, mean_gap, alpha = steer_at[i]

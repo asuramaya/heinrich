@@ -2,6 +2,7 @@
 from __future__ import annotations
 from typing import Any, Sequence
 import numpy as np
+from ..backend.protocol import prepend_vendored_mlx_dir, probe_mlx_runtime
 from ..signal import Signal
 
 
@@ -19,6 +20,14 @@ class MLXProvider:
     def _ensure_loaded(self) -> None:
         if self._model is not None:
             return
+        ok, detail = probe_mlx_runtime()
+        if not ok:
+            raise RuntimeError(
+                "MLX runtime unavailable on this host. "
+                "The MLX probe crashed before Python regained control.\n"
+                f"{detail}"
+            )
+        prepend_vendored_mlx_dir()
         try:
             import mlx_lm
         except ImportError:

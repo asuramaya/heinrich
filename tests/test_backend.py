@@ -186,6 +186,22 @@ def test_forward_pass_no_ablation_runs_all_layers():
     assert calls == ["L0.full", "L1.full", "L2.full"]
 
 
+def test_forward_pass_project_out_removes_direction_component():
+    fake_inner, fake_model, _ = _build_ablation_env(1)
+    direction = np.ones(8, dtype=np.float32)
+    result = _run_forward(
+        fake_inner,
+        fake_model,
+        project_out_dirs={0: direction},
+        return_residual=True,
+        residual_layer=0,
+    )
+
+    residual = result["residual"]
+    assert residual is not None
+    np.testing.assert_allclose(residual, np.zeros_like(residual), atol=1e-6)
+
+
 # ---------------------------------------------------------------------------
 # Issue 2: HFBackend steering via hooks
 # ---------------------------------------------------------------------------
@@ -316,6 +332,25 @@ def test_steer_hook_preserves_tuple_structure():
         h.remove()
 
 
+@requires_torch
+def test_project_out_hook_removes_component_from_all_positions():
+    backend, layers = _make_fake_hf_backend(n_layers=4, hidden_size=8)
+    direction = np.ones(8, dtype=np.float32)
+    handles = backend._install_project_out_hooks({0: direction})
+
+    hidden = torch.full((1, 3, 8), 2.0)
+    output = (hidden.clone(),)
+
+    hook_fn = list(layers[0]._forward_hooks.values())[0]
+    result = hook_fn(layers[0], None, output)
+    unit = direction / np.linalg.norm(direction)
+    projections = torch.einsum("btd,d->bt", result[0].float(), torch.tensor(unit, dtype=torch.float32))
+    np.testing.assert_allclose(projections.numpy(), np.zeros((1, 3)), atol=1e-6)
+
+    for h in handles:
+        h.remove()
+
+
 def _mock_hf_output():
     """Build a fake HF model output with .logits."""
     logits = torch.randn(1, 3, 32)
@@ -358,6 +393,18 @@ def test_generate_with_steering_installs_and_removes_hooks():
     )
 
     backend.generate("test prompt", steer_dirs=steer_dirs, alpha=2.0)
+    assert len(layers[2]._forward_hooks) == 0
+
+
+@requires_torch
+def test_generate_with_project_out_installs_and_removes_hooks():
+    backend, layers = _make_fake_hf_backend(n_layers=4, hidden_size=8)
+    direction = np.ones(8, dtype=np.float32)
+    backend.hf_model.generate = MagicMock(
+        return_value=torch.tensor([[1, 2, 3, 4, 5]])
+    )
+
+    backend.generate("test prompt", project_out_dirs={2: direction}, max_tokens=5)
     assert len(layers[2]._forward_hooks) == 0
 
 

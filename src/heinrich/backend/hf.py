@@ -10,19 +10,42 @@ from heinrich.cartography.model_config import detect_config
 class HFBackend:
     """HuggingFace transformers backend -- runs on CUDA/CPU via transformers."""
 
-    def __init__(self, model_id: str, *, device: str = "auto", torch_dtype: str = "float16"):
+    def __init__(
+        self,
+        model_id: str,
+        *,
+        device: str = "auto",
+        torch_dtype: str = "float16",
+        subfolder: str | None = None,
+    ):
         import torch
         from transformers import AutoModelForCausalLM, AutoTokenizer
 
         dtype_map = {"float16": torch.float16, "bfloat16": torch.bfloat16, "float32": torch.float32}
         resolved_dtype = dtype_map.get(torch_dtype, torch.float16)
 
-        self.tokenizer = AutoTokenizer.from_pretrained(model_id)
-        self.hf_model = AutoModelForCausalLM.from_pretrained(
-            model_id,
-            torch_dtype=resolved_dtype,
-            device_map=device,
-        )
+        # subfolder routes loading to a sub-component of a multi-component repo
+        # (e.g. text_encoder/ inside a diffusers pipeline like Z-Image).
+        # The tokenizer typically lives in its own sibling subfolder ("tokenizer/")
+        # — try that first, fall back to repo root.
+        if subfolder is not None:
+            try:
+                self.tokenizer = AutoTokenizer.from_pretrained(model_id, subfolder="tokenizer")
+            except (OSError, ValueError):
+                self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+            self.hf_model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                subfolder=subfolder,
+                torch_dtype=resolved_dtype,
+                device_map=device,
+            )
+        else:
+            self.tokenizer = AutoTokenizer.from_pretrained(model_id)
+            self.hf_model = AutoModelForCausalLM.from_pretrained(
+                model_id,
+                torch_dtype=resolved_dtype,
+                device_map=device,
+            )
         self.hf_model.eval()  # PyTorch: set model to evaluation mode
         self.config = detect_config(self.hf_model, self.tokenizer)
         self._device = next(self.hf_model.parameters()).device
@@ -84,11 +107,57 @@ class HFBackend:
 
         return handles
 
+    @staticmethod
+    def _normalize_direction(direction: np.ndarray) -> np.ndarray | None:
+        d = np.asarray(direction, dtype=np.float32).reshape(-1)
+        norm = float(np.linalg.norm(d))
+        if not np.isfinite(norm) or norm <= 1e-12:
+            return None
+        return d / norm
+
+    def _install_project_out_hooks(
+        self,
+        project_out_dirs: dict[int, np.ndarray],
+    ) -> list:
+        """Register forward hooks that remove the component along each direction."""
+        import torch
+        handles = []
+        layers = self.hf_model.model.layers
+
+        for layer_idx, direction in project_out_dirs.items():
+            if layer_idx >= len(layers):
+                continue
+            unit = self._normalize_direction(direction)
+            if unit is None:
+                continue
+            dir_tensor = torch.tensor(unit, dtype=torch.float32)
+
+            def make_hook(dt):
+                def hook_fn(module, input, output):
+                    hs = output[0] if isinstance(output, tuple) else output
+                    device = hs.device
+                    hs_dtype = hs.dtype
+                    unit_dir = dt.to(device)
+                    hs_f32 = hs.float()
+                    proj = torch.einsum("...d,d->...", hs_f32, unit_dir)
+                    hs_proj = hs_f32 - proj.unsqueeze(-1) * unit_dir
+                    hs_proj = hs_proj.to(hs_dtype)
+                    if isinstance(output, tuple):
+                        return (hs_proj,) + output[1:]
+                    return hs_proj
+                return hook_fn
+
+            handle = layers[layer_idx].register_forward_hook(make_hook(dir_tensor))
+            handles.append(handle)
+
+        return handles
+
     def forward(
         self,
         prompt: str,
         *,
         steer_dirs=None,
+        project_out_dirs=None,
         alpha=0.0,
         return_residual=False,
         residual_layer=-1,
@@ -97,8 +166,10 @@ class HFBackend:
         from heinrich.cartography.metrics import softmax, entropy as _entropy
 
         hooks = []
+        if project_out_dirs:
+            hooks.extend(self._install_project_out_hooks(project_out_dirs))
         if steer_dirs and alpha != 0:
-            hooks = self._install_steer_hooks(steer_dirs, alpha)
+            hooks.extend(self._install_steer_hooks(steer_dirs, alpha))
 
         try:
             input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
@@ -130,12 +201,14 @@ class HFBackend:
             residual=residual,
         )
 
-    def generate(self, prompt, *, steer_dirs=None, alpha=0.0, max_tokens=30) -> str:
+    def generate(self, prompt, *, steer_dirs=None, project_out_dirs=None, alpha=0.0, max_tokens=30) -> str:
         import torch
 
         hooks = []
+        if project_out_dirs:
+            hooks.extend(self._install_project_out_hooks(project_out_dirs))
         if steer_dirs and alpha != 0:
-            hooks = self._install_steer_hooks(steer_dirs, alpha)
+            hooks.extend(self._install_steer_hooks(steer_dirs, alpha))
 
         try:
             input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
@@ -359,6 +432,27 @@ class HFBackend:
         handles = []
         captures = {"residuals": {}, "all_pos": {}, "attn": {}, "mlp": {}}
 
+        for op in ctx._project_outs:
+            if op.layer < len(self.hf_model.model.layers):
+                unit = self._normalize_direction(op.direction)
+                if unit is None:
+                    continue
+                dt = torch.tensor(unit, dtype=torch.float32)
+
+                def make_project_out(d):
+                    def hook(mod, inp, out):
+                        hs = out[0] if isinstance(out, tuple) else out
+                        unit_dir = d.to(hs.device)
+                        hs_dtype = hs.dtype
+                        hs_f32 = hs.float()
+                        proj = torch.einsum("...d,d->...", hs_f32, unit_dir)
+                        hs_proj = hs_f32 - proj.unsqueeze(-1) * unit_dir
+                        hs_proj = hs_proj.to(hs_dtype)
+                        return (hs_proj,) + out[1:] if isinstance(out, tuple) else hs_proj
+                    return hook
+
+                handles.append(self.hf_model.model.layers[op.layer].register_forward_hook(make_project_out(dt)))
+
         # Build steer hooks
         for op in ctx._steers:
             if op.layer < len(self.hf_model.model.layers):
@@ -481,6 +575,27 @@ class HFBackend:
 
         # Persistent steer hooks
         handles = []
+        for op in gen_ctx._project_outs:
+            if op.layer < len(self.hf_model.model.layers):
+                unit = self._normalize_direction(op.direction)
+                if unit is None:
+                    continue
+                dt = torch.tensor(unit, dtype=torch.float32)
+
+                def make_project_out(d):
+                    def hook(mod, inp, out):
+                        hs = out[0] if isinstance(out, tuple) else out
+                        unit_dir = d.to(hs.device)
+                        hs_dtype = hs.dtype
+                        hs_f32 = hs.float()
+                        proj = torch.einsum("...d,d->...", hs_f32, unit_dir)
+                        hs_proj = hs_f32 - proj.unsqueeze(-1) * unit_dir
+                        hs_proj = hs_proj.to(hs_dtype)
+                        return (hs_proj,) + out[1:] if isinstance(out, tuple) else hs_proj
+                    return hook
+
+                handles.append(self.hf_model.model.layers[op.layer].register_forward_hook(make_project_out(dt)))
+
         for op in gen_ctx._steers:
             if op.layer < len(self.hf_model.model.layers):
                 dt = torch.tensor(op.direction * op.mean_gap * op.alpha, dtype=torch.float32)
