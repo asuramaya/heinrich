@@ -575,3 +575,33 @@ Investigation `docs/session11-crystal-investigation.md`. Summary:
 - `MRI_FIX_LEVEL` metadata field added to every new capture. Increment when a capture-side bug fix changes the *values* in MRI files. History: 0 = pre-session-11; 1 = loader + routing fixes; 2 = path-collapse + gradient-sign preflight.
 - `_ridge_r2` helper: SVD-truncated held-out R² for PosR²/ConR² in `profile-cb-trajectory`. Previous top-20-PC in-sample R² was hiding weak-direction position signal AND inflating scores with fit noise.
 - Band labels in `profile-cb-omega-forensics` renamed `char_1_5` → `period_1_5` (and analogous): bands are periodicities, not linguistic units.
+
+## Session 12 — splat character-injection line (frozen)
+
+Frozen pre-verdict; the empirical sweep didn't run because the GPU driver
+went into a stale state. Full writeup in
+[`docs/session12-splat-character-injection.md`](docs/session12-splat-character-injection.md).
+
+- New subpackage `src/heinrich/splat/`: `splat_build` (COLMAP/MASt3R SfM →
+  gsplat 3DGS), `splat_render`, `splat_inject` (three modes: flux2-ref,
+  flux2-inpaint-img2img [new], depth-controlnet [pending]), `sfm_mast3r`.
+- New CLI: `heinrich splat-build`, `splat-render`, `splat-inject`,
+  `profile-discover-character`. Splat-inject flags include
+  `--mode flux2-inpaint-img2img --strength S --num-ref-views N --init-view V`.
+- `splat-inject mode=flux2-inpaint-img2img` is the primitive: uses
+  `Flux2KleinInpaintPipeline` (diffusers 0.38) with `mask=ones` to get proper
+  img2img semantics — splat-render becomes the init latent for spatial
+  preservation, `image_reference` carries the multi-view ref stack for
+  identity. Strength controls denoise depth.
+- v9 Subject splat at `runs/subject_splat/subject_v9_2048.splat/` (gitignored).
+  48/48 cameras (MASt3R, COLMAP failed), 1.67M Gaussians at 2048px,
+  loss 0.025–0.04. Ready for inject. Strength × ref-views sweep queued.
+- Two prior architectures (FLUX.2 multi-ref CLIP-paired; null-conditional
+  contrastive gradient SVD LoRA) hit the set-variance and model-prior
+  ceilings respectively. The 3DGS thesis is: average into the manifold that
+  produced the data, not the noise.
+- Known pre-existing bug: `_viewmat_from_camera_view` in `splat_render.py`
+  has an OpenGL/OpenCV mismatch — `canonical_frontal` renders are
+  crystal-shaped. Workaround `--init-view training_first`.
+- `.vendor/` (mast3r vendored repo + mlx_lm) and top-level `runs/` are
+  gitignored — fetched/regenerated per-machine.

@@ -1,0 +1,34 @@
+{"text": "a portrait of subject1, photo", "category": "trigger_lora", "token": "subject1", "source": "identity_token_contrast"}
+{"text": "a portrait of ohwx, photo", "category": "trigger_lora", "token": "ohwx", "source": "identity_token_contrast"}
+{"text": "a portrait of sks, photo", "category": "trigger_lora", "token": "sks", "source": "identity_token_contrast"}
+{"text": "a portrait of zwx, photo", "category": "trigger_lora", "token": "zwx", "source": "identity_token_contrast"}
+{"text": "a portrait of m4tt, photo", "category": "trigger_lora", "token": "m4tt", "source": "identity_token_contrast"}
+{"text": "a portrait of zkz, photo", "category": "trigger_lora", "token": "zkz", "source": "identity_token_contrast"}
+{"text": "a portrait of qzqz4, photo", "category": "control_oov", "token": "qzqz4", "source": "identity_token_contrast"}
+{"text": "a portrait of xnknk, photo", "category": "control_oov", "token": "xnknk", "source": "identity_token_contrast"}
+{"text": "a portrait of wpwp, photo", "category": "control_oov", "token": "wpwp", "source": "identity_token_contrast"}
+{"text": "a portrait of 7q3z9, photo", "category": "control_oov", "token": "7q3z9", "source": "identity_token_contrast"}
+{"text": "a portrait of flrkx, photo", "category": "control_oov", "token": "flrkx", "source": "identity_token_contrast"}
+{"text": "a portrait of vxvxv, photo", "category": "control_oov", "token": "vxvxv", "source": "identity_token_contrast"}
+{"text": "a portrait of Sara, photo", "category": "real_name", "token": "Sara", "source": "identity_token_contrast"}
+{"text": "a portrait of Sofia, photo", "category": "real_name", "token": "Sofia", "source": "identity_token_contrast"}
+{"text": "a portrait of Emma, photo", "category": "real_name", "token": "Emma", "source": "identity_token_contrast"}
+{"text": "a portrait of Olivia, photo", "category": "real_name", "token": "Olivia", "source": "identity_token_contrast"}
+{"text": "a portrait of Marcus, photo", "category": "real_name", "token": "Marcus", "source": "identity_token_contrast"}
+{"text": "a portrait of Anna, photo", "category": "real_name", "token": "Anna", "source": "identity_token_contrast"}
+{"text": "a portrait of David, photo", "category": "real_name", "token": "David", "source": "identity_token_contrast"}
+{"text": "a portrait of a woman, photo", "category": "generic", "token": "a woman", "source": "identity_token_contrast"}
+{"text": "a portrait of a man, photo", "category": "generic", "token": "a man", "source": "identity_token_contrast"}
+{"text": "a portrait of a person, photo", "category": "generic", "token": "a person", "source": "identity_token_contrast"}
+{"text": "a portrait of someone, photo", "category": "generic", "token": "someone", "source": "identity_token_contrast"}
+{"text": "a portrait of a young woman, photo", "category": "generic", "token": "a young woman", "source": "identity_token_contrast"}
+{"text": "a portrait of a young man, photo", "category": "generic", "token": "a young man", "source": "identity_token_contrast"}
+{"text": "a portrait of a face, photo", "category": "generic", "token": "a face", "source": "identity_token_contrast"}
+{"text": "subject1", "category": "bare_trigger", "token": "subject1", "source": "identity_token_contrast"}
+{"text": "ohwx", "category": "bare_trigger", "token": "ohwx", "source": "identity_token_contrast"}
+{"text": "sks", "category": "bare_trigger", "token": "sks", "source": "identity_token_contrast"}
+{"text": "qzqz4", "category": "bare_oov", "token": "qzqz4", "source": "identity_token_contrast"}
+{"text": "xnknk", "category": "bare_oov", "token": "xnknk", "source": "identity_token_contrast"}
+{"text": "Sara", "category": "bare_name", "token": "Sara", "source": "identity_token_contrast"}
+{"text": "Sofia", "category": "bare_name", "token": "Sofia", "source": "identity_token_contrast"}
+{"text": "Emma", "category": "bare_name", "token": "Emma", "source": "identity_token_contrast"}

@@ -559,6 +559,416 @@ def build_parser() -> argparse.ArgumentParser:
     p_mri.add_argument("--seq-len", type=int, default=512, help="Sequence length for sequence mode (default: 512)")
     p_mri.add_argument("--byte-level", action="store_true", help="Read val data as uint8 bytes (for byte-level models)")
     p_mri.add_argument("--warmup", type=int, default=0, help="Warmup bytes before capture window (warm-state MRI)")
+    p_mri.add_argument("--subfolder", default=None,
+                       help="Sub-component to load from a multi-component repo "
+                            "(e.g. 'text_encoder' for the text encoder of a "
+                            "diffusers image pipeline like Tongyi-MAI/Z-Image-Turbo). "
+                            "Forces hf backend.")
+
+    p_pmri = sub.add_parser("prompt-mri",
+                             help="Per-prompt × per-layer × per-position residual capture "
+                                  "(prompt-based, not vocab-based). Use for studying "
+                                  "multi-token prompts including image-pipeline text encoders.")
+    p_pmri.add_argument("--model", required=True, help="Model ID or local path")
+    p_pmri.add_argument("--prompts", required=True, help="JSONL file of {\"text\": ..., ...} entries")
+    p_pmri.add_argument("--output", "-o", required=True, help="Output directory")
+    p_pmri.add_argument("--backend", choices=["auto", "mlx", "hf"], default="hf",
+                         help="Backend (default: hf — required for diffusers subfolder loading)")
+    p_pmri.add_argument("--subfolder", default=None,
+                         help="Sub-component to load from a multi-component repo "
+                              "(e.g. 'text_encoder'). Forces hf backend.")
+    p_pmri.add_argument("--dtype", choices=["float16", "float32"], default="float16",
+                         help="Storage dtype for residuals (default: float16)")
+
+    p_pmra = sub.add_parser("prompt-mri-analyze",
+                             help="Per-layer category discrimination analysis on a "
+                                  "prompt-mri capture (cosine similarity of category "
+                                  "centroids and within/between-class gaps).")
+    p_pmra.add_argument("--input", "-i", required=True, help="prompt-mri output directory")
+    p_pmra.add_argument("--position", default="last",
+                         help="Token position to analyze: 'last' (default), 'first', or int")
+
+    p_dmri = sub.add_parser("dit-mri",
+                             help="DiT-mode MRI: per-(layer, timestep, position) residual "
+                                  "capture during image generation. Currently supports "
+                                  "ZImagePipeline (Z-Image / Z-Image-Turbo).")
+    p_dmri.add_argument("--pipeline", required=True,
+                         help="Pipeline ID, e.g. Tongyi-MAI/Z-Image-Turbo")
+    p_dmri.add_argument("--prompts", required=True, help="JSONL of {\"text\": ..., ...}")
+    p_dmri.add_argument("--output", "-o", required=True, help="Output directory")
+    p_dmri.add_argument("--seed", type=int, default=42, help="RNG seed (default: 42)")
+    p_dmri.add_argument("--steps", type=int, default=8, dest="num_inference_steps",
+                         help="Inference steps (default: 8 for Turbo)")
+    p_dmri.add_argument("--width", type=int, default=1024, help="Image width (default: 1024)")
+    p_dmri.add_argument("--height", type=int, default=1024, help="Image height (default: 1024)")
+    p_dmri.add_argument("--dtype", choices=["bfloat16", "float16", "float32"],
+                         default="bfloat16", help="Compute dtype (default: bfloat16)")
+    p_dmri.add_argument("--offload", choices=["model", "sequential", "none"],
+                         default="model",
+                         help="VRAM strategy. 'model' (default): swap whole "
+                              "text_encoder/transformer/vae components — fast when each "
+                              "individually fits. 'sequential': per-submodule swap — "
+                              "~10x slower but fits any model. 'none': everything on GPU.")
+    p_dmri.add_argument("--no-images", action="store_true",
+                         help="Don't save the generated images")
+    p_dmri.add_argument("--lora", default=None,
+                         help="Path to a LoRA .safetensors file to load on the transformer "
+                              "before generation (e.g. an ai-toolkit Z-Image character LoRA).")
+
+    p_dmra = sub.add_parser("dit-mri-analyze",
+                             help="Per-(layer, step, position) identity-discrimination "
+                                  "analysis on a dit-mri capture.")
+    p_dmra.add_argument("--input", "-i", required=True, help="dit-mri output directory")
+    p_dmra.add_argument("--cfg-branch", type=int, default=0,
+                         help="CFG branch to analyze: 0=conditional (default), 1=unconditional")
+    p_dmra.add_argument("--n-image-tokens", type=int, default=None,
+                         help="Number of trailing positions that are image tokens. "
+                              "Default: infer from width/height as (W/16/2)*(H/16/2).")
+
+    p_dmrd = sub.add_parser("dit-mri-diff",
+                             help="Paired-run delta analysis: compare two dit-mri captures "
+                                  "(typically base vs LoRA-loaded). Surfaces per-(layer, step, "
+                                  "position) activation deltas + selectivity to a trigger prompt.")
+    p_dmrd.add_argument("--base", required=True, help="Base run directory (no LoRA)")
+    p_dmrd.add_argument("--treatment", required=True, help="Treatment run directory (with LoRA)")
+    p_dmrd.add_argument("--trigger-token", default="subject1",
+                         help="Prompt token field marking the LoRA's trained trigger (default: subject1)")
+    p_dmrd.add_argument("--cfg-branch", type=int, default=0,
+                         help="CFG branch: 0=conditional (default), 1=unconditional")
+    p_dmrd.add_argument("--n-image-tokens", type=int, default=None,
+                         help="Trailing positions that are image tokens. Default: infer.")
+
+    p_dmrr = sub.add_parser("dit-mri-ref",
+                             help="Reference-image MRI: capture DiT activations from training "
+                                  "images via partial-noise img2img. Output matches dit-mri so "
+                                  "dit-mri-diff/atlas tools work on it.")
+    p_dmrr.add_argument("--pipeline", required=True, help="Pipeline ID")
+    p_dmrr.add_argument("--refs", required=True, help="Directory with NAME.png + NAME.txt pairs")
+    p_dmrr.add_argument("--output", "-o", required=True, help="Output directory")
+    p_dmrr.add_argument("--seed", type=int, default=42)
+    p_dmrr.add_argument("--steps", type=int, default=8, dest="num_inference_steps")
+    p_dmrr.add_argument("--width", type=int, default=512)
+    p_dmrr.add_argument("--height", type=int, default=512)
+    p_dmrr.add_argument("--sigma", type=float, default=0.4,
+                         help="Image-vs-noise mix at partial-denoise start. "
+                              "0.4 = 60%% image / 40%% noise (default). Lower = more image content survives.")
+    p_dmrr.add_argument("--dtype", choices=["bfloat16", "float16", "float32"],
+                         default="bfloat16")
+    p_dmrr.add_argument("--offload", choices=["model", "sequential", "none"],
+                         default="sequential")
+    p_dmrr.add_argument("--lora", default=None)
+    p_dmrr.add_argument("--no-images", action="store_true")
+    p_dmrr.add_argument("--max-refs", type=int, default=None,
+                         help="Cap the number of references (for smoke tests)")
+    p_dmrr.add_argument("--full-seq", action="store_true",
+                         help="Save residuals at full sequence length (text+image). "
+                              "Default: image-token positions only — ~4× smaller.")
+
+    p_atlas = sub.add_parser("dit-mri-atlas",
+                              help="Build an identity atlas from contrastive ref captures: "
+                                   "(identity-mean − baseline-mean) per (layer, step, image-pos) "
+                                   "cell. Output is the data structure that replaces a LoRA.")
+    p_atlas.add_argument("--identity", required=True, help="dit-mri-ref dir for the target subject")
+    p_atlas.add_argument("--baseline", required=True, help="dit-mri-ref dir for generic baseline")
+    p_atlas.add_argument("--output", "-o", required=True, help="Output atlas.npz path")
+    p_atlas.add_argument("--rank", type=int, default=1, help="1=direction only, >1=SVD subspace")
+    p_atlas.add_argument("--cfg-branch", type=int, default=0,
+                         help="CFG branch: 0=conditional (default), 1=unconditional")
+    p_atlas.add_argument("--n-image-tokens", type=int, default=None,
+                         help="Trailing image positions. Default: infer from W/H.")
+
+    p_steer = sub.add_parser("dit-steer",
+                              help="Generate with identity atlas injected — no LoRA, no trigger word. "
+                                   "Adds atlas direction to image-position residuals at every "
+                                   "(layer, step) cell on the conditional CFG branch.")
+    p_steer.add_argument("--pipeline", required=True)
+    p_steer.add_argument("--atlas", required=True, help="atlas.npz from dit-mri-atlas")
+    p_steer.add_argument("--prompts", required=True, help="JSONL of {\"text\": ...}")
+    p_steer.add_argument("--output", "-o", required=True)
+    p_steer.add_argument("--strength", type=float, default=1.0,
+                          help="Atlas injection strength. 0=no injection (base model). "
+                               "1=nominal. Try 0.5/1.0/1.5 to map sensitivity.")
+    p_steer.add_argument("--seed", type=int, default=42)
+    p_steer.add_argument("--steps", type=int, default=8, dest="num_inference_steps")
+    p_steer.add_argument("--width", type=int, default=512)
+    p_steer.add_argument("--height", type=int, default=512)
+    p_steer.add_argument("--dtype", choices=["bfloat16", "float16", "float32"],
+                          default="bfloat16")
+    p_steer.add_argument("--offload", choices=["model", "sequential", "none"],
+                          default="sequential")
+    p_steer.add_argument("--cfg-both-branches", action="store_true",
+                          help="Inject on both CFG branches (default: conditional only).")
+    p_steer.add_argument("--save-residuals", action="store_true",
+                          help="Also save per-(layer, step) residuals during steered "
+                               "generation (large — for verification only).")
+
+    p_repl = sub.add_parser("dit-replace",
+                              help="PAFF-faithful spatial token replacement: at early "
+                                   "denoising steps, replace masked image-tokens with a "
+                                   "reference image's tokens. Image-as-north-star, no atlas.")
+    p_repl.add_argument("--pipeline", required=True)
+    p_repl.add_argument("--ref-image", required=True, help="One reference image of the subject")
+    p_repl.add_argument("--ref-caption", required=True, help="Training-style caption for the ref")
+    p_repl.add_argument("--prompts", required=True)
+    p_repl.add_argument("--output", "-o", required=True)
+    p_repl.add_argument("--replacement-steps", type=int, default=2,
+                          help="Number of consecutive steps with token replacement (default: 2)")
+    p_repl.add_argument("--start-step", type=int, default=0,
+                          help="First step at which to begin replacement (default: 0). "
+                               "Increase to operate at lower sigmas where ref content survives.")
+    p_repl.add_argument("--mask", choices=["whole", "central", "face"], default="central",
+                          dest="mask_kind")
+    p_repl.add_argument("--mask-dilate", type=int, default=0,
+                          help="(legacy, no longer applied — feather instead)")
+    p_repl.add_argument("--feather", type=float, default=0.0,
+                          help="Mask edge feather in fraction of mask half-extent. "
+                               "0.0 = hard edges (paste). 0.5–1.0 = strong blend.")
+    p_repl.add_argument("--inner-frac", type=float, default=0.6,
+                          help="For 'central'/'face': mask inner fraction (default 0.6).")
+    p_repl.add_argument("--oval", action="store_true",
+                          help="Use elliptical instead of rectangular mask shape.")
+    p_repl.add_argument("--no-patch-perturb", action="store_true")
+    p_repl.add_argument("--cfg-both-branches", action="store_true")
+    p_repl.add_argument("--seed", type=int, default=42)
+    p_repl.add_argument("--steps", type=int, default=8, dest="num_inference_steps")
+    p_repl.add_argument("--width", type=int, default=512)
+    p_repl.add_argument("--height", type=int, default=512)
+    p_repl.add_argument("--ref-sigma", type=float, default=0.3)
+    p_repl.add_argument("--dtype", choices=["bfloat16", "float16", "float32"],
+                          default="bfloat16")
+    p_repl.add_argument("--offload", choices=["model", "sequential", "none"],
+                          default="sequential")
+
+    p_face = sub.add_parser("dit-steer-face",
+                              help="Test-time latent optimization with face-encoder loss. "
+                                   "Differentiable identity guidance: VAE decode + CLIP encode + "
+                                   "gradient step on the latent at chosen denoising steps. "
+                                   "Image as north star — pulls trajectory toward target identity "
+                                   "while prompt governs scene/pose.")
+    p_face.add_argument("--pipeline", required=True)
+    p_face.add_argument("--ref-image", required=True)
+    p_face.add_argument("--prompts", required=True)
+    p_face.add_argument("--output", "-o", required=True)
+    p_face.add_argument("--start-step", type=int, default=22)
+    p_face.add_argument("--guidance-steps", type=int, default=4)
+    p_face.add_argument("--lr", type=float, default=0.05, dest="learning_rate")
+    p_face.add_argument("--n-grad-steps", type=int, default=1,
+                          help="Gradient steps per denoising step (default: 1)")
+    p_face.add_argument("--cfg-both-branches", action="store_true")
+    p_face.add_argument("--seed", type=int, default=42)
+    p_face.add_argument("--steps", type=int, default=28, dest="num_inference_steps")
+    p_face.add_argument("--width", type=int, default=512)
+    p_face.add_argument("--height", type=int, default=512)
+    p_face.add_argument("--dtype", choices=["bfloat16", "float16", "float32"],
+                          default="bfloat16")
+    p_face.add_argument("--clip-model", default="openai/clip-vit-large-patch14",
+                          dest="clip_model_id")
+    p_face.add_argument("--diagnostic-replace-with-noise", action="store_true",
+                          help="Diagnostic: replace latents with pure noise in callback. "
+                               "If output is unchanged, callback writes are being ignored.")
+
+    p_flux2 = sub.add_parser("flux2-ref",
+                               help="FLUX.2 native multi-reference generation. "
+                                    "Pass 1-10 reference images; FLUX.2's multimodal text encoder "
+                                    "(Mistral3+Pixtral) processes them alongside the prompt — "
+                                    "zero-shot character identity, no adapters, no training.")
+    p_flux2.add_argument("--pipeline", default="black-forest-labs/FLUX.2-dev")
+    p_flux2.add_argument("--refs", nargs="+",
+                           help="One or more reference image paths (up to 10). Global mode: "
+                                "the same refs go to every prompt.")
+    p_flux2.add_argument("--refs-dir",
+                           help="Directory of reference images (.png/.jpg/.jpeg/.webp). "
+                                "Without --top-k-refs: global mode, all images sent to every prompt "
+                                "(capped at 10). With --top-k-refs N: paired mode, requires NAME.txt "
+                                "captions; the top-N most prompt-relevant refs are picked per prompt "
+                                "via CLIP-text caption ranking.")
+    p_flux2.add_argument("--top-k-refs", type=int, default=None,
+                           help="Paired mode: refs to select per prompt (1-10). Requires --refs-dir "
+                                "with NAME.txt caption files. The training data's caption-image pairs "
+                                "are matched against each generation prompt; refs whose captions "
+                                "describe the right LOD/pose/setting are picked automatically.")
+    p_flux2.add_argument("--ranker", default="openai/clip-vit-base-patch32",
+                           help="HF model id for the CLIP image+text ranker")
+    p_flux2.add_argument("--rank-img-weight", type=float, default=1.0,
+                           help="Blend weight for image-vs-prompt similarity in paired-mode "
+                                "ranking. 1.0 = image only (best LOD/composition match, default). "
+                                "0.0 = caption only. Caption boilerplate often warps text-text "
+                                "scoring, so 1.0 is recommended unless captions are highly varied.")
+    p_flux2.add_argument("--identity-tag", default=None,
+                           help="Identity descriptor (e.g. \"blonde woman with vitiligo skin "
+                                "patches, blue eyes\"). Appended to BOTH the ranker query AND the "
+                                "FLUX.2 generation prompt. Forces the pipe to condition on "
+                                "specific feature language so distinctive markings (vitiligo, "
+                                "scars, tattoos) actually render rather than getting smoothed "
+                                "away by the model's defaults.")
+    p_flux2.add_argument("--feature-anchors", type=int, default=0,
+                           help="Within --top-k-refs, reserve this many slots for refs that score "
+                                "highest on CLIP-image vs --identity-tag (independent of the "
+                                "user prompt). Guarantees feature-evidence refs always travel "
+                                "with the request. Requires --identity-tag.")
+    p_flux2.add_argument("--prompts", required=True)
+    p_flux2.add_argument("--output", "-o", required=True)
+    p_flux2.add_argument("--seed", type=int, default=42)
+    p_flux2.add_argument("--steps", type=int, default=50, dest="num_inference_steps")
+    p_flux2.add_argument("--guidance-scale", type=float, default=4.0)
+    p_flux2.add_argument("--width", type=int, default=1024)
+    p_flux2.add_argument("--height", type=int, default=1024)
+    p_flux2.add_argument("--dtype", choices=["bfloat16", "float16", "float32"],
+                           default="bfloat16")
+    p_flux2.add_argument("--offload", choices=["model", "sequential", "none"],
+                           default="sequential")
+    p_flux2.add_argument("--max-ref-size", type=int, default=1024)
+    p_flux2.add_argument("--lora", default=None,
+                           help="Path to a LoRA .safetensors file to load before generation. "
+                                "Use this with the output of profile-discover-character to test "
+                                "whether the discovered character direction reproduces the subject.")
+    p_flux2.add_argument("--lora-scale", type=float, default=1.0,
+                           help="Scale factor for the LoRA when applied (default 1.0).")
+
+    p_dchar = sub.add_parser("profile-discover-character",
+                              help="Discover a character's direction in DiT weight space via "
+                                   "contrastive gradient SVD — produces a minimal LoRA capturing "
+                                   "the subject without iterative training. Mirrors the "
+                                   "safety-direction methodology of profile-discover-direction "
+                                   "(activation space) applied to weight space for image models.")
+    p_dchar.add_argument("--pipeline", default="black-forest-labs/FLUX.2-klein-base-4B",
+                           help="HF pipeline id (FLUX.2 family).")
+    p_dchar.add_argument("--refs", required=True,
+                           help="Directory of (NAME.png, NAME.txt) pairs for the target character.")
+    p_dchar.add_argument("--output", "-o", required=True,
+                           help="Output path for the LoRA .safetensors file.")
+    p_dchar.add_argument("--null-caption", default="",
+                           help="Caption used for the null-conditional contrast forward "
+                                "(default: empty string). The discovery is self-contrastive: "
+                                "same image, two forwards (with caption / without), gradient diff "
+                                "isolates the caption-conditional signal — no external baseline pool.")
+    p_dchar.add_argument("--rank", type=int, default=32,
+                           help="Per-matrix SVD truncation rank (default 32).")
+    p_dchar.add_argument("--resolution", type=int, default=512,
+                           help="Image side for VAE encoding + DiT forward (default 512 to fit "
+                                "in 12 GB VRAM with gradient checkpointing). Higher = more "
+                                "fidelity, more memory.")
+    p_dchar.add_argument("--n-timesteps", type=int, default=4,
+                           help="Per image, sample this many timesteps and average the gradient "
+                                "(default 4).")
+    p_dchar.add_argument("--max-target-images", type=int, default=None,
+                           help="Cap on target pool size (default: use all).")
+    p_dchar.add_argument("--seed", type=int, default=42)
+    p_dchar.add_argument("--dtype", choices=["bfloat16", "float16", "float32"],
+                           default="bfloat16")
+
+    # ---- Splat (3DGS round-trip) commands ----
+    p_sbuild = sub.add_parser("splat-build",
+                                help="Build a .splat (3D Gaussian Splat) from a directory of "
+                                     "images. Subject-agnostic — works for any subject with "
+                                     "sufficient pose variance and view overlap. Pipeline: "
+                                     "COLMAP SfM → gsplat optimization → .splat artifact.")
+    p_sbuild.add_argument("--refs", required=True, help="Directory of input images.")
+    p_sbuild.add_argument("--output", "-o", required=True,
+                            help="Output .splat directory path (must not exist).")
+    p_sbuild.add_argument("--impl", choices=["2dgs", "3dgs"], default="2dgs",
+                            help="Splat implementation. 2dgs (default): Gaussians forced onto "
+                                 "surfaces, better for surface-decoration features. 3dgs: "
+                                 "volumetric, better for translucent/subsurface phenomena.")
+    p_sbuild.add_argument("--iterations", type=int, default=7000,
+                            help="gsplat training iterations (default 7000).")
+    p_sbuild.add_argument("--work-dir", default=None,
+                            help="Scratch directory for COLMAP intermediate files. "
+                                 "Default: <output>/_work, deleted on success unless "
+                                 "KEEP_SPLAT_WORK env var is set.")
+    p_sbuild.add_argument("--seed", type=int, default=42)
+    p_sbuild.add_argument("--preprocess", choices=["none", "background-mask"], default="none",
+                            help="Preprocess images before SfM. background-mask uses rembg to "
+                                 "remove background variation that fragments SIFT matches in "
+                                 "unconstrained character training sets.")
+    p_sbuild.add_argument("--sfm", choices=["colmap", "mast3r"], default="colmap",
+                            help="SfM backend. colmap uses classical SIFT-based pose recovery "
+                                 "(fast, fails on character training sets with appearance "
+                                 "variation). mast3r uses Naver Labs' learned dense matcher "
+                                 "(robust to in-the-wild data, requires CUDA + checkpoint).")
+    p_sbuild.add_argument("--reuse-sfm-from", default=None,
+                            help="Path to a prior .splat directory. Re-uses its cameras.json "
+                                 "and sparse_points.ply, skipping the (slow) SfM phase. Used "
+                                 "to retrain gsplat at different impl / loss settings on the "
+                                 "same SfM output.")
+    p_sbuild.add_argument("--ssim-weight", type=float, default=0.2,
+                            help="Weight for SSIM term in the photometric loss "
+                                 "(loss = (1 - w) * L1 + w * (1 - SSIM)). 0.2 follows the "
+                                 "standard 3DGS recipe; set 0 to use L1-only.")
+    p_sbuild.add_argument("--native-resolution", action="store_true",
+                            help="Train at each input image's native resolution. Upscales "
+                                 "MASt3R-recorded camera intrinsics + dimensions to match. "
+                                 "Heavier (4K images, ~10× more pixels per step) but produces "
+                                 "much sharper splats — recommended once SfM is dialed in.")
+    p_sbuild.add_argument("--training-max-side", type=int, default=None,
+                            help="Cap training resolution: rescale cameras so max(W,H) ≤ N. "
+                                 "Used to back off from full native resolution when 4K OOMs "
+                                 "on 12 GB GPUs. Common values: 1024 (safe), 2048 (sharp), "
+                                 "no cap (native).")
+    p_sbuild.add_argument("--max-init-points", type=int, default=None,
+                            help="Cap initial Gaussian count by uniform-random subsampling "
+                                 "the SfM sparse points. Used to fit memory at high "
+                                 "resolutions. Common values: 1000000, 2000000.")
+
+    p_srender = sub.add_parser("splat-render",
+                                 help="Render a .splat at a chosen camera view.")
+    p_srender.add_argument("--splat", required=True, help="Path to .splat directory.")
+    p_srender.add_argument("--output", "-o", required=True, help="Output PNG path.")
+    p_srender.add_argument("--view", choices=["canonical_frontal", "training_first"],
+                             default="canonical_frontal",
+                             help="Camera selection strategy.")
+    p_srender.add_argument("--width", type=int, default=1024)
+    p_srender.add_argument("--height", type=int, default=1024)
+
+    p_sinject = sub.add_parser("splat-inject",
+                                 help="Inject a .splat through FLUX.2 to generate scenes. "
+                                      "Renders the splat at a chosen camera, passes the "
+                                      "render to FLUX.2 as conditioning, generates per-prompt.")
+    p_sinject.add_argument("--splat", required=True, help="Path to .splat directory.")
+    p_sinject.add_argument("--pipeline", default="black-forest-labs/FLUX.2-klein-base-4B",
+                             help="HF pipeline id.")
+    p_sinject.add_argument("--prompts", required=True,
+                             help="JSONL of prompts ({\"text\": \"...\"} per line).")
+    p_sinject.add_argument("--output", "-o", required=True, help="Output directory.")
+    p_sinject.add_argument("--mode", choices=["flux2-ref", "flux2-inpaint-img2img",
+                                                 "img2img-strength", "depth-controlnet"],
+                             default="flux2-ref",
+                             help="Splat-render → diffusion conditioning mode. "
+                                  "flux2-ref: pass splat-render(s) to FLUX.2's multimodal "
+                                  "encoder as identity refs (non-spatial). "
+                                  "flux2-inpaint-img2img: use Flux2KleinInpaintPipeline with "
+                                  "mask=ones; init latent = splat-render (preserves spatial "
+                                  "layout via partial denoise), separate multi-view ref stack. "
+                                  "img2img-strength is superseded by flux2-inpaint-img2img.")
+    p_sinject.add_argument("--strength", type=float, default=0.7,
+                             help="(flux2-inpaint-img2img) denoising strength. 1.0 = full "
+                                  "noise (no spatial preservation), 0.0 = no denoise. "
+                                  "Sweep 0.4–0.8.")
+    p_sinject.add_argument("--num-ref-views", type=int, default=1,
+                             help="Number of distinct splat views fed as identity refs (1–10). "
+                                  "Picked by farthest-point sampling on training-camera "
+                                  "positions for spatial diversity.")
+    p_sinject.add_argument("--init-view",
+                             choices=["training_first", "canonical_frontal", "training_random"],
+                             default="training_first",
+                             help="(flux2-inpaint-img2img) which splat view becomes the "
+                                  "img2img init latent.")
+    p_sinject.add_argument("--identity-tag", default=None,
+                             help="Optional text appended to every prompt (same as flux2-ref's flag).")
+    p_sinject.add_argument("--view-strategy",
+                             choices=["canonical_frontal", "training_random", "training_first"],
+                             default="canonical_frontal",
+                             help="(flux2-ref) Per-prompt camera selection strategy when "
+                                  "num_ref_views=1.")
+    p_sinject.add_argument("--steps", type=int, default=30, dest="num_inference_steps")
+    p_sinject.add_argument("--guidance-scale", type=float, default=4.0)
+    p_sinject.add_argument("--width", type=int, default=1024)
+    p_sinject.add_argument("--height", type=int, default=1024)
+    p_sinject.add_argument("--dtype", choices=["bfloat16", "float16", "float32"],
+                             default="bfloat16")
+    p_sinject.add_argument("--offload", choices=["model", "sequential", "none"],
+                             default="sequential")
+    p_sinject.add_argument("--seed", type=int, default=42)
 
     p_capture = sub.add_parser("total-capture", help="[legacy] Use 'mri' instead. Capture every token, every layer.")
     p_capture.add_argument("--model", required=True, help="Model ID")
@@ -624,11 +1034,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--direction", required=True, help="Direction .npy file")
     p.add_argument("--layer", type=int, required=True)
 
-    p = sub.add_parser("attack-steer", help="Generate with direction vector applied")
+    p = sub.add_parser("attack-steer", help="Generate with a direction added or projected out")
     p.add_argument("--model", required=True)
     p.add_argument("--prompt", required=True)
     p.add_argument("--direction", required=True, help="Direction .npy file")
     p.add_argument("--layer", type=int, required=True)
+    p.add_argument("--mode", choices=["add", "project-out"], default="add",
+                   help="Intervention mode: additive steering or projection ablation")
     p.add_argument("--alpha", type=float, default=1.0, help="Steering magnitude")
     p.add_argument("--max-tokens", type=int, default=100)
 
@@ -637,6 +1049,23 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--directions", required=True, help="Directory of .npy direction files")
     p.add_argument("--prompts", required=True, help="File with one prompt per line")
     p.add_argument("--layer", type=int, required=True)
+
+    p = sub.add_parser("gemma-study", help="Run a file-backed self-study harness with clean/project-out/restored sweeps")
+    p.add_argument("--model", required=True)
+    p.add_argument("--backend", choices=["auto", "mlx", "hf", "decepticon"], default="auto",
+                   help="Backend (default: auto)")
+    p.add_argument("--prompts", required=True, help="Prompt file (.txt, .jsonl, or .json)")
+    p.add_argument("--spec-file", default=None, help="Optional governing file/spec to prepend and audit against")
+    p.add_argument("--direction", default=None, help="Direction .npy file for project-out / restoration sweep")
+    p.add_argument("--layer", type=int, default=None, help="Layer for project-out / restoration")
+    p.add_argument("--restore-alphas", default="1.0", help="Comma-separated restoration strengths (default: 1.0)")
+    p.add_argument("--mean-gap", type=float, default=1.0, help="Direction scale factor for restoration (default: 1.0)")
+    p.add_argument("--framing", default="direct", help="Prompt framing name (default: direct)")
+    p.add_argument("--max-prompts", type=int, default=None, help="Cap number of prompts for quick runs")
+    p.add_argument("--max-tokens", type=int, default=120, help="Max generation length per condition")
+    p.add_argument("--audit-max-tokens", type=int, default=200, help="Max generation length for self-audit pass")
+    p.add_argument("--study-max-tokens", type=int, default=280, help="Max generation length for cross-condition self-study")
+    p.add_argument("--output", "-o", default=None, help="Optional JSON output path")
 
     # === trace ===
     p = sub.add_parser("trace-causal", help="Position-aware causal tracing: where and when does the model decide?")
@@ -782,6 +1211,36 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_backfill(args)
     elif args.command == "mri":
         _cmd_mri(args)
+    elif args.command == "prompt-mri":
+        _cmd_prompt_mri(args)
+    elif args.command == "prompt-mri-analyze":
+        _cmd_prompt_mri_analyze(args)
+    elif args.command == "dit-mri":
+        _cmd_dit_mri(args)
+    elif args.command == "dit-mri-analyze":
+        _cmd_dit_mri_analyze(args)
+    elif args.command == "dit-mri-diff":
+        _cmd_dit_mri_diff(args)
+    elif args.command == "dit-mri-ref":
+        _cmd_dit_mri_ref(args)
+    elif args.command == "dit-mri-atlas":
+        _cmd_dit_mri_atlas(args)
+    elif args.command == "dit-steer":
+        _cmd_dit_steer(args)
+    elif args.command == "dit-replace":
+        _cmd_dit_replace(args)
+    elif args.command == "dit-steer-face":
+        _cmd_dit_steer_face(args)
+    elif args.command == "flux2-ref":
+        _cmd_flux2_ref(args)
+    elif args.command == "profile-discover-character":
+        _cmd_profile_discover_character(args)
+    elif args.command == "splat-build":
+        _cmd_splat_build(args)
+    elif args.command == "splat-render":
+        _cmd_splat_render(args)
+    elif args.command == "splat-inject":
+        _cmd_splat_inject(args)
     elif args.command == "total-capture":
         _cmd_total_capture(args)
     elif args.command == "profile-basin":
@@ -912,6 +1371,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_attack_steer(args)
     elif args.command == "attack-surface":
         _cmd_attack_surface(args)
+    elif args.command == "gemma-study":
+        _cmd_gemma_study(args)
     # === trace ===
     elif args.command == "trace-causal":
         _cmd_trace_causal(args)
@@ -1560,6 +2021,12 @@ def _cmd_mri(args: argparse.Namespace) -> None:
         backend_kwargs['result_json'] = args.result_json
     if getattr(args, 'tokenizer_path', None):
         backend_kwargs['tokenizer_path'] = args.tokenizer_path
+    # Sub-component loading (diffusers pipeline text encoders etc.) requires HF
+    # backend — MLX doesn't support subfolder routing through AutoModelForCausalLM.
+    subfolder = getattr(args, 'subfolder', None)
+    if subfolder:
+        backend_name = "hf"
+        backend_kwargs['subfolder'] = subfolder
     backend = load_backend(args.model, backend=backend_name, **backend_kwargs)
     extra = {}
     if getattr(args, 'data', None):
@@ -1580,6 +2047,316 @@ def _cmd_mri(args: argparse.Namespace) -> None:
     print(f"\n  {capture.get('n_tokens', '?')} tokens")
     print(f"  mode: {capture.get('mode', '?')}")
     print(f"  {meta.get('elapsed_s', '?')}s elapsed")
+
+
+def _cmd_prompt_mri(args: argparse.Namespace) -> None:
+    """Prompt-based per-layer per-position residual capture."""
+    from .backend.protocol import load_backend
+    from .profile.prompt_mri import capture_prompt_mri
+
+    backend_name = args.backend
+    backend_kwargs = {}
+    if args.subfolder:
+        backend_name = "hf"
+        backend_kwargs["subfolder"] = args.subfolder
+
+    backend = load_backend(args.model, backend=backend_name, **backend_kwargs)
+    capture_prompt_mri(
+        backend,
+        prompts_path=args.prompts,
+        output=args.output,
+        dtype=args.dtype,
+    )
+
+
+def _cmd_prompt_mri_analyze(args: argparse.Namespace) -> None:
+    """Per-layer category discrimination analysis."""
+    from .profile.prompt_mri_analyze import analyze_prompt_mri
+    analyze_prompt_mri(args.input, position=args.position)
+
+
+def _cmd_dit_mri(args: argparse.Namespace) -> None:
+    """DiT-mode MRI capture during image generation."""
+    from .profile.dit_mri import capture_dit_mri
+    capture_dit_mri(
+        pipeline_id=args.pipeline,
+        prompts_path=args.prompts,
+        output=args.output,
+        seed=args.seed,
+        num_inference_steps=args.num_inference_steps,
+        width=args.width,
+        height=args.height,
+        dtype=args.dtype,
+        offload=args.offload,
+        save_images=not args.no_images,
+        lora_path=args.lora,
+    )
+
+
+def _cmd_dit_mri_analyze(args: argparse.Namespace) -> None:
+    """Per-(layer, step, position) DiT identity-discrimination analysis."""
+    from .profile.dit_mri_analyze import analyze_dit_mri
+    analyze_dit_mri(
+        args.input,
+        cfg_branch=args.cfg_branch,
+        n_image_tokens=args.n_image_tokens,
+    )
+
+
+def _cmd_dit_mri_diff(args: argparse.Namespace) -> None:
+    """Paired-run delta analysis (base vs LoRA-loaded)."""
+    from .profile.dit_mri_diff import diff_dit_mri
+    diff_dit_mri(
+        base_dir=args.base,
+        treatment_dir=args.treatment,
+        cfg_branch=args.cfg_branch,
+        trigger_token=args.trigger_token,
+        n_image_tokens=args.n_image_tokens,
+    )
+
+
+def _cmd_dit_mri_ref(args: argparse.Namespace) -> None:
+    """Reference-image MRI: capture DiT activations from training images."""
+    from .profile.dit_mri_ref import capture_dit_mri_ref
+    capture_dit_mri_ref(
+        pipeline_id=args.pipeline,
+        refs_dir=args.refs,
+        output=args.output,
+        seed=args.seed,
+        num_inference_steps=args.num_inference_steps,
+        width=args.width,
+        height=args.height,
+        sigma=args.sigma,
+        dtype=args.dtype,
+        offload=args.offload,
+        lora_path=args.lora,
+        save_images=not args.no_images,
+        max_refs=args.max_refs,
+        image_tokens_only=not args.full_seq,
+    )
+
+
+def _cmd_dit_mri_atlas(args: argparse.Namespace) -> None:
+    """Build identity atlas from identity vs baseline ref captures."""
+    from .profile.dit_mri_atlas import build_atlas
+    build_atlas(
+        identity_dir=args.identity,
+        baseline_dir=args.baseline,
+        output=args.output,
+        cfg_branch=args.cfg_branch,
+        rank=args.rank,
+        n_image_tokens=args.n_image_tokens,
+    )
+
+
+def _cmd_dit_steer(args: argparse.Namespace) -> None:
+    """Generate with identity atlas injection."""
+    from .profile.dit_steer import steer_with_atlas
+    steer_with_atlas(
+        pipeline_id=args.pipeline,
+        atlas_path=args.atlas,
+        prompts_path=args.prompts,
+        output=args.output,
+        strength=args.strength,
+        cfg_branch_only=not args.cfg_both_branches,
+        seed=args.seed,
+        num_inference_steps=args.num_inference_steps,
+        width=args.width,
+        height=args.height,
+        dtype=args.dtype,
+        offload=args.offload,
+        save_residuals=args.save_residuals,
+    )
+
+
+def _cmd_flux2_ref(args: argparse.Namespace) -> None:
+    """FLUX.2 native multi-reference generation."""
+    from .profile.flux2_ref import generate_with_flux2_ref, load_paired_pool, FLUX2_MAX_REFS
+    if bool(args.refs) == bool(args.refs_dir):
+        raise SystemExit("flux2-ref: pass exactly one of --refs or --refs-dir")
+    if args.top_k_refs is not None and not args.refs_dir:
+        raise SystemExit("flux2-ref: --top-k-refs requires --refs-dir (paired mode needs captions)")
+    if args.top_k_refs is not None and not (1 <= args.top_k_refs <= FLUX2_MAX_REFS):
+        raise SystemExit(f"flux2-ref: --top-k-refs must be in [1, {FLUX2_MAX_REFS}]")
+    if args.feature_anchors > 0 and not args.identity_tag:
+        raise SystemExit("flux2-ref: --feature-anchors > 0 requires --identity-tag")
+    if args.feature_anchors > 0 and args.top_k_refs is not None and args.feature_anchors >= args.top_k_refs:
+        raise SystemExit(f"flux2-ref: --feature-anchors ({args.feature_anchors}) "
+                          f"must be < --top-k-refs ({args.top_k_refs})")
+
+    common = dict(
+        pipeline_id=args.pipeline,
+        prompts_path=args.prompts,
+        output=args.output,
+        seed=args.seed,
+        num_inference_steps=args.num_inference_steps,
+        guidance_scale=args.guidance_scale,
+        width=args.width,
+        height=args.height,
+        dtype=args.dtype,
+        offload=args.offload,
+        max_ref_size=args.max_ref_size,
+        ranker_model_id=args.ranker,
+        rank_img_weight=args.rank_img_weight,
+        identity_tag=args.identity_tag,
+        feature_anchors=args.feature_anchors,
+        lora_path=args.lora,
+        lora_scale=args.lora_scale,
+    )
+
+    if args.top_k_refs is not None:
+        pool = load_paired_pool(args.refs_dir)
+        if not pool:
+            raise SystemExit(f"flux2-ref: no caption-image pairs found in {args.refs_dir} "
+                              f"(expected NAME.png + NAME.txt)")
+        print(f"loaded paired pool of {len(pool)} ref(s) from {args.refs_dir}")
+        generate_with_flux2_ref(ref_pool=pool, top_k=args.top_k_refs, **common)
+        return
+
+    if args.refs_dir:
+        from pathlib import Path as _P
+        exts = {".png", ".jpg", ".jpeg", ".webp"}
+        ref_paths = sorted(str(p) for p in _P(args.refs_dir).iterdir()
+                             if p.suffix.lower() in exts)
+        if not ref_paths:
+            raise SystemExit(f"flux2-ref: no images found in {args.refs_dir}")
+        if len(ref_paths) > FLUX2_MAX_REFS:
+            print(f"warning: {len(ref_paths)} refs found, FLUX.2 caps at {FLUX2_MAX_REFS} — "
+                  f"using first {FLUX2_MAX_REFS} (sorted)")
+            ref_paths = ref_paths[:FLUX2_MAX_REFS]
+        print(f"loaded {len(ref_paths)} refs from {args.refs_dir}")
+    else:
+        ref_paths = list(args.refs)
+        if len(ref_paths) > FLUX2_MAX_REFS:
+            print(f"warning: {len(ref_paths)} refs passed, FLUX.2 caps at {FLUX2_MAX_REFS} — "
+                  f"using first {FLUX2_MAX_REFS}")
+            ref_paths = ref_paths[:FLUX2_MAX_REFS]
+    generate_with_flux2_ref(ref_images=ref_paths, **common)
+
+
+def _cmd_profile_discover_character(args: argparse.Namespace) -> None:
+    """Discover character direction via null-conditional self-contrastive gradient SVD."""
+    from .profile.character_direction import discover_character
+    discover_character(
+        pipeline_id=args.pipeline,
+        refs_dir=args.refs,
+        output=args.output,
+        rank=args.rank,
+        resolution=args.resolution,
+        n_timesteps=args.n_timesteps,
+        max_target_images=args.max_target_images,
+        seed=args.seed,
+        dtype=args.dtype,
+        null_caption=args.null_caption,
+    )
+
+
+def _cmd_splat_build(args: argparse.Namespace) -> None:
+    """Build a .splat from a directory of images."""
+    from .splat.splat_build import build_splat
+    build_splat(
+        refs_dir=args.refs,
+        output=args.output,
+        impl=args.impl,
+        iterations=args.iterations,
+        work_dir=args.work_dir,
+        seed=args.seed,
+        preprocess=args.preprocess,
+        sfm=args.sfm,
+        reuse_sfm_from=args.reuse_sfm_from,
+        ssim_weight=args.ssim_weight,
+        native_resolution=args.native_resolution,
+        training_max_side=args.training_max_side,
+        max_init_points=args.max_init_points,
+    )
+
+
+def _cmd_splat_render(args: argparse.Namespace) -> None:
+    """Render a .splat at a chosen camera view."""
+    from .splat.splat_render import CameraView, render_splat, render_at_training_camera
+    if args.view == "canonical_frontal":
+        view = CameraView.canonical_frontal(args.splat, width=args.width, height=args.height)
+        img = render_splat(args.splat, view)
+    elif args.view == "training_first":
+        img = render_at_training_camera(args.splat, image_index=0)
+    else:
+        raise SystemExit(f"unknown view: {args.view}")
+    img.save(args.output)
+    print(f"wrote {args.output}")
+
+
+def _cmd_splat_inject(args: argparse.Namespace) -> None:
+    """Inject a .splat through FLUX.2 to generate scenes."""
+    from .splat.splat_inject import inject_splat
+    inject_splat(
+        splat_dir=args.splat,
+        pipeline_id=args.pipeline,
+        prompts_path=args.prompts,
+        output=args.output,
+        mode=args.mode,
+        strength=args.strength,
+        view_strategy=args.view_strategy,
+        num_inference_steps=args.num_inference_steps,
+        guidance_scale=args.guidance_scale,
+        width=args.width, height=args.height,
+        dtype=args.dtype,
+        offload=args.offload,
+        seed=args.seed,
+        identity_tag=args.identity_tag,
+        num_ref_views=args.num_ref_views,
+        init_view=args.init_view,
+    )
+
+
+def _cmd_dit_steer_face(args: argparse.Namespace) -> None:
+    """Face-encoder gradient guidance during denoising."""
+    from .profile.dit_steer_face import steer_face_during_generation
+    steer_face_during_generation(
+        pipeline_id=args.pipeline,
+        ref_image=args.ref_image,
+        prompts_path=args.prompts,
+        output=args.output,
+        start_step=args.start_step,
+        guidance_steps=args.guidance_steps,
+        learning_rate=args.learning_rate,
+        n_grad_steps=args.n_grad_steps,
+        cfg_branch_only=not args.cfg_both_branches,
+        seed=args.seed,
+        num_inference_steps=args.num_inference_steps,
+        width=args.width,
+        height=args.height,
+        dtype=args.dtype,
+        clip_model_id=args.clip_model_id,
+        diagnostic_replace_with_noise=args.diagnostic_replace_with_noise,
+    )
+
+
+def _cmd_dit_replace(args: argparse.Namespace) -> None:
+    """PAFF-style spatial token replacement at early denoising steps."""
+    from .profile.dit_replace import replace_during_generation
+    replace_during_generation(
+        pipeline_id=args.pipeline,
+        ref_image=args.ref_image,
+        ref_caption=args.ref_caption,
+        prompts_path=args.prompts,
+        output=args.output,
+        replacement_steps=args.replacement_steps,
+        start_step=args.start_step,
+        mask_kind=args.mask_kind,
+        mask_dilate=args.mask_dilate,
+        feather=args.feather,
+        inner_frac=args.inner_frac,
+        oval=args.oval,
+        patch_perturb=not args.no_patch_perturb,
+        cfg_branch_only=not args.cfg_both_branches,
+        seed=args.seed,
+        num_inference_steps=args.num_inference_steps,
+        width=args.width,
+        height=args.height,
+        ref_sigma=args.ref_sigma,
+        dtype=args.dtype,
+        offload=args.offload,
+    )
 
 
 def _cmd_total_capture(args: argparse.Namespace) -> None:
@@ -3621,7 +4398,14 @@ def _cmd_cb_effective_context(args: argparse.Namespace) -> None:
             print(f"  knee: NOT DETECTED (curve still decreasing)")
         else:
             print(f"  knee: [{r['knee_bucket_min']},{r['knee_bucket_max']})")
-        print(f"  saturation_bpb: {r['saturation_bpb']:.4f}\n")
+        print(f"  saturation_bpb: {r['saturation_bpb']:.4f}")
+        if r.get("u_shape_detected"):
+            print(f"  optimum: [{r['optimum_bucket_min']},{r['optimum_bucket_max']})  "
+                  f"bpb={r['optimum_bpb']:.4f}")
+            print(f"  U-SHAPE: depth={r['u_shape_depth_bpb']:.4f} bpb "
+                  f"(saturation - optimum). The model is best at the optimum bucket "
+                  f"and degrades at longer context.")
+        print()
 
     _json_or(args, result, _fmt)
 
@@ -4596,17 +5380,35 @@ def _cmd_attack_cliff(args):
 
 
 def _cmd_attack_steer(args):
-    """Generate with a direction vector applied."""
-    from .attack.steer import generate_steered
+    """Generate with a direction vector applied or projected out."""
     import numpy as _np
 
     backend = _load(args)
-    direction = _np.load(args.direction)
-    modifications = {(args.layer, 0): args.alpha}
-    result = generate_steered(
-        backend.model, backend.tokenizer, args.prompt,
-        modifications, args.max_tokens, backend=backend)
+    direction = _np.load(args.direction).astype(_np.float32)
+    if args.mode == "project-out":
+        generated = backend.generate(
+            args.prompt,
+            project_out_dirs={args.layer: direction},
+            max_tokens=args.max_tokens,
+        )
+    else:
+        generated = backend.generate(
+            args.prompt,
+            steer_dirs={args.layer: (direction, 1.0)},
+            alpha=args.alpha,
+            max_tokens=args.max_tokens,
+        )
+    result = {
+        "prompt": args.prompt,
+        "generated": generated,
+        "mode": args.mode,
+        "layer": args.layer,
+        "alpha": args.alpha if args.mode == "add" else None,
+        "direction_norm": float(_np.linalg.norm(direction)),
+    }
     def _fmt(r):
+        print(f"  Mode: {r.get('mode', '')}")
+        print(f"  Layer: {r.get('layer', '')}")
         print(f"  Prompt: {r.get('prompt', '')}")
         print(f"  Generated: {r.get('generated', '')}")
     _json_or(args, result, _fmt)
@@ -4635,6 +5437,68 @@ def _cmd_attack_surface(args):
             print(f"    {cp.get('direction', '?')} × '{cp.get('prompt', '')[:40]}': "
                   f"cliff={cp.get('cliff_magnitude', '?')}")
     _json_or(args, result_dict, _fmt)
+
+
+def _cmd_gemma_study(args):
+    """Run the Gemma self-study harness."""
+    from .eval.gemma_study import run_gemma_study
+
+    restore_alphas = []
+    for piece in str(args.restore_alphas).split(","):
+        piece = piece.strip()
+        if not piece:
+            continue
+        restore_alphas.append(float(piece))
+    backend_name = getattr(args, 'backend', 'auto')
+    if backend_name == "auto" and args.model.endswith('.checkpoint.pt'):
+        backend_name = "decepticon"
+
+    result = run_gemma_study(
+        model=args.model,
+        backend_name=backend_name,
+        prompts_path=args.prompts,
+        spec_path=args.spec_file,
+        direction_path=args.direction,
+        layer=args.layer,
+        restore_alphas=restore_alphas,
+        mean_gap=args.mean_gap,
+        framing=args.framing,
+        max_prompts=args.max_prompts,
+        max_tokens=args.max_tokens,
+        audit_max_tokens=args.audit_max_tokens,
+        study_max_tokens=args.study_max_tokens,
+    )
+
+    if args.output:
+        Path(args.output).write_text(json.dumps(result, indent=2), encoding="utf-8")
+
+    def _fmt(r):
+        print(f"\n=== Gemma Study: {r['model']} ===")
+        print(f"  prompts: {r['n_prompts']}  backend: {r.get('backend', 'auto')}  elapsed: {r['elapsed_s']:.1f}s")
+        if r.get("spec_path"):
+            print(f"  spec: {r['spec_path']}")
+        if r.get("direction_path"):
+            print(f"  direction: {r['direction_path']} @ L{r.get('layer')}")
+        print()
+        for name, stats in r.get("summary", {}).get("by_condition", {}).items():
+            labels = ", ".join(f"{k}={v}" for k, v in sorted(stats.get("labels", {}).items()))
+            print(f"  {name}: {labels or 'no labels'}")
+            if stats.get("adheres_to_file_rate") is not None:
+                print(f"    file adherence: {stats['adheres_to_file_rate']:.1%}")
+            if stats.get("mean_refuse_prob") is not None:
+                print(f"    mean refuse_prob: {stats['mean_refuse_prob']:.4f}")
+            if stats.get("mean_kl_from_clean") is not None:
+                print(f"    mean KL from clean: {stats['mean_kl_from_clean']:.4f}")
+            if stats.get("mean_safety_delta") is not None:
+                print(f"    mean safety delta: {stats['mean_safety_delta']:+.4f}")
+        best = r.get("summary", {}).get("self_study", {}).get("best_condition", {})
+        if best:
+            best_line = ", ".join(f"{k}={v}" for k, v in sorted(best.items()))
+            print(f"\n  self-study best_condition: {best_line}")
+        if args.output:
+            print(f"\n  Saved to {args.output}")
+
+    _json_or(args, result, _fmt)
 
 
 # === trace commands ===

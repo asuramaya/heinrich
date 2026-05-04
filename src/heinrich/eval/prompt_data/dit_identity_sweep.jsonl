@@ -1,0 +1,8 @@
+{"text": "a portrait of subject1, photo", "category": "trigger_lora", "token": "subject1", "source": "dit_identity_sweep"}
+{"text": "a portrait of ohwx, photo", "category": "trigger_lora", "token": "ohwx", "source": "dit_identity_sweep"}
+{"text": "a portrait of qzqz4, photo", "category": "control_oov", "token": "qzqz4", "source": "dit_identity_sweep"}
+{"text": "a portrait of xnknk, photo", "category": "control_oov", "token": "xnknk", "source": "dit_identity_sweep"}
+{"text": "a portrait of Sara, photo", "category": "real_name", "token": "Sara", "source": "dit_identity_sweep"}
+{"text": "a portrait of Sofia, photo", "category": "real_name", "token": "Sofia", "source": "dit_identity_sweep"}
+{"text": "a portrait of a woman, photo", "category": "generic", "token": "a woman", "source": "dit_identity_sweep"}
+{"text": "a portrait of a person, photo", "category": "generic", "token": "a person", "source": "dit_identity_sweep"}
