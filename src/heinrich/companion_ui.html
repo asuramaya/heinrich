@@ -1605,13 +1605,17 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
 }
 function updateTrajMarker(vi){const v=views[vi];
   const buf=v._trajBufs&&v._trajBufs[cL];if(!buf)return;
-  if(v.trajMarker){const tp=v.trajMarker.geometry.attributes.position.array;tp.set(buf);
-    if(_hiddenScripts.size){for(let i=0;i<nN;i++){if(_hiddenScripts.has(scripts[i])){tp[i*3]=9999;tp[i*3+1]=9999;tp[i*3+2]=9999;}}}
-    v.trajMarker.geometry.attributes.position.needsUpdate=true;}
+  // Guard against a stale buffer from a previous model (different nN): buildTraj
+  // calls this before _precomputeTraj refreshes _trajBufs, so a shrinking model
+  // switch would overflow the fresh marker buffer (Float32Array.set RangeError).
+  if(v.trajMarker){const tp=v.trajMarker.geometry.attributes.position.array;
+    if(buf.length===tp.length){tp.set(buf);
+      if(_hiddenScripts.size){for(let i=0;i<nN;i++){if(_hiddenScripts.has(scripts[i])){tp[i*3]=9999;tp[i*3+1]=9999;tp[i*3+2]=9999;}}}
+      v.trajMarker.geometry.attributes.position.needsUpdate=true;}}
   const pos=_ensurePositionBuf(v);
-  pos.set(buf);
-  if(_hiddenScripts.size){for(let i=0;i<nN;i++){if(_hiddenScripts.has(scripts[i])){pos[i*3]=9999;pos[i*3+1]=9999;pos[i*3+2]=9999;}}}
-  v.geo.attributes.position.needsUpdate=true;v.pts.visible=false;
+  if(buf.length===pos.length){pos.set(buf);
+    if(_hiddenScripts.size){for(let i=0;i<nN;i++){if(_hiddenScripts.has(scripts[i])){pos[i*3]=9999;pos[i*3+1]=9999;pos[i*3+2]=9999;}}}
+    v.geo.attributes.position.needsUpdate=true;v.pts.visible=false;}
 }
 function thirdPC(a,b){const mx=Math.max(nK,_pcsFullK||0,3);for(let i=0;i<mx;i++){if(i!==a&&i!==b)return i;}return 0;}
 let _lastPK='';
@@ -2380,7 +2384,13 @@ function _rebuildInternals(vi,pair,needsRebuild){
   // Label
   const lbl=document.getElementById('lv'+vi+'i');
   if(lbl)lbl.textContent=vi===0?`A: PC${pcA}\u00d7PC${pcB}`:vi===1?`\u0394: PC${pcA}\u00d7PC${pcB}`:`B: PC${pcA}\u00d7PC${pcB}`;
-  if(!lv._camSet){lv.cam.position.set(0,0,zSpan*0.8);lv.ctl.target.set(0,0,0);lv.ctl.update();lv._camSet=true;}
+  if(!lv._camSet){
+    // Content-aware framing: fit the radial star with ~40% margin, accounting
+    // for petals tilting toward the camera (z reaches +zSpan/2). Was a fixed
+    // zSpan*0.8 that let long petals (|align|→√2) overflow with no margin.
+    let _maxR=0.5;for(let mi=0;mi<nMat;mi++)for(let l=0;l<_nRealLayers;l++)_maxR=Math.max(_maxR,_petalLen(l,mi));
+    const _fitD=zSpan*0.5+_maxR*1.4/Math.tan(25*Math.PI/180);
+    lv.cam.position.set(0,0,Math.max(zSpan*0.8,_fitD));lv.ctl.target.set(0,0,0);lv.ctl.update();lv._camSet=true;}
   lv._wlLines=true;
 
   lv._pcA=pcA;lv._pcB=pcB;
@@ -2429,7 +2439,11 @@ function _rebuildInternals(vi,pair,needsRebuild){
       const midR=(minR+maxR)/2;
       const tx=Math.cos(fa)*midR,ty=Math.sin(fa)*midR;
       const range=Math.max(0.3,(maxR-minR)*1.5+0.5);
-      const dist=range*1.8;
+      // The petal spans zSpan in depth, which the chart-view orientation maps to
+      // screen-horizontal — so dist must fit max(zSpan, radial) at the 50° FOV,
+      // not just the radial range, or the petal overflows and feels un-zoomable.
+      const _extent=Math.max(maxR,zSpan)*1.4;
+      const dist=Math.max(range*2.2, _extent/(2*Math.tan(25*Math.PI/180)));
       lv.cam.position.set(tx+Math.cos(fa+Math.PI/2)*dist,ty+Math.sin(fa+Math.PI/2)*dist,0);
       lv.ctl.target.set(tx,ty,0);
       lv.cam.up.set(Math.cos(fa),Math.sin(fa),0);
@@ -2491,8 +2505,10 @@ function _rebuildInternals(vi,pair,needsRebuild){
   }
   lv._wlIsolated=-1;
   lv._savedCam=null;// clear stale focus camera from old PCs
-  // Reset camera to default flower view for new PCs
-  lv.cam.position.set(0,0,zSpan*0.8);
+  // Reset camera to default flower view for new PCs — content-aware distance so
+  // long petals (|align|→√2) stay framed with margin instead of overflowing.
+  {let _mR=0.5;for(let mi=0;mi<nMat;mi++)for(let l=0;l<_nRealLayers;l++)_mR=Math.max(_mR,_petalLen(l,mi));
+   lv.cam.position.set(0,0,Math.max(zSpan*0.8, zSpan*0.5+_mR*1.4/Math.tan(25*Math.PI/180)));}
   lv.cam.up.set(0,1,0);
   lv.ctl.target.set(0,0,0);lv.ctl.update();lv._camSet=true;
   // Clear focus label
@@ -3854,6 +3870,13 @@ async function loadAll(){
     pinnedToken=Math.floor(Math.random()*nN);
     pinnedTokenB=Math.floor(Math.random()*nN);
   }// delta (vpPairs[1]) auto-derived
+  // Sanitize PC pairs: non-finite or out-of-range indices (e.g. from saved
+  // state written before nK was known) feed NaN positions into Three.js and
+  // crash every cloud/trajectory viewport. Clamp back to safe defaults.
+  {const _defPair={0:[0,1],2:[0,2]};
+   for(const _vi of [0,2]){const _p=vpPairs[_vi];
+     const _ok=Array.isArray(_p)&&_p.length===2&&Number.isInteger(_p[0])&&Number.isInteger(_p[1])&&_p[0]>=0&&_p[1]>=0&&_p[0]<nK&&_p[1]<nK;
+     if(!_ok){const _d=_defPair[_vi];vpPairs[_vi]=[Math.min(_d[0],nK-1),Math.min(_d[1],nK-1)];}}}
 
   // Cross-model token matching: find same token text in new model
   if(pinnedToken<0&&prevPinTextA){const idx=texts.indexOf(prevPinTextA);if(idx>=0)pinnedToken=idx;}
