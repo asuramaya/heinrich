@@ -1,0 +1,25 @@
+{
+  // Heinrich companion — serverless MRI visualizer.
+  // Static SPA (Workers Assets) + R2 bucket of immutable decomp blobs.
+  // No paid compute: the Worker only does R2 GETs + range reads + repacking.
+  "name": "heinrich-companion",
+  "main": "worker/index.js",
+  "compatibility_date": "2026-05-11",
+
+  // Single-page app: unknown non-/api routes fall back to index.html.
+  "assets": {
+    "directory": "./public",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+
+  // The MRI library. Keys mirror the on-disk layout:
+  //   models.json
+  //   <model>/<mode>.mri/metadata.json
+  //   <model>/<mode>.mri/decomp/{meta.json,tokens.json,*.bin,L*_scores.npy}
+  "r2_buckets": [
+    { "binding": "MRI", "bucket_name": "heinrich-mri" }
+  ],
+
+  "observability": { "enabled": true }
+}

@@ -68,3 +68,9 @@ verify_*.png
 
 # Top-level runs/ — splat builds, FLUX.2 inject outputs, training artefacts (multi-GB)
 runs/
+
+# CF companion prototype synthetic data
+web/.data/
+web/node_modules/
+web/.wrangler/
+web/public/index.html
