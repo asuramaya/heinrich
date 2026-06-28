@@ -38,6 +38,7 @@ class HFBackend:
                 subfolder=subfolder,
                 torch_dtype=resolved_dtype,
                 device_map=device,
+                attn_implementation="eager",  # forensics: need real attention weights
             )
         else:
             self.tokenizer = AutoTokenizer.from_pretrained(model_id)
@@ -45,8 +46,13 @@ class HFBackend:
                 model_id,
                 torch_dtype=resolved_dtype,
                 device_map=device,
+                attn_implementation="eager",  # forensics: need real attention weights
             )
         self.hf_model.eval()  # PyTorch: set model to evaluation mode
+        # Forensics never trains these weights; disabling grad lets weight
+        # extraction call .numpy() directly and keeps embedding_grad cheap
+        # (it builds its own requires_grad leaf on the input embedding).
+        self.hf_model.requires_grad_(False)
         self.config = detect_config(self.hf_model, self.tokenizer)
         self._device = next(self.hf_model.parameters()).device
 

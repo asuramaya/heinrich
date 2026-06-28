@@ -116,11 +116,12 @@ def _extract_weight(module, in_dim: int, is_mlx: bool) -> np.ndarray:
         if hasattr(module, 'weight') and module.weight is not None:
             return module.weight.float().cpu().numpy()
         import torch
-        device = next(module.parameters()).device
+        _p = next(module.parameters())
+        device, _pdtype = _p.device, _p.dtype
         cols = []
         for s in range(0, in_dim, 64):
             e = min(s + 64, in_dim)
-            probe = torch.zeros(1, e - s, in_dim, device=device)
+            probe = torch.zeros(1, e - s, in_dim, device=device, dtype=_pdtype)
             for j in range(e - s):
                 probe[0, j, s + j] = 1.0
             with torch.no_grad():
@@ -327,8 +328,33 @@ def _framework_ops(backend):
         device = next(backend.hf_model.parameters()).device
 
         def _lm_head_hf(h):
-            normed = model_inner.norm(h)
+            w_dtype = backend.hf_model.lm_head.weight.dtype
+            normed = model_inner.norm(h.to(w_dtype))
             return backend.hf_model.lm_head(normed)
+
+        def _hf_pos_emb(h):
+            """Rotary (cos, sin) for transformers>=4.43 attention, from hidden h."""
+            rotary = getattr(model_inner, 'rotary_emb', None)
+            if rotary is None:
+                return None
+            seq_len = h.shape[1]
+            position_ids = torch.arange(seq_len, device=h.device).unsqueeze(0)
+            return rotary(h, position_ids)
+
+        def _hf_self_attn(ly, norm_in, mask):
+            """self_attn call tolerant of the position_embeddings arg (required
+            since transformers 4.43) and of attention impls that return no weights."""
+            kw = {'attention_mask': mask}
+            pe = _hf_pos_emb(norm_in)
+            if pe is not None:
+                kw['position_embeddings'] = pe
+            try:
+                out = ly.self_attn(norm_in, output_attentions=True, **kw)
+            except TypeError:
+                out = ly.self_attn(norm_in, **kw)
+            hidden = out[0] if isinstance(out, tuple) else out
+            weights = out[-1] if isinstance(out, tuple) and len(out) > 1 else None
+            return hidden, weights
 
         def _hf_layer_decomposed(ly, h, mask):
             """Run one HF layer decomposed. Handles sequential and parallel."""
@@ -336,10 +362,7 @@ def _framework_ops(backend):
                 residual = h
                 norm_in = ly.input_layernorm(h) if hasattr(ly, 'input_layernorm') else h
 
-                attn_out = ly.self_attn(norm_in, attention_mask=mask,
-                                         output_attentions=True)
-                attn_hidden = attn_out[0]
-                weights = attn_out[-1]
+                attn_hidden, weights = _hf_self_attn(ly, norm_in, mask)
 
                 is_parallel = not hasattr(ly, 'post_attention_layernorm')
                 if is_parallel:
@@ -401,6 +424,28 @@ def _framework_ops(backend):
                 real_val = torch.gather(g, 1, topk_idx)
                 return topk_idx.cpu().numpy(), real_val.float().cpu().numpy(), k
 
+        def _hf_layer_forward(ly, h, mask):
+            kw = {'attention_mask': mask}
+            pe = _hf_pos_emb(h)
+            if pe is not None:
+                kw['position_embeddings'] = pe
+            out = ly(h, **kw)
+            return out[0] if isinstance(out, tuple) else out
+
+        def _hf_embedding_grad(emb, mask):
+            """Gradient of the top-1 logit w.r.t. the input embedding (difficulty).
+            One backward pass with a fixed target — mirrors the MLX path."""
+            with torch.enable_grad():
+                e = emb.detach().clone().requires_grad_(True)
+                h = e
+                for ly in model_inner.layers:
+                    h = _hf_layer_forward(ly, h, mask)
+                h = model_inner.norm(h)
+                last = backend.hf_model.lm_head(h)[:, -1, :]
+                top1 = last.argmax(dim=1, keepdim=True)
+                last.gather(1, top1).sum().backward()
+            return e.grad.float().cpu().numpy()
+
         return SimpleNamespace(
             model_inner=model_inner,
             array=lambda x: torch.tensor(x, device=device, dtype=torch.long),
@@ -409,7 +454,8 @@ def _framework_ops(backend):
             to_numpy_1d=lambda t: t.float().cpu().numpy(),
             to_numpy_2d=lambda t, row, col: t.float().cpu().numpy()[0, row, :],
             embed=lambda ids: model_inner.embed_tokens(ids),
-            layer_forward=lambda ly, h, mask: (lambda out: out[0] if isinstance(out, tuple) else out)(ly(h, attention_mask=mask)),
+            layer_forward=_hf_layer_forward,
+            embedding_grad=_hf_embedding_grad,
             layer_decomposed=_hf_layer_decomposed,
             mlp_internals=_hf_mlp_internals,
             gate_topk=_hf_gate_topk,
@@ -1544,7 +1590,8 @@ def capture_mri(
                 cols = []
                 for start in range(0, hidden, 64):
                     end = min(start + 64, hidden)
-                    probe = torch.zeros(1, end - start, hidden, device=next(backend.hf_model.parameters()).device)
+                    _hp = next(backend.hf_model.parameters())
+                    probe = torch.zeros(1, end - start, hidden, device=_hp.device, dtype=_hp.dtype)
                     for j in range(end - start):
                         probe[0, j, start + j] = 1.0
                     with torch.no_grad():
