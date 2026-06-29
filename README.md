@@ -41,6 +41,31 @@ For Apple Silicon (recommended):
 pip install mlx mlx-lm              # MLX backend, 10-50x faster generation
 ```
 
+## Two halves: producer and Observatory
+
+Heinrich is a **producer** (capture, decompose, eval, audit — runs models, needs
+a GPU and weight access, exposed as the MCP tool suite) and a **consumer** (the
+viewer and the model-free `profile-*` analyses — reads recordings, runs
+anywhere). The `.mri` artifact is the contract between them.
+
+The **Observatory** (`web/`) is the consumer published to the edge: a static
+Three.js SPA + a Cloudflare R2 bucket of immutable decomposition blobs + a thin
+Worker that does only object reads and HTTP byte-range requests. No model, no
+server compute, no install for the viewer — fly through a real model's residual
+stream in any browser. The local `companion` is the same viewer, run directly.
+
+- Architecture & positioning: [`docs/observatory.md`](docs/observatory.md)
+- The open artifact format (producer↔consumer contract): [`web/ARTIFACT_FORMAT.md`](web/ARTIFACT_FORMAT.md)
+- Deploy / run: [`web/README.md`](web/README.md)
+
+```bash
+# capture + decompose (producer) → prep + serve at the edge (consumer)
+heinrich mri --model X --mode raw --n-index 2000 --output web/.data/X/raw.mri
+heinrich mri-decompose --mri web/.data/X/raw.mri --n-components 48
+python3 scripts/cf_mri_prep.py --out web/.data    # worker-native sidecars + manifest
+cd web && bash upload.sh local && wrangler dev     # localhost:8787, served off local R2
+```
+
 ## Quick Start
 
 ```bash
