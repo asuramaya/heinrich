@@ -2674,6 +2674,14 @@ function buildRightColumn(){
 // Uses full-K server data from /api/direction-depth/ via _dirDepthData
 // X = layer (emb→L0→...→LN→lmh), Y = projection onto direction, two lines + density
 function _buildRV0Variance(){
+  // Direction Depth REMOVED: a 2D line chart (A↔B projection through depth) that
+  // just restated the trajectory viewports and sat flattened in a 3D orbit slot.
+  // rv0 is a free slot now; the original body below is unreachable (kept until
+  // rv0 gets a real spatial viewport).
+  {const _rv=rightViews[0];if(_rv){_clearRV(_rv);_rv._rvSlices=[];_rv.built=true;
+    const _l=_rv.el?.querySelector('.rlbl');if(_l){_l.textContent='';_l._asinhBadge=null;}
+    _rv.cam.position.set(0,0,2.5);_rv.ctl.target.set(0,0,0);_rv.ctl.update();}
+   return;}
   const rv=rightViews[0];if(!rv||!_layerVar.length)return;
   _clearRV(rv);rv._rvSlices=[];rv.built=true;
   const rlbl=rv.el?.querySelector('.rlbl');
