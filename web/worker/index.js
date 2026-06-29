@@ -445,7 +445,14 @@ export default {
 
       if (ep === "decomp-meta" && prefix) {
         const meta = await r2json(env, `${prefix}/decomp/meta.json`);
-        return meta ? jsonResponse(meta) : jsonResponse({ error: "no decomp meta" }, 404);
+        if (!meta) return jsonResponse({ error: "no decomp meta" }, 404);
+        // The Neurons viewport needs intermediate_size; decompose doesn't write
+        // it into meta.json, so read it from the token_neurons.bin TOKN header.
+        if (!meta.intermediate_size) {
+          const h = await r2range(env, `${prefix}/decomp/token_neurons.bin`, 0, 16);
+          if (h) meta.intermediate_size = new DataView(h).getUint32(12, true);
+        }
+        return jsonResponse(meta);
       }
 
       if (ep === "serve-meta" && prefix) {
