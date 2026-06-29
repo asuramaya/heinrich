@@ -4512,12 +4512,27 @@ if(e.key==='g'||e.key==='G'){const t=_capTarget;if(t)recordViewport(t.sc,t.cam,t
 });
 let _needsRender=true,_frameCount=0,_fpsTime=performance.now();
 function _markDirty(){_needsRender=true;}
-views.forEach(v=>v.ctl.addEventListener('change',_markDirty));
-brCtl.addEventListener('change',_markDirty);
-leftViews.forEach(v=>v.ctl.addEventListener('change',_markDirty));
-rightViews.forEach(v=>v.ctl.addEventListener('change',_markDirty));
+let _wasInteracting=false,_lastCamMove=0;
+// Camera 'change' fires on every drag step; record the time so the LOD knows the
+// camera is actively moving (damping/_needsUpdate is only true during the settle,
+// not the drag itself). Also marks dirty so the frame renders.
+function _onCamMove(){_lastCamMove=performance.now();_needsRender=true;}
+views.forEach(v=>v.ctl.addEventListener('change',_onCamMove));
+brCtl.addEventListener('change',_onCamMove);
+leftViews.forEach(v=>v.ctl.addEventListener('change',_onCamMove));
+rightViews.forEach(v=>v.ctl.addEventListener('change',_onCamMove));
 (function anim(){requestAnimationFrame(anim);
-  const damping=views.some(v=>v.ctl.enableDamping&&v.ctl._needsUpdate)||brCtl._needsUpdate||leftViews.some(v=>v.ctl._needsUpdate);
+  const damping=views.some(v=>v.ctl.enableDamping&&v.ctl._needsUpdate)||brCtl._needsUpdate||leftViews.some(v=>v.ctl._needsUpdate)||rightViews.some(v=>v.ctl._needsUpdate);
+  // LOD: the trajectory line groups (5000 merged segments × 3 viewports) cost ~75% of
+  // the frame — measured 3fps with them, 13fps without. Hide them while the camera is
+  // moving (recent 'change' = active drag, or damping = settle) and restore + force one
+  // full render when motion stops. Smooth orbit, full detail at rest.
+  const interacting=(performance.now()-_lastCamMove<140)||damping;
+  if(interacting!==_wasInteracting){
+    for(let i=NC;i<views.length;i++){const v=views[i];if(v.trajGroup)v.trajGroup.visible=!interacting;}
+    _wasInteracting=interacting;
+    if(!interacting)_needsRender=true;// settle → final render with trajectories restored
+  }
   if(!_needsRender&&!damping&&!play)return;
   _needsRender=false;
   // Single renderer: clear once, render each region with scissor
