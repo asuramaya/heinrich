@@ -1428,8 +1428,12 @@ function _colorFromProj(proj){
     if(v.trajMarker){const tc=v.trajMarker.geometry.attributes.color?.array;
       if(tc){for(let i=0;i<nN;i++){tc[i*3]=_dirR[i];tc[i*3+1]=_dirG[i];tc[i*3+2]=_dirB[i];}v.trajMarker.geometry.attributes.color.needsUpdate=true;}}
     if(v.trajGroup&&v._trajTokenMap){const lc=v.trajGroup.geometry.attributes.color?.array;
+      // Dim the line colors hard. The points carry the full-saturation direction
+      // split; 5000 additively-blended lines at full red/blue blow out into an
+      // unreadable tangle, so the trajectory lines stay a faint directional haze.
+      const _d=0.3;
       if(lc){for(const{ti,start,count}of v._trajTokenMap){
-        for(let j=start;j<start+count;j++){lc[j*3]=_dirR[ti];lc[j*3+1]=_dirG[ti];lc[j*3+2]=_dirB[ti];}
+        for(let j=start;j<start+count;j++){lc[j*3]=_dirR[ti]*_d;lc[j*3+1]=_dirG[ti]*_d;lc[j*3+2]=_dirB[ti]*_d;}
       }v.trajGroup.geometry.attributes.color.needsUpdate=true;}}
   }
   _dirColorActive=true;_markDirty();
