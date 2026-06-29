@@ -174,6 +174,20 @@ def publish(mri_dir: str | Path, *, bucket: str | None = None,
         raise FileNotFoundError(f"no decomp/ — run `heinrich mri-decompose --mri {mri_dir}` first")
 
     sidecars = write_sidecars(mri_dir)
+
+    # Guard against shipping a truncated decomposition — the full residual
+    # geometry (all hidden dims) IS the MRI; a capped PC range defeats the point.
+    try:
+        dm = json.loads((mri_dir / "decomp" / "meta.json").read_text())
+        hidden = json.loads((mri_dir / "metadata.json").read_text()).get("model", {}).get("hidden_size", 0)
+        nc = dm.get("n_components", 0)
+        if hidden and nc and nc < hidden:
+            print(f"  ⚠ truncated decomposition: {nc} of {hidden} PCs. The full PC "
+                  f"range is the point of the MRI — re-run `heinrich mri-decompose "
+                  f"--mri {mri_dir} --n-components 0` for the full hidden range.")
+    except (FileNotFoundError, ValueError, KeyError):
+        pass
+
     model, mode = _model_mode(mri_dir)
     prefix = f"{model}/{mode}.mri"
     files = list(consumer_files(mri_dir, with_hover=with_hover))

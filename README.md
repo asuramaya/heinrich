@@ -61,7 +61,7 @@ stream in any browser. The local `companion` is the same viewer, run directly.
 ```bash
 # capture + decompose (producer) → prep + serve at the edge (consumer)
 heinrich mri --model X --mode raw --n-index 2000 --output web/.data/X/raw.mri
-heinrich mri-decompose --mri web/.data/X/raw.mri --n-components 48
+heinrich mri-decompose --mri web/.data/X/raw.mri --n-components 0   # full PC range (= hidden_size)
 python3 scripts/cf_mri_prep.py --out web/.data    # worker-native sidecars + manifest
 cd web && bash upload.sh local && wrangler dev     # localhost:8787, served off local R2
 ```

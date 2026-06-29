@@ -94,7 +94,7 @@ an open format.
 
 ```
 heinrich mri          --model X --mode raw --n-index 2000 --output runs/X.mri
-heinrich mri-decompose --mri runs/X.mri --n-components 48
+heinrich mri-decompose --mri runs/X.mri --n-components 0   # full PC range (= hidden_size); never truncate — the full residual geometry IS the MRI
 heinrich publish      --mri runs/X.mri --bucket heinrich-mri    # → R2 (S3 API)
 ```
 

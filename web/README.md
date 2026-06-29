@@ -45,7 +45,7 @@ python3 ../scripts/cf_synth_mri.py --out .data --model synth-mini --mode raw
 #    …or a real capture (needs the heinrich producer + a model)
 heinrich mri --model HuggingFaceTB/SmolLM2-135M --mode raw --n-index 2000 \
   --output .data/smollm2-135m/raw.mri
-heinrich mri-decompose --mri .data/smollm2-135m/raw.mri --n-components 48
+heinrich mri-decompose --mri .data/smollm2-135m/raw.mri --n-components 0  # full PC range (= hidden_size)
 python3 ../scripts/cf_mri_prep.py --out .data        # sidecars + manifest
 
 # B. load into the local R2 simulation + run the edge stack locally
