@@ -404,12 +404,15 @@ export default {
       const mode = parts[4];
       const prefix = model && mode ? mriPrefix(model, mode) : null;
 
-      // Live/navigation endpoints have no backend in a static deploy — answer
-      // benignly so the SPA's pollers don't hammer 501 in a tight loop.
-      if (ep === "poll" || ep === "navigate") return jsonResponse({});
-      if (ep === "chat-poll") return jsonResponse({ reply: null });
+      // Live/navigation endpoints have no backend in a static deploy. The SPA's
+      // long-poll loops expect the local companion to hold the request ~25s; a
+      // worker returns instantly, so without a signal they'd busy-loop the
+      // network. `static: true` tells the SPA to stop the loop after one probe.
+      if (ep === "poll") return jsonResponse({ cmd: "none", static: true });
+      if (ep === "navigate") return jsonResponse({});
+      if (ep === "chat-poll") return jsonResponse({ reply: null, static: true });
       if (ep === "chat-drain") return jsonResponse({ messages: [] });
-      if (ep === "live-status") return jsonResponse({ loaded: false, status: "static deployment — no live backend" });
+      if (ep === "live-status") return jsonResponse({ loaded: false, static: true, status: "static deployment — no live backend" });
       if (ep === "signals") return jsonResponse([]);
 
       const q = (k, d) => url.searchParams.get(k) ?? d;

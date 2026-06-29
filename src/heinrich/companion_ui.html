@@ -181,12 +181,12 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
       <div id="attnPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Attention</div><div class="pane-note">Token A · current layer</div></div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
     </div>
     <div class="tok-tabs" id="tokTabs">
-      <button class="tab-btn" data-tab="find">Find</button>
+      <button class="tab-btn active" data-tab="find">Find</button>
       <button class="tab-btn" data-tab="compare">Compare</button>
-      <button class="tab-btn active" data-tab="run">Run</button>
+      <button class="tab-btn" data-tab="run">Run</button>
     </div>
     <div id="tokTabContent">
-      <div class="tab-pane" data-pane="find">
+      <div class="tab-pane active" data-pane="find">
         <div class="find-stack">
           <div class="panel-card">
             <div class="pane-head"><div class="pane-title">Token Search</div><div class="pane-note">search, pin, compare</div></div>
@@ -217,7 +217,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
           <div id="crossResult" style="font-size:7px;color:#888;margin-top:4px"></div>
         </div>
       </div>
-      <div class="tab-pane active" data-pane="run">
+      <div class="tab-pane" data-pane="run">
         <div class="run-stack">
           <div class="panel-card">
             <div class="pane-head"><div class="pane-title">Live Session</div><div class="pane-note">loaded backend for run/chat</div></div>
@@ -2239,9 +2239,22 @@ for(let i=0;i<3;i++){
 // Drag tokpanel
 (function(){const d=document.getElementById('tokDrag'),p=document.getElementById('tokpanel');if(!d||!p)return;
   let dx=0,dy=0,dragging=false;
-  d.addEventListener('pointerdown',e=>{dx=e.clientX-p.offsetLeft;dy=e.clientY-p.offsetTop;dragging=true;e.preventDefault();});
-  addEventListener('pointermove',e=>{if(!dragging)return;p.style.left=(e.clientX-dx)+'px';p.style.top=(e.clientY-dy)+'px';p.style.right='auto';});
-  addEventListener('pointerup',()=>{dragging=false;});
+  // Keep the panel reachable: clamp left to the viewport width and top so at
+  // least the drag bar stays on-screen (you can't fling it into the void).
+  const clampL=L=>Math.min(Math.max(0,L),Math.max(0,window.innerWidth-p.offsetWidth));
+  const clampT=T=>Math.min(Math.max(0,T),Math.max(0,window.innerHeight-28));
+  function place(L,T){p.style.left=clampL(L)+'px';p.style.top=clampT(T)+'px';p.style.right='auto';}
+  // Restore last position (persisted across reloads).
+  try{const s=JSON.parse(localStorage.getItem('heinrich.panelPos')||'null');
+    if(s&&Number.isFinite(s.l)&&Number.isFinite(s.t))place(s.l,s.t);}catch(e){}
+  d.addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;// let the minimize button click through
+    dx=e.clientX-p.offsetLeft;dy=e.clientY-p.offsetTop;dragging=true;
+    try{d.setPointerCapture(e.pointerId);}catch(_){}e.preventDefault();});
+  d.addEventListener('pointermove',e=>{if(!dragging)return;place(e.clientX-dx,e.clientY-dy);});
+  const end=e=>{if(!dragging)return;dragging=false;try{d.releasePointerCapture(e.pointerId);}catch(_){}
+    try{localStorage.setItem('heinrich.panelPos',JSON.stringify({l:p.offsetLeft,t:p.offsetTop}));}catch(_){}};
+  d.addEventListener('pointerup',end);d.addEventListener('pointercancel',end);
+  addEventListener('resize',()=>{if(p.style.left)place(p.offsetLeft,p.offsetTop);});// keep on-screen on resize
 })();
 
 // Delta viewports (vp1=cloud, vp4=trajectory) are now handled by the main viewport pipeline
@@ -4656,7 +4669,8 @@ async function _pollLoop(){
     try{
       const r=await fetch('/api/poll?timeout=25');
       const msg=await r.json();
-      if(msg.cmd==='none')continue;
+      if(msg.static){_setDeployStatic();return;}// hosted deploy — no command channel
+      if(msg.cmd==='none'||!msg.cmd)continue;
       if(msg.cmd==='navigate')await _handleNavigate(msg);
       else if(msg.cmd==='capture')await _handleCapture(msg);
     }catch(e){
@@ -4877,19 +4891,37 @@ async function _captureGifRemote(sc,cam,el,vi,rid){
 setTimeout(_pollLoop,1000);
 
 // --- Tokpanel tab switcher (merged from 3 former accordions: chat/cross/live) ---
+function _activateTab(name){
+  const tabs=document.getElementById('tokTabs');if(!tabs)return;
+  tabs.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
+  document.querySelectorAll('#tokTabContent .tab-pane').forEach(p=>p.classList.toggle('active',p.dataset.pane===name));
+  if(name==='compare')_populateCrossModels();
+  if(name==='run'&&!_deployStatic){_liveSuggestModelId();_refreshLiveStatus();}
+}
 (function(){
   const tabs=document.getElementById('tokTabs');if(!tabs)return;
-  tabs.addEventListener('click',e=>{
-    const btn=e.target.closest('.tab-btn');if(!btn)return;
-    const name=btn.dataset.tab;
-    tabs.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b===btn));
-    document.querySelectorAll('#tokTabContent .tab-pane').forEach(p=>{
-      p.classList.toggle('active',p.dataset.pane===name);
-    });
-    if(name==='compare')_populateCrossModels();
-    if(name==='run'){_liveSuggestModelId();_refreshLiveStatus();}
-  });
+  tabs.addEventListener('click',e=>{const btn=e.target.closest('.tab-btn');if(!btn)return;_activateTab(btn.dataset.tab);});
 })();
+// Static/hosted Observatory has no live model backend. Detected from the poll
+// channels (the worker sends `static:true`). When set: stop the long-poll loops
+// (else they busy-hammer the network — the worker answers instantly instead of
+// holding ~25s), and mark the Run tab's live cards read-only rather than letting
+// them pretend to work. Local `heinrich companion` never sends the flag, so its
+// live forward / chat / MCP command channel keep working unchanged.
+let _deployStatic=false;
+function _setDeployStatic(){
+  if(_deployStatic)return;_deployStatic=true;
+  _pollActive=false;// halt the command-channel poll loop
+  const note='producer-only — run `heinrich companion` locally';
+  const ss=document.getElementById('liveSessionStatus');
+  if(ss){ss.style.color='#777';ss.textContent='read-only viewer — no live model backend ('+note+')';}
+  const lc=document.getElementById('liveChatStatus');if(lc)lc.textContent=note;
+  const lv=document.getElementById('liveStatus');if(lv)lv.textContent=note;
+  ['liveInput','liveChatInput','liveModelId','chatInput'].forEach(id=>{const el=document.getElementById(id);if(el){el.disabled=true;el.placeholder=note;}});
+  ['liveStatusRefresh','liveStatusUnload','liveUseSuggested'].forEach(id=>{const el=document.getElementById(id);if(el)el.disabled=true;});
+  // if the user is parked on the now-inert Run tab, move them to Find
+  if(document.querySelector('#tokTabs .tab-btn[data-tab="run"]')?.classList.contains('active'))_activateTab('find');
+}
 
 // --- Minimize / expand tokpanel ---
 document.getElementById('tokMin')?.addEventListener('click',()=>{
@@ -4960,6 +4992,7 @@ async function _chatPollLoop(){
       const r=await fetch('/api/chat-poll?timeout=25');
       if(r.status>=500){throw new Error('server '+r.status);}
       const m=await r.json();
+      if(m&&m.static){_setDeployStatic();return;}// hosted deploy — no MCP chat backend
       _setBadge(false);backoff=1000;
       if(m&&m.reply){
         const log=document.getElementById('chatLog');
@@ -5081,6 +5114,7 @@ function _renderLiveChipRow(parent,label,tokens,kind){
 }
 function _renderLiveSession(info){
   const el=document.getElementById('liveSessionStatus');if(!el)return;
+  if(info&&info.static){_setDeployStatic();return;}// hosted — _setDeployStatic owns the text
   if(!info){el.textContent='session idle';return;}
   const resolved=info.resolved_model_id||'(unset)';
   if(info.error){el.textContent=`error · ${info.error}`;el.style.color='#f77';return;}
