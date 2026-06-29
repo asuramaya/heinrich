@@ -332,6 +332,15 @@ def build_parser() -> argparse.ArgumentParser:
     p_serve.add_argument("--steps", default="10,25,50", help="Precompute sampled PC indexes for these token strides")
     p_serve.add_argument("--force", action="store_true", help="Rebuild serve artifacts even if they already exist")
 
+    p_publish = sub.add_parser("publish", help="Publish a decomposed .mri to an R2 bucket (or local export dir) for the Observatory viewer. Uploads only the lean consumer subset; see web/ARTIFACT_FORMAT.md")
+    p_publish.add_argument("--mri", required=True, help="decomposed .mri directory")
+    p_publish.add_argument("--bucket", default=None, help="R2 bucket name (uses S3 API; creds from R2_ACCOUNT_ID/R2_ACCESS_KEY_ID/R2_SECRET_ACCESS_KEY)")
+    p_publish.add_argument("--local-dir", default=None, help="Export the consumer subset to a directory instead of R2 (no network)")
+    p_publish.add_argument("--account-id", default=None, help="Cloudflare account id (else $R2_ACCOUNT_ID)")
+    p_publish.add_argument("--endpoint-url", default=None, help="Override S3 endpoint (else https://<account>.r2.cloudflarestorage.com)")
+    p_publish.add_argument("--with-hover", action="store_true", help="Also upload mlp/ gate+up (enables token-hover neurons; large)")
+    p_publish.add_argument("--dry-run", action="store_true", help="Report what would be published without uploading")
+
     p_logitlens = sub.add_parser("profile-logit-lens", help="What would the model predict at each layer? Applies norm+lmhead to exit states")
     p_logitlens.add_argument("--mri", required=True, help=".mri directory")
     p_logitlens.add_argument("--top-k", type=int, default=5, help="Top K predictions per layer (default: 5)")
@@ -1285,6 +1294,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_mri_decompose(args)
     elif args.command == "mri-serve":
         _cmd_mri_serve(args)
+    elif args.command == "publish":
+        _cmd_publish(args)
     elif args.command == "profile-logit-lens":
         _cmd_logit_lens(args)
     elif args.command == "profile-layer-deltas":
@@ -3591,6 +3602,35 @@ def _cmd_mri_decompose(args: argparse.Namespace) -> None:
                   f"nbr={lr['neighbor_stability']:.2f}  {dim_bar}")
         print()
     _json_or(args, result, _fmt)
+
+
+def _cmd_publish(args: argparse.Namespace) -> None:
+    """Publish a decomposed .mri to R2 (or a local export dir) for the Observatory."""
+    from .observatory import publish
+
+    try:
+        plan = publish(
+            args.mri, bucket=args.bucket, account_id=args.account_id,
+            endpoint_url=args.endpoint_url, local_dir=args.local_dir,
+            with_hover=bool(args.with_hover), dry_run=bool(args.dry_run),
+        )
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Error: {e}")
+        return
+    except ImportError:
+        print("Error: boto3 not installed. `pip install heinrich[publish]` (or boto3) for R2 upload.")
+        return
+
+    mb = plan["bytes"] / (1024 * 1024)
+    print(f"\n=== publish {plan['model']}/{plan['mode']} ===")
+    print(f"  sidecars: {', '.join(plan['sidecars']) or 'none'}")
+    print(f"  {plan['n_files']} consumer files, {mb:.1f} MB → {plan['prefix']}/")
+    if args.dry_run:
+        print("  (dry run — nothing uploaded)")
+        for k in plan.get("files", []):
+            print(f"    {k}")
+    else:
+        print(f"  published to {plan['target']}  (manifest models.json updated)")
 
 
 def _cmd_mri_serve(args: argparse.Namespace) -> None:

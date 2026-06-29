@@ -61,9 +61,17 @@ blobs under `.wrangler/state`), the same code path that runs at the edge.
 ```bash
 wrangler login
 wrangler r2 bucket create heinrich-mri
-bash upload.sh remote                 # or `heinrich publish` once it lands
 wrangler deploy                       # add a custom domain route in the dashboard
+
+# publish artifacts straight to R2 from the producer (pure Python, S3 API):
+pip install 'heinrich[publish]'
+export R2_ACCOUNT_ID=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=...
+heinrich publish --mri .data/smollm2-135m/raw.mri --bucket heinrich-mri
 ```
+
+`heinrich publish` uploads only the lean consumer subset and upserts
+`models.json`. `bash upload.sh remote` (wrangler-based) remains as an
+alternative; `--local-dir` / `--dry-run` need no credentials.
 
 ## Status
 

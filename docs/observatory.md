@@ -90,21 +90,30 @@ an open format.
 - **Browser**: renders (Three.js) and computes the interactive analysis
   (WebGPU/JS). Optionally runs a tiny model client-side for live mode.
 
-## The publish loop (target)
+## The publish loop
 
 ```
-heinrich mri        --model X --mode raw --output runs/X.mri
+heinrich mri          --model X --mode raw --n-index 2000 --output runs/X.mri
 heinrich mri-decompose --mri runs/X.mri --n-components 48
-heinrich publish    --mri runs/X.mri --to r2://observatory   # emits sidecars + uploads
+heinrich publish      --mri runs/X.mri --bucket heinrich-mri    # → R2 (S3 API)
 ```
 
-`heinrich publish` is the seam: it computes the worker-native sidecars
-(`tokens.json`, `norms.json`, `baselines.json`), any precomputed read-side
-analysis, updates `models.json`, and uploads only the consumer-served files
-(decomp blobs + sidecars), never the multi-GB raw weights/activations.
+`heinrich publish` (`src/heinrich/observatory/publish.py`) is the seam: it
+computes the worker-native sidecars (`tokens.json`, `norms.json`,
+`baselines.json`), selects only the consumer-served files (decomp blobs +
+sidecars — never the multi-GB raw weights/activations), uploads them, and
+upserts `models.json`. It talks to R2 over the **S3 API** (boto3), so the
+producer stays pure Python — no Node/wrangler dependency. Creds come from
+`R2_ACCOUNT_ID` / `R2_ACCESS_KEY_ID` / `R2_SECRET_ACCESS_KEY`.
 
-Until `publish` lands, the loop is scripted:
-`scripts/cf_mri_prep.py` (sidecars + manifest) + `web/upload.sh` (R2 put).
+```
+heinrich publish --mri runs/X.mri --dry-run            # report the plan
+heinrich publish --mri runs/X.mri --local-dir export/  # export layout, no network
+heinrich publish --mri runs/X.mri --bucket B --with-hover   # also mlp/ (token-hover)
+```
+
+`pip install heinrich[publish]` pulls boto3. The viewer reads exactly what
+`publish` uploads — that set is the [artifact contract](../web/ARTIFACT_FORMAT.md).
 
 ## Roadmap
 
@@ -114,8 +123,10 @@ Until `publish` lands, the loop is scripted:
 - **Phase 2 — browser compute.** Port the interactive `direction-*` and
   `token-predicts` endpoints to WebGPU/JS in the SPA. This is where the SPA
   is modified (Tier-B compute moves client-side).
-- **Phase 3 — `heinrich publish`.** Formalize capture → publish → render as
-  one clean loop; version the artifact format.
+- **Phase 3 — `heinrich publish` (done).** Capture → publish → render is one
+  clean loop: `publish` emits sidecars, selects the consumer subset, uploads to
+  R2 over the S3 API, and upserts the manifest. Format versioned in
+  [`ARTIFACT_FORMAT.md`](../web/ARTIFACT_FORMAT.md).
 - **Phase 4 — the Observatory proper.** Public gallery landing page over
   `models.json`; `profile-*` analyses as panels behind the viewer; optional
   BYO-origin / transformers.js live mode for ≤3B models.

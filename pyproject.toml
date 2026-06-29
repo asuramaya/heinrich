@@ -30,6 +30,10 @@ analysis = [
     "scipy>=1.10",
     "scikit-learn>=1.3",
 ]
+publish = [
+    # `heinrich publish` -> R2 over the S3 API (no Node/wrangler needed)
+    "boto3>=1.34",
+]
 splat = [
     # 3D Gaussian Splatting round-trip pipeline. Requires nvcc on PATH for
     # gsplat's first-use JIT compile, and the colmap system binary
@@ -45,6 +49,7 @@ all = [
     "heinrich[mlx]",
     "heinrich[hf]",
     "heinrich[analysis]",
+    "heinrich[publish]",
     "heinrich[dev]",
 ]
 
