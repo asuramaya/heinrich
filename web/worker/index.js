@@ -442,6 +442,15 @@ export default {
         }
         if (ep === "token-neurons") return jsonResponse(await r2json(env, `${prefix}/decomp/neuron_importance.json`) ?? { token_idx: parseInt(q("token", "0")), layers: [] });
         if (ep === "falsification") return jsonResponse(await r2json(env, `${prefix}/decomp/falsification.json`) ?? { random_baseline: [], top_pcs: [] });
+        if (ep === "token-resolve") {
+          // Cross-model compare resolves a token by text (tokenizers fragment
+          // differently, so raw index equality isn't the same concept). Pure
+          // lookup in the target model's tokens.json — no compute.
+          const toks = await r2json(env, `${prefix}/decomp/tokens.json`);
+          const txt = q("text", "");
+          const idx = toks && Array.isArray(toks.token_texts) ? toks.token_texts.indexOf(txt) : -1;
+          return jsonResponse({ idx, text: txt });
+        }
         if (ep === "norms") return jsonResponse(await r2json(env, `${prefix}/norms.json`) ?? {});
         if (ep === "baselines") return jsonResponse(await r2json(env, `${prefix}/baselines.json`) ?? {});
         if (ep === "token-attn") return jsonResponse({ token_idx: parseInt(q("token", "0")), layers: [] });

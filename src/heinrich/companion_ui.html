@@ -5374,15 +5374,53 @@ function _renderCrossResult(d){
   sparkB.title='Bimodality sparkline — taller = more bimodal. Layer 0 at left.';
   res.appendChild(sparkB);
 }
-// Summarize a depth payload into the shape _renderCrossResult expects.
+// Fetch one token's full per-layer PC vector from ANY published model (the
+// Worker serves token-pca for every model: 8-byte header [nL,fK] + nL*fK f32).
+async function _fetchTokenVec(mdl,mde,token){
+  try{
+    const buf=await (await fetch(`/api/token-pca/${encodeURIComponent(mdl)}/${encodeURIComponent(mde)}?token=${token}`)).arrayBuffer();
+    if(buf.byteLength<8)return null;
+    const dv=new DataView(buf);const nL=dv.getUint32(0,true),fK=dv.getUint32(4,true);
+    if(!nL||!fK||buf.byteLength<8+nL*fK*4)return null;
+    return {nL,fK,data:new Float32Array(buf,8,nL*fK)};
+  }catch(e){return null;}
+}
+// Browser-compute of /api/direction-depth (501 in the serverless deploy) for a
+// cross-model comparison: per-layer magnitude of the a−b direction from the two
+// tokens' full PC vectors (two small reads). Magnitude is the meaningful
+// cross-model signal — bimodality depends on each model's own population, which
+// isn't comparable across different vocabularies.
+async function _crossDepth(mdl,mde,a,b){
+  const meta=await api(`serve-meta/${encodeURIComponent(mdl)}/${encodeURIComponent(mde)}`);
+  if(!meta||!meta.full_k)return null;
+  const NRL=meta.n_real_layers??meta.n_layers;
+  const [vA,vB]=await Promise.all([_fetchTokenVec(mdl,mde,a),_fetchTokenVec(mdl,mde,b)]);
+  if(!vA||!vB)return null;
+  const fK=Math.min(vA.fK,vB.fK);
+  const layers=[];
+  for(let l=0;l<NRL;l++){
+    const diff=new Float32Array(fK);let m2=0;const oa=l*vA.fK,ob=l*vB.fK;
+    for(let k=0;k<fK;k++){let da=vA.data[oa+k],db=vB.data[ob+k];da=da===da?da:0;db=db===db?db:0;const d=da-db;diff[k]=d;m2+=d*d;}
+    const order=Array.from({length:fK},(_,k)=>k).sort((x,y)=>diff[y]*diff[y]-diff[x]*diff[x]);
+    const tot=m2+1e-8;let cum=0,pcs_50=fK;
+    for(let r=0;r<fK;r++){cum+=diff[order[r]]*diff[order[r]];if(cum/tot>=0.5){pcs_50=r+1;break;}}
+    layers.push({layer:l,magnitude:Math.sqrt(m2),pcs_50});
+  }
+  return {layers,n_layers:NRL};
+}
+// Summarize a depth payload into the shape _renderCrossSide expects. Browser
+// depth carries magnitude (exact) but no population bimodality → best layer is
+// argmax magnitude, sparkline tracks magnitude.
 function _summarizeDepth(d){
   const layers=d.layers||[];
+  let best_layer=layers.length?layers[0].layer:0,peak=0;
+  layers.forEach(l=>{if((l.magnitude||0)>peak){peak=l.magnitude;best_layer=l.layer;}});
+  const hasBim=layers.some(l=>l.bimodality!=null);
   return {
     n_layers: d.n_layers,
-    best_layer: d.best_layer,
-    worst_layer: d.worst_layer,
-    peak_magnitude: layers.reduce((m,l)=>Math.max(m,l.magnitude||0),0),
-    min_bimodality: layers.reduce((m,l)=>Math.min(m,l.bimodality??1),1),
+    best_layer: d.best_layer??best_layer,
+    peak_magnitude: peak,
+    min_bimodality: hasBim?layers.reduce((m,l)=>Math.min(m,l.bimodality??1),1):null,
     layers: layers.map(l=>({
       layer: l.layer,
       layer_frac: l.layer / Math.max(1, d.n_layers-1),
@@ -5405,18 +5443,19 @@ function _renderCrossSide(tag, name, summary){
   const lbl=document.createElement('span');lbl.className='cm-lbl';
   lbl.textContent=`${tag}: ${name||'?'}`;lbl.title=name||'';
   const stat=document.createElement('span');stat.className='cm-stat';
-  stat.textContent=`L${summary.best_layer}/${summary.n_layers} bm=${summary.min_bimodality.toFixed(3)} mag=${summary.peak_magnitude.toFixed(1)}`;
+  const hasBim=summary.min_bimodality!=null;
+  stat.textContent=`peakL${summary.best_layer}/${summary.n_layers}${hasBim?' bm='+summary.min_bimodality.toFixed(3):''} mag=${summary.peak_magnitude.toFixed(1)}`;
   row.appendChild(lbl);row.appendChild(stat);res.appendChild(row);
-  // Sparkline
+  // Magnitude sparkline — taller = larger A−B displacement at that layer.
   const BLOCKS=' ▁▂▃▄▅▆▇█';
-  const vals=summary.layers.map(l=>1-l.bimodality);
+  const vals=summary.layers.map(l=>l.magnitude||0);
   const lo=Math.min(...vals),hi=Math.max(...vals),rng=(hi-lo)||1;
   const spark=vals.map(v=>BLOCKS[Math.min(8,Math.floor(((v-lo)/rng)*8.99))]).join('');
   const sparkEl=document.createElement('div');
   sparkEl.dataset.cmSpark=tag;
   sparkEl.style.cssText=`color:${tag==='A'?'#8ac':'#ca8'};font-family:monospace;padding:2px 4px;font-size:10px`;
   sparkEl.textContent=`${tag} ${spark}`;
-  sparkEl.title='Bimodality sparkline — taller = more bimodal. Layer 0 at left.';
+  sparkEl.title='Magnitude sparkline — taller = larger A−B displacement. Layer 0 at left.';
   res.appendChild(sparkEl);
 }
 document.getElementById('crossRun')?.addEventListener('click',async()=>{
@@ -5453,23 +5492,22 @@ document.getElementById('crossRun')?.addEventListener('click',async()=>{
     w.textContent=`\u26A0 no text match in ${ms.value}/${md.value} for: ${unmatched.join(', ')}. Falling back to raw indices — direction may not be the same concept.`;
     resEl.appendChild(w);
   }
-  st.textContent=`running A (${model} ${pinnedToken}/${pinnedTokenB}) and B (${ms.value} ${bA}/${bB})...`;
+  st.textContent=`computing depth — A (${model} ${pinnedToken}/${pinnedTokenB}) vs B (${ms.value} ${bA}/${bB})...`;
   st.style.color='#a84';
   const startedAt=performance.now();
-  let doneCount=0;const startOne=(tag,name,urlPath)=>fetch(urlPath)
-    .then(r=>r.json())
-    .then(d=>{
-      if(d.error)throw new Error(d.error);
-      _renderCrossSide(tag,name,_summarizeDepth(d));
-      doneCount++;
-      const elapsed=((performance.now()-startedAt)/1000).toFixed(1);
-      if(doneCount===1){st.style.color='#a84';st.textContent=`${tag} done in ${elapsed}s, waiting on the other...`;}
-      else{st.style.color='#6c8';st.textContent=`both done in ${elapsed}s${resolvedA&&resolvedB?' (text-matched)':' (partial text match)'}`;}
-    })
-    .catch(e=>{st.style.color='#f77';st.textContent=`${tag} failed: ${e.message}`;});
-  const urlA=`/api/direction-depth/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?a=${pinnedToken}&b=${pinnedTokenB}`;
-  const urlB=`/api/direction-depth/${encodeURIComponent(ms.value)}/${encodeURIComponent(md.value)}?a=${bA}&b=${bB}`;
-  Promise.all([startOne('A',model,urlA),startOne('B',ms.value,urlB)]);
+  // Browser-compute the per-layer magnitude profile for both models from their
+  // token vectors (was the server's /api/direction-depth, 501 in the deploy).
+  try{
+    const [dA,dB]=await Promise.all([
+      _crossDepth(model,mode,pinnedToken,pinnedTokenB),
+      _crossDepth(ms.value,md.value,bA,bB),
+    ]);
+    if(dA)_renderCrossSide('A',model,_summarizeDepth(dA));
+    if(dB)_renderCrossSide('B',ms.value,_summarizeDepth(dB));
+    const elapsed=((performance.now()-startedAt)/1000).toFixed(1);
+    if(!dA||!dB){st.style.color='#f77';st.textContent=`${!dA?'A':'B'} failed: no data for that model/token`;}
+    else{st.style.color='#6c8';st.textContent=`both done in ${elapsed}s${resolvedA&&resolvedB?' (text-matched)':' (partial text match)'}`;}
+  }catch(e){st.style.color='#f77';st.textContent='failed: '+e.message;}
 });
 
 // Debug / remote-control bridge. Module-scoped state can't reach window
@@ -5504,6 +5542,7 @@ window.__heinrich = {
   dirDiscover:(l,n)=>_dirDiscoverJS(l,n), dirSupport:(a,b,l,cov,cap)=>_dirSupport(a,b,l,cov,cap),
   loadFalsification:()=>_loadFalsification(), get pcFullSize(){return _pcFull.size;},
   fetchDirDepth:()=>_fetchDirDepth(),
+  crossDepth:(m,d,a,b)=>_crossDepth(m,d,a,b), fetchTokenVec:(m,d,t)=>_fetchTokenVec(m,d,t),
   async __bimAtCoverage(a,b,l,cov){const S=await _dirSupport(a,b,l,cov,99999);const inv=1/(S.mag+1e-8),dir=new Float32Array(nK);for(const k of S.support)dir[k]=S.diff[k]*inv;const NT=_pcFullNT||nN;const proj=await _projSupport(l,dir,S.support,NT);return {n:S.support.length,bim:_bimoJS(proj),mag:S.mag};},
 
   // --- navigation ---
