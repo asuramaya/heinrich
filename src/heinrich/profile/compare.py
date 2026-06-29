@@ -6931,6 +6931,90 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
             print(f"  Token neuron index: {n_sample} tokens × {n_layers} layers × {_inter} neurons = "
                   f"{(16 + n_sample * n_stride) / (1024*1024):.0f}MB", file=sys.stderr)
 
+    # === Precompute direction-falsification tables ===
+    # The Observatory computes the direction-* analyses in the browser. At large
+    # hidden sizes, loading every PC column to (a) rank PCs by bimodality for
+    # `discover` and (b) build the 50-pair random baseline is infeasible — it is
+    # the one all-PC operation. Precompute both here (the producer holds every
+    # score) so the consumer streams only a direction's *support* PCs and reads
+    # these tables for the parts that need all of them. Tiny: ~50 entries/layer.
+    #   random_baseline[li] : sorted bimodalities of 50 random token-pair
+    #                         directions (crystal-suppressed) — percentile context.
+    #   top_pcs[li]         : the 50 most-bimodal PCs {pc, bimodality,
+    #                         variance_share} — `discover` is then a lookup +
+    #                         a load of just the winning PCs' token columns.
+    # Outlier suppression (|z|>6 mask) matches the UI's _dirDiscoverJS exactly.
+    print("  Direction falsification tables...", file=sys.stderr)
+
+    def _bimo(proj):
+        proj = np.asarray(proj, dtype=np.float32)
+        if proj.size == 0:
+            return 1.0
+        lo, hi = float(proj.min()), float(proj.max())
+        if hi - lo < 1e-12:
+            return 1.0
+        hist, _ = np.histogram(proj, bins=100, range=(lo, hi))
+        p1 = int(hist.argmax())
+        p1h = int(hist[p1])
+        if p1h == 0:
+            return 1.0
+        masked = hist.astype(np.int64).copy()
+        masked[max(0, p1 - 10):min(100, p1 + 11)] = -1
+        if masked.max() <= 0:
+            return 1.0
+        p2 = int(masked.argmax())
+        p2h = int(hist[p2])
+        a0, b0 = (p1, p2) if p1 < p2 else (p2, p1)
+        vs = hist[a0 + 1:b0]
+        if vs.size == 0:
+            return 1.0
+        return float(vs.min()) / (min(p1h, p2h) + 1e-8)
+
+    fals_random: list = []   # [total_layers][<=50] sorted bimodalities
+    fals_top: list = []      # [total_layers][<=50] {pc, bimodality, variance_share}
+    _frng = np.random.RandomState(42)
+    for li in range(total_layers):
+        sp = _get_score_mmap_local(decomp_dir, li, n_layers)
+        if sp is None:
+            fals_random.append([])
+            fals_top.append([])
+            continue
+        sc = np.asarray(sp, dtype=np.float32)        # [N, K]
+        Kl = sc.shape[1]
+        # Crystal suppression: drop tokens with |z|>6 on any PC (matches the UI).
+        std = sc.std(axis=0)
+        pos = std[std > 0]
+        floor = float(np.percentile(pos, 5)) if pos.size else 1e-8
+        denom = np.maximum(std, floor)
+        denom[denom == 0] = 1e-8
+        keep = ~(np.abs(sc) / denom > 6).any(axis=1)
+        kept = sc[keep] if keep.any() else sc
+        lv = np.asarray(all_variances[li], dtype=np.float64) if li < len(all_variances) \
+            else np.zeros(Kl)
+        totv = float(lv.sum()) or 1.0
+        pc_bm = sorted(((k, _bimo(kept[:, k])) for k in range(Kl)), key=lambda t: t[1])
+        fals_top.append([{"pc": int(k), "bimodality": round(bm, 5),
+                          "variance_share": round(float(lv[k]) / totv if k < lv.size else 0.0, 6)}
+                         for k, bm in pc_bm[:50]])
+        rb: list = []
+        if kept.shape[0] > 1:
+            for ia, ib in _frng.randint(0, kept.shape[0], size=(50, 2)):
+                if ia == ib:
+                    continue
+                d = kept[ia] - kept[ib]
+                n = float(np.linalg.norm(d))
+                if n < 1e-8:
+                    continue
+                rb.append(_bimo(kept @ (d / n)))
+        fals_random.append([round(x, 5) for x in sorted(rb)])
+
+    (decomp_dir / 'falsification.json').write_text(json.dumps({
+        "n_layers": total_layers, "K": K,
+        "random_baseline": fals_random, "top_pcs": fals_top,
+    }))
+    print(f"  Falsification: {total_layers} layers, top-{min(50, K)} PCs + 50-pair "
+          f"baseline (crystal-suppressed)", file=sys.stderr)
+
     # intermediate_size makes the artifact self-describing for the Neurons
     # viewport (so the consumer needn't read it from the TOKN header).
     intermediate_size = 0

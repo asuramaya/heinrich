@@ -438,6 +438,7 @@ export default {
           return await tokenBundle(env, prefix, csv(q("full")), csv(q("hover")), parseInt(q("layer", "0")));
         }
         if (ep === "token-neurons") return jsonResponse(await r2json(env, `${prefix}/decomp/neuron_importance.json`) ?? { token_idx: parseInt(q("token", "0")), layers: [] });
+        if (ep === "falsification") return jsonResponse(await r2json(env, `${prefix}/decomp/falsification.json`) ?? { random_baseline: [], top_pcs: [] });
         if (ep === "norms") return jsonResponse(await r2json(env, `${prefix}/norms.json`) ?? {});
         if (ep === "baselines") return jsonResponse(await r2json(env, `${prefix}/baselines.json`) ?? {});
         if (ep === "token-attn") return jsonResponse({ token_idx: parseInt(q("token", "0")), layers: [] });
@@ -445,14 +446,7 @@ export default {
 
       if (ep === "decomp-meta" && prefix) {
         const meta = await r2json(env, `${prefix}/decomp/meta.json`);
-        if (!meta) return jsonResponse({ error: "no decomp meta" }, 404);
-        // The Neurons viewport needs intermediate_size; decompose doesn't write
-        // it into meta.json, so read it from the token_neurons.bin TOKN header.
-        if (!meta.intermediate_size) {
-          const h = await r2range(env, `${prefix}/decomp/token_neurons.bin`, 0, 16);
-          if (h) meta.intermediate_size = new DataView(h).getUint32(12, true);
-        }
-        return jsonResponse(meta);
+        return meta ? jsonResponse(meta) : jsonResponse({ error: "no decomp meta" }, 404);
       }
 
       if (ep === "serve-meta" && prefix) {

@@ -1005,58 +1005,142 @@ function _projCols(cols,dir,NT){
   for(let k=0;k<nK;k++){const c=cols[k],dk=dir[k];if(!c||dk===0)continue;for(let i=0;i<NT;i++)p[i]+=dk*c[i];}
   return p;
 }
+// --- Sliding-window direction compute (scale-ready) ---------------------------
+// At full hidden size (4096–8192 PCs) the direction-* analyses can't load every
+// PC column. We compute the direction a−b at full resolution from the two
+// tokens' TOKS vectors (two small reads), then stream only the PCs carrying a
+// coverage fraction of ‖a−b‖² — the *support window*. This auto-sizes to the
+// direction's effective rank: a few PCs on a crystallized/concept-aligned layer
+// (exact vs full-load), growing toward full only where the layer is genuinely
+// high-dimensional — you can't conjure sparsity the data doesn't have, but you
+// never load more than the data needs. magnitude/concentration/explained_variance
+// and the top tokens are exact regardless (computed from the full diff + the
+// per-PC variance ratio); the bimodality histogram carries the usual valley/peak
+// noise near the unimodal boundary, but its verdict is window-stable.
+// The two all-PC ops (random baseline, discover ranking) are read from the
+// producer's falsification.json precompute instead of recomputed in-browser.
+let _dirFals=null; // {top_pcs:[[{pc,bimodality,variance_share}]], random_baseline:[[…]]}
+async function _loadFalsification(){
+  const k=model+'/'+mode;
+  if(_dirFals&&_dirFals._key===k)return _dirFals;
+  try{const r=await api('falsification/'+model+'/'+mode);_dirFals=(r&&r.top_pcs)?r:{top_pcs:[],random_baseline:[]};}
+  catch(e){_dirFals={top_pcs:[],random_baseline:[]};}
+  _dirFals._key=k;return _dirFals;
+}
+// Full a−b at `layer` from two cached token vectors; PC support carrying
+// `coverage` of ‖diff‖² (≥3 PCs, ≤cap). Pure — no fetch, no column load.
+function _dirSupportAt(ea,eb,layer,coverage,cap){
+  const fK=Math.min(ea.fK,eb.fK,nK),oa=layer*ea.fK,ob=layer*eb.fK;
+  const diff=new Float32Array(nK);let m2=0;
+  for(let k=0;k<fK;k++){let va=ea.data[oa+k],vb=eb.data[ob+k];va=va===va?va:0;vb=vb===vb?vb:0;const v=va-vb;diff[k]=v;m2+=v*v;}
+  const order=Array.from({length:nK},(_,k)=>k).sort((x,y)=>diff[y]*diff[y]-diff[x]*diff[x]);
+  const tot=m2+1e-12;let cum=0;const support=[];
+  for(let r=0;r<nK;r++){const k=order[r];if(diff[k]===0)break;support.push(k);cum+=diff[k]*diff[k];if((cum/tot>=coverage&&support.length>=3)||support.length>=cap)break;}
+  return {diff,mag:Math.sqrt(m2),order,support,m2};
+}
+async function _dirSupport(a,b,layer,coverage=0.99,cap=4096){
+  const[ea,eb]=await Promise.all([_pcsFetchToken(a),_pcsFetchToken(b)]);
+  if(!ea||!eb)return null;
+  const S=_dirSupportAt(ea,eb,layer,coverage,cap);S.ea=ea;S.eb=eb;return S;
+}
+// Project all tokens onto a (mostly-zero) PC-space direction, loading only its
+// support columns. dir[k] non-zero only for k in support.
+async function _projSupport(layer,dir,support,NT){
+  await _ensurePCs(support);
+  const p=new Float32Array(NT);
+  for(let s=0;s<support.length;s++){const k=support[s],dk=dir[k];if(!dk)continue;const c=_getScoreColumn(layer,k);if(!c)continue;for(let i=0;i<NT;i++)p[i]+=dk*c[i];}
+  return p;
+}
+// 50-pair random bimodality baseline. Precompute-first (the only all-PC op);
+// fall back to an in-browser scan only when absent (small models / virtual
+// layers) where loading every PC is cheap anyway.
+async function _randBaseline(layer,NT){
+  const F=await _loadFalsification();
+  const pre=F.random_baseline&&F.random_baseline[layer];
+  if(pre&&pre.length)return pre;
+  await _ensurePCs(Array.from({length:nK},(_,k)=>k));
+  const cols=new Array(nK);for(let k=0;k<nK;k++)cols[k]=_getScoreColumn(layer,k);
+  const rb=[];for(let m=0;m<50;m++){const ia=((m*2654435761)>>>0)%NT,ib=((m*40503+98765)>>>0)%NT;if(ia===ib)continue;rb.push(_bimoJS(_projCols(cols,_pairDir(cols,ia,ib),NT)));}
+  return rb;
+}
 // Browser-compute of /api/direction-quality (501 in the serverless deploy).
 // Full-K A↔B analysis at a layer from _pcFull: magnitude, concentration,
 // bimodality + 50-pair random baseline, per-layer bimodality sweep + best layer.
 // functional_* need lmhead (a weight, not in the published artifact) → null.
 async function _dirQuality(a,b,layer){
-  await _ensurePCs(Array.from({length:nK},(_,k)=>k));
+  // 0.999 for the reported bimodality: the window auto-sizes to the direction's
+  // effective support — tiny where it's sparse (exact vs full), larger only
+  // where the layer is genuinely high-dimensional (you can't cheat that).
+  const S=await _dirSupport(a,b,layer,0.999);
+  if(!S)return {error:'tokens unavailable'};
   const NT=_pcFullNT||nN, NL=_pcFullNL||nL;
-  const cols=new Array(nK);for(let k=0;k<nK;k++)cols[k]=_getScoreColumn(layer,k);
-  const diff=new Float32Array(nK);let mag2=0;
-  for(let k=0;k<nK;k++){const c=cols[k];const v=c?(c[a]-c[b]):0;diff[k]=v;mag2+=v*v;}
-  const mag=Math.sqrt(mag2),tot=mag2+1e-8,inv=1/(mag+1e-8);
-  const dir=new Float32Array(nK);for(let k=0;k<nK;k++)dir[k]=diff[k]*inv;
-  const order=Array.from({length:nK},(_,k)=>k).sort((x,y)=>diff[y]*diff[y]-diff[x]*diff[x]);
+  const{diff,mag,order,support,m2,ea,eb}=S;
+  const tot=m2+1e-8,inv=1/(mag+1e-8);
+  const dir=new Float32Array(nK);for(const k of support)dir[k]=diff[k]*inv;
+  // concentration + top_pcs straight off the full diff (no column load)
   let cum=0,p50=nK,p80=nK,p95=nK;
-  for(let r=0;r<nK;r++){cum+=diff[order[r]]*diff[order[r]];const f=cum/tot;if(p50===nK&&f>=0.5)p50=r+1;if(p80===nK&&f>=0.8)p80=r+1;if(p95===nK&&f>=0.95){p95=r+1;break;}}
+  for(let r=0;r<nK;r++){const k=order[r];cum+=diff[k]*diff[k];const f=cum/tot;if(p50===nK&&f>=0.5)p50=r+1;if(p80===nK&&f>=0.8)p80=r+1;if(p95===nK&&f>=0.95){p95=r+1;break;}}
   const top_pcs=order.slice(0,5).map(k=>({pc:k,share:diff[k]*diff[k]/tot,delta:diff[k]}));
-  const proj=_projCols(cols,dir,NT),bim=_bimoJS(proj);
-  let pm=0;for(let i=0;i<NT;i++)pm+=proj[i];pm/=NT;
-  let pv=0;for(let i=0;i<NT;i++){const d=proj[i]-pm;pv+=d*d;}pv/=NT;
-  let totVar=0;for(let k=0;k<nK;k++){const c=cols[k];if(!c)continue;let m=0;for(let i=0;i<NT;i++)m+=c[i];m/=NT;let v=0;for(let i=0;i<NT;i++){const d=c[i]-m;v+=d*d;}totVar+=v/NT;}
-  const explained_variance=pv/(totVar+1e-8);
-  const randBms=[];
-  for(let m=0;m<50;m++){const ia=((m*2654435761)>>>0)%NT,ib=((m*40503+98765)>>>0)%NT;if(ia===ib)continue;randBms.push(_bimoJS(_projCols(cols,_pairDir(cols,ia,ib),NT)));}
-  const random_baseline_percentile=randBms.length?randBms.filter(r=>r>bim).length/randBms.length*100:50;
+  // projection over the support window only — omitted PCs <1% of ‖diff‖²
+  const proj=await _projSupport(layer,dir,support,NT),bim=_bimoJS(proj);
+  // explained variance of the a−b direction = Σ dir[k]²·var_ratio[k]. _layerVar
+  // is the per-PC explained-variance ratio (sums to 1), and PCA scores are
+  // orthogonal, so this is exact from the support alone — no proj-variance scan.
+  const lv=_layerVar[layer]||[];let explained_variance=0;for(const k of support)explained_variance+=dir[k]*dir[k]*(lv[k]||0);
+  const rb=await _randBaseline(layer,NT);
+  const random_baseline_percentile=rb.length?rb.filter(r=>r>bim).length/rb.length*100:50;
+  // per-layer sweep: per-layer support window (top-32 — enough for the estimate)
   const layer_bimodalities=[];let best_layer=layer,bestBm=bim;
-  for(let l=0;l<NL;l++){const lc=new Array(nK);for(let k=0;k<nK;k++)lc[k]=_getScoreColumn(l,k);const lb=_bimoJS(_projCols(lc,_pairDir(lc,a,b),NT));layer_bimodalities.push({layer:l,bimodality:lb});if(lb<bestBm){bestBm=lb;best_layer=l;}}
+  for(let l=0;l<NL;l++){
+    let lb;
+    if(l===layer)lb=bim;
+    else{const Sl=_dirSupportAt(ea,eb,l,0.9,16);if(!Sl.support.length){lb=1.0;}else{const il=1/(Sl.mag+1e-8),dl=new Float32Array(nK);for(const k of Sl.support)dl[k]=Sl.diff[k]*il;lb=_bimoJS(await _projSupport(l,dl,Sl.support,NT));}}
+    layer_bimodalities.push({layer:l,bimodality:lb});if(lb<bestBm){bestBm=lb;best_layer=l;}
+  }
   // most A-like / B-like tokens by projection (direction = a−b, high = A-like)
   const _sidx=Array.from({length:NT},(_,i)=>i).sort((x,y)=>proj[x]-proj[y]);
   const _mk=i=>({idx:i,text:texts[i],script:scripts[i],proj:proj[i]});
   const top_a=_sidx.slice(-10).reverse().map(_mk),top_b=_sidx.slice(0,10).map(_mk);
   const token_a={idx:a,text:texts[a],script:scripts[a]},token_b={idx:b,text:texts[b],script:scripts[b]};
-  return {K:nK,magnitude:mag,concentration:{pcs_50:p50,pcs_80:p80,pcs_95:p95},top_pcs,bimodality:bim,explained_variance,random_baseline_percentile,layer_bimodalities,best_layer,top_a,top_b,token_a,token_b,functional_hit_rate:null,functional_warning:null};
+  return {K:nK,magnitude:mag,concentration:{pcs_50:p50,pcs_80:p80,pcs_95:p95},top_pcs,bimodality:bim,explained_variance,random_baseline_percentile,layer_bimodalities,best_layer,top_a,top_b,token_a,token_b,functional_hit_rate:null,functional_warning:null,_support:support.length};
 }
 // Browser-compute of /api/direction-brief (501). Fast falsification signals at
 // one layer — a subset of _dirQuality. functional_* need lmhead → null.
 async function _dirBriefJS(a,b,layer){
-  await _ensurePCs(Array.from({length:nK},(_,k)=>k));
   const NT=_pcFullNT||nN;
-  const cols=new Array(nK);for(let k=0;k<nK;k++)cols[k]=_getScoreColumn(layer,k);
-  let mag2=0;for(let k=0;k<nK;k++){const c=cols[k];const v=c?(c[a]-c[b]):0;mag2+=v*v;}
-  const mag=Math.sqrt(mag2),dir=_pairDir(cols,a,b);
-  const bm=_bimoJS(_projCols(cols,dir,NT));
-  const randBms=[];for(let m=0;m<50;m++){const ia=((m*2654435761)>>>0)%NT,ib=((m*40503+98765)>>>0)%NT;if(ia===ib)continue;randBms.push(_bimoJS(_projCols(cols,_pairDir(cols,ia,ib),NT)));}
-  const pctile=randBms.length?randBms.filter(r=>r>bm).length/randBms.length*100:50;
-  return {layer,K:nK,N:NT,magnitude:mag,bimodality:bm,random_baseline_percentile:pctile,functional_hit_rate:null,functional_warning:null};
+  const S=await _dirSupport(a,b,layer,0.999);
+  if(!S)return {layer,K:nK,N:NT,magnitude:0,bimodality:1,random_baseline_percentile:50,functional_hit_rate:null,functional_warning:null};
+  const inv=1/(S.mag+1e-8),dir=new Float32Array(nK);for(const k of S.support)dir[k]=S.diff[k]*inv;
+  const bm=_bimoJS(await _projSupport(layer,dir,S.support,NT));
+  const rb=await _randBaseline(layer,NT);
+  const pctile=rb.length?rb.filter(r=>r>bm).length/rb.length*100:50;
+  return {layer,K:nK,N:NT,magnitude:S.mag,bimodality:bm,random_baseline_percentile:pctile,functional_hit_rate:null,functional_warning:null};
 }
 // Browser-compute of /api/direction-discover (501). Each PC's score column IS a
 // direction's projection; rank PCs by bimodality (crystal-suppressed via a |z|>6
 // outlier mask), report variance share + top tokens per side. functional → null.
 async function _dirDiscoverJS(layer,n_top){
-  await _ensurePCs(Array.from({length:nK},(_,k)=>k));
   const NT=_pcFullNT||nN;
+  // Precompute-first: producer ranked every PC by bimodality (crystal-suppressed)
+  // into falsification.json. Look it up, load only the winning PCs' columns for
+  // top tokens — bounded, exact, no all-PC scan. The one all-PC op, made O(n_top).
+  const F=await _loadFalsification();
+  const preTop=F.top_pcs&&F.top_pcs[layer];
+  if(preTop&&preTop.length){
+    const top=preTop.slice(0,n_top);
+    await _ensurePCs(top.map(e=>e.pc));
+    const rb=(F.random_baseline&&F.random_baseline[layer])||[];
+    const discovered=top.map(({pc,bimodality,variance_share})=>{
+      const c=_getScoreColumn(layer,pc)||new Float32Array(NT);
+      const ix=Array.from({length:NT},(_,i)=>i).sort((x,y)=>c[x]-c[y]);
+      const mk=i=>({idx:i,text:texts[i],script:scripts[i],proj:c[i]});
+      const pctile=rb.length?rb.filter(r=>r>bimodality).length/rb.length*100:50;
+      return {pc,bimodality,variance_share,random_baseline_percentile:pctile,top_pos:ix.slice(-5).reverse().map(mk),top_neg:ix.slice(0,5).map(mk),functional_hit_rate:null,functional_warning:null};
+    });
+    return {discovered,layer,n_top,outliers_excluded:null,n_population:NT,source:'precompute'};
+  }
+  // Fallback: in-browser all-PC scan (no precompute — small models / virtual layers).
+  await _ensurePCs(Array.from({length:nK},(_,k)=>k));
   const cols=new Array(nK);for(let k=0;k<nK;k++)cols[k]=_getScoreColumn(layer,k);
   const std=new Float32Array(nK);
   for(let k=0;k<nK;k++){const c=cols[k];if(!c){continue;}let m=0;for(let i=0;i<NT;i++)m+=c[i];m/=NT;let v=0;for(let i=0;i<NT;i++){const d=c[i]-m;v+=d*d;}std[k]=Math.sqrt(v/NT);}
@@ -1581,16 +1665,17 @@ async function _applyDirectionColors(){
   try{
     // Browser-compute. Was /api/direction-project, a server numpy endpoint that
     // returns 501 in the serverless deploy — so cloud direction-coloring silently
-    // regressed. Restore it client-side: project every token onto the A-B
-    // direction in PC space at this layer (the same _pcFull math as
-    // direction-depth, restricted to the current layer).
-    await _ensurePCs(Array.from({length:nK},(_,k)=>k));
+    // regressed. Restore it client-side via the sliding window: build the full
+    // a−b direction from the two tokens' TOKS vectors, then project every token
+    // over only its support PCs (the omitted PCs hold <0.1% of ‖a−b‖²). Scales
+    // to full hidden size without loading every PC column.
+    const S=await _dirSupport(_a,_b,_layer);
+    if(_dirColorReqId!==reqId||!S)return;
+    const inv=1/(S.mag+1e-8),dir=new Float32Array(nK);for(const k of S.support)dir[k]=S.diff[k]*inv;
+    await _ensurePCs(S.support);
     if(_dirColorReqId!==reqId)return;
-    const cols=new Array(nK),diff=new Float32Array(nK);let mag2=0;
-    for(let k=0;k<nK;k++){const c=_getScoreColumn(_layer,k);cols[k]=c;const dk0=c?(c[_a]-c[_b]):0;diff[k]=dk0;mag2+=dk0*dk0;}
-    const inv=1/(Math.sqrt(mag2)+1e-8);
     const proj=new Float32Array(nN);
-    for(let k=0;k<nK;k++){const c=cols[k],dk=diff[k]*inv;if(!c||dk===0)continue;for(let i=0;i<nN;i++)proj[i]+=dk*c[i];}
+    for(let s=0;s<S.support.length;s++){const k=S.support[s],dk=dir[k];if(!dk)continue;const c=_getScoreColumn(_layer,k);if(!c)continue;for(let i=0;i<nN;i++)proj[i]+=dk*c[i];}
     if(proj.length!==nN)return;
     _colorFromProj(proj);
   }catch(e){/* silently fail — 50-PC coloring remains as fallback */}
@@ -3760,31 +3845,30 @@ async function _fetchDirBrief(){
 async function _fetchDirDepth(){
   if(pinnedToken<0||pinnedTokenB<0||!model||!mode){_dirDepthData=null;return null;}
   try{
-    // Browser-compute (was the server's /api/direction-depth numpy endpoint).
-    // Everything derives from _pcFull: load all K PCs, then per layer take the
-    // A↔B difference in PC space as the direction and project the whole token
-    // population onto it. A small N×K matmul per layer — plain JS, no WebGPU.
+    // Browser-compute (was the server's /api/direction-depth numpy endpoint),
+    // via the sliding window: build the A↔B direction at each layer from the two
+    // tokens' TOKS vectors (one fetch, reused across layers), then project the
+    // population over only that layer's support PCs. magnitude / pcs_50 / top_pcs
+    // are exact off the full diff; the percentile band is projection-robust to
+    // the dropped tail. Bounds per-layer cost to ≤256 PC columns at any K.
     const a=pinnedToken,b=pinnedTokenB;
-    await _ensurePCs(Array.from({length:nK},(_,k)=>k));
+    const[ea,eb]=await Promise.all([_pcsFetchToken(a),_pcsFetchToken(b)]);
+    if(!ea||!eb){_dirDepthData=null;return null;}
     const NL=_pcFullNL||nL, NT=_pcFullNT||nN;
-    const cols=new Array(nK),diff=new Float32Array(nK),dir=new Float32Array(nK),proj=new Float32Array(NT);
     const layers=[];
     for(let l=0;l<NL;l++){
-      let mag2=0;
-      for(let k=0;k<nK;k++){const c=_getScoreColumn(l,k);cols[k]=c;const dv=c?(c[a]-c[b]):0;diff[k]=dv;mag2+=dv*dv;}
-      const mag=Math.sqrt(mag2),inv=1/(mag+1e-8);
-      for(let k=0;k<nK;k++)dir[k]=diff[k]*inv;
-      proj.fill(0);
-      for(let k=0;k<nK;k++){const c=cols[k],dk=dir[k];if(!c||dk===0)continue;for(let i=0;i<NT;i++)proj[i]+=dk*c[i];}
+      const S=_dirSupportAt(ea,eb,l,0.99,256);
+      const mag=S.mag,inv=1/(mag+1e-8),tot=S.m2+1e-8;
+      const dir=new Float32Array(nK);for(const k of S.support)dir[k]=S.diff[k]*inv;
+      const proj=await _projSupport(l,dir,S.support,NT);
       const proj_a=proj[a],proj_b=proj[b];
       const stp=Math.max(1,Math.floor(NT/500)),samp=[];
       for(let i=0;i<NT;i+=stp)samp.push(proj[i]);
       samp.sort((x,y)=>x-y);
       const pct=q=>samp.length?samp[Math.min(samp.length-1,Math.floor(q*samp.length))]:0;
-      const idx=Array.from({length:nK},(_,k)=>k).sort((x,y)=>diff[y]*diff[y]-diff[x]*diff[x]);
-      const tot=mag2+1e-8;let cum=0,pcs_50=nK;
-      for(let r=0;r<nK;r++){cum+=diff[idx[r]]*diff[idx[r]];if(cum/tot>=0.5){pcs_50=r+1;break;}}
-      const top_pcs=idx.slice(0,8).map(k=>({pc:k,share:diff[k]*diff[k]/tot}));
+      let cum=0,pcs_50=nK;
+      for(let r=0;r<S.order.length;r++){const k=S.order[r];cum+=S.diff[k]*S.diff[k];if(cum/tot>=0.5){pcs_50=r+1;break;}}
+      const top_pcs=S.order.slice(0,8).map(k=>({pc:k,share:S.diff[k]*S.diff[k]/tot}));
       layers.push({layer:l,magnitude:mag,proj_a,proj_b,p10:pct(0.10),p50:pct(0.50),p90:pct(0.90),pcs_50,top_pcs});
     }
     _dirDepthData={layers,n_layers:NL,client:true};
@@ -3944,7 +4028,7 @@ async function loadAll(){
   dm=dmResult;model=newModel;mode=newMode;
   nL=dm.n_layers;_nRealLayers=dm.n_real_layers||nL;_buildLayerSeq();
   // Clear all PCA caches on model switch
-  _pcsFetchGen++;_cloudFetchGen++;_pcsHoverCache.clear();_pcsHoverPending.clear();_hoverCache.clear();_pcFull.clear();_pcMedium.clear();_pcFullPending.clear();_pcMediumPending.clear();_nfCache.clear();
+  _pcsFetchGen++;_cloudFetchGen++;_dirFals=null;_pcsHoverCache.clear();_pcsHoverPending.clear();_hoverCache.clear();_pcFull.clear();_pcMedium.clear();_pcFullPending.clear();_pcMediumPending.clear();_nfCache.clear();
   CloudStore.pending.clear();TokenStore.pending.clear();
   _pcsFullA=null;_pcsFullB=null;_pcsFullK=0;_pcsFullNL=0;_pcsScale=0;_pcsNK=0;
   _pcsLoadingA=-1;_pcsLoadingB=-1;_pcsHoverTok=-1;_hoverTok=-1;_hoverLoading='';
@@ -5381,6 +5465,12 @@ window.__heinrich = {
   // --- direct handles to existing functions ---
   buildTraj, setLayer, _onPinChange, _applyDirectionColors, _updateSeparation,
   _togglePlay, _clampTraj, _robustColMax, _updateRVLayer, _rebuildWeightLines,
+  // direction compute (sliding-window) — for verification / scripting
+  dirQuality:(a,b,l)=>_dirQuality(a,b,l), dirBrief:(a,b,l)=>_dirBriefJS(a,b,l),
+  dirDiscover:(l,n)=>_dirDiscoverJS(l,n), dirSupport:(a,b,l,cov,cap)=>_dirSupport(a,b,l,cov,cap),
+  loadFalsification:()=>_loadFalsification(), get pcFullSize(){return _pcFull.size;},
+  fetchDirDepth:()=>_fetchDirDepth(),
+  async __bimAtCoverage(a,b,l,cov){const S=await _dirSupport(a,b,l,cov,99999);const inv=1/(S.mag+1e-8),dir=new Float32Array(nK);for(const k of S.support)dir[k]=S.diff[k]*inv;const NT=_pcFullNT||nN;const proj=await _projSupport(l,dir,S.support,NT);return {n:S.support.length,bim:_bimoJS(proj),mag:S.mag};},
 
   // --- navigation ---
   layerNext(n=1){for(let i=0;i<n;i++){document.getElementById('lnext').click();} return cL;},
