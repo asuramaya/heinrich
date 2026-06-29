@@ -311,6 +311,10 @@ rdr.setPixelRatio(_DPR);rdr.setSize(window.innerWidth,window.innerHeight);
 rdr.autoClear=false;rdr.setScissorTest(true);
 function _renderRegion(el,sc,cam){
   const r=el.getBoundingClientRect();const w=r.width,h=r.height;if(w<=0||h<=0)return;
+  // Occlusion: skip regions scrolled fully out of the window. Safe with the
+  // global-clear render path (no preserveDrawingBuffer) — off-screen pixels are
+  // never seen. On short screens most of the 15-viewport stack is below the fold.
+  if(r.bottom<=0||r.top>=window.innerHeight||r.right<=0||r.left>=window.innerWidth)return;
   const x=r.left,y=window.innerHeight-r.bottom;
   cam.aspect=w/h;cam.updateProjectionMatrix();
   rdr.setViewport(x,y,w,h);rdr.setScissor(x,y,w,h);rdr.render(sc,cam);
@@ -1374,6 +1378,17 @@ function _rayHit(vi,e){const v=views[vi];const r=v.cv.getBoundingClientRect();
   }
   if(h.length>0)return h[0].index%nN;
   return -1;}
+// Hover raycasts are O(N) over the cloud (intersectObject tests every point).
+// Coalesce to one per animation frame so a 150K-vocab cloud doesn't run a full
+// intersect on every mousemove (100+/s → ≤60/s, only the latest cursor position).
+let _hoverPending=null,_hoverRAF=0;
+function _processHover(){
+  _hoverRAF=0;const pend=_hoverPending;_hoverPending=null;
+  if(!pend||!nN)return;
+  const {vi,e}=pend;const i=_rayHit(vi,e);const td=document.getElementById('detail');
+  if(i>=0){highlightToken(i);document.getElementById('tt').textContent=texts[i]||'?';document.getElementById('tt').style.color=CLh[scripts[i]]||'#aaa';document.getElementById('tm').textContent=_popupText(i,vi);let _px=e.clientX+15,_py=e.clientY-10;if(_px+220>window.innerWidth)_px=e.clientX-225;if(_py+120>window.innerHeight)_py=window.innerHeight-125;if(_py<5)_py=5;td.style.left=_px+'px';td.style.top=_py+'px';td.style.transform='none';td.style.display='block';}
+  else{highlightToken(-1);td.style.display='none';}
+}
 function _isRightClick(e){return e.button===2||(e.button===0&&e.ctrlKey);} // ctrl+click=right on Mac
 function _popupText(i,vi){
   const tok=texts[i]||'';const bytes=new TextEncoder().encode(tok).length;
@@ -1476,10 +1491,8 @@ document.querySelectorAll('.cbtn').forEach(grp=>{
 // Interaction: left=TokenA, right=TokenB
 function setupInteraction(vi){const v=views[vi];
   v.cv.addEventListener('contextmenu',e=>e.preventDefault(),true);// capture phase — fires before OrbitControls
-  v.cv.addEventListener('mousemove',e=>{if(!nN)return;const i=_rayHit(vi,e);const td=document.getElementById('detail');
-    if(i>=0){highlightToken(i);document.getElementById('tt').textContent=texts[i]||'?';document.getElementById('tt').style.color=CLh[scripts[i]]||'#aaa';document.getElementById('tm').textContent=_popupText(i,vi);let _px=e.clientX+15,_py=e.clientY-10;if(_px+220>window.innerWidth)_px=e.clientX-225;if(_py+120>window.innerHeight)_py=window.innerHeight-125;if(_py<5)_py=5;td.style.left=_px+'px';td.style.top=_py+'px';td.style.transform='none';td.style.display='block';}
-    else{highlightToken(-1);td.style.display='none';}});
-  v.cv.addEventListener('mouseleave',()=>{highlightToken(-1);document.getElementById('detail').style.display='none';});
+  v.cv.addEventListener('mousemove',e=>{if(!nN)return;_hoverPending={vi,e};if(!_hoverRAF)_hoverRAF=requestAnimationFrame(_processHover);});
+  v.cv.addEventListener('mouseleave',()=>{_hoverPending=null;highlightToken(-1);document.getElementById('detail').style.display='none';});
   let _dx=0,_dy=0;
   v.cv.addEventListener('pointerdown',e=>{_dx=e.clientX;_dy=e.clientY;});
   v.cv.addEventListener('pointerup',e=>{if(!nN||Math.abs(e.clientX-_dx)+Math.abs(e.clientY-_dy)>5)return;
