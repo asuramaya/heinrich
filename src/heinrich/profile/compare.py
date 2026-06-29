@@ -6931,12 +6931,20 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
             print(f"  Token neuron index: {n_sample} tokens × {n_layers} layers × {_inter} neurons = "
                   f"{(16 + n_sample * n_stride) / (1024*1024):.0f}MB", file=sys.stderr)
 
+    # intermediate_size makes the artifact self-describing for the Neurons
+    # viewport (so the consumer needn't read it from the TOKN header).
+    intermediate_size = 0
+    _gate0 = mlp_dir / 'L00_gate.npy'
+    if _gate0.exists():
+        intermediate_size = int(np.load(str(_gate0), mmap_mode='r').shape[1])
+
     # Save metadata (sample_indices as "all" for full vocab to avoid huge JSON)
     meta_out = {
         "n_sample": n_sample,
         "n_components": K,
         "n_layers": total_layers,
         "n_real_layers": n_layers,
+        "intermediate_size": intermediate_size,
         "method": "pca",
         "virtual_layers": ["emb", "lmh"],
         "sample_indices": "all" if n_sample == n_tok else idx.tolist(),

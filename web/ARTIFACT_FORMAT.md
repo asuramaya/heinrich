@@ -55,8 +55,10 @@ be multi-GB; the published subset is a few MB + the optional neuron index.
 
 ### `decomp/meta.json`
 `n_layers` (total, incl. virtual), `n_real_layers`, `n_sample`, `n_components`,
-`layers` (ordered list, drives variance ordering), `virtual_layers`,
-`sample_indices`, `method`.
+`intermediate_size` (MLP width — the Neurons viewport reads it), `layers`
+(ordered list, drives variance ordering), `virtual_layers`, `sample_indices`,
+`method`. `mri-decompose` writes `intermediate_size`; `heinrich publish`
+back-fills it from the `token_neurons.bin` TOKN header for older decompositions.
 
 Layer ordering is canonical and shared by every binary index:
 `[L00 … L{n-1}, emb, lmh]` → `total_layers = n_real_layers + 2`.

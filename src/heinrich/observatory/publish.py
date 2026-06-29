@@ -31,6 +31,28 @@ def _model_mode(mri_dir: Path) -> tuple[str, str]:
     return mri_dir.parent.name, mode
 
 
+def _ensure_intermediate(decomp: Path) -> None:
+    """Back-fill intermediate_size into decomp/meta.json from the TOKN header.
+
+    Decompositions made before the producer wrote intermediate_size lack it, so
+    the Neurons viewport stays dark. Read it from token_neurons.bin (TOKN header,
+    offset 12) and patch meta.json — keeps the artifact self-describing.
+    """
+    import struct
+    meta_p = decomp / "meta.json"
+    tn = decomp / "token_neurons.bin"
+    if not (meta_p.exists() and tn.exists()):
+        return
+    meta = json.loads(meta_p.read_text())
+    if meta.get("intermediate_size"):
+        return
+    with open(tn, "rb") as f:
+        magic, _n_tok, _n_layers, inter = struct.unpack("<4sIII", f.read(16))
+    if magic == b"TOKN" and inter:
+        meta["intermediate_size"] = int(inter)
+        meta_p.write_text(json.dumps(meta, indent=2))
+
+
 def write_sidecars(mri_dir: Path) -> list[str]:
     """tokens.npz/norms.npz/baselines.npz → worker-native JSON sidecars.
 
@@ -39,6 +61,8 @@ def write_sidecars(mri_dir: Path) -> list[str]:
     import numpy as np
     written: list[str] = []
     decomp = mri_dir / "decomp"
+    if decomp.exists():
+        _ensure_intermediate(decomp)
 
     npz = mri_dir / "tokens.npz"
     if npz.exists() and decomp.exists():
