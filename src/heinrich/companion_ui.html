@@ -1464,13 +1464,18 @@ async function _applyDirectionColors(){
   const _dcs=document.getElementById('dirColorStatus');
   if(_dcs)_dcs.style.display='block';
   try{
-    const resp=await fetch(`/api/direction-project/${model}/${mode}?a=${_a}&b=${_b}&layer=${_layer}`,{signal:ctrl.signal});
+    // Browser-compute. Was /api/direction-project, a server numpy endpoint that
+    // returns 501 in the serverless deploy — so cloud direction-coloring silently
+    // regressed. Restore it client-side: project every token onto the A-B
+    // direction in PC space at this layer (the same _pcFull math as
+    // direction-depth, restricted to the current layer).
+    await _ensurePCs(Array.from({length:nK},(_,k)=>k));
     if(_dirColorReqId!==reqId)return;
-    const buf=await resp.arrayBuffer();
-    const dv=new DataView(buf);
-    const hdrLen=dv.getUint32(0,true);
-    const projBytes=new Uint8Array(buf,4+hdrLen);
-    const proj=new Float32Array(projBytes.buffer.slice(projBytes.byteOffset,projBytes.byteOffset+projBytes.byteLength));
+    const cols=new Array(nK),diff=new Float32Array(nK);let mag2=0;
+    for(let k=0;k<nK;k++){const c=_getScoreColumn(_layer,k);cols[k]=c;const dk0=c?(c[_a]-c[_b]):0;diff[k]=dk0;mag2+=dk0*dk0;}
+    const inv=1/(Math.sqrt(mag2)+1e-8);
+    const proj=new Float32Array(nN);
+    for(let k=0;k<nK;k++){const c=cols[k],dk=diff[k]*inv;if(!c||dk===0)continue;for(let i=0;i<nN;i++)proj[i]+=dk*c[i];}
     if(proj.length!==nN)return;
     _colorFromProj(proj);
   }catch(e){/* silently fail — 50-PC coloring remains as fallback */}
