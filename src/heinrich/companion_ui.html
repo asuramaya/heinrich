@@ -3623,9 +3623,35 @@ async function _fetchDirBrief(){
 async function _fetchDirDepth(){
   if(pinnedToken<0||pinnedTokenB<0||!model||!mode){_dirDepthData=null;return null;}
   try{
-    const d=await api(`direction-depth/${model}/${mode}?a=${pinnedToken}&b=${pinnedTokenB}`);
-    if(d&&d.layers)_dirDepthData=d;else _dirDepthData=null;
-  }catch(e){_dirDepthData=null;}
+    // Browser-compute (was the server's /api/direction-depth numpy endpoint).
+    // Everything derives from _pcFull: load all K PCs, then per layer take the
+    // A↔B difference in PC space as the direction and project the whole token
+    // population onto it. A small N×K matmul per layer — plain JS, no WebGPU.
+    const a=pinnedToken,b=pinnedTokenB;
+    await _ensurePCs(Array.from({length:nK},(_,k)=>k));
+    const NL=_pcFullNL||nL, NT=_pcFullNT||nN;
+    const cols=new Array(nK),diff=new Float32Array(nK),dir=new Float32Array(nK),proj=new Float32Array(NT);
+    const layers=[];
+    for(let l=0;l<NL;l++){
+      let mag2=0;
+      for(let k=0;k<nK;k++){const c=_getScoreColumn(l,k);cols[k]=c;const dv=c?(c[a]-c[b]):0;diff[k]=dv;mag2+=dv*dv;}
+      const mag=Math.sqrt(mag2),inv=1/(mag+1e-8);
+      for(let k=0;k<nK;k++)dir[k]=diff[k]*inv;
+      proj.fill(0);
+      for(let k=0;k<nK;k++){const c=cols[k],dk=dir[k];if(!c||dk===0)continue;for(let i=0;i<NT;i++)proj[i]+=dk*c[i];}
+      const proj_a=proj[a],proj_b=proj[b];
+      const stp=Math.max(1,Math.floor(NT/500)),samp=[];
+      for(let i=0;i<NT;i+=stp)samp.push(proj[i]);
+      samp.sort((x,y)=>x-y);
+      const pct=q=>samp.length?samp[Math.min(samp.length-1,Math.floor(q*samp.length))]:0;
+      const idx=Array.from({length:nK},(_,k)=>k).sort((x,y)=>diff[y]*diff[y]-diff[x]*diff[x]);
+      const tot=mag2+1e-8;let cum=0,pcs_50=nK;
+      for(let r=0;r<nK;r++){cum+=diff[idx[r]]*diff[idx[r]];if(cum/tot>=0.5){pcs_50=r+1;break;}}
+      const top_pcs=idx.slice(0,8).map(k=>({pc:k,share:diff[k]*diff[k]/tot}));
+      layers.push({layer:l,magnitude:mag,proj_a,proj_b,p10:pct(0.10),p50:pct(0.50),p90:pct(0.90),pcs_50,top_pcs});
+    }
+    _dirDepthData={layers,n_layers:NL,client:true};
+  }catch(e){console.error('dirDepth client:',e);_dirDepthData=null;}
   return _dirDepthData;
 }
 let _pinChangeDebounce=null;
@@ -5193,7 +5219,8 @@ function _resolveViewByName(name){
 window.__heinrich = {
   // --- state readers ---
   get views(){return views;}, get leftViews(){return leftViews;}, get rightViews(){return rightViews;},
-  get vpPairs(){return vpPairs;},
+  get vpPairs(){return vpPairs;}, get dirDepth(){return _dirDepthData;},
+  get pins(){return {a:pinnedToken,b:pinnedTokenB};},
   get state(){return {model,mode,cL,nL,nN,nK,_nRealLayers,pinnedToken,pinnedTokenB,_dirColorActive,play};},
   get wlData(){return _wlData;}, get wlDirData(){return _wlDirData;}, get wlDirKey(){return _wlDirKey;},
   get dirProjLast(){return _dirProjLast;},
