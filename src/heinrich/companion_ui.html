@@ -147,6 +147,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
         <button id="bl" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">Go</button>
         <span style="flex:1"></span>
         <span id="ntok" style="color:#444;font-size:7px"></span>
+        <span id="unlockPill" title="Read-only viewer — run heinrich locally to unlock heavy + live analysis" style="display:none;cursor:pointer;color:#9c6;border:1px solid #353;border-radius:999px;padding:0 5px;font-size:7px;margin-left:3px;white-space:nowrap">&#128275; unlock</span>
       </div>
       <div style="display:flex;gap:3px;align-items:center">
         <button id="lprev" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9664;</button>
@@ -249,6 +250,26 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
         </div>
       </div>
     </div>
+  </div>
+</div>
+<div id="unlockPanel" style="display:none;position:fixed;inset:0;z-index:60;background:rgba(0,0,0,0.72);align-items:center;justify-content:center;font-size:11px">
+  <div style="background:#0e0e0e;border:1px solid #2a3a2a;border-radius:6px;max-width:440px;padding:16px 18px;color:#bbb;box-shadow:0 8px 40px rgba(0,0,0,0.6)">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+      <div style="color:#9c6;font-weight:bold;font-size:13px">&#128275; Unlock <span id="unlockTier">live</span> mode</div>
+      <button id="unlockClose" style="background:transparent;border:1px solid #333;color:#888;border-radius:3px;cursor:pointer;font-family:inherit;padding:1px 7px">close</button>
+    </div>
+    <div id="unlockWhy" style="color:#888;font-size:10px;line-height:1.5;margin-bottom:12px"></div>
+    <div style="color:#666;font-size:9px;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">1 &middot; run heinrich locally</div>
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
+      <code id="unlockCmd" style="flex:1;background:#161616;border:1px solid #2a2a2a;border-radius:3px;padding:5px 8px;color:#9cd;font-size:11px">pipx run heinrich companion</code>
+      <button id="unlockCopyCmd" style="background:#1a2a1a;border:1px solid #353;color:#9c6;border-radius:3px;cursor:pointer;font-family:inherit;padding:4px 8px">copy</button>
+    </div>
+    <div style="color:#666;font-size:9px;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">2 &middot; open this exact view there</div>
+    <div style="display:flex;gap:6px;align-items:center">
+      <a id="unlockLink" href="#" target="_blank" rel="noopener" style="flex:1;background:#161616;border:1px solid #2a2a2a;border-radius:3px;padding:5px 8px;color:#9cd;font-size:10px;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></a>
+      <button id="unlockCopyLink" style="background:#1a2a1a;border:1px solid #353;color:#9c6;border-radius:3px;cursor:pointer;font-family:inherit;padding:4px 8px">copy</button>
+    </div>
+    <div id="unlockHint" style="color:#555;font-size:9px;margin-top:8px;line-height:1.5">Same model &middot; layer &middot; pins carry over in the link. Start the command first, then open it.</div>
   </div>
 </div>
 <style>
@@ -1283,7 +1304,7 @@ async function _updateSeparationNow(a,b){
     nlDiv.style.cssText='padding:2px 4px;margin:2px 0;font-size:8px;color:#555';
     nlDiv.textContent='testing linearity...';
     list.appendChild(nlDiv);
-    if(!CAP.weights){nlDiv.textContent='linearity: run heinrich locally (full-space kNN)';}
+    if(!CAP.weights){nlDiv.textContent='linearity: run heinrich locally ▸ (full-space kNN)';nlDiv.style.cssText+=';cursor:pointer;color:#9c6';nlDiv.onclick=()=>_showUnlock('weights');}
     else api(`direction-nonlinear/${model}/${mode}?a=${a}&b=${b}&layer=${cL}&n_sample=2000`).then(nl=>{
       if(_sepReqId!==reqId)return;
       if(nl.error){nlDiv.textContent='linearity: '+nl.error;return;}
@@ -1354,7 +1375,7 @@ async function _updateSeparationNow(a,b){
     circDiv.style.cssText='font-size:7px;color:#555;margin:4px 0';
     circDiv.textContent='tracing circuit...';
     list.appendChild(circDiv);
-    if(!CAP.weights){circDiv.textContent='circuit: run heinrich locally (needs raw weights)';}
+    if(!CAP.weights){circDiv.textContent='circuit: run heinrich locally ▸ (needs raw weights)';circDiv.style.cssText+=';cursor:pointer;color:#9c6';circDiv.onclick=()=>_showUnlock('weights');}
     else api(`direction-circuit/${model}/${mode}?a=${a}&b=${b}`).then(circ=>{
       if(_sepReqId!==reqId)return;
       if(circ.error){circDiv.textContent='circuit: '+circ.error;return;}
@@ -4927,7 +4948,7 @@ function _disableLiveUI(){
   _pollActive=false;// halt the command-channel poll loop if it ever started
   const note='producer-only — run `heinrich companion` locally';
   const ss=document.getElementById('liveSessionStatus');
-  if(ss){ss.style.color='#777';ss.textContent='read-only viewer — no live model backend ('+note+')';}
+  if(ss){ss.style.color='#9c6';ss.style.cursor='pointer';ss.textContent='read-only viewer — run heinrich locally to unlock ▸';ss.onclick=()=>_showUnlock('live');}
   const lc=document.getElementById('liveChatStatus');if(lc)lc.textContent=note;
   const lv=document.getElementById('liveStatus');if(lv)lv.textContent=note;
   ['liveInput','liveChatInput','liveModelId','chatInput'].forEach(id=>{const el=document.getElementById(id);if(el){el.disabled=true;el.placeholder=note;}});
@@ -4938,10 +4959,44 @@ function _disableLiveUI(){
 function _applyCapabilities(){
   _deployStatic=!CAP.live;
   if(!CAP.live)_disableLiveUI();
+  const pill=document.getElementById('unlockPill');
+  if(pill)pill.style.display=(!CAP.live||!CAP.weights)?'inline-block':'none';
 }
 // Fallback for the legacy static-poll path — CAP is authoritative, but if a poll
 // ever sees `static:true` we still degrade the live UI.
 function _setDeployStatic(){if(!_deployStatic)_deployStatic=true;_disableLiveUI();}
+
+// === Unlock panel: the "transition down" to a local heinrich ===
+// The cloud SPA's state already lives in location.hash (m/d/l/a/b/p), and the SPA
+// restores from it on boot — so the deep-link is just localhost + that hash, and
+// the spawned local instance lands on the exact same view (model · layer · pins).
+// `tier` tailors the why/command to the cheapest rung that unlocks what the user
+// reached for: weights (slim local, numpy, no GPU) vs live (full local + torch).
+const _LOCAL_BASE='http://localhost:8377/';
+function _unlockLink(){_saveState();return _LOCAL_BASE+(location.hash||'');}
+function _showUnlock(tier){
+  const p=document.getElementById('unlockPanel');if(!p)return;
+  const weights=tier==='weights';
+  const tEl=document.getElementById('unlockTier');if(tEl)tEl.textContent=weights?'heavy-analysis':'live';
+  const why=document.getElementById('unlockWhy');
+  if(why)why.textContent=weights
+    ?'Circuit attribution, the nonlinear (kNN) test, and weight-direction flowers read raw arrays from the full .mri — too heavy for the browser. A local heinrich (numpy, no GPU) serves them.'
+    :'Live forward, steering, and model chat run the model itself — a local heinrich with a model loaded provides them (needs torch).';
+  const link=_unlockLink();
+  const a=document.getElementById('unlockLink');if(a){a.href=link;a.textContent=link;}
+  p.style.display='flex';
+}
+function _hideUnlock(){const p=document.getElementById('unlockPanel');if(p)p.style.display='none';}
+(function(){
+  document.getElementById('unlockPill')?.addEventListener('click',()=>_showUnlock(CAP.weights?'live':'weights'));
+  document.getElementById('unlockClose')?.addEventListener('click',_hideUnlock);
+  document.getElementById('unlockPanel')?.addEventListener('click',e=>{if(e.target.id==='unlockPanel')_hideUnlock();});
+  const wire=(srcId,btnId)=>document.getElementById(btnId)?.addEventListener('click',()=>{
+    const el=document.getElementById(srcId);if(!el)return;const txt=el.textContent||el.href||'';
+    navigator.clipboard?.writeText(txt).then(()=>{const b=document.getElementById(btnId);const o=b.textContent;b.textContent='✓';setTimeout(()=>{b.textContent=o;},1000);}).catch(()=>{});
+  });
+  wire('unlockCmd','unlockCopyCmd');wire('unlockLink','unlockCopyLink');
+})();
 
 // --- Minimize / expand tokpanel ---
 document.getElementById('tokMin')?.addEventListener('click',()=>{
