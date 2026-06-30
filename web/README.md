@@ -63,27 +63,49 @@ wrangler login
 wrangler r2 bucket create heinrich-mri
 wrangler deploy                       # add a custom domain route in the dashboard
 
-# publish artifacts straight to R2 from the producer (pure Python, S3 API):
+# Publish the lean consumer subset to R2. Two paths:
+#  (a) S3 API — pure Python, portable, no node:
 pip install 'heinrich[publish]'
 export R2_ACCOUNT_ID=... R2_ACCESS_KEY_ID=... R2_SECRET_ACCESS_KEY=...
 heinrich publish --mri .data/smollm2-135m/raw.mri --bucket heinrich-mri
+#  (b) no S3 keys — export the lean layout, push it with your wrangler session:
+heinrich publish --mri .data/smollm2-135m/raw.mri --local-dir .r2-export
+#   then: for each file under .r2-export, wrangler r2 object put heinrich-mri/<key> --file <f> --remote
 ```
 
-`heinrich publish` uploads only the lean consumer subset and upserts
-`models.json`. `bash upload.sh remote` (wrangler-based) remains as an
-alternative; `--local-dir` / `--dry-run` need no credentials.
+`heinrich publish` uploads only the lean consumer subset (decomp blobs +
+sidecars + `falsification.json` / `token_predicts.bin` — never the multi-GB raw
+weights) and upserts `models.json`. `--local-dir` / `--dry-run` need no
+credentials; path (b) reuses the same OAuth login as `wrangler deploy`.
+
+## Run the full instrument locally (the maximal node)
+
+The *same* SPA, served by a local `heinrich companion`, is the full-power node —
+live forward / steer / chat plus the heavy artifact analysis the edge can't do:
+
+```bash
+heinrich companion --mri-root .data                       # full power over local captures
+heinrich companion --mri-root .data --gallery https://hcirnieh.com   # + proxy the public gallery
+```
+
+It advertises `GET /api/capabilities {live:true, weights:true, mcp:true,
+models:both}`; the edge Worker advertises the minimal node — and the SPA composes
+its UI from whichever it's talking to (see
+[the capability manifest](../docs/observatory.md#the-capability-manifest-the-inverted-contract)).
+The cloud viewer's "🔓 unlock" nudge hands its exact view down to a local instance
+via a deep-link (state rides in `location.hash`).
 
 ## Status
 
-- **Phase 1 (done):** recorded-data layer — cloud, trajectory, flower,
-  spectrum, neurons, token interaction. Verified on SmolLM2-135M (30 layers,
-  2000 tokens), served entirely from R2 range reads.
-- **Phase 2:** browser-compute the interactive endpoints (`direction-*`,
-  `token-predicts`) via WebGPU; this is where the SPA gains client-side compute.
-- **Phase 3:** `heinrich publish` — fold sidecar generation + selective upload
-  into one producer verb (currently `scripts/cf_mri_prep.py` + `upload.sh`).
-- **Phase 4:** the gallery — a landing page over `models.json`, `profile-*`
-  analyses as panels, optional BYO-origin / transformers.js live mode (≤3B).
+- **Phase 1–3 (done):** recorded-data layer (cloud/trajectory/flower/spectrum/
+  neurons/token interaction), the interactive layer at the edge (browser-computed
+  `direction-*` + cross-compare, producer-precomputed `falsification.json` /
+  `token_predicts.bin`), and `heinrich publish`. Verified on SmolLM2-135M.
+- **Phase 3.5 (done):** capability inversion — `/api/capabilities` is the boundary;
+  the on-ramp ladder (cloud → slim-local numpy → full-local torch) + unlock/deep-
+  link handoff + `models:"both"` gallery proxy.
+- **Phase 4:** the gallery landing page over `models.json`; `profile-*` panels;
+  a browser-resident `live:true` node via transformers.js (≤3B).
 
 ## Costs
 

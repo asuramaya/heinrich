@@ -52,17 +52,26 @@ The **Observatory** (`web/`) is the consumer published to the edge: a static
 Three.js SPA + a Cloudflare R2 bucket of immutable decomposition blobs + a thin
 Worker that does only object reads and HTTP byte-range requests. No model, no
 server compute, no install for the viewer — fly through a real model's residual
-stream in any browser. The local `companion` is the same viewer, run directly.
+stream in any browser. The local `companion` is **the same SPA**, run directly.
+
+Which features a viewer gets is **declared, not hard-coded**: every backend
+answers `GET /api/capabilities`, and the one SPA composes from it. The edge is
+read-only (`live:false`); a local `heinrich companion` is full-power
+(`live:true, weights:true`). A "🔓 unlock" nudge in the cloud viewer hands its
+exact view down to a local instance via a deep-link — the on-ramp ladder is
+cloud → slim-local (numpy, no GPU) → full-local (torch). See
+[`docs/observatory.md`](docs/observatory.md).
 
 - Architecture & positioning: [`docs/observatory.md`](docs/observatory.md)
 - The open artifact format (producer↔consumer contract): [`web/ARTIFACT_FORMAT.md`](web/ARTIFACT_FORMAT.md)
 - Deploy / run: [`web/README.md`](web/README.md)
 
 ```bash
-# capture + decompose (producer) → prep + serve at the edge (consumer)
+# capture + decompose (producer) → publish to R2 (consumer)
 heinrich mri --model X --mode raw --n-index 2000 --output web/.data/X/raw.mri
 heinrich mri-decompose --mri web/.data/X/raw.mri --n-components 0   # full PC range (= hidden_size)
-python3 scripts/cf_mri_prep.py --out web/.data    # worker-native sidecars + manifest
+heinrich publish --mri web/.data/X/raw.mri --bucket heinrich-mri    # lean subset → R2 (S3 API)
+# or run the whole edge stack locally first:
 cd web && bash upload.sh local && wrangler dev     # localhost:8787, served off local R2
 ```
 

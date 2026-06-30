@@ -203,8 +203,10 @@ All unit tests run without GPU. Integration tests need MLX + cached Qwen 0.5B.
 - `discover/` — direction finding, neuron profiling (legacy shrt.py here is stale — use profile/)
 - `attack/` — cliff search, steering, distributed attacks
 - `cartography/` — model config, templates, datasets, runtime, audit
-- `companion.py` — Live 3D MRI viewer server. Configurable `mri_root`. Serves transposed indexes (O(1) per-token and per-PC queries). Neuron cache bounded.
-- `companion_ui.html` — Single-page 3D viewer: 20 viewports (cloud/trajectory/flower/prism/spectrum/neurons/weights). Inline GIF encoder. Bulk column access for 150K token performance.
+- `companion.py` — Live 3D MRI viewer server (the maximal node). `--mri-root` + `--gallery <url>` (proxy published models, models:both). Declares the capability manifest at `/api/capabilities` ({live, weights, mcp, write: true}). Serves transposed indexes (O(1) per-token/per-PC). Neuron cache bounded.
+- `companion_ui.html` — Single-page 3D viewer (the ONE SPA, served by both the local companion and the edge Worker). 20 viewports. Capability-driven: it composes its UI from `/api/capabilities` (the backend declares; no per-endpoint failure detection). A "🔓 unlock" nudge deep-links the current view (state in `location.hash`) down to a spawned local instance.
+- `observatory/publish.py` — `heinrich publish`: lean consumer subset (decomp blobs + sidecars + `falsification.json`/`token_predicts.bin`; never raw weights) → R2 over the S3 API, or `--local-dir` export. The `.mri` is the producer↔consumer contract.
+- `web/` — the **Observatory**: static SPA + R2 + a thin Worker (`worker/index.js`, range reads only, minimal-node capabilities). Live at https://heinrich-companion.asuramaya-hq.workers.dev. Architecture: `docs/observatory.md`; format: `web/ARTIFACT_FORMAT.md`.
 - `viz.py` — [deprecated] old DB-based visualizer, use `companion` instead
 - `mcp.py` — MCP tool definitions and ToolServer
 - `mcp_transport.py` — JSON-RPC stdio transport
