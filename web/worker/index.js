@@ -388,8 +388,17 @@ export default {
     const path = url.pathname;
 
     if (!path.startsWith("/api/")) {
-      // static asset / SPA fallback
-      return env.ASSETS.fetch(request);
+      // Three surfaces: landing (/), the viz SPA (/observatory), docs (/docs).
+      // Serve the real asset if it exists; otherwise fall back to that surface's
+      // index (client-side routes / the hash-state viz / VitePress SPA nav).
+      const res = await env.ASSETS.fetch(request);
+      if (res.status !== 404) return res;
+      const idx = path === "/observatory" || path.startsWith("/observatory/")
+          ? "/observatory/index.html"
+          : path === "/docs" || path.startsWith("/docs/")
+          ? "/docs/index.html"
+          : "/index.html";
+      return env.ASSETS.fetch(new Request(new URL(idx, url), request));
     }
 
     try {

@@ -5,12 +5,15 @@
   "name": "heinrich-companion",
   "main": "worker/index.js",
   "compatibility_date": "2026-05-11",
+  "workers_dev": true,
 
-  // Single-page app: unknown non-/api routes fall back to index.html.
+  // Three surfaces on one origin: landing (/), the viz SPA (/observatory),
+  // and the docs (/docs). The Worker controls per-surface fallback, so Assets
+  // returns a real 404 for misses instead of one global SPA index.
   "assets": {
     "directory": "./public",
     "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
+    "not_found_handling": "none"
   },
 
   // The MRI library. Keys mirror the on-disk layout:
@@ -19,6 +22,13 @@
   //   <model>/<mode>.mri/decomp/{meta.json,tokens.json,*.bin,L*_scores.npy}
   "r2_buckets": [
     { "binding": "MRI", "bucket_name": "heinrich-mri" }
+  ],
+
+  // The home: hcirnieh.com (heinrich, read inward). Custom domains are
+  // provisioned on deploy since the zone is in this account.
+  "routes": [
+    { "pattern": "hcirnieh.com", "custom_domain": true },
+    { "pattern": "www.hcirnieh.com", "custom_domain": true }
   ],
 
   "observability": { "enabled": true }

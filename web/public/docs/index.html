@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en"><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Heinrich — Docs</title>
+<style>
+  :root{--bg:#0a0a0a;--txt:#cfcfcf;--dim:#777;--line:#222;--grn:#9c6;--blu:#9cd;--mono:ui-monospace,Menlo,Consolas,monospace}
+  *{box-sizing:border-box} html,body{margin:0;background:var(--bg);color:var(--txt);font-family:system-ui,sans-serif;line-height:1.6}
+  a{color:var(--blu);text-decoration:none} a:hover{color:#cde}
+  .wrap{max-width:760px;margin:0 auto;padding:0 22px}
+  nav{border-bottom:1px solid var(--line)} nav .wrap{display:flex;gap:18px;align-items:center;height:52px}
+  .brand{font-family:var(--mono);font-weight:700;color:#fff} nav .sp{flex:1} nav a{font-family:var(--mono);font-size:13px;color:var(--dim)} nav a:hover{color:#fff}
+  main{padding:60px 0}
+  h1{font-size:30px;margin:0 0 8px} .lede{color:var(--dim);margin:0 0 36px}
+  .sec{border:1px solid var(--line);border-radius:8px;padding:18px 20px;margin-bottom:12px;background:#111}
+  .sec h3{margin:0 0 6px;font-size:16px;color:#eee;font-family:var(--mono)}
+  .sec p{margin:0 0 10px;color:var(--dim);font-size:14px}
+  .sec a{font-family:var(--mono);font-size:13px}
+  .note{margin-top:30px;padding:14px 16px;border:1px dashed #353;border-radius:6px;color:var(--grn);font-family:var(--mono);font-size:13px;background:#0e140a}
+</style></head><body>
+<nav><div class="wrap"><span class="brand">heinrich</span><span class="sp"></span>
+  <a href="/">Home</a><a href="/observatory">Observatory</a><a href="https://github.com/asuramaya/heinrich">GitHub</a></div></nav>
+<main><div class="wrap">
+  <h1>Documentation</h1>
+  <p class="lede">The full doc site is being built. For now, the canonical sources live in the repo —
+    they're the same markdown the site will render.</p>
+
+  <div class="sec"><h3>Concept</h3><p>What Heinrich measures and why measurement and calibration interfere.</p>
+    <a href="https://github.com/asuramaya/heinrich/blob/cf-companion-webgpu/README.md">README →</a></div>
+  <div class="sec"><h3>The Observatory architecture</h3><p>Producer / consumer / edge, and the capability-inverted contract.</p>
+    <a href="https://github.com/asuramaya/heinrich/blob/cf-companion-webgpu/docs/observatory.md">docs/observatory.md →</a></div>
+  <div class="sec"><h3>The artifact format</h3><p>The <span style="font-family:var(--mono)">.mri</span> contract: object layout, binary indexes, the Worker API.</p>
+    <a href="https://github.com/asuramaya/heinrich/blob/cf-companion-webgpu/web/ARTIFACT_FORMAT.md">web/ARTIFACT_FORMAT.md →</a></div>
+  <div class="sec"><h3>Tool reference</h3><p>CLI, capture pipeline, MCP tools, the research findings.</p>
+    <a href="https://github.com/asuramaya/heinrich/blob/cf-companion-webgpu/CLAUDE.md">CLAUDE.md →</a></div>
+
+  <div class="note">▸ A full VitePress doc site (search, nav, dark theme) is next.</div>
+</div></main>
+</body></html>
