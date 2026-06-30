@@ -29,6 +29,12 @@ models.json                                  # gallery manifest (array)
     gate_heatmap.npy                         # [N × n_real_layers] f16
     weight_alignment.json                    # per-layer weight↔PC alignment (flowers)
     neuron_importance.json                   # top neurons per layer
+    falsification.json                       # per-layer: 50-pair random bimodality
+                                             #   baseline + top-50 bimodal PCs
+                                             #   (direction discover + percentile)
+    token_predicts.bin   [TPRD]              # captured-vocab logit lens:
+                                             #   [N × L × K] (u32 mri_idx, f16 prob,
+                                             #   f16 logit), token-major O(1) seek
     L{NN}_scores.npy / _variance.npy / _components.npy
     emb_scores.npy / lmh_scores.npy (+ _variance)   # virtual boundary layers
   norms.json / baselines.json                # worker-native sidecars (from *.npz)
@@ -123,6 +129,7 @@ reads above. **Binary responses** are raw little-endian; **JSON** as noted.
 
 | Endpoint | Reads | Response |
 | --- | --- | --- |
+| `GET /api/capabilities` | — (static literal) | JSON `{backend, live, weights, mcp, write, models, …}` — the inverted contract |
 | `GET /api/models` | `models.json` | JSON array |
 | `GET /api/decomp-meta/<m>/<mode>` | `decomp/meta.json` | JSON |
 | `GET /api/serve-meta/<m>/<mode>` | `all_scores.bin` hdr+var block, `pc_scores.bin` hdr | JSON `{full_k, n_layers, n_real_layers, n_tokens, pc_vars}` |
@@ -138,11 +145,18 @@ reads above. **Binary responses** are raw little-endian; **JSON** as noted.
 | `GET /api/token-bio/...?token=N` | `gate_heatmap.npy` row | JSON `{token_idx, max_per_layer}` |
 | `GET /api/weight-align-all/<m>/<mode>` | `weight_alignment.json` | JSON array |
 | `GET /api/weight-align/...?layer=N` | `weight_alignment.json` | JSON (one layer) |
+| `GET /api/falsification/<m>/<mode>` | `falsification.json` | JSON `{random_baseline[][], top_pcs[][]}` |
+| `GET /api/token-predicts/...?token=N&layer=L&k=K` | `token_predicts.bin` slice + `tokens.json` | JSON `{top_k:[{text, prob, logit, mri_idx}]}` |
+| `GET /api/token-resolve/<m>/<mode>?text=...` | `tokens.json` | JSON `{idx, text}` (cross-model compare) |
 | `GET /api/norms` · `/api/baselines` | sidecar | JSON |
 
-**Compute endpoints** (`direction-*`, `token-predicts`) return `501` — they are
-Phase-2 browser-compute, not server-served. **Live endpoints** (`poll`,
-`chat-poll`, `live-status`) return benign no-ops in a static deployment.
+**Browser-computed** in the SPA over already-loaded arrays (no server compute):
+`direction-project/quality/brief/discover/depth`, cross-model compare. **Producer-
+only** (advertised via `/api/capabilities`, gated off at the edge): `direction-
+circuit/nonlinear/weights/steer`, live forward/chat. **Live channels** (`poll`,
+`chat-poll`, `live-status`) tag `static:true` so the SPA's MCP loops never start.
+The SPA composes all of this from the capability manifest — see
+[`docs/observatory.md`](../docs/observatory.md#the-capability-manifest-the-inverted-contract).
 
 `.npy` parsing in the Worker: read the v1.0 header (`\x93NUMPY`, 2-byte version,
 `uint16` header length at offset 8, dict header), payload at `10 + headerLen`;
