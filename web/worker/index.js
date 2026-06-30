@@ -395,6 +395,8 @@ export default {
       if (res.status !== 404) return res;
       const idx = path === "/observatory" || path.startsWith("/observatory/")
           ? "/observatory/index.html"
+          : path === "/book" || path.startsWith("/book/")
+          ? "/book/index.html"
           : path === "/docs" || path.startsWith("/docs/")
           ? "/docs/index.html"
           : "/index.html";

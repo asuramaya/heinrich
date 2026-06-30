@@ -16,7 +16,7 @@ export default defineConfig({
     nav: [
       { text: '↩ hcirnieh.com', link: 'https://hcirnieh.com/' },
       { text: 'Observatory', link: 'https://hcirnieh.com/observatory' },
-      { text: 'The Book', link: 'https://github.com/asuramaya/heinrich/blob/main/paper/TGUTOS.pdf' },
+      { text: 'The Book', link: 'https://hcirnieh.com/book' },
       { text: 'GitHub', link: 'https://github.com/asuramaya/heinrich' },
     ],
     sidebar: [

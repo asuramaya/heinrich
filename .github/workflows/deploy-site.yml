@@ -1,0 +1,48 @@
+name: deploy hcirnieh.com
+
+# Push to the repo → rebuild the docs (+ regenerate the viz copy + the book page)
+# → wrangler deploy. The repo becomes the source of truth for the live site.
+on:
+  push:
+    branches: [main, cf-companion-webgpu]
+    paths:
+      - 'web/**'
+      - 'src/heinrich/companion_ui.html'
+      - 'paper/grand_unified_shart_theory_book_draft_finale_polished.tex'
+  workflow_dispatch: {}
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Regenerate the viz SPA copy
+        run: |
+          mkdir -p web/public/observatory
+          cp src/heinrich/companion_ui.html web/public/observatory/index.html
+
+      - name: Build the docs (VitePress → web/public/docs)
+        run: |
+          cd web/docs
+          npm ci
+          npm run build
+
+      # The book page is generated from the .tex when it lands (see web/book/build.sh)
+      - name: Build the book page
+        run: |
+          if [ -f web/book/build.sh ]; then
+            sudo apt-get update && sudo apt-get install -y pandoc
+            bash web/book/build.sh
+          fi
+
+      - name: Deploy to Cloudflare
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          workingDirectory: web
+          command: deploy

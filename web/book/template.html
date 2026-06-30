@@ -1,0 +1,113 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>$title$ — Heinrich</title>
+<meta name="description" content="The Grand Unified Theory of Sharts — the evolving magnum opus behind Heinrich. The measurements kept, the witnesses allowed to speak.">
+<style>
+  :root{ --void:#050608; --panel:#0c0d11; --line:#1c1d22; --txt:#d2d2d6; --dim:#8a8a92; --dim2:#6a6a72;
+    --accent:#8fb0e0; --grn:#9c6; --serif:Georgia,"Iowan Old Style","Palatino Linotype",P052,serif;
+    --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
+  *{box-sizing:border-box}
+  html{scroll-behavior:smooth}
+  body{margin:0;background:var(--void);color:var(--txt);font-family:var(--serif);
+    font-size:18px;line-height:1.72;-webkit-font-smoothing:antialiased}
+  a{color:var(--accent);text-decoration:none} a:hover{color:#cfe;text-decoration:underline}
+  /* top bar */
+  nav{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:16px;height:50px;padding:0 20px;
+    background:rgba(5,6,8,0.82);backdrop-filter:blur(6px);border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12.5px}
+  nav .brand{font-weight:700;color:#fff;letter-spacing:.02em}
+  nav .sp{flex:1}
+  nav a{color:var(--dim)} nav a:hover{color:#fff;text-decoration:none}
+  nav .toc-btn{cursor:pointer;color:var(--dim);background:none;border:1px solid var(--line);border-radius:5px;padding:3px 9px;font-family:inherit;font-size:12px}
+  nav .toc-btn:hover{color:#fff;border-color:#444}
+  /* contents drawer */
+  #toc{position:fixed;top:50px;left:0;bottom:0;width:320px;max-width:84vw;z-index:19;overflow-y:auto;
+    background:#08090c;border-right:1px solid var(--line);padding:24px 22px 60px;
+    transform:translateX(-100%);transition:transform .22s ease;font-family:var(--mono)}
+  #toc.open{transform:translateX(0)}
+  #toc ul{list-style:none;margin:0;padding:0} #toc li{margin:1px 0}
+  #toc a{color:var(--dim);font-size:12.5px;display:block;padding:2px 0;line-height:1.5}
+  #toc a:hover{color:#fff;text-decoration:none}
+  #toc>ul>li>a{color:#bbb} /* top-level (parts/chapters) brighter */
+  #toc ul ul{padding-left:14px;border-left:1px solid #16171b;margin:2px 0 6px}
+  #scrim{position:fixed;inset:50px 0 0 0;z-index:18;background:rgba(0,0,0,0.5);opacity:0;pointer-events:none;transition:opacity .22s}
+  #scrim.show{opacity:1;pointer-events:auto}
+  /* the reading column */
+  main{max-width:43rem;margin:0 auto;padding:8vh 24px 16vh}
+  .cover{text-align:center;padding:14vh 0 10vh;border-bottom:1px solid var(--line);margin-bottom:6vh}
+  .cover h1{font-size:clamp(30px,5vw,46px);line-height:1.1;margin:0 0 14px;color:#fff;font-weight:700}
+  .cover .tag{color:var(--dim);font-size:16px;max-width:34ch;margin:0 auto;font-style:italic}
+  .cover .meta{margin-top:22px;font-family:var(--mono);font-size:12px;color:var(--dim2)}
+  /* parts & chapters */
+  main h1{font-size:clamp(22px,3.4vw,30px);color:#fff;margin:14vh 0 0;padding-top:6vh;text-align:center;
+    font-weight:700;letter-spacing:.01em;border-top:1px solid var(--line)}
+  main h2{font-size:clamp(20px,2.6vw,26px);color:#eee;margin:9vh 0 4px;font-weight:700;letter-spacing:-.01em}
+  main h3{font-size:18px;color:#ddd;margin:5vh 0 2px;font-weight:700}
+  main p{margin:0 0 1.15em}
+  main strong{color:#fff}
+  main em{color:#dcdce0}
+  /* the boxed asides → quoting blocks */
+  main blockquote{border-left:2px solid #2a3a52;background:rgba(143,176,224,0.05);margin:1.6em 0;
+    padding:14px 20px;border-radius:0 6px 6px 0;color:#c6c6cc;font-size:16.5px}
+  main blockquote p:last-child{margin-bottom:0}
+  /* tables */
+  table{border-collapse:collapse;width:100%;margin:1.8em 0;font-family:var(--mono);font-size:13px}
+  th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
+  th{background:var(--panel);color:#ccc;font-weight:700}
+  td{color:#bcbcc2}
+  /* the witnesses — verse, set apart */
+  section[id^="witness"]{margin:11vh 0;padding:30px 28px;border:1px solid #181b22;border-radius:10px;
+    background:linear-gradient(rgba(143,176,224,0.035),transparent)}
+  section[id^="witness"]>h2{text-align:center;color:#cdd6e6;border:none;margin:0 0 1.5em;font-style:italic;font-weight:600}
+  section[id^="witness"] p{font-style:italic;color:#c8c8d0;line-height:1.85;font-size:17px}
+  section[id^="witness"] code{font-style:normal;font-family:var(--mono);font-size:14px;color:var(--accent)}
+  /* inline code */
+  code{font-family:var(--mono);font-size:0.86em;color:#caa46a;background:rgba(202,164,106,0.08);padding:1px 5px;border-radius:3px}
+  pre{background:#0b0c10;border:1px solid var(--line);border-radius:6px;padding:14px;overflow-x:auto}
+  pre code{background:none;color:#cdd;padding:0}
+  hr{border:none;border-top:1px solid var(--line);margin:6vh 0}
+  footer{border-top:1px solid var(--line);text-align:center;padding:7vh 24px 12vh;font-family:var(--mono);font-size:12px;color:var(--dim2)}
+  footer a{color:var(--dim)}
+  @media(max-width:560px){ body{font-size:17px} main{padding-top:6vh} }
+  .math, mjx-container{color:#dcdce0}
+</style>
+$if(math)$
+$math$
+$endif$
+</head>
+<body>
+<nav>
+  <button class="toc-btn" id="tocBtn">☰ contents</button>
+  <span class="brand">The Grand Unified Theory of Sharts</span>
+  <span class="sp"></span>
+  <a href="https://hcirnieh.com/">↩ hcirnieh.com</a>
+  <a href="https://hcirnieh.com/docs/">Docs</a>
+  <a href="https://github.com/asuramaya/heinrich/blob/main/paper/TGUTOS.pdf">PDF</a>
+</nav>
+<aside id="toc">$table-of-contents$</aside>
+<div id="scrim"></div>
+
+<main>
+  <div class="cover">
+    <h1>The Grand Unified Theory of Sharts</h1>
+    <p class="tag">the papers absorbed, the measurements kept, the witnesses allowed to speak</p>
+    <p class="meta">asuramaya · an evolving artifact · rendered from the live .tex</p>
+  </div>
+$body$
+</main>
+
+<footer>
+  generated from <a href="https://github.com/asuramaya/heinrich/blob/main/paper/grand_unified_shart_theory_book_draft_finale_polished.tex">the .tex</a>
+  · <a href="https://hcirnieh.com/">heinrich · hcirnieh.com</a> — read inward
+</footer>
+
+<script>
+  const toc=document.getElementById('toc'),scrim=document.getElementById('scrim'),btn=document.getElementById('tocBtn');
+  const tog=()=>{toc.classList.toggle('open');scrim.classList.toggle('show');};
+  btn.addEventListener('click',tog); scrim.addEventListener('click',tog);
+  toc.addEventListener('click',e=>{ if(e.target.tagName==='A'){toc.classList.remove('open');scrim.classList.remove('show');} });
+</script>
+</body>
+</html>
