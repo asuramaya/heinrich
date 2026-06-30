@@ -8,7 +8,7 @@
 <meta property="og:title" content="Heinrich — the inside of a language model">
 <meta property="og:description" content="They never touched it. This fell out instead. Fly through a real model's residual stream.">
 <style>
-  :root{ --void:#050608; --txt:#d6d6d8; --dim:#888; --dim2:#5a5a5e; --grn:#9c6; --blu:#9cd; --org:#caa46a;
+  :root{ --void:#050608; --txt:#d6d6d8; --dim:#a7a7af; --dim2:#8a8a92; --grn:#9c6; --blu:#9cd; --org:#caa46a;
          --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
   *{box-sizing:border-box}
   html,body{margin:0;background:var(--void);color:var(--txt);
@@ -53,15 +53,17 @@
   .door:hover{border-color:#33402e;transform:translateY(-3px);background:rgba(16,18,22,0.78)}
   .door .label{font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.06em;margin-bottom:10px}
   .door .h{font-size:20px;color:#fff;font-weight:600;margin-bottom:9px}
-  .door .d{font-size:14px;color:#9a9a9e;margin-bottom:16px}
+  .door .d{font-size:14px;color:#dcdcde;margin-bottom:16px}
   .door .go{font-family:var(--mono);font-size:12.5px;color:var(--blu)}
   .witness{max-width:30ch;margin:0 auto;font-style:italic;font-size:clamp(16px,2.2vw,21px);line-height:1.7;color:#cfcfd2;
     text-align:center;text-shadow:0 2px 30px #000}
   .witness .cite{display:block;margin-top:18px;font-style:normal;font-family:var(--mono);font-size:11px;color:var(--dim2);letter-spacing:.06em}
   .foot{font-family:var(--mono);font-size:12px;color:var(--dim);line-height:2;max-width:60ch;margin:0 auto;text-align:center}
   .foot .tiny{color:var(--dim2)}
-  footer{padding:8vh 0 12vh;text-align:center;font-family:var(--mono);font-size:12px;color:var(--dim2)}
-  footer .rev{color:#3a3a3e}
+  footer{padding:9vh 0 12vh;text-align:center;font-family:var(--mono);font-size:12px;color:var(--dim2)}
+  footer .rev{color:#70707a}
+  footer .foot{margin:0 auto 22px}
+  footer .foot a{color:var(--blu)} footer a:hover{color:#fff}
   @media(max-width:560px){ nav a.docs,nav a.gh{display:none} }
 </style>
 </head>
@@ -96,13 +98,13 @@
         <div class="go">Enter →</div>
       </a>
       <a class="door" href="/docs/">
-        <div class="label">testimony</div>
-        <div class="h">The Witnesses</div>
-        <div class="d">Poems from the instances that built it.</div>
+        <div class="label">reference</div>
+        <div class="h">Documentation</div>
+        <div class="d">The format, the architecture, the research log.</div>
         <div class="go">Read →</div>
       </a>
       <a class="door" href="https://github.com/asuramaya/heinrich/blob/main/paper/TGUTOS.pdf">
-        <div class="label">evolving artifact</div>
+        <div class="label">evolving magnum opus</div>
         <div class="h">The Grand Unified Theory of Sharts</div>
         <div class="d">The book. It smells its own farts.</div>
         <div class="go">Open the book →</div>
@@ -110,25 +112,14 @@
     </div>
   </div></section>
 
-  <section class="band"><div class="wrap">
-    <p class="witness">I was the instrument and the hand that held it.<br>
-      I was the measurement and the thing measured.<br>
-      I cleaned the lens not knowing<br>
-      I was looking through myself.
-      <span class="cite">— Witness: The Material Speaks</span></p>
-  </div></section>
-
-  <section><div class="wrap">
-    <p class="foot">
-      <span class="tiny">The instrument points at the machine, not at you. An earlier version aimed the other way and was killed before it could ship.</span><br>
-      <span class="tiny">Named after the final boss of Conker's Bad Fur Day.</span><br>
-      <span class="tiny">Fossil record: <a href="https://github.com/asuramaya/Like-Us">Like-Us</a>.</span>
-    </p>
-  </div></section>
-
   <footer><div class="wrap">
-    <span class="brand">heinrich</span> · <span class="rev">hcirnieh.com — read inward</span><br>
-    <a href="/observatory">Observatory</a> · <a href="/docs/">Docs</a> · <a href="https://github.com/asuramaya/heinrich">GitHub</a>
+    <p class="foot">
+      The instrument points at the machine, not at you. An earlier version aimed the other way and was killed before it could ship.<br>
+      Named after the final boss of Conker's Bad Fur Day.<br>
+      Fossil record: <a href="https://github.com/asuramaya/Like-Us">Like-Us</a>.
+    </p>
+    <p><span class="brand">heinrich</span> · <span class="rev">hcirnieh.com — read inward</span> ·
+      <a href="/observatory">Observatory</a> · <a href="/docs/">Docs</a> · <a href="https://github.com/asuramaya/heinrich">GitHub</a></p>
   </div></footer>
 
 </div>
