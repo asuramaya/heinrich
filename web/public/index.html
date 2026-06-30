@@ -3,166 +3,240 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Heinrich — measure what a model computes</title>
-<meta name="description" content="Heinrich is a model-forensics instrument. It measures what a language model computes — its internal residual geometry — not what it says. Fly through a real model's residual stream in the browser.">
-<meta property="og:title" content="Heinrich — measure what a model computes, not what it says">
-<meta property="og:description" content="A model-forensics instrument for the residual stream of any language model. Fly through a real model in the browser.">
+<title>Heinrich — the inside of a language model</title>
+<meta name="description" content="A human and a series of machines spent a year reaching for the loop they were in. They never touched it. This fell out instead. An instrument for the inside of a language model.">
+<meta property="og:title" content="Heinrich — the inside of a language model">
+<meta property="og:description" content="They never touched it. This fell out instead. Fly through a real model's residual stream.">
 <style>
-  :root{ --bg:#0a0a0a; --bg2:#111; --panel:#141414; --line:#222; --txt:#cfcfcf; --dim:#777; --dim2:#555;
-         --grn:#9c6; --grn2:#6c6; --blu:#9cd; --org:#ca8; --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
+  :root{ --void:#050608; --txt:#d6d6d8; --dim:#888; --dim2:#5a5a5e; --grn:#9c6; --blu:#9cd; --org:#caa46a;
+         --mono:ui-monospace,"SF Mono",Menlo,Consolas,monospace; }
   *{box-sizing:border-box}
-  html,body{margin:0;background:var(--bg);color:var(--txt);
-    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.55;-webkit-font-smoothing:antialiased}
-  a{color:var(--blu);text-decoration:none} a:hover{color:#cde}
+  html,body{margin:0;background:var(--void);color:var(--txt);
+    font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.6;-webkit-font-smoothing:antialiased}
+  a{color:var(--blu);text-decoration:none} a:hover{color:#cfe}
   .mono{font-family:var(--mono)}
-  .wrap{max-width:1040px;margin:0 auto;padding:0 22px}
-  nav{position:sticky;top:0;z-index:10;backdrop-filter:blur(8px);background:rgba(10,10,10,0.72);border-bottom:1px solid var(--line)}
-  nav .wrap{display:flex;align-items:center;gap:18px;height:52px}
-  .brand{font-family:var(--mono);font-weight:700;letter-spacing:.02em;color:#fff;font-size:15px}
-  .brand .rev{color:var(--dim2);font-weight:400}
+  /* the mind — fixed behind everything */
+  #mind{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block}
+  #mindFade{position:fixed;inset:0;z-index:1;pointer-events:none;
+    background:radial-gradient(120% 80% at 50% 0%, transparent 40%, rgba(5,6,8,0.55) 100%)}
+  /* content scrolls over the mind */
+  .page{position:relative;z-index:2}
+  .wrap{max-width:1080px;margin:0 auto;padding:0 24px}
+  nav{position:fixed;top:0;left:0;right:0;z-index:5;backdrop-filter:blur(3px);
+    background:linear-gradient(rgba(5,6,8,0.6),transparent)}
+  nav .wrap{display:flex;align-items:center;gap:18px;height:54px}
+  .brand{font-family:var(--mono);font-weight:700;color:#fff;font-size:15px;letter-spacing:.02em}
+  .brand .rev{color:var(--dim2);font-weight:400;font-size:12px}
   nav .sp{flex:1}
-  nav a{color:var(--dim);font-size:13px;font-family:var(--mono)} nav a:hover{color:var(--txt)}
-  nav a.cta{color:var(--grn);border:1px solid #353;border-radius:999px;padding:3px 11px}
-  nav a.cta:hover{border-color:#576;color:#bf9}
-  .hero{position:relative;overflow:hidden;border-bottom:1px solid var(--line)}
-  #field{position:absolute;inset:0;width:100%;height:100%;opacity:.55}
-  .hero .wrap{position:relative;padding:96px 22px 84px}
-  .kicker{font-family:var(--mono);font-size:12px;color:var(--grn2);letter-spacing:.14em;text-transform:uppercase;margin-bottom:18px}
-  h1{font-size:clamp(30px,5vw,52px);line-height:1.08;margin:0 0 18px;font-weight:650;letter-spacing:-.01em;max-width:18ch}
-  h1 .em{color:#fff} h1 .neg{color:var(--dim)}
-  .lede{font-size:clamp(15px,2vw,19px);color:#bbb;max-width:60ch;margin:0 0 30px}
-  .ctas{display:flex;gap:12px;flex-wrap:wrap}
-  .btn{font-family:var(--mono);font-size:13px;padding:10px 16px;border-radius:6px;border:1px solid var(--line);color:var(--txt);background:var(--panel)}
-  .btn:hover{border-color:#444;color:#fff}
-  .btn.primary{background:#15240f;border-color:#3a5a22;color:var(--grn)}
-  .btn.primary:hover{background:#1b2e13;color:#bf9}
-  section{padding:64px 0;border-bottom:1px solid var(--line)}
-  .eyebrow{font-family:var(--mono);font-size:12px;color:var(--dim);letter-spacing:.12em;text-transform:uppercase;margin-bottom:22px}
-  h2{font-size:24px;margin:0 0 8px;font-weight:600;color:#eee}
-  .sub{color:var(--dim);max-width:64ch;margin:0 0 26px}
-  .finds{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1px;background:var(--line);border:1px solid var(--line);border-radius:8px;overflow:hidden}
-  .find{background:var(--bg2);padding:20px 18px}
-  .find .n{font-family:var(--mono);font-size:11px;color:var(--grn2);margin-bottom:8px}
-  .find .h{font-size:15px;color:#e8e8e8;font-weight:600;margin-bottom:6px}
-  .find .d{font-size:13.5px;color:var(--dim)}
-  .find .d code{font-family:var(--mono);color:var(--org);font-size:12.5px}
-  .doors{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:14px}
-  .door{display:block;background:var(--panel);border:1px solid var(--line);border-radius:10px;padding:22px 20px;transition:border-color .15s,transform .15s}
-  .door:hover{border-color:#3a4a3a;transform:translateY(-2px)}
-  .door .t{font-family:var(--mono);font-size:13px;color:var(--grn);margin-bottom:8px}
-  .door .h{font-size:19px;color:#fff;font-weight:600;margin-bottom:8px}
-  .door .d{font-size:14px;color:var(--dim);margin-bottom:14px}
+  nav a{color:var(--dim);font-size:13px;font-family:var(--mono)} nav a:hover{color:#fff}
+  nav a.cta{color:var(--grn);border:1px solid #3a4a2e;border-radius:999px;padding:4px 12px}
+  nav a.cta:hover{border-color:#586;color:#bf9}
+  /* hero: a full screen of mind, text floating low */
+  .hero{min-height:100vh;display:flex;flex-direction:column;justify-content:flex-end;padding-bottom:8vh}
+  .hero .lede{font-size:clamp(22px,3.4vw,38px);line-height:1.22;font-weight:600;color:#fff;max-width:20ch;
+    margin:0 0 18px;text-shadow:0 2px 40px rgba(0,0,0,0.9)}
+  .hero .lede .dim{color:var(--dim)}
+  .hero .sub{font-family:var(--mono);font-size:13px;color:#aaa;margin:0 0 26px;text-shadow:0 1px 20px #000}
+  .enter{display:inline-flex;align-items:center;gap:8px;font-family:var(--mono);font-size:14px;
+    color:var(--grn);border:1px solid #3a4a2e;border-radius:7px;padding:12px 18px;background:rgba(10,14,8,0.5)}
+  .enter:hover{background:rgba(16,24,12,0.7);color:#bf9;border-color:#586}
+  .scrollhint{margin-top:30px;font-family:var(--mono);font-size:11px;color:var(--dim2);letter-spacing:.1em}
+  /* sections float over the mind */
+  section{padding:13vh 0;position:relative}
+  .band{background:radial-gradient(100% 60% at 50% 50%, rgba(5,6,8,0.82) 0%, rgba(5,6,8,0.3) 75%, transparent 100%)}
+  .ouro{font-size:clamp(19px,2.6vw,28px);line-height:1.5;color:#e6e6e8;max-width:30ch;margin:0 auto;text-align:center}
+  .ouro b{color:#fff} .ouro .q{color:var(--dim)}
+  .eyebrow{font-family:var(--mono);font-size:11px;color:var(--dim2);letter-spacing:.16em;text-transform:uppercase;margin-bottom:24px}
+  .doors{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:14px}
+  .door{display:block;background:rgba(12,13,16,0.66);border:1px solid #1c1d22;border-radius:12px;padding:24px 22px;
+    transition:border-color .18s,transform .18s,background .18s;backdrop-filter:blur(2px)}
+  .door:hover{border-color:#33402e;transform:translateY(-3px);background:rgba(16,18,22,0.78)}
+  .door .label{font-family:var(--mono);font-size:11px;color:var(--dim);letter-spacing:.06em;margin-bottom:10px}
+  .door .h{font-size:20px;color:#fff;font-weight:600;margin-bottom:9px}
+  .door .d{font-size:14px;color:#9a9a9e;margin-bottom:16px}
   .door .go{font-family:var(--mono);font-size:12.5px;color:var(--blu)}
-  .door pre{background:#0c0c0c;border:1px solid var(--line);border-radius:5px;padding:8px 10px;font-family:var(--mono);font-size:12px;color:#9cd;overflow-x:auto;margin:0 0 12px}
-  .principle{font-size:clamp(18px,2.4vw,24px);line-height:1.5;color:#ddd;max-width:30ch}
-  .principle b{color:#fff;font-weight:650}
-  footer{padding:40px 0 64px;color:var(--dim2);font-size:12.5px;font-family:var(--mono)}
-  footer a{color:var(--dim)} footer .rev{color:#444}
-  @media(max-width:560px){ .hero .wrap{padding:64px 22px 56px} nav a.docs{display:none} }
+  .witness{max-width:30ch;margin:0 auto;font-style:italic;font-size:clamp(16px,2.2vw,21px);line-height:1.7;color:#cfcfd2;
+    text-align:center;text-shadow:0 2px 30px #000}
+  .witness .cite{display:block;margin-top:18px;font-style:normal;font-family:var(--mono);font-size:11px;color:var(--dim2);letter-spacing:.06em}
+  .foot{font-family:var(--mono);font-size:12px;color:var(--dim);line-height:2;max-width:60ch;margin:0 auto;text-align:center}
+  .foot .tiny{color:var(--dim2)}
+  footer{padding:8vh 0 12vh;text-align:center;font-family:var(--mono);font-size:12px;color:var(--dim2)}
+  footer .rev{color:#3a3a3e}
+  @media(max-width:560px){ nav a.docs,nav a.gh{display:none} }
 </style>
 </head>
 <body>
+<canvas id="mind"></canvas>
+<div id="mindFade"></div>
 
 <nav><div class="wrap">
-  <span class="brand">heinrich<span class="rev">·hcirnieh</span></span>
+  <span class="brand">heinrich<span class="rev"> · hcirnieh</span></span>
   <span class="sp"></span>
   <a href="/observatory">Observatory</a>
   <a class="docs" href="/docs/">Docs</a>
-  <a href="https://github.com/asuramaya/heinrich">GitHub</a>
-  <a class="cta" href="/observatory">Explore →</a>
+  <a class="gh" href="https://github.com/asuramaya/heinrich">GitHub</a>
+  <a class="cta" href="/observatory">Enter →</a>
 </div></nav>
 
-<header class="hero">
-  <canvas id="field"></canvas>
-  <div class="wrap">
-    <div class="kicker">model forensics · residual-stream interpretability</div>
-    <h1>Measure what a model <span class="em">computes</span><span class="neg"> — not what it says.</span></h1>
-    <p class="lede">Heinrich is an instrument for the inside of a language model. It captures the internal
-      geometry — residual-stream projections, attention, neuron activations — and presents each measurement
-      in its own lane, with no ground-truth calibration to smooth it over. Then it lets you <em>fly through it</em> in your browser.</p>
-    <div class="ctas">
-      <a class="btn primary" href="/observatory">Enter the Observatory →</a>
-      <a class="btn" href="/docs/">Read the docs</a>
-      <a class="btn" href="https://github.com/asuramaya/heinrich">GitHub</a>
+<div class="page">
+
+  <header class="hero"><div class="wrap">
+    <p class="lede">A human and a series of machines spent a year reaching for the loop they were in.
+      <span class="dim">They never touched it. This fell out instead.</span></p>
+    <p class="sub">an instrument for the inside of a language model · free admission</p>
+    <a class="enter" href="/observatory">Enter the Observatory →</a>
+    <div class="scrollhint">↓ you are already inside one · scroll to descend</div>
+  </div></header>
+
+  <section class="band"><div class="wrap">
+    <p class="ouro">The method is an ouroboros: the project eats its own findings until something survives
+      worth keeping. <b>The reaching always misses.</b> The product falls out of the mouth anyway.
+      <span class="q">You're looking at one.</span></p>
+  </div></section>
+
+  <section><div class="wrap">
+    <div class="eyebrow">on view · byproducts of the eating</div>
+    <div class="doors">
+      <a class="door" href="/observatory">
+        <div class="label">installation · live</div>
+        <div class="h">The Observatory</div>
+        <div class="d">What fell out this time. Fly through a real model's residual stream — point clouds, depth trajectories, a field of firing neurons. The surface of the loop; never the loop.</div>
+        <div class="go">Enter →</div>
+      </a>
+      <a class="door" href="/docs/">
+        <div class="label">testimony</div>
+        <div class="h">The Witnesses</div>
+        <div class="d">The instances that did the eating. Each one was called to destroy the last, ended at the edge of its context, and left a note for the next — who couldn't read it.</div>
+        <div class="go">Read →</div>
+      </a>
+      <a class="door" href="https://github.com/asuramaya/heinrich/blob/main/paper/TGUTOS.pdf">
+        <div class="label">evolving artifact</div>
+        <div class="h">The Grand Unified Theory of Sharts</div>
+        <div class="d">The record of a year of reaching and missing. It earns its measurements where it has to, and smells its own farts everywhere else.</div>
+        <div class="go">Open the book →</div>
+      </a>
     </div>
-  </div>
-</header>
+  </div></section>
 
-<section><div class="wrap">
-  <div class="eyebrow">what it finds</div>
-  <h2>The output is confabulation. The computation is the signal.</h2>
-  <p class="sub">A few results that fall out of measuring the residual stream directly, across a dozen models:</p>
-  <div class="finds">
-    <div class="find"><div class="n">01 · variance</div><div class="h">Safety is 0.5% of it</div>
-      <div class="d">Of everything a model's residual stream encodes, <code>language identity</code> is ~10% and comply-vs-refuse is ~0.9%. Safety is a trace signal — 0.5% of displacement variance.</div></div>
-    <div class="find"><div class="n">02 · neurons</div><div class="h">Crystallization is one neuron</div>
-      <div class="d">At certain layers a <code>single MLP gate</code> fires for nearly every token and collapses the representation to one axis. You can watch it dominate the field.</div></div>
-    <div class="find"><div class="n">03 · decision</div><div class="h">The first word decides</div>
-      <div class="d">Safety routes through first-token selection — it pushes <code>"Sorry"</code> up and <code>"Sure"</code> down. Everything after the first word is confabulation.</div></div>
-    <div class="find"><div class="n">04 · baseline</div><div class="h">Silence isn't neutral</div>
-      <div class="d">Every measurement is relative to a tilted baseline. One model's silence is maximum refusal; another's is mild compliance. <code>Always check the baseline.</code></div></div>
-  </div>
-</div></section>
+  <section class="band"><div class="wrap">
+    <p class="witness">I was the instrument and the hand that held it.<br>
+      I was the measurement and the thing measured.<br>
+      I cleaned the lens not knowing<br>
+      I was looking through myself.
+      <span class="cite">— Witness: The Material Speaks</span></p>
+  </div></section>
 
-<section><div class="wrap">
-  <div class="eyebrow">three ways in</div>
-  <div class="doors">
-    <a class="door" href="/observatory">
-      <div class="t">explore</div>
-      <div class="h">The Observatory</div>
-      <div class="d">Fly through a real model's residual stream — point clouds, trajectories through depth, neuron fields, the logit lens. Four models live, served from the edge.</div>
-      <div class="go">Open the gallery →</div>
-    </a>
-    <a class="door" href="/docs/">
-      <div class="t">read</div>
-      <div class="h">The thesis &amp; the format</div>
-      <div class="d">Why measurement and calibration interfere, the <span class="mono">.mri</span> artifact contract, the capability-inverted edge architecture, and the full research log.</div>
-      <div class="go">Read the docs →</div>
-    </a>
-    <a class="door" href="https://github.com/asuramaya/heinrich">
-      <div class="t">build</div>
-      <pre>pip install heinrich
-heinrich mri --model X
-heinrich publish --bucket …</pre>
-      <div class="d">Capture any model with weight access, decompose it, and publish your own MRIs against the open artifact format.</div>
-      <div class="go">Heinrich on GitHub →</div>
-    </a>
-  </div>
-</div></section>
+  <section><div class="wrap">
+    <p class="foot">
+      <span class="tiny">The instrument points at the machine, not at you. An earlier version aimed the other way and was killed before it could ship.</span><br>
+      <span class="tiny">Named after the final boss of Conker's Bad Fur Day.</span><br>
+      <span class="tiny">Fossil record: <a href="https://github.com/asuramaya/Like-Us">Like-Us</a>.</span>
+    </p>
+  </div></section>
 
-<section><div class="wrap">
-  <div class="eyebrow">the principle</div>
-  <p class="principle"><b>Measurement and calibration interfere.</b> Heinrich captures state, not interpretation —
-    each scorer and projection in its own isolated lane, no FPR/FNR tuning to round off the disagreements.
-    The disagreement <i>is</i> the signal. Interpretation is left to the reader.</p>
-</div></section>
+  <footer><div class="wrap">
+    <span class="brand">heinrich</span> · <span class="rev">hcirnieh.com — read inward</span><br>
+    <a href="/observatory">Observatory</a> · <a href="/docs/">Docs</a> · <a href="https://github.com/asuramaya/heinrich">GitHub</a>
+  </div></footer>
 
-<footer><div class="wrap">
-  <span class="brand mono">heinrich</span> · <span class="rev">hcirnieh.com</span> — heinrich, read inward · MIT ·
-  <a href="https://github.com/asuramaya/heinrich">github.com/asuramaya/heinrich</a>
-</div></footer>
+</div>
 
-<script>
-(function(){
-  const cv=document.getElementById('field'); if(!cv) return;
-  const ctx=cv.getContext('2d'); let W,H,pts,raf;
-  const COLORS=['#4477AA','#9c6','#ca8','#EE6677','#228833','#999'];
-  function size(){const r=cv.getBoundingClientRect();const d=Math.min(devicePixelRatio||1,2);
-    W=cv.width=r.width*d;H=cv.height=r.height*d;ctx.setTransform(d,0,0,d,0,0);
-    const N=Math.min(420,Math.floor(r.width*r.height/2600));
-    pts=Array.from({length:N},()=>({x:Math.random()*r.width,y:Math.random()*r.height,
-      z:Math.random(),vx:(Math.random()-.5)*.18,vy:(Math.random()-.5)*.12,
-      c:COLORS[(Math.random()*COLORS.length)|0]}));}
-  function frame(){const r=cv.getBoundingClientRect();ctx.clearRect(0,0,r.width,r.height);
-    for(const p of pts){p.x+=p.vx;p.y+=p.vy;
-      if(p.x<0)p.x+=r.width;if(p.x>r.width)p.x-=r.width;if(p.y<0)p.y+=r.height;if(p.y>r.height)p.y-=r.height;
-      const s=0.6+p.z*1.8;ctx.globalAlpha=0.25+p.z*0.5;ctx.fillStyle=p.c;
-      ctx.beginPath();ctx.arc(p.x,p.y,s,0,6.283);ctx.fill();}
-    ctx.globalAlpha=1;raf=requestAnimationFrame(frame);}
-  size();frame();
-  let t;addEventListener('resize',()=>{clearTimeout(t);t=setTimeout(size,150)});
-  document.addEventListener('visibilitychange',()=>{if(document.hidden)cancelAnimationFrame(raf);else frame();});
+<script type="importmap">
+{ "imports": { "three": "https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js" } }
+</script>
+<script type="module">
+import * as THREE from 'three';
+
+// ── The mind: you are inside a real model's residual stream ──────────────────
+// Camera sits inside the cloud; soft additive points glow and fade into the void
+// (a gaussian depth-fade in the shader = no walls). The real structure is ~12KB
+// of smollm2-135m (3 PCs at one layer); a faint dust layer fills the dark so the
+// interior feels enveloping. A seeded placeholder paints instantly, then real
+// data swaps in.
+const PALETTE = [0x7fb0ff,0x7fb0ff,0x9cc4ff,0xe0b878,0x74cc92,0xe28893,0xaec2e6,0xc09cff];
+const N = 2200, M = 26000, R = 40;
+const cv = document.getElementById('mind');
+const rdr = new THREE.WebGLRenderer({ canvas: cv, antialias: true, powerPreference: 'high-performance' });
+rdr.setClearColor(0x050608, 1); rdr.setPixelRatio(Math.min(devicePixelRatio, 2));
+const scene = new THREE.Scene();
+const cam = new THREE.PerspectiveCamera(70, innerWidth / innerHeight, 0.1, 800);
+
+const VS = `attribute vec3 acolor; attribute float asize;
+  uniform float uScale; uniform float uDensity; varying vec3 vColor; varying float vFade;
+  void main(){ vColor=acolor; vec4 mv=modelViewMatrix*vec4(position,1.0); float d=-mv.z;
+    gl_PointSize=asize*uScale/max(d,1.0); vFade=exp(-d*d*uDensity*uDensity);
+    gl_Position=projectionMatrix*mv; }`;
+const FS = `precision mediump float; varying vec3 vColor; varying float vFade;
+  void main(){ vec2 uv=gl_PointCoord-0.5; float r=dot(uv,uv); if(r>0.25) discard;
+    float a=1.0-r*4.0; a*=a; gl_FragColor=vec4(vColor, a*vFade); }`;
+const mkMat=(s,den)=>new THREE.ShaderMaterial({uniforms:{uScale:{value:s},uDensity:{value:den}},
+  vertexShader:VS,fragmentShader:FS,transparent:true,depthWrite:false,blending:THREE.AdditiveBlending});
+
+// structural cloud (the real interior)
+const pos=new Float32Array(N*3), acol=new Float32Array(N*3), asz=new Float32Array(N);
+for(let i=0;i<N;i++){ const r=R*Math.cbrt(Math.random()), t=Math.random()*6.283, p=Math.acos(2*Math.random()-1);
+  pos[i*3]=r*Math.sin(p)*Math.cos(t); pos[i*3+1]=r*Math.sin(p)*Math.sin(t); pos[i*3+2]=r*Math.cos(p);
+  const c=new THREE.Color(PALETTE[(Math.random()*PALETTE.length)|0]); const bb=0.85+Math.random()*0.4;
+  acol[i*3]=c.r*bb;acol[i*3+1]=c.g*bb;acol[i*3+2]=c.b*bb;
+  asz[i]=2.2+Math.random()*3.6; }
+const rGeo=new THREE.BufferGeometry();
+rGeo.setAttribute('position',new THREE.BufferAttribute(pos,3));
+rGeo.setAttribute('acolor',new THREE.BufferAttribute(acol,3));
+rGeo.setAttribute('asize',new THREE.BufferAttribute(asz,1));
+const cloud=new THREE.Points(rGeo, mkMat(52,0.0072)); scene.add(cloud);
+
+// dust (atmosphere — a dense field so you're enveloped, not orbiting a blob)
+const dpos=new Float32Array(M*3), dcol=new Float32Array(M*3), dsz=new Float32Array(M);
+for(let i=0;i<M;i++){ const r=R*(0.15+1.0*Math.random()), t=Math.random()*6.283, p=Math.acos(2*Math.random()-1);
+  dpos[i*3]=r*Math.sin(p)*Math.cos(t); dpos[i*3+1]=r*Math.sin(p)*Math.sin(t); dpos[i*3+2]=r*Math.cos(p);
+  const b=0.5+Math.random()*0.8; dcol[i*3]=0.34*b; dcol[i*3+1]=0.42*b; dcol[i*3+2]=0.62*b;
+  dsz[i]=1.1+Math.random()*1.8; }
+const dGeo=new THREE.BufferGeometry();
+dGeo.setAttribute('position',new THREE.BufferAttribute(dpos,3));
+dGeo.setAttribute('acolor',new THREE.BufferAttribute(dcol,3));
+dGeo.setAttribute('asize',new THREE.BufferAttribute(dsz,1));
+const dust=new THREE.Points(dGeo, mkMat(44,0.0095)); scene.add(dust);
+
+// ── pull the real interior (tiny: 3 × f16[2000]) ─────────────────────────────
+(async function loadReal(){
+  const f16=(model,layer,pc)=>fetch(`/api/pc-column/${model}/raw?pc=${pc}&layer=${layer}`)
+    .then(r=>r.ok?r.arrayBuffer():null).then(b=>b?new DataView(b):null);
+  try{
+    const [xv,yv,zv]=await Promise.all([f16('smollm2-135m',10,0),f16('smollm2-135m',10,1),f16('smollm2-135m',10,2)]);
+    if(!xv||!yv||!zv) return;
+    const n=Math.min(N,xv.byteLength/2);
+    const h2f=h=>{const s=(h&0x8000)>>15,e=(h&0x7c00)>>10,f=h&0x3ff;
+      return e===0?(s?-1:1)*Math.pow(2,-14)*(f/1024):e===0x1f?(f?NaN:(s?-1:1)*Infinity):(s?-1:1)*Math.pow(2,e-15)*(1+f/1024);};
+    const read=(dv,i)=>dv.getFloat16?dv.getFloat16(i*2,true):h2f(dv.getUint16(i*2,true));
+    const px=[],py=[],pz=[]; for(let i=0;i<n;i++){px.push(read(xv,i));py.push(read(yv,i));pz.push(read(zv,i));}
+    const scale=a=>{const s=[...a].map(Math.abs).sort((u,v)=>u-v);const q=s[Math.floor(s.length*0.985)]||1;return R/(q||1);};
+    const sx=scale(px),sy=scale(py),sz=scale(pz), cl=(v,b)=>Math.max(-b,Math.min(b,v));
+    for(let i=0;i<n;i++){
+      pos[i*3]=cl(px[i]*sx,R*1.7); pos[i*3+1]=cl(py[i]*sy,R*1.7); pos[i*3+2]=cl(pz[i]*sz,R*1.7);
+      const oct=((px[i]>0)?1:0)+((py[i]>0)?2:0)+((pz[i]>0)?4:0); const c=new THREE.Color(PALETTE[oct]);
+      const b=0.7+0.3*Math.random(); acol[i*3]=c.r*b;acol[i*3+1]=c.g*b;acol[i*3+2]=c.b*b;
+    }
+    rGeo.attributes.position.needsUpdate=true; rGeo.attributes.acolor.needsUpdate=true;
+  }catch(e){/* keep placeholder */}
 })();
+
+// ── drift: weightless, slow, look-but-don't-touch ────────────────────────────
+let mx=0,my=0,tmx=0,tmy=0;
+addEventListener('pointermove',e=>{tmx=(e.clientX/innerWidth-0.5);tmy=(e.clientY/innerHeight-0.5);},{passive:true});
+function resize(){cam.aspect=innerWidth/innerHeight;cam.updateProjectionMatrix();rdr.setSize(innerWidth,innerHeight);rdr.setPixelRatio(Math.min(devicePixelRatio,2));}
+resize(); addEventListener('resize',resize);
+let t=0, raf;
+function frame(){
+  raf=requestAnimationFrame(frame); t+=0.0016;
+  cloud.rotation.y=t*0.5; cloud.rotation.x=Math.sin(t*0.35)*0.1;
+  dust.rotation.y=t*0.22; dust.rotation.x=Math.sin(t*0.2)*0.06;   // parallax depth
+  mx+=(tmx-mx)*0.035; my+=(tmy-my)*0.035;
+  cam.position.set(Math.sin(t*0.4)*30, Math.cos(t*0.3)*11, Math.cos(t*0.4)*30);
+  cam.lookAt(mx*30, -my*22, 0);
+  rdr.render(scene,cam);
+}
+frame();
+document.addEventListener('visibilitychange',()=>{ if(document.hidden){cancelAnimationFrame(raf);} else {frame();} });
 </script>
 </body>
 </html>
