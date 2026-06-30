@@ -156,6 +156,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_comp = sub.add_parser("companion", aliases=["viz"], help="Live 3D MRI viewer (http://localhost:8377)")
     p_comp.add_argument("--port", type=int, default=8377, help="Port (default: 8377)")
     p_comp.add_argument("--mri-root", default=None, help="Directory of <model>/<mode>.mri captures (default: /Volumes/sharts)")
+    p_comp.add_argument("--gallery", default=None, help="Public Observatory base URL to proxy published models from (models:both), e.g. https://hcirnieh.com")
 
     # Crystal inspector — finds single-token crystals in raw-mode MRIs.
     p_crystal = sub.add_parser("crystal-inspect",
@@ -1176,6 +1177,8 @@ def main(argv: list[str] | None = None) -> None:
         kw = {"port": args.port}
         if getattr(args, "mri_root", None):
             kw["mri_root"] = args.mri_root
+        if getattr(args, "gallery", None):
+            kw["gallery_base"] = args.gallery
         run_companion(**kw)
     elif args.command == "crystal-inspect":
         _cmd_crystal_inspect(args)

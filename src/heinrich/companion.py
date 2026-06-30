@@ -2205,7 +2205,28 @@ def _live_capable() -> bool:
     return False
 
 
-def _capabilities() -> dict:
+def _merge_models(mri_root: str, gallery_base: str | None) -> list[dict]:
+    """Local models ∪ published gallery models (models:both). Local wins on a name
+    clash (you have the full .mri; the gallery has only the lean subset)."""
+    local = _list_models(mri_root)
+    if not gallery_base:
+        return local
+    names = {m.get("model") for m in local}
+    try:
+        import urllib.request
+        with urllib.request.urlopen(gallery_base.rstrip('/') + '/api/models', timeout=15) as r:
+            remote = json.loads(r.read())
+    except Exception:
+        return local
+    merged = list(local)
+    for m in remote:
+        if isinstance(m, dict) and m.get("model") not in names:
+            m = {**m, "source": "gallery"}
+            merged.append(m)
+    return merged
+
+
+def _capabilities(gallery_base: str | None = None) -> dict:
     """Capability manifest — the inverted contract (see companion_ui.html CAP).
     The local companion is the maximal node: serves the artifact AND does the
     heavy/live analysis. `live`/`steer` need a generation backend importable;
@@ -2218,7 +2239,7 @@ def _capabilities() -> dict:
     return {
         "backend": "local",
         "artifact": True,
-        "models": "local",          # "both" once R2-aware (proxy published artifacts)
+        "models": "both" if gallery_base else "local",
         "live": live,
         "steer": live,
         "weights": True,
@@ -3258,14 +3279,69 @@ class CompanionHandler(SimpleHTTPRequestHandler):
     """HTTP handler for the companion API + viewer."""
 
     mri_root = "/Volumes/sharts"
+    gallery_base = None          # public base URL for proxying published (R2) models
+    _local_names_cache = None    # set[str] of model names on disk (lazy)
 
     def _mri_path(self, model: str, mode: str) -> str:
         return f"{self.mri_root}/{model}/{mode}.mri"
+
+    def _local_model_names(self) -> set:
+        """Model names available locally on disk (cached on the class)."""
+        cls = type(self)
+        if cls._local_names_cache is None:
+            try:
+                cls._local_names_cache = {m.get("model") for m in _list_models(self.mri_root)}
+            except (OSError, ValueError):
+                cls._local_names_cache = set()
+        return cls._local_names_cache
+
+    @staticmethod
+    def _request_model(path: str, qs: dict) -> str:
+        """Extract the model name a data request targets (path /api/<ep>/<model>/<mode> or ?model=)."""
+        parts = path.split('/')                 # ['', 'api', ep, model, mode, ...]
+        if len(parts) >= 4 and parts[3]:
+            return parts[3]
+        return (qs.get('model', [''])[0] or qs.get('mri_model', [''])[0])
+
+    # Endpoints that never name a model — exempt from the gallery proxy.
+    _NO_MODEL_EP = ('/api/poll', '/api/chat-poll', '/api/chat-drain',
+                    '/api/models', '/api/capabilities', '/api/live-status', '/api/signals')
+
+    def _proxy_gallery(self, parsed) -> None:
+        """models:both — fetch a published model's bytes from the public base and
+        stream them, so a gallery model the local node lacks still resolves
+        same-origin (the SPA never straddles two origins)."""
+        import urllib.request
+        url = self.gallery_base.rstrip('/') + self.path
+        try:
+            with urllib.request.urlopen(url, timeout=20) as resp:
+                body = resp.read()
+                ctype = resp.headers.get('Content-Type', 'application/octet-stream')
+        except Exception as e:
+            self._send_json({"error": f"gallery proxy failed: {e}"})
+            return
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', ctype)
+            self.send_header('Content-Length', str(len(body)))
+            self.send_header('Access-Control-Allow-Origin', '*')
+            self.end_headers()
+            self.wfile.write(body)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
 
     def do_GET(self):
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
+
+        # models:both — a data request for a model we don't have locally is proxied
+        # from the public gallery base (read-only, same-origin to the SPA).
+        if (self.gallery_base and path.startswith('/api/')
+                and path not in self._NO_MODEL_EP):
+            model = self._request_model(path, qs)
+            if model and model not in self._local_model_names():
+                return self._proxy_gallery(parsed)
 
         # Long-poll: browser blocks here waiting for commands
         if path == '/api/poll':
@@ -3314,9 +3390,9 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             ui_path = Path(__file__).parent / "companion_ui.html"
             self._send_html(ui_path.read_text())
         elif path == '/api/models':
-            self._send_json(_list_models(self.mri_root))
+            self._send_json(_merge_models(self.mri_root, self.gallery_base))
         elif path == '/api/capabilities':
-            self._send_json(_capabilities())
+            self._send_json(_capabilities(self.gallery_base))
         elif path == '/api/live-status':
             mri_model = qs.get('mri_model', [''])[0]
             mode_name = qs.get('mode', ['raw'])[0]
@@ -4185,17 +4261,27 @@ class CompanionHandler(SimpleHTTPRequestHandler):
         pass  # silence request logs
 
 
-def run_companion(port: int = 8377, mri_root: str = "/Volumes/sharts"):
-    """Run the companion HTTP server (threaded)."""
+def run_companion(port: int = 8377, mri_root: str = "/Volumes/sharts",
+                  gallery_base: str | None = None):
+    """Run the companion HTTP server (threaded).
+
+    gallery_base: public Observatory base URL (e.g. https://hcirnieh.com). When
+    set, published models the local node lacks are proxied from it (models:both),
+    so a deep-link to a gallery model resolves and the SPA stays single-origin.
+    """
     from socketserver import ThreadingMixIn
 
     CompanionHandler.mri_root = mri_root
+    CompanionHandler.gallery_base = gallery_base
+    CompanionHandler._local_names_cache = None  # recompute for this root
 
     class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
         daemon_threads = True
 
     server = ThreadedHTTPServer(('0.0.0.0', port), CompanionHandler)
     print(f"Heinrich companion: http://localhost:{port}")
+    if gallery_base:
+        print(f"  + gallery proxy: {gallery_base}")
     print()
     try:
         server.serve_forever()
