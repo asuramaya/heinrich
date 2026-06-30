@@ -155,6 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
     # Visualizer (companion is primary, viz is alias)
     p_comp = sub.add_parser("companion", aliases=["viz"], help="Live 3D MRI viewer (http://localhost:8377)")
     p_comp.add_argument("--port", type=int, default=8377, help="Port (default: 8377)")
+    p_comp.add_argument("--mri-root", default=None, help="Directory of <model>/<mode>.mri captures (default: /Volumes/sharts)")
 
     # Crystal inspector — finds single-token crystals in raw-mode MRIs.
     p_crystal = sub.add_parser("crystal-inspect",
@@ -1172,7 +1173,10 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_eval(args)
     elif args.command in ("companion", "viz"):
         from .companion import run_companion
-        run_companion(port=args.port)
+        kw = {"port": args.port}
+        if getattr(args, "mri_root", None):
+            kw["mri_root"] = args.mri_root
+        run_companion(**kw)
     elif args.command == "crystal-inspect":
         _cmd_crystal_inspect(args)
     elif args.command == "viz-legacy":

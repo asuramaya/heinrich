@@ -3314,7 +3314,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             ui_path = Path(__file__).parent / "companion_ui.html"
             self._send_html(ui_path.read_text())
         elif path == '/api/models':
-            self._send_json(_list_models())
+            self._send_json(_list_models(self.mri_root))
         elif path == '/api/capabilities':
             self._send_json(_capabilities())
         elif path == '/api/live-status':
