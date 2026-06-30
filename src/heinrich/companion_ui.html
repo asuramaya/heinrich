@@ -1283,7 +1283,8 @@ async function _updateSeparationNow(a,b){
     nlDiv.style.cssText='padding:2px 4px;margin:2px 0;font-size:8px;color:#555';
     nlDiv.textContent='testing linearity...';
     list.appendChild(nlDiv);
-    api(`direction-nonlinear/${model}/${mode}?a=${a}&b=${b}&layer=${cL}&n_sample=2000`).then(nl=>{
+    if(_deployStatic){nlDiv.textContent='linearity: producer-only (full-space kNN)';}
+    else api(`direction-nonlinear/${model}/${mode}?a=${a}&b=${b}&layer=${cL}&n_sample=2000`).then(nl=>{
       if(_sepReqId!==reqId)return;
       if(nl.error){nlDiv.textContent='linearity: '+nl.error;return;}
       const vColor=nl.verdict==='linear'?'#4f4':nl.verdict==='nonlinear'?'#f44':'#cc4';
@@ -1353,7 +1354,8 @@ async function _updateSeparationNow(a,b){
     circDiv.style.cssText='font-size:7px;color:#555;margin:4px 0';
     circDiv.textContent='tracing circuit...';
     list.appendChild(circDiv);
-    api(`direction-circuit/${model}/${mode}?a=${a}&b=${b}`).then(circ=>{
+    if(_deployStatic){circDiv.textContent='circuit: producer-only (needs raw weights)';}
+    else api(`direction-circuit/${model}/${mode}?a=${a}&b=${b}`).then(circ=>{
       if(_sepReqId!==reqId)return;
       if(circ.error){circDiv.textContent='circuit: '+circ.error;return;}
       circDiv.textContent='';
@@ -2307,6 +2309,10 @@ async function _loadDirectionWeightData(a,b){
   // _onPinChange doesn't short-circuit on the already-set key with null.
   if(_wlDirPending&&_wlDirPending.key===key)return _wlDirPending.p;
   const p=(async()=>{
+    // direction-weights needs raw projection weights (not in the lean artifact);
+    // skip the doomed request on the hosted deploy — flowers fall back to PC-axis
+    // alignment instead of concept-direction alignment.
+    if(_deployStatic){_wlDirData=null;_wlDirKey='';_wlDirPending=null;return null;}
     try{
       const r=await api(`direction-weights/${model}/${mode}?a=${a}&b=${b}`);
       if(r&&Array.isArray(r.layers)){
