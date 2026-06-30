@@ -2193,6 +2193,40 @@ def _backend_supports_geometry(backend: Any) -> bool:
     return callable(getattr(backend, "generate_with_geometry", None)) and not mod.endswith(".decepticon")
 
 
+def _live_capable() -> bool:
+    """Can this host load a model for live forward/steer? (generation backend importable)"""
+    import importlib.util
+    for mod in ("mlx_lm", "transformers"):
+        try:
+            if importlib.util.find_spec(mod) is not None:
+                return True
+        except (ImportError, ValueError):
+            pass
+    return False
+
+
+def _capabilities() -> dict:
+    """Capability manifest — the inverted contract (see companion_ui.html CAP).
+    The local companion is the maximal node: serves the artifact AND does the
+    heavy/live analysis. `live`/`steer` need a generation backend importable;
+    `weights` (circuit, nonlinear kNN, weight-direction) is numpy over the full
+    .mri, always available locally; `mcp` (command channel + chat) and `write`
+    are local-only. The SPA composes the UI from this, so the edge Worker — which
+    returns the minimal node ({live:false,...}) — never has to chase parity.
+    """
+    live = _live_capable()
+    return {
+        "backend": "local",
+        "artifact": True,
+        "models": "local",          # "both" once R2-aware (proxy published artifacts)
+        "live": live,
+        "steer": live,
+        "weights": True,
+        "mcp": True,
+        "write": True,
+    }
+
+
 def _live_session_status(mri_path: str, model_id: str = "") -> dict:
     """Report current live-backend cache status without loading a model."""
     resolved = _resolve_live_model_id(mri_path, model_id)
@@ -3281,6 +3315,8 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             self._send_html(ui_path.read_text())
         elif path == '/api/models':
             self._send_json(_list_models())
+        elif path == '/api/capabilities':
+            self._send_json(_capabilities())
         elif path == '/api/live-status':
             mri_model = qs.get('mri_model', [''])[0]
             mode_name = qs.get('mode', ['raw'])[0]

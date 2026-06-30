@@ -1283,7 +1283,7 @@ async function _updateSeparationNow(a,b){
     nlDiv.style.cssText='padding:2px 4px;margin:2px 0;font-size:8px;color:#555';
     nlDiv.textContent='testing linearity...';
     list.appendChild(nlDiv);
-    if(_deployStatic){nlDiv.textContent='linearity: producer-only (full-space kNN)';}
+    if(!CAP.weights){nlDiv.textContent='linearity: run heinrich locally (full-space kNN)';}
     else api(`direction-nonlinear/${model}/${mode}?a=${a}&b=${b}&layer=${cL}&n_sample=2000`).then(nl=>{
       if(_sepReqId!==reqId)return;
       if(nl.error){nlDiv.textContent='linearity: '+nl.error;return;}
@@ -1354,7 +1354,7 @@ async function _updateSeparationNow(a,b){
     circDiv.style.cssText='font-size:7px;color:#555;margin:4px 0';
     circDiv.textContent='tracing circuit...';
     list.appendChild(circDiv);
-    if(_deployStatic){circDiv.textContent='circuit: producer-only (needs raw weights)';}
+    if(!CAP.weights){circDiv.textContent='circuit: run heinrich locally (needs raw weights)';}
     else api(`direction-circuit/${model}/${mode}?a=${a}&b=${b}`).then(circ=>{
       if(_sepReqId!==reqId)return;
       if(circ.error){circDiv.textContent='circuit: '+circ.error;return;}
@@ -2312,7 +2312,7 @@ async function _loadDirectionWeightData(a,b){
     // direction-weights needs raw projection weights (not in the lean artifact);
     // skip the doomed request on the hosted deploy — flowers fall back to PC-axis
     // alignment instead of concept-direction alignment.
-    if(_deployStatic){_wlDirData=null;_wlDirKey='';_wlDirPending=null;return null;}
+    if(!CAP.weights){_wlDirData=null;_wlDirKey='';_wlDirPending=null;return null;}
     try{
       const r=await api(`direction-weights/${model}/${mode}?a=${a}&b=${b}`);
       if(r&&Array.isArray(r.layers)){
@@ -4894,7 +4894,7 @@ async function _captureGifRemote(sc,cam,el,vi,rid){
 }
 
 // Start polling after initial load completes
-setTimeout(_pollLoop,1000);
+// (poll loops are started by the capability boot below, only if CAP.mcp)
 
 // --- Tokpanel tab switcher (merged from 3 former accordions: chat/cross/live) ---
 function _activateTab(name){
@@ -4908,16 +4908,23 @@ function _activateTab(name){
   const tabs=document.getElementById('tokTabs');if(!tabs)return;
   tabs.addEventListener('click',e=>{const btn=e.target.closest('.tab-btn');if(!btn)return;_activateTab(btn.dataset.tab);});
 })();
-// Static/hosted Observatory has no live model backend. Detected from the poll
-// channels (the worker sends `static:true`). When set: stop the long-poll loops
-// (else they busy-hammer the network — the worker answers instantly instead of
-// holding ~25s), and mark the Run tab's live cards read-only rather than letting
-// them pretend to work. Local `heinrich companion` never sends the flag, so its
-// live forward / chat / MCP command channel keep working unchanged.
-let _deployStatic=false;
-function _setDeployStatic(){
-  if(_deployStatic)return;_deployStatic=true;
-  _pollActive=false;// halt the command-channel poll loop
+// === Capability manifest (the inverted contract) ===
+// The backend DECLARES what it can do; the SPA composes from that — instead of
+// the SPA probing for failures. /api/capabilities is the whole boundary:
+//   worker (edge)  → { live:false, weights:false, mcp:false, ... }   read-only
+//   heinrich local → { live:true,  weights:true,  mcp:true,  ... }   full instrument
+// Every gated feature keys off CAP, so the Worker never chases parity and the
+// per-feature divergence math disappears. Default is the most restrictive node,
+// so a failed/absent fetch is safely read-only.
+let CAP={backend:'worker',artifact:true,models:'r2',live:false,steer:false,weights:false,mcp:false,write:false};
+async function _loadCapabilities(){
+  try{const c=await api('capabilities');if(c&&c.backend)CAP=Object.assign({},CAP,c);}catch(e){}
+  return CAP;
+}
+// derived: "no live model backend" — kept as a name for the live-tier gates.
+let _deployStatic=true;
+function _disableLiveUI(){
+  _pollActive=false;// halt the command-channel poll loop if it ever started
   const note='producer-only — run `heinrich companion` locally';
   const ss=document.getElementById('liveSessionStatus');
   if(ss){ss.style.color='#777';ss.textContent='read-only viewer — no live model backend ('+note+')';}
@@ -4925,9 +4932,16 @@ function _setDeployStatic(){
   const lv=document.getElementById('liveStatus');if(lv)lv.textContent=note;
   ['liveInput','liveChatInput','liveModelId','chatInput'].forEach(id=>{const el=document.getElementById(id);if(el){el.disabled=true;el.placeholder=note;}});
   ['liveStatusRefresh','liveStatusUnload','liveUseSuggested'].forEach(id=>{const el=document.getElementById(id);if(el)el.disabled=true;});
-  // if the user is parked on the now-inert Run tab, move them to Find
   if(document.querySelector('#tokTabs .tab-btn[data-tab="run"]')?.classList.contains('active'))_activateTab('find');
 }
+// Configure the UI from CAP (called once after the manifest loads).
+function _applyCapabilities(){
+  _deployStatic=!CAP.live;
+  if(!CAP.live)_disableLiveUI();
+}
+// Fallback for the legacy static-poll path — CAP is authoritative, but if a poll
+// ever sees `static:true` we still degrade the live UI.
+function _setDeployStatic(){if(!_deployStatic)_deployStatic=true;_disableLiveUI();}
 
 // --- Minimize / expand tokpanel ---
 document.getElementById('tokMin')?.addEventListener('click',()=>{
@@ -5014,7 +5028,14 @@ async function _chatPollLoop(){
     }
   }
 }
-setTimeout(_chatPollLoop,1500);
+// Capability boot: load the manifest, configure the UI, and start the MCP
+// command/chat channels ONLY if the backend advertises mcp. This is the inverted
+// control — no static-detection, no busy-loop sniffing; the backend declares.
+(async()=>{
+  await _loadCapabilities();
+  _applyCapabilities();
+  if(CAP.mcp){setTimeout(_pollLoop,1000);setTimeout(_chatPollLoop,1500);}
+})();
 
 // --- Live Forward ---
 // Type a prompt, server loads model (cached per-session) + runs forward pass,
@@ -5534,7 +5555,7 @@ window.__heinrich = {
   // --- state readers ---
   get views(){return views;}, get leftViews(){return leftViews;}, get rightViews(){return rightViews;},
   get vpPairs(){return vpPairs;}, get dirDepth(){return _dirDepthData;},
-  get pins(){return {a:pinnedToken,b:pinnedTokenB};},
+  get pins(){return {a:pinnedToken,b:pinnedTokenB};}, get cap(){return CAP;},
   get state(){return {model,mode,cL,nL,nN,nK,_nRealLayers,pinnedToken,pinnedTokenB,_dirColorActive,play};},
   get wlData(){return _wlData;}, get wlDirData(){return _wlDirData;}, get wlDirKey(){return _wlDirKey;},
   get dirProjLast(){return _dirProjLast;},

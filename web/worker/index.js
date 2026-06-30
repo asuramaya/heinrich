@@ -408,6 +408,12 @@ export default {
       // long-poll loops expect the local companion to hold the request ~25s; a
       // worker returns instantly, so without a signal they'd busy-loop the
       // network. `static: true` tells the SPA to stop the loop after one probe.
+      // Capability manifest — the inverted contract. The edge is the minimal
+      // node: it serves the artifact and nothing live. The SPA composes from this.
+      if (ep === "capabilities") return jsonResponse({
+        backend: "worker", artifact: true, models: "r2",
+        live: false, steer: false, weights: false, mcp: false, write: false,
+      });
       if (ep === "poll") return jsonResponse({ cmd: "none", static: true });
       if (ep === "navigate") return jsonResponse({});
       if (ep === "chat-poll") return jsonResponse({ reply: null, static: true });
