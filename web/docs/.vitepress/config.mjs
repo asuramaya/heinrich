@@ -59,8 +59,7 @@ export default defineConfig({
       text: 'Edit / contribute on GitHub',
     },
     footer: {
-      message: 'The DB is the single source of truth. Interpretation is left to the reader.',
-      copyright: 'heinrich · <a href="https://hcirnieh.com/">hcirnieh.com</a> — read inward',
+      copyright: 'heinrich · <a href="https://hcirnieh.com/">hcirnieh.com</a>',
     },
   },
 })

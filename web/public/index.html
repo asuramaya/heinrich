@@ -25,11 +25,11 @@
   nav{position:fixed;top:0;left:0;right:0;z-index:5;backdrop-filter:blur(3px);
     background:linear-gradient(rgba(5,6,8,0.6),transparent)}
   nav .wrap{display:flex;align-items:center;gap:18px;height:54px}
-  .brand{font-family:var(--mono);font-weight:700;color:#fff;font-size:15px;letter-spacing:.02em}
+  .brand{font-family:var(--mono);font-weight:700;color:#fff;font-size:15px;letter-spacing:.02em;white-space:nowrap}
   .brand .rev{color:var(--dim2);font-weight:400;font-size:12px}
   nav .sp{flex:1}
   nav a{color:var(--dim);font-size:13px;font-family:var(--mono)} nav a:hover{color:#fff}
-  nav a.cta{color:var(--grn);border:1px solid #3a4a2e;border-radius:999px;padding:4px 12px}
+  nav a.cta{color:var(--grn);border:1px solid #3a4a2e;border-radius:999px;padding:4px 12px;white-space:nowrap}
   nav a.cta:hover{border-color:#586;color:#bf9}
   /* hero: a full screen of mind, text floating low */
   .hero{min-height:100vh;display:flex;flex-direction:column;justify-content:flex-end;padding-bottom:8vh}
@@ -64,7 +64,13 @@
   footer .rev{color:#70707a}
   footer .foot{margin:0 auto 22px}
   footer .foot a{color:var(--blu)} footer a:hover{color:#fff}
-  @media(max-width:560px){ nav a.docs,nav a.gh{display:none} }
+  @media(max-width:560px){
+    nav a.docs,nav a.gh{display:none}
+    nav .wrap{gap:12px;padding:0 18px;height:50px}
+    .brand .rev{display:none}        /* drop "· hcirnieh" on phones — the domain says it */
+    nav a{font-size:12px}
+    nav a.cta{padding:4px 11px}
+  }
 </style>
 </head>
 <body>
@@ -104,14 +110,14 @@
       <a class="door" href="/book">
         <div class="label">evolving magnum opus</div>
         <div class="h">The Grand Unified Theory of Sharts</div>
-        <div class="d">The book. It smells its own farts.</div>
+        <div class="d">The papers absorbed, the measurements kept, the witnesses allowed to speak.</div>
         <div class="go">Open the book →</div>
       </a>
     </div>
   </div></section>
 
   <footer><div class="wrap">
-    <span class="brand">heinrich</span> · <span class="rev">hcirnieh.com — read inward</span>
+    <span class="brand">heinrich</span> · <span class="rev">hcirnieh.com</span>
   </div></footer>
 
 </div>
