@@ -1,0 +1,58 @@
+/* Match hcirnieh.com — dark void, green accent, blue links, mono. */
+:root {
+  --vp-c-bg: #050608;
+  --vp-c-bg-alt: #0a0b0e;
+  --vp-c-bg-elv: #0e0f13;
+  --vp-c-bg-soft: #0e0f13;
+
+  --vp-c-divider: #1c1d22;
+  --vp-c-border: #222329;
+  --vp-c-gutter: #0a0b0e;
+
+  --vp-c-text-1: #d6d6d8;
+  --vp-c-text-2: #a7a7af;
+  --vp-c-text-3: #8a8a92;
+
+  /* green = brand/action (the Enter-button green) */
+  --vp-c-brand-1: #b6e07a;
+  --vp-c-brand-2: #9ccc66;
+  --vp-c-brand-3: #2a361c;
+  --vp-c-brand-soft: rgba(156, 204, 102, 0.14);
+
+  --vp-c-default-soft: #14151a;
+
+  --vp-font-family-base: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --vp-font-family-mono: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+
+  --vp-home-hero-name-color: #fff;
+}
+
+/* links blue, not green, to match the site */
+.vp-doc a { color: #9cd; font-weight: 500; }
+.vp-doc a:hover { color: #cfe; }
+
+/* nav brand monospace + the inversion motif */
+.VPNavBarTitle .title { font-family: var(--vp-font-family-mono); letter-spacing: .02em; }
+
+/* code blocks darker, mono accents in amber like the site */
+:root {
+  --vp-code-block-bg: #0b0c10;
+  --vp-code-line-highlight-color: rgba(156, 204, 102, 0.08);
+}
+.vp-doc code { color: #caa46a; }
+.vp-doc :not(pre) > code { background: rgba(202, 164, 106, 0.08); }
+
+/* headings a touch brighter/whiter */
+.vp-doc h1, .vp-doc h2, .vp-doc h3 { color: #eee; letter-spacing: -0.01em; }
+.vp-doc h2 { border-top-color: #1c1d22; }
+
+/* blockquotes = the deadpan asides */
+.vp-doc blockquote { border-left-color: #2a361c; color: #aaa; }
+
+/* tables legible on dark */
+.vp-doc tr { background: transparent; border-top-color: #1c1d22; }
+.vp-doc th { background: #0e0f13; color: #ccc; }
+.vp-doc td { border-color: #1c1d22; }
+
+/* custom containers tuned dark */
+.vp-doc .custom-block { border-radius: 8px; }

@@ -113,5 +113,16 @@ R2 has zero egress, artifacts are immutable (cache-forever), and byte-range
 reads bound transfer to the slice viewed — so a published gallery is ~free to
 host at any scale. The producer's GPU cost is paid once, at capture.
 
-The SPA is a generated copy of `src/heinrich/companion_ui.html`
-(`cp` it into `public/index.html`); edit the source, not the copy.
+## Surfaces
+
+`hcirnieh.com` serves three things off one Worker:
+
+- `/` — the immersive landing (`public/index.html`, authored).
+- `/observatory` — the viz SPA, a generated copy of `src/heinrich/companion_ui.html`
+  (`cp` it into `public/observatory/index.html`; edit the source, not the copy).
+- `/docs/` — the VitePress doc site. Source in `docs/`; build before deploy:
+
+```bash
+cd docs && npm install && npm run build   # → ../public/docs (gitignored)
+cd .. && wrangler deploy                   # ships landing + viz + docs
+```
