@@ -2,6 +2,7 @@
 <html>
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <title>Heinrich</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
@@ -83,6 +84,21 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .vp .info .t{font-weight:bold}.vp .info .s{font-weight:bold;margin-left:4px}
 .cbtn{display:flex;gap:2px;z-index:5;position:absolute;bottom:3px;right:4px}
 .cbtn button{background:rgba(20,20,20,0.85);border:1px solid #333;color:#666;padding:1px 4px;font-size:7px;font-family:inherit;cursor:pointer;border-radius:2px;line-height:13px}
+/* Touch devices: enlarge tap targets and let the panel fit a phone. Inline styles on the
+   buttons force !important here. Untouched on mouse/trackpad (pointer:fine). */
+@media (pointer: coarse){
+  #tokpanel{width:min(620px,calc(100vw - 16px))!important;font-size:11px;max-height:82vh;padding:10px}
+  #tokpanel button,#tokpanel select{min-height:34px;padding:6px 10px!important;font-size:12px!important}
+  #tokpanel .tok-tabs .tab-btn{min-height:40px;padding:9px 16px!important;font-size:12px!important}
+  #tokpanel .search-row input,#tokpanel input[type=text],#chatInput{min-height:36px;font-size:12px!important;padding:7px 9px!important}
+  #tokpanel .tok-min{min-height:32px;min-width:32px;font-size:15px!important;line-height:1!important}
+  #tokpanel .drag-handle{min-height:34px;padding:9px 6px;font-size:11px!important}
+  #tokpanel .legend-compact{padding:9px 0;font-size:11px!important}
+  #tokpanel #ctrlbar .cbtn button{min-height:30px;min-width:28px;padding:5px 8px!important;font-size:11px!important;line-height:1!important}
+  #tokpanel #llbl{font-size:12px!important;min-width:30px}
+  .cbtn{gap:4px}
+  .cbtn button{min-height:28px;min-width:26px;padding:4px 7px!important;font-size:11px!important;line-height:1!important}
+}
 .cbtn button:hover{color:#ccc;border-color:#666}
 .browse{position:relative;overflow:hidden;background:transparent}
 .browse .blbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
@@ -175,7 +191,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
     <div id="tokInspect" class="inspect-stack">
       <div id="tokAB">
         <div id="tokA" class="token-card"><div class="subhead">Token A · click</div><div class="tn" id="taName" style="color:#FF6644">&mdash;</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarA" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="taMeta" style="font-size:8px">click a token to pin</div><div id="predsA" style="font-size:7px;color:#555;margin-top:3px"></div></div>
-        <div id="tokB" class="token-card"><div class="subhead">Token B · right click</div><div class="tn" id="tbName" style="color:#4477AA">&mdash;</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarB" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="tbMeta" style="font-size:8px">R-click for comparison</div><div id="predsB" style="font-size:7px;color:#555;margin-top:3px"></div></div>
+        <div id="tokB" class="token-card"><div class="subhead">Token B · right-click / long-press</div><div class="tn" id="tbName" style="color:#4477AA">&mdash;</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarB" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="tbMeta" style="font-size:8px">right-click or long-press to compare</div><div id="predsB" style="font-size:7px;color:#555;margin-top:3px"></div></div>
       </div>
       <div id="dirColorStatus" class="dcs" style="display:none">projecting direction&hellip;</div>
       <div id="sepPanel" class="panel-card" style="display:none" title="Run exact direction analysis for the pinned pair"><div class="pane-head"><div><div class="pane-title">Direction Analysis</div><div class="pane-note" id="sepNote">exact, on demand</div></div><button id="sepRun" class="mini-btn" type="button">Analyze</button></div><div style="color:#555;font-size:7px;margin-bottom:2px">Max separation PCs <span id="sepDist" style="color:#888"></span></div><div id="sepList" style="font-size:8px"></div></div>
@@ -1600,9 +1616,21 @@ function setupInteraction(vi){const v=views[vi];
   v.cv.addEventListener('contextmenu',e=>e.preventDefault(),true);// capture phase — fires before OrbitControls
   v.cv.addEventListener('mousemove',e=>{if(!nN)return;_hoverPending={vi,e};if(!_hoverRAF)_hoverRAF=requestAnimationFrame(_processHover);});
   v.cv.addEventListener('mouseleave',()=>{_hoverPending=null;highlightToken(-1);document.getElementById('detail').style.display='none';});
-  let _dx=0,_dy=0;
-  v.cv.addEventListener('pointerdown',e=>{_dx=e.clientX;_dy=e.clientY;});
-  v.cv.addEventListener('pointerup',e=>{if(!nN||Math.abs(e.clientX-_dx)+Math.abs(e.clientY-_dy)>5)return;
+  let _dx=0,_dy=0,_lpTimer=0,_lpFired=false;
+  const _clearLP=()=>{if(_lpTimer){clearTimeout(_lpTimer);_lpTimer=0;}};
+  const _pinB=i=>{pinnedTokenB=i;updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();};
+  v.cv.addEventListener('pointerdown',e=>{_dx=e.clientX;_dy=e.clientY;_lpFired=false;_clearLP();
+    // Touch has no right-click. Long-press (≈480ms, no drag) pins Token B — the mobile
+    // equivalent. Haptic tick on fire; the move/cancel/up handlers below abort it.
+    if(e.pointerType==='touch'){_lpTimer=setTimeout(()=>{_lpTimer=0;if(!nN)return;
+      const i=_rayHit(vi,{clientX:_dx,clientY:_dy});
+      if(i>=0){_lpFired=true;if(navigator.vibrate)navigator.vibrate(18);_pinB(i);}},480);}
+  });
+  v.cv.addEventListener('pointermove',e=>{if(_lpTimer&&Math.abs(e.clientX-_dx)+Math.abs(e.clientY-_dy)>8)_clearLP();},{passive:true});
+  v.cv.addEventListener('pointercancel',_clearLP);
+  v.cv.addEventListener('pointerup',e=>{_clearLP();
+    if(_lpFired){_lpFired=false;return;}// long-press already pinned B; the lift is not a tap
+    if(!nN||Math.abs(e.clientX-_dx)+Math.abs(e.clientY-_dy)>5)return;
     const i=_rayHit(vi,e);
     if(i>=0){if(_isRightClick(e)){pinnedTokenB=i;}else{pinnedToken=i;loadAttnData(i);}updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();}
     else if(!_isRightClick(e)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();}});}
@@ -4649,7 +4677,7 @@ if(e.key==='g'||e.key==='G'){const t=_capTarget;if(t)recordViewport(t.sc,t.cam,t
 });
 let _needsRender=true,_frameCount=0,_fpsTime=performance.now();
 function _markDirty(){_needsRender=true;}
-let _wasInteracting=false,_lastCamMove=0;
+let _trajShown=true,_lastCamMove=0;
 // Camera 'change' fires on every drag step; record the time so the LOD knows the
 // camera is actively moving (damping/_needsUpdate is only true during the settle,
 // not the drag itself). Also marks dirty so the frame renders.
@@ -4664,11 +4692,21 @@ rightViews.forEach(v=>v.ctl.addEventListener('change',_onCamMove));
   // the frame — measured 3fps with them, 13fps without. Hide them while the camera is
   // moving (recent 'change' = active drag, or damping = settle) and restore + force one
   // full render when motion stops. Smooth orbit, full detail at rest.
-  const interacting=(performance.now()-_lastCamMove<140)||damping;
-  if(interacting!==_wasInteracting){
-    for(let i=NC;i<views.length;i++){const v=views[i];if(v.trajGroup)v.trajGroup.visible=!interacting;}
-    _wasInteracting=interacting;
-    if(!interacting)_needsRender=true;// settle → final render with trajectories restored
+  // LOD with hysteresis. A single 140ms threshold toggled trajectory visibility on/off
+  // during slow or intermittent drags (the 'change' gaps crossed the line both ways) →
+  // flicker. Now: hide the instant the camera moves (sinceMove<90 or damping), restore
+  // only after it has been still for >300ms, and HOLD the current state in the 90–300ms
+  // dead-band. Asymmetric thresholds = no oscillation. Keeps the ~10x orbit-FPS win.
+  const sinceMove=performance.now()-_lastCamMove;
+  const moving=damping||sinceMove<90;
+  let wantTraj;
+  if(moving)wantTraj=false;
+  else if(sinceMove>300)wantTraj=true;
+  else wantTraj=_trajShown;// dead-band: keep whatever we last showed
+  if(wantTraj!==_trajShown){
+    for(let i=NC;i<views.length;i++){const v=views[i];if(v.trajGroup)v.trajGroup.visible=wantTraj;}
+    _trajShown=wantTraj;
+    _needsRender=true;// render the transition (hide or restore)
   }
   if(!_needsRender&&!damping&&!play)return;
   _needsRender=false;
