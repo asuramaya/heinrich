@@ -22,7 +22,7 @@ _DECOMP_EXACT = {
     "meta.json", "tokens.json",
     "all_scores.bin", "pc_scores.bin", "token_scores.bin", "token_neurons.bin",
     "gate_heatmap.npy", "weight_alignment.json", "neuron_importance.json",
-    "falsification.json",
+    "falsification.json", "token_predicts.bin",
 }
 
 

@@ -7015,6 +7015,75 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
     print(f"  Falsification: {total_layers} layers, top-{min(50, K)} PCs + 50-pair "
           f"baseline (crystal-suppressed)", file=sys.stderr)
 
+    # === Precompute token-predicts (captured-vocab logit lens) ===
+    # The token cards show "what does this token's residual predict next" via the
+    # logit lens (final_norm + lm_head applied to each layer's exit state). True
+    # global top-k would need the tokenizer to decode arbitrary vocab ids, and
+    # decompose is model-free — so restrict predictions to the CAPTURED token set
+    # (top-k over lm_head[captured_ids]). Every prediction is then a captured
+    # token: its text + index come straight from tokens.json (no tokenizer, no
+    # model id), and it's directly pinnable in the UI. Probabilities are softmax
+    # over the captured set (relative likelihood among captured tokens) — readable
+    # in the card, where a full-vocab denominator would crush every captured prob
+    # to ~0 (the global top tokens usually aren't captured). Ranking is identical
+    # either way. Captured-only matmul also keeps the precompute light (no
+    # [N, vocab] pass) — the full-vocab version OOM'd on re-decompose.
+    _lmh_p = mri_dir / 'lmhead_raw.npy'
+    if _lmh_p.exists() and n_layers and n_sample:
+        try:
+            print("  Token-predicts (captured-vocab logit lens)...", file=sys.stderr)
+            TP_K = 8
+
+            def _logsumexp(a, axis):
+                m = np.max(a, axis=axis, keepdims=True)
+                return m.squeeze(axis) + np.log(np.sum(np.exp(a - m), axis=axis))
+
+            lmhead = np.load(str(_lmh_p), mmap_mode='r')          # [vocab, hidden]
+            vocab = int(lmhead.shape[0])
+            norm_final = None
+            _norms_p = mri_dir / 'norms.npz'
+            if _norms_p.exists():
+                with np.load(str(_norms_p)) as _nz:
+                    if 'final' in _nz.files:
+                        norm_final = np.asarray(_nz['final'], dtype=np.float32)
+            cap_ids = np.clip(np.asarray(tokens['token_ids'])[idx].astype(np.int64), 0, vocab - 1)
+            lmh_cap = np.asarray(lmhead[cap_ids], dtype=np.float32)   # [n_sample, hidden]
+            entry = np.zeros((n_sample, n_layers, TP_K),
+                             dtype=[('idx', '<u4'), ('prob', '<f2'), ('logit', '<f2')])
+            kk = min(TP_K, n_sample)
+            CH = 256
+            for li in range(n_layers):
+                ep = _find_exit(li)
+                if ep is None:
+                    continue
+                states_all = np.load(str(ep), mmap_mode='r')         # [n_tok, hidden]
+                for s0 in range(0, n_sample, CH):
+                    s1 = min(s0 + CH, n_sample)
+                    st = np.asarray(states_all[idx[s0:s1]], dtype=np.float32)
+                    if norm_final is not None:
+                        rms = np.sqrt(np.mean(st ** 2, axis=1, keepdims=True) + 1e-6)
+                        st = st / rms * norm_final
+                    cap = st @ lmh_cap.T                             # [chunk, n_sample]
+                    denom = _logsumexp(cap, axis=1)                  # softmax over captured set
+                    topj = np.argpartition(-cap, kk - 1, axis=1)[:, :kk]
+                    for r in range(s1 - s0):
+                        jj = topj[r]
+                        lg = cap[r, jj]
+                        o = np.argsort(-lg)
+                        jj, lg = jj[o], lg[o]
+                        pr = np.exp(lg - denom[r])
+                        entry['idx'][s0 + r, li, :kk] = jj
+                        entry['prob'][s0 + r, li, :kk] = pr
+                        entry['logit'][s0 + r, li, :kk] = lg
+                del states_all
+            with open(decomp_dir / 'token_predicts.bin', 'wb') as f:
+                f.write(struct.pack('<4sIII', b'TPRD', n_sample, n_layers, TP_K))
+                f.write(entry.tobytes())
+            print(f"  Token-predicts: {n_sample} tok × {n_layers} layers × {TP_K} "
+                  f"(captured-vocab) = {(16 + entry.nbytes) / (1024*1024):.1f}MB", file=sys.stderr)
+        except (ValueError, OSError, KeyError, IndexError) as e:
+            print(f"  Token-predicts skipped: {e}", file=sys.stderr)
+
     # intermediate_size makes the artifact self-describing for the Neurons
     # viewport (so the consumer needn't read it from the TOKN header).
     intermediate_size = 0

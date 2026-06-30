@@ -442,6 +442,35 @@ export default {
         }
         if (ep === "token-neurons") return jsonResponse(await r2json(env, `${prefix}/decomp/neuron_importance.json`) ?? { token_idx: parseInt(q("token", "0")), layers: [] });
         if (ep === "falsification") return jsonResponse(await r2json(env, `${prefix}/decomp/falsification.json`) ?? { random_baseline: [], top_pcs: [] });
+        if (ep === "token-predicts") {
+          // Captured-vocab logit lens, precomputed into token_predicts.bin (TPRD):
+          // [N, L, K] of (uint32 mri_idx, f16 prob, f16 logit), token-major.
+          // Range-read one (token,layer) slice, join mri_idx→text via tokens.json.
+          const key = `${prefix}/decomp/token_predicts.bin`;
+          const h = await r2range(env, key, 0, 16);
+          if (!h) return jsonResponse({ top_k: [] });
+          const hv = new DataView(h);
+          if (new TextDecoder().decode(new Uint8Array(h, 0, 4)) !== "TPRD") return jsonResponse({ top_k: [] });
+          const N = hv.getUint32(4, true), L = hv.getUint32(8, true), K = hv.getUint32(12, true);
+          const token = parseInt(q("token", "0")), layer = parseInt(q("layer", "0"));
+          const want = Math.min(parseInt(q("k", "8")) || 8, K);
+          if (token < 0 || token >= N || layer < 0 || layer >= L) return jsonResponse({ top_k: [] });
+          const stride = K * 8;
+          const slab = await r2range(env, key, 16 + (token * L + layer) * stride, stride);
+          if (!slab) return jsonResponse({ top_k: [] });
+          const dv = new DataView(slab);
+          const toks = await r2json(env, `${prefix}/decomp/tokens.json`);
+          const texts = (toks && toks.token_texts) || [];
+          const out = [];
+          for (let i = 0; i < want; i++) {
+            const mri_idx = dv.getUint32(i * 8, true);
+            const prob = dv.getFloat16(i * 8 + 4, true);
+            const logit = dv.getFloat16(i * 8 + 6, true);
+            if (!Number.isFinite(prob)) continue;
+            out.push({ text: texts[mri_idx] ?? `#${mri_idx}`, prob, logit, mri_idx });
+          }
+          return jsonResponse({ top_k: out });
+        }
         if (ep === "token-resolve") {
           // Cross-model compare resolves a token by text (tokenizers fragment
           // differently, so raw index equality isn't the same concept). Pure
