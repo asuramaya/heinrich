@@ -125,7 +125,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .rlbl-mode{float:right;font-size:9px;color:#b8a45a;background:#2a2410;border:1px solid #5a4e20;border-radius:2px;padding:0 4px;margin-left:4px;font-family:monospace;font-weight:bold}
 /* ============ MOBILE: single-pane focus + carousel over all 14 lanes ============ */
 #mstage,#mswitch{display:none}
-body.mobile{--mtop:44px;--peek:118px}
+body.mobile{--mtop:44px;--peek:150px}     /* peek reveals the model + layer-scrub rows */
 body.mobile #main{display:none}                       /* the whole desktop grid is parked */
 /* transparent: the shared #glCanvas (z-index:0) renders the lanes *behind* this;
    an opaque background here would paint over the cloud (the viewports are windows) */
@@ -145,8 +145,13 @@ body.mobile #mswitch{display:flex;align-items:center;gap:6px;position:fixed;left
 /* the floating panel becomes a bottom sheet */
 body.mobile #tokpanel{position:fixed!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;width:100%!important;max-width:none!important;margin:0;border-radius:14px 14px 0 0;border-bottom:none;max-height:var(--peek);overflow:hidden;transition:max-height .28s ease;z-index:21;backdrop-filter:blur(8px)}
 body.mobile #tokpanel.expanded{max-height:84vh;overflow-y:auto}
-body.mobile #tokpanel .drag-handle{cursor:pointer;justify-content:center;position:relative;padding-top:16px;min-height:0}
+body.mobile #tokpanel .drag-handle{cursor:pointer;justify-content:center;position:relative;padding:15px 6px 5px;min-height:0}
 body.mobile #tokpanel .drag-handle::before{content:"";position:absolute;top:6px;left:50%;transform:translateX(-50%);width:40px;height:4px;border-radius:2px;background:#4a4a4a}
+body.mobile #tokpanel .drag-mid{display:none}   /* the ":: drag ::" hint — it toggles, not drags */
+body.mobile #tokMin{display:none}                /* the grabber tap collapses/expands; minimize is redundant */
+/* one-time gesture hint (long-press is otherwise undiscoverable) */
+#mhint{display:none}
+body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(var(--mtop) + 10px);z-index:25;background:rgba(12,14,18,0.93);border:1px solid #2a3a2a;border-radius:10px;padding:10px 13px;color:#bcd;font-size:12px;line-height:1.5;text-align:center;backdrop-filter:blur(6px);transition:opacity .45s}
 </style>
 </head>
 <body>
@@ -375,6 +380,9 @@ const MPANES=[
   {tag:'r0',name:'Depth'},{tag:'r1',name:'Neurons'},{tag:'r2',name:'Superpos.'},
   {tag:'br0',name:'Prism'},{tag:'pcs',name:'Spectrum'},
 ];
+// 2-up compare pairs the focused lane with its meaningful counterpart (A↔B clouds,
+// A↔B trajectories, A↔B flowers; deltas pair with their A; analysis lanes pair sensibly).
+const MPAIR={'0':'2','2':'0','1':'0','3':'5','5':'3','4':'3','l0':'l2','l2':'l0','l1':'l0','r0':'r1','r1':'r0','r2':'pcs','br0':'pcs','pcs':'r2'};
 let MOBILE=false,_focusPane=0,_twoUp=false;const _movedPanes=[];
 // --- Single shared WebGL renderer ---
 const glCanvas=document.getElementById('glCanvas');
@@ -5687,6 +5695,7 @@ function _resolveViewByName(name){
 // *reparented* into #mstage (so the whole desktop #main grid can be display:none), and
 // the render loop draws only it — the perf win, since scissor rects come from live DOM.
 function _curPane(){return MPANES[((_focusPane%MPANES.length)+MPANES.length)%MPANES.length];}
+function _pairTag(){const tg=_curPane().tag;return MPAIR[tg]||MPANES[(_focusPane+1)%MPANES.length].tag;}
 function _mStage(){return document.getElementById('mstage');}
 function _restoreMoved(){for(const m of _movedPanes){try{if(m.next&&m.next.parentNode===m.parent)m.parent.insertBefore(m.el,m.next);else m.parent.appendChild(m.el);}catch(e){}}_movedPanes.length=0;}
 function _moveToStage(el){if(!el)return;_movedPanes.push({el,parent:el.parentNode,next:el.nextSibling});_mStage().appendChild(el);}
@@ -5697,7 +5706,7 @@ function _setFocusPane(i){
   _restoreMoved();
   const P=_resolveViewByName(_curPane().tag);
   if(P&&P.el)_moveToStage(P.el);
-  if(_twoUp){const Q=_resolveViewByName(MPANES[(_focusPane+1)%MPANES.length].tag);if(Q&&Q.el&&Q.el!==(P&&P.el))_moveToStage(Q.el);}
+  if(_twoUp){const Q=_resolveViewByName(_pairTag());if(Q&&Q.el&&Q.el!==(P&&P.el))_moveToStage(Q.el);}
   if(/^l/.test(_curPane().tag)&&typeof updateLeftViewports==='function'){try{updateLeftViewports();}catch(e){}}
   _renderMobileChips();_needsRender=true;
 }
@@ -5707,7 +5716,7 @@ function _animMobile(){
   const damping=!!(P.ctl&&P.ctl.enableDamping&&P.ctl._needsUpdate);
   // trajectory LOD for the focused traj lane (same hysteresis as desktop, applied to one view)
   if(typeof P.vi==='number'&&P.vi>=NC){const v=views[P.vi];if(v&&v.trajGroup){const sm=performance.now()-_lastCamMove;const mv=damping||sm<90;let want;if(mv)want=false;else if(sm>300)want=true;else want=v.trajGroup.visible;if(want!==v.trajGroup.visible){v.trajGroup.visible=want;_needsRender=true;}}}
-  const Q=_twoUp?_resolveViewByName(MPANES[(_focusPane+1)%MPANES.length].tag):null;
+  const Q=_twoUp?_resolveViewByName(_pairTag()):null;
   const dampQ=!!(Q&&Q.ctl&&Q.ctl.enableDamping&&Q.ctl._needsUpdate);
   if(!_needsRender&&!damping&&!dampQ&&!play)return;
   _needsRender=false;
@@ -5729,6 +5738,13 @@ function _buildMobileUI(){
   // the sheet handle toggles expanded/peek
   const dh=document.getElementById('tokDrag');
   if(dh)dh.addEventListener('click',e=>{if(!MOBILE||e.target.closest('button'))return;document.getElementById('tokpanel').classList.toggle('expanded');});
+  // one-time gesture hint — the long-press-to-compare gesture is otherwise invisible
+  let seen=false;try{seen=!!localStorage.getItem('heinrich.mhint');}catch(_){}
+  if(!seen){const hint=document.createElement('div');hint.id='mhint';
+    hint.innerHTML='tap a point = pin&nbsp;A&nbsp;·&nbsp; long-press = pin&nbsp;B&nbsp;·&nbsp; ⊟ = compare two&nbsp;·&nbsp; swipe the chips for lanes';
+    document.body.appendChild(hint);
+    const dismiss=()=>{hint.style.opacity='0';setTimeout(()=>hint.remove(),450);try{localStorage.setItem('heinrich.mhint','1');}catch(_){}};
+    hint.addEventListener('click',dismiss);setTimeout(dismiss,6500);}
 }
 function _applyMobile(){
   const want=matchMedia('(pointer:coarse)').matches&&Math.min(innerWidth,innerHeight)<820&&innerWidth<900;
