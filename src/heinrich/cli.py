@@ -157,6 +157,9 @@ def build_parser() -> argparse.ArgumentParser:
     p_comp.add_argument("--port", type=int, default=8377, help="Port (default: 8377)")
     p_comp.add_argument("--mri-root", default=None, help="Directory of <model>/<mode>.mri captures (default: /Volumes/sharts)")
     p_comp.add_argument("--gallery", default=None, help="Public Observatory base URL to proxy published models from (models:both), e.g. https://hcirnieh.com")
+    p_comp.add_argument("--host", default="127.0.0.1", help="Interface to bind (default: 127.0.0.1 loopback; use 0.0.0.0 to expose on the LAN)")
+    p_comp.add_argument("--pair", default=None, help="Pairing code the edge Observatory must present to connect over LNA (default: random)")
+    p_comp.add_argument("--allow-origin", action="append", default=None, help="Extra web origin allowed to pair (repeatable); defaults to hcirnieh.com + workers.dev")
 
     # Crystal inspector — finds single-token crystals in raw-mode MRIs.
     p_crystal = sub.add_parser("crystal-inspect",
@@ -1179,6 +1182,13 @@ def main(argv: list[str] | None = None) -> None:
             kw["mri_root"] = args.mri_root
         if getattr(args, "gallery", None):
             kw["gallery_base"] = args.gallery
+        if getattr(args, "host", None):
+            kw["host"] = args.host
+        if getattr(args, "pair", None):
+            kw["pair_token"] = args.pair
+        if getattr(args, "allow_origin", None):
+            from .companion import DEFAULT_ALLOW_ORIGINS
+            kw["allow_origins"] = tuple(DEFAULT_ALLOW_ORIGINS) + tuple(args.allow_origin)
         run_companion(**kw)
     elif args.command == "crystal-inspect":
         _cmd_crystal_inspect(args)

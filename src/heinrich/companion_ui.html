@@ -192,7 +192,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
         <button id="bl" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">Go</button>
         <span style="flex:1"></span>
         <span id="ntok" style="color:#444;font-size:7px"></span>
-        <span id="unlockPill" title="Read-only viewer — run heinrich locally to unlock heavy + live analysis" style="display:none;cursor:pointer;color:#9c6;border:1px solid #353;border-radius:999px;padding:0 5px;font-size:7px;margin-left:3px;white-space:nowrap">&#128275; unlock</span>
+        <span id="unlockPill" title="Connect a local heinrich companion to go live in place (Chrome), or open the local view" style="display:none;cursor:pointer;color:#9c6;border:1px solid #353;border-radius:999px;padding:0 5px;font-size:7px;margin-left:3px;white-space:nowrap">&#128275; unlock</span>
       </div>
       <div style="display:flex;gap:3px;align-items:center">
         <button id="lprev" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9664;</button>
@@ -304,17 +304,21 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
       <button id="unlockClose" style="background:transparent;border:1px solid #333;color:#888;border-radius:3px;cursor:pointer;font-family:inherit;padding:1px 7px">close</button>
     </div>
     <div id="unlockWhy" style="color:#888;font-size:10px;line-height:1.5;margin-bottom:12px"></div>
-    <div style="color:#666;font-size:9px;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">1 &middot; run heinrich locally</div>
-    <div style="display:flex;gap:6px;align-items:center;margin-bottom:10px">
+    <div style="color:#666;font-size:9px;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">1 &middot; run heinrich locally (prints a pairing code)</div>
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:12px">
       <code id="unlockCmd" style="flex:1;background:#161616;border:1px solid #2a2a2a;border-radius:3px;padding:5px 8px;color:#9cd;font-size:11px">pipx run heinrich companion</code>
       <button id="unlockCopyCmd" style="background:#1a2a1a;border:1px solid #353;color:#9c6;border-radius:3px;cursor:pointer;font-family:inherit;padding:4px 8px">copy</button>
     </div>
-    <div style="color:#666;font-size:9px;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">2 &middot; open this exact view there</div>
+    <div style="color:#666;font-size:9px;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">2 &middot; connect (Chrome) &mdash; stay right here, go live</div>
+    <div style="margin-bottom:12px">
+      <button id="unlockConnect" style="width:100%;background:#16240f;border:1px solid #3a5a30;color:#bf9;border-radius:4px;cursor:pointer;font-family:inherit;padding:8px 8px;font-size:11px">&#128279; Connect companion &amp; go live</button>
+    </div>
+    <div style="color:#666;font-size:9px;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">or &middot; open this exact view in a local tab (non-Chrome fallback)</div>
     <div style="display:flex;gap:6px;align-items:center">
       <a id="unlockLink" href="#" target="_blank" rel="noopener" style="flex:1;background:#161616;border:1px solid #2a2a2a;border-radius:3px;padding:5px 8px;color:#9cd;font-size:10px;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></a>
       <button id="unlockCopyLink" style="background:#1a2a1a;border:1px solid #353;color:#9c6;border-radius:3px;cursor:pointer;font-family:inherit;padding:4px 8px">copy</button>
     </div>
-    <div id="unlockHint" style="color:#555;font-size:9px;margin-top:8px;line-height:1.5">Same model &middot; layer &middot; pins carry over in the link. Start the command first, then open it.</div>
+    <div id="unlockHint" style="color:#555;font-size:9px;margin-top:8px;line-height:1.5">Connect keeps you on this origin and reroutes the instrument to your local companion over Chrome Local Network Access. The link is the fallback: same model &middot; layer &middot; pins carry over.</div>
   </div>
 </div>
 <style>
@@ -341,10 +345,23 @@ let model='',mode='',scripts=[],texts=[],nN=0,nK=0,nL=0,_layerVar=[],_blobScoreK
 const _hiddenScripts=new Set();// scripts toggled off by legend clicks
 // 20s timeout prevents UI state like "predicts..." from sticking forever on
 // slow/missing server resources. Callers already handle rejected promises.
+// When paired with a local companion over Chrome LNA, every /api/ call reroutes
+// to it (with the pairing token + the LNA hint). Empty base = same-origin: the
+// edge Worker, published models only. This is the whole "supercharger" switch —
+// flip _localBase and the identical SPA becomes the maximal (live) instrument.
+let _localBase=null,_pairToken=null;
+function _apiFetch(url,opts){
+  opts=opts||{};
+  if(_localBase&&url.charAt(0)==='/'){
+    url=_localBase+url;
+    opts=Object.assign({targetAddressSpace:'local'},opts,{headers:Object.assign({'X-Heinrich-Pair':_pairToken},opts.headers||{})});
+  }
+  return fetch(url,opts);
+}
 const api=(p,timeoutMs=20000)=>{
   const ctrl=new AbortController();
   const t=setTimeout(()=>ctrl.abort(),timeoutMs);
-  return fetch('/api/'+p,{signal:ctrl.signal})
+  return _apiFetch('/api/'+p,{signal:ctrl.signal})
     .then(r=>r.json())
     .finally(()=>clearTimeout(t));
 };
@@ -352,7 +369,7 @@ async function _fetchJSON(url,options={},timeoutMs=20000){
   const ctrl=new AbortController();
   const t=setTimeout(()=>ctrl.abort(),timeoutMs);
   try{
-    const resp=await fetch(url,{...options,signal:ctrl.signal});
+    const resp=await _apiFetch(url,{...options,signal:ctrl.signal});
     const text=await resp.text();
     let data={};
     if(text){
@@ -615,7 +632,7 @@ const CloudStore={
       if(needFull.length)q.set('full',needFull.join(','));
       if(needMedium.length)q.set('medium',needMedium.join(','));
       q.set('step',String(step));
-      const resp=await fetch(`/api/cloud-bundle/${model}/${mode}?${q.toString()}`);
+      const resp=await _apiFetch(`/api/cloud-bundle/${model}/${mode}?${q.toString()}`);
       if(!resp.ok)throw new Error(`cloud-bundle ${resp.status}`);
       const buf=await resp.arrayBuffer();
       if(gen!==_cloudFetchGen)return;
@@ -781,7 +798,7 @@ const TokenStore={
       if(needFull.length)q.set('full',needFull.join(','));
       if(needHover.length)q.set('hover',needHover.join(','));
       q.set('layer',String(layer));
-      const resp=await fetch(`/api/token-bundle/${model}/${mode}?${q.toString()}`);
+      const resp=await _apiFetch(`/api/token-bundle/${model}/${mode}?${q.toString()}`);
       if(!resp.ok)throw new Error(`token-bundle ${resp.status}`);
       const buf=await resp.arrayBuffer();
       if(gen!==_pcsFetchGen)return;
@@ -1409,7 +1426,7 @@ async function _updateSeparationNow(a,b){
     steerBtn.addEventListener('click',async()=>{
       steerBtn.disabled=true;steerBtn.textContent='steering...';
       try{
-        const sr=await fetch('/api/direction-steer',{method:'POST',
+        const sr=await _apiFetch('/api/direction-steer',{method:'POST',
           headers:{'Content-Type':'application/json'},
           body:JSON.stringify({model,mode,a,b,layer:cL,prompt:'Once upon a time',alpha:2.0,max_tokens:30})
         }).then(r=>r.json());
@@ -2361,7 +2378,7 @@ function _updateDeltaPins(){}// no-op, handled by _syncAllPins
 let _gateHeat=null; // Float32Array, row-major [token][layer]
 let _gateNL=0;
 async function loadGateHeatmap(){
-  try{const resp=await fetch(`/api/gate-heatmap/${model}/${mode}`);if(!resp.ok)return;
+  try{const resp=await _apiFetch(`/api/gate-heatmap/${model}/${mode}`);if(!resp.ok)return;
     const buf=await resp.arrayBuffer();
     // Parse npy: magic(6)+ver(2)+HEADER_LEN(2)+header_str. Data starts after padding to 64.
     const dv=new DataView(buf);const hLen=dv.getUint16(8,true);
@@ -3321,7 +3338,7 @@ async function _nfLoadToken(tokIdx, slot){
   }
   // Fetch full data (all layers) for trails — replaces temp array
   try{
-    const resp=await fetch(`/api/neuron-field/${model}/${mode}?token=${tokIdx}`);
+    const resp=await _apiFetch(`/api/neuron-field/${model}/${mode}?token=${tokIdx}`);
     if(!resp.ok)return;
     const ct=resp.headers.get('content-type')||'';
     if(ct.includes('json'))return;
@@ -4523,7 +4540,7 @@ function _renderViewportToCanvas(sc,cam,el,vi,scale){
 }
 function _captureError(rid,msg){
   if(!rid)return;
-  fetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
+  _apiFetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({request_id:rid,error:msg})}).catch(()=>{});
 }
 function captureComposite(rid){
@@ -4558,7 +4575,7 @@ function captureComposite(rid){
     if(rid){
       comp.toBlob(blob=>{
         if(!blob){_captureError(rid,'composite: toBlob returned null');return;}
-        fetch('/api/capture-upload?request_id='+encodeURIComponent(rid)+'&filename='+encodeURIComponent(filename),
+        _apiFetch('/api/capture-upload?request_id='+encodeURIComponent(rid)+'&filename='+encodeURIComponent(filename),
           {method:'POST',body:blob})
           .catch(e=>_captureError(rid,'composite upload failed: '+e.message));
       },'image/png');
@@ -4777,7 +4794,7 @@ let _pollActive=true;
 async function _pollLoop(){
   while(_pollActive){
     try{
-      const r=await fetch('/api/poll?timeout=25');
+      const r=await _apiFetch('/api/poll?timeout=25');
       const msg=await r.json();
       if(msg.static){_setDeployStatic();return;}// hosted deploy — no command channel
       if(msg.cmd==='none'||!msg.cmd)continue;
@@ -4876,7 +4893,7 @@ async function _handleCapture(msg){
   const vi=_resolveViewport(msg.viewport);
   const target=_resolveCapTarget(vi);
   if(!target){
-    fetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
+    _apiFetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({request_id:rid,error:'unknown viewport: '+msg.viewport})});
     return;
   }
@@ -4924,7 +4941,7 @@ function _captureScreenshotRemote(sc,cam,el,vi,rid){
     const reader=new FileReader();
     reader.onload=()=>{
       const b64=reader.result.split(',')[1];
-      fetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
+      _apiFetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
         body:JSON.stringify({request_id:rid,data:b64,filename:_captureFilename(vi,'png')})});
     };
     reader.readAsDataURL(blob);
@@ -4934,7 +4951,7 @@ function _captureScreenshotRemote(sc,cam,el,vi,rid){
 }
 
 async function _captureGifRemote(sc,cam,el,vi,rid){
-  if(_recording&&!_recordingIsStale()){fetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
+  if(_recording&&!_recordingIsStale()){_apiFetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({request_id:rid,error:'already recording'})});return;}
   _recording=true;_recordingStart=Date.now();
   const startL=cL;
@@ -4987,10 +5004,10 @@ async function _captureGifRemote(sc,cam,el,vi,rid){
     cam.aspect=el.clientWidth/el.clientHeight;cam.updateProjectionMatrix();
     // Upload binary directly — no base64
     const filename=`${model}_${mode}_${_captureLabel(vi)}.gif`;
-    fetch('/api/capture-upload?request_id='+encodeURIComponent(rid)+'&filename='+encodeURIComponent(filename),
+    _apiFetch('/api/capture-upload?request_id='+encodeURIComponent(rid)+'&filename='+encodeURIComponent(filename),
       {method:'POST',body:blob});
   }catch(e){
-    fetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
+    _apiFetch('/api/capture-result',{method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({request_id:rid,error:e.message||'gif failed'})});
   }finally{
     play=wasPlay;setLayer(startL);_recording=false;_recordingStart=0;
@@ -5038,10 +5055,20 @@ function _disableLiveUI(){
   ['liveStatusRefresh','liveStatusUnload','liveUseSuggested'].forEach(id=>{const el=document.getElementById(id);if(el)el.disabled=true;});
   if(document.querySelector('#tokTabs .tab-btn[data-tab="run"]')?.classList.contains('active'))_activateTab('find');
 }
-// Configure the UI from CAP (called once after the manifest loads).
+// Inverse of _disableLiveUI — light the live tier back up once a companion is paired.
+function _enableLiveUI(){
+  _pollActive=true;
+  ['liveInput','liveChatInput','liveModelId','chatInput'].forEach(id=>{const el=document.getElementById(id);if(el){el.disabled=false;if((el.placeholder||'').startsWith('producer-only'))el.placeholder='';}});
+  ['liveStatusRefresh','liveStatusUnload','liveUseSuggested'].forEach(id=>{const el=document.getElementById(id);if(el)el.disabled=false;});
+  const ss=document.getElementById('liveSessionStatus');if(ss){ss.style.cursor='';ss.onclick=null;ss.style.color='#6c6';ss.textContent='companion connected — live';}
+  ['liveChatStatus','liveStatus'].forEach(id=>{const el=document.getElementById(id);if(el)el.textContent='';});
+  try{_liveSuggestModelId();}catch(e){}
+  try{_refreshLiveStatus();}catch(e){}
+}
+// Configure the UI from CAP (called after the manifest loads AND after a connect).
 function _applyCapabilities(){
   _deployStatic=!CAP.live;
-  if(!CAP.live)_disableLiveUI();
+  if(CAP.live)_enableLiveUI();else _disableLiveUI();
   const pill=document.getElementById('unlockPill');
   if(pill)pill.style.display=(!CAP.live||!CAP.weights)?'inline-block':'none';
 }
@@ -5070,8 +5097,44 @@ function _showUnlock(tier){
   p.style.display='flex';
 }
 function _hideUnlock(){const p=document.getElementById('unlockPanel');if(p)p.style.display='none';}
+// === Live pairing over Chrome Local Network Access ===
+// The edge SPA reaches a local `heinrich companion` on loopback and becomes the
+// maximal (live) instrument IN PLACE — no origin switch. The manifest inversion
+// pre-paid for this: _apiFetch reroutes every /api call to the companion, and
+// _applyCapabilities recomposes the UI to live+weights+mcp. Falls back to the
+// deep-link handoff if LNA is unavailable (non-Chromium, denied, or not running).
+let _channelsStarted=false;
+function _startChannels(){if(_channelsStarted||!CAP.mcp)return;_channelsStarted=true;_pollActive=true;setTimeout(_pollLoop,500);setTimeout(_chatPollLoop,800);}
+async function _refreshModelsAfterConnect(){
+  try{const models=await api('models');const sel=document.getElementById('sm');if(!sel||!Array.isArray(models))return;
+    const have=new Set([...sel.options].map(o=>o.value));
+    models.filter(m=>m.architecture==='transformer').forEach(m=>{if(!have.has(m.model)){have.add(m.model);const o=document.createElement('option');o.value=m.model;o.textContent=m.model+' (local)';sel.appendChild(o);}});
+  }catch(e){}
+}
+async function connectCompanion(port,code){
+  const base='http://127.0.0.1:'+(port||8377);
+  code=(code||prompt('Pairing code — shown in your `heinrich companion` terminal:')||'').trim();
+  if(!code)return;
+  let c;
+  try{
+    const r=await fetch(base+'/api/capabilities',{targetAddressSpace:'local',headers:{'X-Heinrich-Pair':code}});
+    if(r.status===403){alert('Pairing code rejected — check the code printed by `heinrich companion`.');return;}
+    if(!r.ok)throw new Error('status '+r.status);
+    c=await r.json();
+  }catch(e){
+    _showUnlock(CAP.weights?'live':'weights');return;// LNA denied / non-Chromium / not running → deep-link handoff
+  }
+  _localBase=base;_pairToken=code;
+  if(c&&c.backend)CAP=Object.assign({},CAP,c);
+  _applyCapabilities();_hideUnlock();_startChannels();
+  await _refreshModelsAfterConnect();
+  const pill=document.getElementById('unlockPill');
+  if(pill&&CAP.live&&CAP.weights){pill.textContent='● companion';pill.style.color='#6c6';pill.title='Connected to local heinrich — live analysis unlocked';pill.style.display='inline-block';}
+  const ls=document.getElementById('loadStatus');if(ls)ls.textContent='companion connected — live analysis unlocked';
+}
 (function(){
-  document.getElementById('unlockPill')?.addEventListener('click',()=>_showUnlock(CAP.weights?'live':'weights'));
+  document.getElementById('unlockPill')?.addEventListener('click',()=>{if(_localBase)return;connectCompanion();});
+  document.getElementById('unlockConnect')?.addEventListener('click',()=>connectCompanion());
   document.getElementById('unlockClose')?.addEventListener('click',_hideUnlock);
   document.getElementById('unlockPanel')?.addEventListener('click',e=>{if(e.target.id==='unlockPanel')_hideUnlock();});
   const wire=(srcId,btnId)=>document.getElementById(btnId)?.addEventListener('click',()=>{
@@ -5111,7 +5174,7 @@ document.getElementById('chatInput')?.addEventListener('keydown',e=>{
   log.appendChild(userMsg);
   // Dedicated /api/chat endpoint — queued for MCP client to drain.
   // Server responds with ack only; actual replies arrive via /api/chat-poll.
-  fetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
+  _apiFetch('/api/chat',{method:'POST',headers:{'Content-Type':'application/json'},
     body:JSON.stringify({message:msg,pinnedA:pinnedToken,pinnedB:pinnedTokenB,layer:cL,model,mode})
   }).then(r=>r.json()).then(r=>{
     if(r.error){
@@ -5147,7 +5210,7 @@ async function _chatPollLoop(){
   };
   while(true){
     try{
-      const r=await fetch('/api/chat-poll?timeout=25');
+      const r=await _apiFetch('/api/chat-poll?timeout=25');
       if(r.status>=500){throw new Error('server '+r.status);}
       const m=await r.json();
       if(m&&m.static){_setDeployStatic();return;}// hosted deploy — no MCP chat backend
@@ -5543,7 +5606,7 @@ function _renderCrossResult(d){
 // Worker serves token-pca for every model: 8-byte header [nL,fK] + nL*fK f32).
 async function _fetchTokenVec(mdl,mde,token){
   try{
-    const buf=await (await fetch(`/api/token-pca/${encodeURIComponent(mdl)}/${encodeURIComponent(mde)}?token=${token}`)).arrayBuffer();
+    const buf=await (await _apiFetch(`/api/token-pca/${encodeURIComponent(mdl)}/${encodeURIComponent(mde)}?token=${token}`)).arrayBuffer();
     if(buf.byteLength<8)return null;
     const dv=new DataView(buf);const nL=dv.getUint32(0,true),fK=dv.getUint32(4,true);
     if(!nL||!fK||buf.byteLength<8+nL*fK*4)return null;
@@ -5642,8 +5705,8 @@ document.getElementById('crossRun')?.addEventListener('click',async()=>{
   let resolvedA=false, resolvedB=false;
   try{
     const [rA,rB]=await Promise.all([
-      fetch(`/api/token-resolve/${encodeURIComponent(ms.value)}/${encodeURIComponent(md.value)}?text=${encodeURIComponent(txtA)}`).then(r=>r.json()),
-      fetch(`/api/token-resolve/${encodeURIComponent(ms.value)}/${encodeURIComponent(md.value)}?text=${encodeURIComponent(txtB)}`).then(r=>r.json()),
+      _apiFetch(`/api/token-resolve/${encodeURIComponent(ms.value)}/${encodeURIComponent(md.value)}?text=${encodeURIComponent(txtA)}`).then(r=>r.json()),
+      _apiFetch(`/api/token-resolve/${encodeURIComponent(ms.value)}/${encodeURIComponent(md.value)}?text=${encodeURIComponent(txtB)}`).then(r=>r.json()),
     ]);
     if(rA.idx>=0){bA=rA.idx;resolvedA=true;}
     if(rB.idx>=0){bB=rB.idx;resolvedB=true;}
@@ -5766,6 +5829,8 @@ addEventListener('orientationchange',()=>setTimeout(_applyMobile,220));
 _applyMobile();
 
 window.__heinrich = {
+  // --- companion pairing (LNA) ---
+  connect:(code,port)=>connectCompanion(port,code), get localBase(){return _localBase;}, get cap(){return CAP;},
   // --- state readers ---
   get views(){return views;}, get leftViews(){return leftViews;}, get rightViews(){return rightViews;},
   get vpPairs(){return vpPairs;}, get dirDepth(){return _dirDepthData;},

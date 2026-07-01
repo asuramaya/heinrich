@@ -17,6 +17,7 @@ import sys
 import threading
 import time
 import gc
+import secrets
 from collections import OrderedDict
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
@@ -3281,6 +3282,61 @@ class CompanionHandler(SimpleHTTPRequestHandler):
     mri_root = "/Volumes/sharts"
     gallery_base = None          # public base URL for proxying published (R2) models
     _local_names_cache = None    # set[str] of model names on disk (lazy)
+    pair_token = None            # required from cross-origin (edge) callers; None = local-only
+    allow_origins = frozenset()  # remote web origins permitted to pair (e.g. hcirnieh.com)
+
+    # Loopback origins are the local SPA talking to itself — trusted, no pairing needed.
+    _LOCAL_ORIGINS = frozenset({
+        f"http://localhost:{p}" for p in (8377,)
+    } | {f"http://127.0.0.1:{p}" for p in (8377,)})
+
+    def _allowed_origins(self) -> frozenset:
+        return self._LOCAL_ORIGINS | self.allow_origins
+
+    def _cors(self):
+        """Emit CORS + Local Network Access headers scoped to the request Origin.
+
+        Loopback + configured remote origins are echoed (never '*' for a browser
+        origin, since this server runs models and writes files). Non-browser
+        callers (no Origin) keep the permissive '*' for curl/tests. The
+        Access-Control-Allow-Private-Network header is what Chrome's LNA preflight
+        requires when a public HTTPS origin reaches http://127.0.0.1.
+        """
+        origin = self.headers.get('Origin')
+        if origin and origin in self._allowed_origins():
+            self.send_header('Access-Control-Allow-Origin', origin)
+            self.send_header('Vary', 'Origin')
+            self.send_header('Access-Control-Allow-Private-Network', 'true')
+            self.send_header('Access-Control-Allow-Headers', 'X-Heinrich-Pair, Content-Type')
+            self.send_header('Access-Control-Allow-Methods', 'GET, POST, OPTIONS')
+        elif not origin:
+            self.send_header('Access-Control-Allow-Origin', '*')
+        # origin present but not allowed → emit no ACAO; the browser blocks it.
+
+    def _pair_ok(self) -> bool:
+        """Authorize the request. Loopback/non-browser callers pass; a configured
+        remote origin must present the correct X-Heinrich-Pair token."""
+        origin = self.headers.get('Origin')
+        if not origin or origin in self._LOCAL_ORIGINS:
+            return True
+        if origin in self.allow_origins:
+            return bool(self.pair_token) and \
+                self.headers.get('X-Heinrich-Pair') == self.pair_token
+        return False
+
+    def _deny(self):
+        self.send_response(403)
+        self._cors()
+        self.send_header('Content-Length', '0')
+        self.end_headers()
+
+    def do_OPTIONS(self):
+        # CORS + LNA preflight. No pairing here — the browser sends this without
+        # custom headers; the token rides on the actual request.
+        self.send_response(204)
+        self._cors()
+        self.send_header('Content-Length', '0')
+        self.end_headers()
 
     def _mri_path(self, model: str, mode: str) -> str:
         return f"{self.mri_root}/{model}/{mode}.mri"
@@ -3324,13 +3380,15 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', ctype)
             self.send_header('Content-Length', str(len(body)))
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self._cors()
             self.end_headers()
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
     def do_GET(self):
+        if not self._pair_ok():
+            return self._deny()
         parsed = urlparse(self.path)
         path = parsed.path
         qs = parse_qs(parsed.query)
@@ -3454,7 +3512,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                     self.send_response(200)
                     self.send_header('Content-Type', 'application/octet-stream')
                     self.send_header('Content-Length', file_size)
-                    self.send_header('Access-Control-Allow-Origin', '*')
+                    self._cors()
                     self.send_header('Cache-Control', 'public, max-age=3600')
                     self.end_headers()
                     with open(bin_path, 'rb') as f:
@@ -3883,6 +3941,8 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             self.send_error(404)
 
     def do_POST(self):
+        if not self._pair_ok():
+            return self._deny()
         parsed = urlparse(self.path)
         path = parsed.path
         length = int(self.headers.get('Content-Length', 0))
@@ -4180,7 +4240,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', len(body))
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self._cors()
             self.send_header('Cache-Control', 'no-cache')
             self.end_headers()
             self.wfile.write(body)
@@ -4195,7 +4255,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             self.send_response(200)
             self.send_header('Content-Type', 'application/octet-stream')
             self.send_header('Content-Length', len(data))
-            self.send_header('Access-Control-Allow-Origin', '*')
+            self._cors()
             self.send_header('Cache-Control', 'no-cache')
             self.end_headers()
             # Chunk writes to avoid broken pipe on large responses
@@ -4213,7 +4273,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'application/octet-stream')
         self.send_header('Content-Length', size)
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self._cors()
         self.send_header('Cache-Control', 'public, max-age=3600')
         self.end_headers()
         with open(path, 'rb') as f:
@@ -4244,7 +4304,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
         self.send_response(200)
         self.send_header('Content-Type', 'application/octet-stream')
         self.send_header('Content-Length', len(body))
-        self.send_header('Access-Control-Allow-Origin', '*')
+        self._cors()
         self.end_headers()
         self.wfile.write(body)
 
@@ -4261,28 +4321,57 @@ class CompanionHandler(SimpleHTTPRequestHandler):
         pass  # silence request logs
 
 
+# Web origins allowed to pair with a local companion over Chrome Local Network
+# Access. The edge Observatory + its workers.dev fallback; add more via --allow-origin.
+DEFAULT_ALLOW_ORIGINS = (
+    "https://hcirnieh.com",
+    "https://www.hcirnieh.com",
+    "https://heinrich-companion.asuramaya-hq.workers.dev",
+)
+
+
 def run_companion(port: int = 8377, mri_root: str = "/Volumes/sharts",
-                  gallery_base: str | None = None):
+                  gallery_base: str | None = None, host: str = "127.0.0.1",
+                  pair_token: str | None = None,
+                  allow_origins: "tuple[str, ...] | None" = None):
     """Run the companion HTTP server (threaded).
 
     gallery_base: public Observatory base URL (e.g. https://hcirnieh.com). When
     set, published models the local node lacks are proxied from it (models:both),
     so a deep-link to a gallery model resolves and the SPA stays single-origin.
+
+    host: interface to bind. Defaults to loopback (127.0.0.1) — the companion runs
+    models and writes files, so it should not be reachable from the LAN. The edge
+    SPA reaches it over Chrome Local Network Access (loopback), which is enough.
+
+    pair_token / allow_origins: gate cross-origin (edge) callers. A remote origin
+    in `allow_origins` must present X-Heinrich-Pair == pair_token; loopback (the
+    local SPA) never needs it. A token is generated if not supplied.
     """
     from socketserver import ThreadingMixIn
+
+    token = pair_token or secrets.token_hex(4)
+    origins = frozenset(allow_origins if allow_origins is not None else DEFAULT_ALLOW_ORIGINS)
 
     CompanionHandler.mri_root = mri_root
     CompanionHandler.gallery_base = gallery_base
     CompanionHandler._local_names_cache = None  # recompute for this root
+    CompanionHandler.pair_token = token
+    CompanionHandler.allow_origins = origins
 
     class ThreadedHTTPServer(ThreadingMixIn, HTTPServer):
         daemon_threads = True
 
-    server = ThreadedHTTPServer(('0.0.0.0', port), CompanionHandler)
-    print(f"Heinrich companion: http://localhost:{port}")
+    server = ThreadedHTTPServer((host, port), CompanionHandler)
+    print(f"Heinrich companion: http://localhost:{port}  (bound {host})")
     if gallery_base:
         print(f"  + gallery proxy: {gallery_base}")
     print()
+    print("  ┌─ connect from the edge Observatory ───────────────────────────┐")
+    print(f"  │  pairing code:  {token:<44} │")
+    print("  │  open https://hcirnieh.com/observatory, click 🔓, and enter it │")
+    print("  └───────────────────────────────────────────────────────────────┘")
+    print(flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
