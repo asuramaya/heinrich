@@ -15,13 +15,22 @@
     font-size:18px;line-height:1.72;-webkit-font-smoothing:antialiased}
   a{color:var(--accent);text-decoration:none} a:hover{color:#cfe;text-decoration:underline}
   /* top bar */
-  nav{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:16px;height:50px;padding:0 20px;
+  nav{position:sticky;top:0;z-index:20;display:flex;align-items:center;gap:16px;height:50px;padding:0 20px;flex-wrap:nowrap;
     background:rgba(5,6,8,0.82);backdrop-filter:blur(6px);border-bottom:1px solid var(--line);font-family:var(--mono);font-size:12.5px}
-  nav .brand{font-weight:700;color:#fff;letter-spacing:.02em}
+  nav .brand{font-weight:700;color:#fff;letter-spacing:.02em;white-space:nowrap;text-decoration:none}
+  nav .brand:hover{color:#fff}
+  nav .brand .rev{color:var(--dim2);font-weight:400}
   nav .sp{flex:1}
-  nav a{color:var(--dim)} nav a:hover{color:#fff;text-decoration:none}
-  nav .toc-btn{cursor:pointer;color:var(--dim);background:none;border:1px solid var(--line);border-radius:5px;padding:3px 9px;font-family:inherit;font-size:12px}
+  nav a{color:var(--dim);white-space:nowrap} nav a:hover{color:#fff;text-decoration:none}
+  nav .toc-btn{cursor:pointer;color:var(--dim);background:none;border:1px solid var(--line);border-radius:5px;padding:3px 9px;font-family:inherit;font-size:12px;white-space:nowrap}
   nav .toc-btn:hover{color:#fff;border-color:#444}
+  nav .toc-btn .tocMini{display:none}
+  @media(max-width:560px){
+    nav{gap:10px;padding:0 14px}
+    nav .brand .rev{display:none}          /* → just "heinrich", like the landing */
+    nav .n-obs,nav .n-pdf{display:none}     /* keep home + Docs; drop the rest */
+    nav .toc-btn .tocFull{display:none} nav .toc-btn .tocMini{display:inline}
+  }
   /* contents drawer */
   #toc{position:fixed;top:50px;left:0;bottom:0;width:320px;max-width:84vw;z-index:19;overflow-y:auto;
     background:#08090c;border-right:1px solid var(--line);padding:24px 22px 60px;
@@ -52,8 +61,11 @@
   main blockquote{border-left:2px solid #2a3a52;background:rgba(143,176,224,0.05);margin:1.6em 0;
     padding:14px 20px;border-radius:0 6px 6px 0;color:#c6c6cc;font-size:16.5px}
   main blockquote p:last-child{margin-bottom:0}
-  /* tables */
-  table{border-collapse:collapse;width:100%;margin:1.8em 0;font-family:var(--mono);font-size:13px}
+  /* tables — wrapped in .tscroll so a wide table scrolls itself, not the page
+     (a horizontally-overflowing table used to drag the sticky nav sideways on mobile) */
+  html{overflow-x:clip}
+  .tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch;margin:1.8em 0}
+  table{border-collapse:collapse;width:100%;margin:0;font-family:var(--mono);font-size:13px}
   th,td{border:1px solid var(--line);padding:7px 10px;text-align:left;vertical-align:top}
   th{background:var(--panel);color:#ccc;font-weight:700}
   td{color:#bcbcc2}
@@ -79,12 +91,13 @@ $endif$
 </head>
 <body>
 <nav>
-  <button class="toc-btn" id="tocBtn">☰ contents</button>
-  <span class="brand">The Grand Unified Theory of Sharts</span>
+  <button class="toc-btn" id="tocBtn"><span class="tocFull">☰ contents</span><span class="tocMini">☰</span></button>
+  <a class="brand" href="https://hcirnieh.com/">heinrich<span class="rev"> · book</span></a>
   <span class="sp"></span>
-  <a href="https://hcirnieh.com/">↩ hcirnieh.com</a>
-  <a href="https://hcirnieh.com/docs/">Docs</a>
-  <a href="https://github.com/asuramaya/heinrich/blob/main/paper/TGUTOS.pdf">PDF</a>
+  <a class="n-home" href="https://hcirnieh.com/">↩ hcirnieh.com</a>
+  <a class="n-obs" href="https://hcirnieh.com/observatory">Observatory</a>
+  <a class="n-docs" href="https://hcirnieh.com/docs/">Docs</a>
+  <a class="n-pdf" href="https://github.com/asuramaya/heinrich/blob/main/paper/TGUTOS.pdf">PDF</a>
 </nav>
 <aside id="toc">$table-of-contents$</aside>
 <div id="scrim"></div>
@@ -104,6 +117,8 @@ $body$
 </footer>
 
 <script>
+  // Wide tables scroll within their own box instead of widening the page.
+  document.querySelectorAll('main table').forEach(t=>{const w=document.createElement('div');w.className='tscroll';t.parentNode.insertBefore(w,t);w.appendChild(t);});
   const toc=document.getElementById('toc'),scrim=document.getElementById('scrim'),btn=document.getElementById('tocBtn');
   const tog=()=>{toc.classList.toggle('open');scrim.classList.toggle('show');};
   btn.addEventListener('click',tog); scrim.addEventListener('click',tog);
