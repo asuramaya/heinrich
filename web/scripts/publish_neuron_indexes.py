@@ -47,14 +47,24 @@ def main() -> int:
         region_name="auto",
     )
 
+    from botocore.exceptions import ClientError
+
     for model in TARGETS:
         src = ROOT / model / REL
         key = f"{model}/{REL}"
         if not src.exists():
             print(f"SKIP {model}: {src} not found", file=sys.stderr)
             continue
-        mb = src.stat().st_size / 1e6
-        print(f"-> {key}  ({mb:.0f} MB) uploading ...", flush=True)
+        size = src.stat().st_size
+        # idempotent: skip if the object already exists at the right size
+        try:
+            existing = client.head_object(Bucket=BUCKET, Key=key)["ContentLength"]
+            if existing == size:
+                print(f"-> {key}  already in R2 ({size / 1e6:.0f} MB), skipping")
+                continue
+        except ClientError:
+            pass
+        print(f"-> {key}  ({size / 1e6:.0f} MB) uploading ...", flush=True)
         client.upload_file(str(src), BUCKET, key)  # auto-multipart for large files
         head = client.head_object(Bucket=BUCKET, Key=key)
         print(f"   done: {head['ContentLength'] / 1e6:.0f} MB in R2")
