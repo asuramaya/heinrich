@@ -7,6 +7,11 @@ build/
 *.pyc
 .DS_Store
 
+# Secrets — never commit R2 / S3 credentials
+.env
+*.env
+.env.*
+
 # Large model files
 *.safetensors
 *.bin
