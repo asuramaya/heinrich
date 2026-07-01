@@ -123,6 +123,30 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .mode-badge.dir{background:#542;color:#fc8;border:1px solid #864;box-shadow:0 0 4px rgba(255,170,100,0.3)}
 .wl-legend.dir-active{outline:1px dashed rgba(255,170,100,0.3);outline-offset:1px}
 .rlbl-mode{float:right;font-size:9px;color:#b8a45a;background:#2a2410;border:1px solid #5a4e20;border-radius:2px;padding:0 4px;margin-left:4px;font-family:monospace;font-weight:bold}
+/* ============ MOBILE: single-pane focus + carousel over all 14 lanes ============ */
+#mstage,#mswitch{display:none}
+body.mobile{--mtop:44px;--peek:118px}
+body.mobile #main{display:none}                       /* the whole desktop grid is parked */
+/* transparent: the shared #glCanvas (z-index:0) renders the lanes *behind* this;
+   an opaque background here would paint over the cloud (the viewports are windows) */
+body.mobile #mstage{display:flex;flex-direction:column;gap:1px;position:fixed;left:0;top:var(--mtop);right:0;bottom:var(--peek);z-index:1;background:transparent;pointer-events:none}
+body.mobile #mstage>*{pointer-events:auto}
+/* the focused pane(s) are reparented in here — override their grid placement */
+body.mobile #mstage>*{flex:1 1 0;min-height:0;position:relative!important;left:auto!important;top:auto!important;right:auto!important;bottom:auto!important;width:auto!important;height:auto!important;grid-column:auto!important;grid-row:auto!important;visibility:visible!important;border:none}
+/* top carousel switcher */
+body.mobile #mswitch{display:flex;align-items:center;gap:6px;position:fixed;left:0;top:0;right:0;height:var(--mtop);z-index:22;background:rgba(8,9,11,0.94);border-bottom:1px solid #222;padding:0 6px;backdrop-filter:blur(4px)}
+#mswitch .marr{flex:none;width:34px;height:32px;background:#161616;border:1px solid #333;color:#ccc;border-radius:6px;font-size:16px;line-height:1;font-family:inherit}
+#mswitch .mchips{flex:1;display:flex;gap:5px;overflow-x:auto;scrollbar-width:none;-webkit-overflow-scrolling:touch;padding:6px 2px}
+#mswitch .mchips::-webkit-scrollbar{display:none}
+#mswitch .mchip{flex:none;padding:6px 12px;background:#141414;border:1px solid #2a2a2a;color:#8a8a8a;border-radius:999px;font-size:12px;white-space:nowrap;font-family:inherit}
+#mswitch .mchip.on{background:#1a2a1a;border-color:#3a5a30;color:#bf9}
+#mswitch .m2up{flex:none;width:36px;height:32px;background:#161616;border:1px solid #333;color:#889;border-radius:6px;font-size:14px;font-family:inherit}
+#mswitch .m2up.on{background:#1a2230;border-color:#356;color:#9cf}
+/* the floating panel becomes a bottom sheet */
+body.mobile #tokpanel{position:fixed!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;width:100%!important;max-width:none!important;margin:0;border-radius:14px 14px 0 0;border-bottom:none;max-height:var(--peek);overflow:hidden;transition:max-height .28s ease;z-index:21;backdrop-filter:blur(8px)}
+body.mobile #tokpanel.expanded{max-height:84vh;overflow-y:auto}
+body.mobile #tokpanel .drag-handle{cursor:pointer;justify-content:center;position:relative;padding-top:16px;min-height:0}
+body.mobile #tokpanel .drag-handle::before{content:"";position:absolute;top:6px;left:50%;transform:translateX(-50%);width:40px;height:4px;border-radius:2px;background:#4a4a4a}
 </style>
 </head>
 <body>
@@ -341,6 +365,17 @@ async function _fetchJSON(url,options={},timeoutMs=20000){
 function f16(h){const s=(h>>15)&1,e=(h>>10)&0x1f,m=h&0x3ff;if(e===0)return m===0?0:(s?-1:1)*2**-14*(m/1024);if(e===31)return m?NaN:(s?-Infinity:Infinity);return(s?-1:1)*2**(e-15)*(1+m/1024);}
 
 const NV=6,NC=3,_DPR=Math.min(devicePixelRatio,1.5);// 0=cloudA,1=deltaCloud,2=cloudB,3=trajA,4=deltaTraj,5=trajB
+// --- Mobile focus mode: on a phone the 20-viewport cockpit collapses to one full-bleed
+// lane at a time, chosen from a top carousel. State lives here so the anim loop + panel
+// drag handler (both earlier in the file) can read it; the DOM/logic is built at the end. ---
+const MPANES=[
+  {tag:'0',name:'Cloud A'},{tag:'1',name:'Delta'},{tag:'2',name:'Cloud B'},
+  {tag:'3',name:'Traj A'},{tag:'4',name:'Traj Δ'},{tag:'5',name:'Traj B'},
+  {tag:'l0',name:'Flower A'},{tag:'l1',name:'Flower Δ'},{tag:'l2',name:'Flower B'},
+  {tag:'r0',name:'Depth'},{tag:'r1',name:'Neurons'},{tag:'r2',name:'Superpos.'},
+  {tag:'br0',name:'Prism'},{tag:'pcs',name:'Spectrum'},
+];
+let MOBILE=false,_focusPane=0,_twoUp=false;const _movedPanes=[];
 // --- Single shared WebGL renderer ---
 const glCanvas=document.getElementById('glCanvas');
 const rdr=new THREE.WebGLRenderer({canvas:glCanvas,antialias:true,logarithmicDepthBuffer:true});
@@ -2298,7 +2333,8 @@ for(let i=0;i<3;i++){
   // Restore last position (persisted across reloads).
   try{const s=JSON.parse(localStorage.getItem('heinrich.panelPos')||'null');
     if(s&&Number.isFinite(s.l)&&Number.isFinite(s.t))place(s.l,s.t);}catch(e){}
-  d.addEventListener('pointerdown',e=>{if(e.target.closest('button'))return;// let the minimize button click through
+  d.addEventListener('pointerdown',e=>{if(MOBILE)return;// on mobile the handle toggles the bottom sheet (wired at end of file), not drag
+    if(e.target.closest('button'))return;// let the minimize button click through
     dx=e.clientX-p.offsetLeft;dy=e.clientY-p.offsetTop;dragging=true;
     try{d.setPointerCapture(e.pointerId);}catch(_){}e.preventDefault();});
   d.addEventListener('pointermove',e=>{if(!dragging)return;place(e.clientX-dx,e.clientY-dy);});
@@ -4687,6 +4723,7 @@ brCtl.addEventListener('change',_onCamMove);
 leftViews.forEach(v=>v.ctl.addEventListener('change',_onCamMove));
 rightViews.forEach(v=>v.ctl.addEventListener('change',_onCamMove));
 (function anim(){requestAnimationFrame(anim);
+  if(MOBILE){_animMobile();return;}// mobile renders only the focused lane (see end of file)
   const damping=views.some(v=>v.ctl.enableDamping&&v.ctl._needsUpdate)||brCtl._needsUpdate||leftViews.some(v=>v.ctl._needsUpdate)||rightViews.some(v=>v.ctl._needsUpdate);
   // LOD: the trajectory line groups (5000 merged segments × 3 viewports) cost ~75% of
   // the frame — measured 3fps with them, 13fps without. Hide them while the camera is
@@ -5644,6 +5681,74 @@ function _resolveViewByName(name){
   if(s==='br0'||s==='br1'){const pi=s==='br0'?0:1; const p=_brPanels?.[pi]; return p?{vi:s,sc:brSc,cam:p.cam,ctl:p.ctl,el:p.el,tag:s}:null;}
   return null;
 }
+
+// ============ Mobile focus mode ============
+// One lane full-bleed, chosen from a top carousel. The focused pane's DOM element is
+// *reparented* into #mstage (so the whole desktop #main grid can be display:none), and
+// the render loop draws only it — the perf win, since scissor rects come from live DOM.
+function _curPane(){return MPANES[((_focusPane%MPANES.length)+MPANES.length)%MPANES.length];}
+function _mStage(){return document.getElementById('mstage');}
+function _restoreMoved(){for(const m of _movedPanes){try{if(m.next&&m.next.parentNode===m.parent)m.parent.insertBefore(m.el,m.next);else m.parent.appendChild(m.el);}catch(e){}}_movedPanes.length=0;}
+function _moveToStage(el){if(!el)return;_movedPanes.push({el,parent:el.parentNode,next:el.nextSibling});_mStage().appendChild(el);}
+function _renderMobileChips(){const w=document.getElementById('mswitch');if(!w)return;const strip=w.querySelector('.mchips');if(!strip)return;strip.innerHTML='';MPANES.forEach((p,i)=>{const c=document.createElement('button');c.className='mchip'+(i===_focusPane?' on':'');c.textContent=p.name;c.addEventListener('click',()=>_setFocusPane(i));strip.appendChild(c);if(i===_focusPane)setTimeout(()=>{try{c.scrollIntoView({inline:'center',block:'nearest'});}catch(e){}},0);});}
+function _setFocusPane(i){
+  _focusPane=((i%MPANES.length)+MPANES.length)%MPANES.length;
+  if(!MOBILE){_renderMobileChips();return;}
+  _restoreMoved();
+  const P=_resolveViewByName(_curPane().tag);
+  if(P&&P.el)_moveToStage(P.el);
+  if(_twoUp){const Q=_resolveViewByName(MPANES[(_focusPane+1)%MPANES.length].tag);if(Q&&Q.el&&Q.el!==(P&&P.el))_moveToStage(Q.el);}
+  if(/^l/.test(_curPane().tag)&&typeof updateLeftViewports==='function'){try{updateLeftViewports();}catch(e){}}
+  _renderMobileChips();_needsRender=true;
+}
+function _animMobile(){
+  const P=_resolveViewByName(_curPane().tag);
+  if(!P||!P.el||!P.sc){_needsRender=false;return;}
+  const damping=!!(P.ctl&&P.ctl.enableDamping&&P.ctl._needsUpdate);
+  // trajectory LOD for the focused traj lane (same hysteresis as desktop, applied to one view)
+  if(typeof P.vi==='number'&&P.vi>=NC){const v=views[P.vi];if(v&&v.trajGroup){const sm=performance.now()-_lastCamMove;const mv=damping||sm<90;let want;if(mv)want=false;else if(sm>300)want=true;else want=v.trajGroup.visible;if(want!==v.trajGroup.visible){v.trajGroup.visible=want;_needsRender=true;}}}
+  const Q=_twoUp?_resolveViewByName(MPANES[(_focusPane+1)%MPANES.length].tag):null;
+  const dampQ=!!(Q&&Q.ctl&&Q.ctl.enableDamping&&Q.ctl._needsUpdate);
+  if(!_needsRender&&!damping&&!dampQ&&!play)return;
+  _needsRender=false;
+  rdr.setScissorTest(false);rdr.setClearColor(0x151515);rdr.clear();rdr.setScissorTest(true);
+  const drawOne=R=>{if(!R||!R.el||!R.sc)return;if(R.ctl)R.ctl.update();
+    if(typeof R.vi==='number'){const v=views[R.vi];if(v){const d=v.cam.position.length();v.mtl.size=Math.min(0.15,Math.max(0.004,d*0.012));if(R.vi>=NC&&v.trajMarker)v.trajMarker.material.size=Math.min(0.1,Math.max(0.006,d*0.015));const ms=Math.min(0.2,Math.max(0.01,d*0.04));if(pinMarkers[R.vi]&&pinMarkers[R.vi].visible)pinMarkers[R.vi].material.size=ms;if(pinMarkersB[R.vi]&&pinMarkersB[R.vi].visible)pinMarkersB[R.vi].material.size=ms;if(highlightMarkers[R.vi]&&highlightMarkers[R.vi].visible)highlightMarkers[R.vi].material.size=ms*0.7;}}
+    _renderRegion(R.el,R.sc,R.cam);};
+  drawOne(P);if(Q)drawOne(Q);
+  _frameCount++;const now=performance.now();if(now-_fpsTime>1000){const fps=Math.round(_frameCount*1000/(now-_fpsTime));const el=document.getElementById('fpsDisplay');if(el)el.textContent=fps+'fps';_frameCount=0;_fpsTime=now;}
+}
+function _buildMobileUI(){
+  if(document.getElementById('mswitch'))return;
+  const sw=document.createElement('div');sw.id='mswitch';
+  sw.innerHTML='<button class="marr" data-d="-1">‹</button><div class="mchips"></div><button class="marr" data-d="1">›</button><button class="m2up" title="compare two lanes">⊟</button>';
+  document.body.appendChild(sw);
+  document.body.appendChild(Object.assign(document.createElement('div'),{id:'mstage'}));
+  sw.querySelectorAll('.marr').forEach(b=>b.addEventListener('click',()=>_setFocusPane(_focusPane+(+b.dataset.d))));
+  sw.querySelector('.m2up').addEventListener('click',function(){_twoUp=!_twoUp;this.classList.toggle('on',_twoUp);_setFocusPane(_focusPane);});
+  // the sheet handle toggles expanded/peek
+  const dh=document.getElementById('tokDrag');
+  if(dh)dh.addEventListener('click',e=>{if(!MOBILE||e.target.closest('button'))return;document.getElementById('tokpanel').classList.toggle('expanded');});
+}
+function _applyMobile(){
+  const want=matchMedia('(pointer:coarse)').matches&&Math.min(innerWidth,innerHeight)<820&&innerWidth<900;
+  if(want===MOBILE)return;
+  MOBILE=want;document.body.classList.toggle('mobile',MOBILE);
+  const p=document.getElementById('tokpanel');
+  if(MOBILE){
+    _buildMobileUI();
+    if(p){p.style.left='';p.style.top='';p.style.right='';p.classList.remove('minimized','expanded');}
+    _setFocusPane(_focusPane);
+  }else{
+    _restoreMoved();
+    if(p)p.classList.remove('expanded');
+  }
+  _needsRender=true;if(typeof _resizeCanvas==='function')_resizeCanvas();
+}
+addEventListener('resize',_applyMobile);
+addEventListener('orientationchange',()=>setTimeout(_applyMobile,220));
+_applyMobile();
+
 window.__heinrich = {
   // --- state readers ---
   get views(){return views;}, get leftViews(){return leftViews;}, get rightViews(){return rightViews;},
