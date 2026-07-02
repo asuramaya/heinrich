@@ -5560,28 +5560,28 @@ async function _runLiveChat(message){
 async function _runLiveForward(prompt){
   if(_liveBusy)return;
   _liveBusy=true;
+  // Everything (incl. DOM access) inside try/finally so _liveBusy can never get
+  // stuck true — a stuck flag silently no-ops every later call (incl. agent pushes).
   const st=document.getElementById('liveStatus');
   const res=document.getElementById('liveResult');
-  st.textContent='running forward... (model load on first run ~5-30s)';
-  st.style.color='#a84';
   try{
+    if(st){st.textContent='running forward... (model load on first run ~5-30s)';st.style.color='#a84';}
     const model_id=document.getElementById('liveModelId')?.value.trim()||'';
     const d=await _fetchJSON('/api/live-forward',{
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({prompt,mri_model:model,mode,model_id})
     },60000);
     if(d.error){
-      st.style.color='#f77';st.textContent='error: '+d.error;
-      while(res.firstChild)res.removeChild(res.firstChild);return;
+      if(st){st.style.color='#f77';st.textContent='error: '+d.error;}
+      if(res)while(res.firstChild)res.removeChild(res.firstChild);return;
     }
-    st.style.color='#6c8';
-    st.textContent=(d.n_layers||'?')+' layers, '+((d.token_texts||[]).length)+' tokens · '+(d.latency_ms||'?')+' ms';
-    _liveRender(res,d);
+    if(st){st.style.color='#6c8';st.textContent=(d.n_layers||'?')+' layers, '+((d.token_texts||[]).length)+' tokens · '+(d.latency_ms||'?')+' ms';}
+    if(res)_liveRender(res,d);
     _renderLiveSession(d);
     _renderLivePoint(d);// plot the prompt's landing in the frozen frame
   }catch(e){
-    st.style.color='#f77';st.textContent='fetch failed: '+e.message;
-  }finally{_liveBusy=false;_refreshLiveStatus();}
+    if(st){st.style.color='#f77';st.textContent='fetch failed: '+e.message;}
+  }finally{_liveBusy=false;try{_refreshLiveStatus();}catch(e){}}
 }
 document.getElementById('liveInput')?.addEventListener('keydown',e=>{
   if(e.key!=='Enter')return;

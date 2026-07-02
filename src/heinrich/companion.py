@@ -123,11 +123,17 @@ def _poll_push(cmd: dict):
     """Push a command for the browser to pick up."""
     with _poll_lock:
         _poll_commands.append(cmd)
-    _poll_event.set()
+        _poll_event.set()  # set INSIDE the lock so a concurrent _poll_take can't clear it afterward
 
 
 def _poll_take(timeout: float = 30.0) -> dict | None:
-    """Block until a command is available or timeout."""
+    """Block until a command is available or timeout.
+
+    The set (push) and clear (take) both happen under _poll_lock: otherwise a
+    command pushed in the window between wait() returning and clear() would have
+    its wake-up clobbered, so the next poll blocked for a full timeout and the
+    command looked 'lost'. Serializing set/clear closes that race.
+    """
     _poll_event.wait(timeout=timeout)
     with _poll_lock:
         if _poll_commands:
@@ -135,8 +141,8 @@ def _poll_take(timeout: float = 30.0) -> dict | None:
             if not _poll_commands:
                 _poll_event.clear()
             return cmd
-    _poll_event.clear()
-    return None
+        _poll_event.clear()
+        return None
 
 
 def notify_companions(event: dict):
