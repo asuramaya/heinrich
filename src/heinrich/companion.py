@@ -3021,11 +3021,21 @@ def _pins_direction(mri_path: str, a: int, b: int, layer: int
     direction = (components.T @ dir_pc[:components.shape[0]]).astype(np.float32)
     hidden_norm = float(np.linalg.norm(direction))
     direction = direction / (hidden_norm + 1e-8)
+    # Natural units: scale the unit direction by the layer's TYPICAL residual
+    # magnitude (median frozen row norm), so alpha=1 means "a perturbation the
+    # size of a typical state at this layer". Without this, alpha is in raw
+    # residual units and the bend threshold varies wildly by layer (a unit
+    # vector needed alpha~40 at L15 — invisible from a ±6 slider).
+    sub = scores[:: max(1, N // 512)].astype(np.float32)
+    unit_scale = float(np.median(np.linalg.norm(sub, axis=1)))
+    direction = direction * unit_scale
     meta = {
         "a": int(a), "b": int(b), "layer": int(layer),
         "pc_norm": round(pc_norm, 4),
         "hidden_norm_pre": round(hidden_norm, 4),
-        "direction_norm_check": round(float(np.linalg.norm(direction)), 6),
+        "unit_scale": round(unit_scale, 3),
+        "units": "alpha 1.0 = one median frozen row norm at this layer",
+        "direction_norm_check": round(float(np.linalg.norm(direction) / (unit_scale + 1e-9)), 6),
     }
     return direction, meta
 

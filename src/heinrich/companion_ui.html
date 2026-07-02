@@ -475,7 +475,7 @@ let _liveScores=null;// {layerStr: [[k]]} last-token PCA scores from the last li
 let _walkSteps=[];// [{step,token,token_id,prob,entropy,scores}] — full walk incl. current
 let _walkActive=false,_walkText='',_liveWalkTick=0;// tick bumps per step so homing recomputes
 const liveCloudMarkers=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.2,color:0x66ffcc,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=12;p.visible=false;v.sc.add(p);return p;});
-const liveTrajLines=views.map(v=>{const l=new THREE.Line(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0x66ffcc,transparent:true,opacity:0.95,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
+const liveTrajLines=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0x66ffcc,transparent:true,opacity:0.95,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
 // Steered-forward inhabitant: the SAME live prompt run through the model with the
 // A-B pin direction injected at one layer, projected into the SAME frozen frame.
 // Magenta, so the clean (cyan) and steered (magenta) trajectories can be watched
@@ -484,7 +484,7 @@ const STEER_COL=0xFF44CC;
 let _steerScores=null;// {layerStr:[[k]]} steered forward scores from the last /api/live-steer
 let _steerInfo=null;// {alpha,layer,cleanPrediction,steeredPrediction,differs} — bridge getter
 const steerCloudMarkers=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.2,color:STEER_COL,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=12;p.visible=false;v.sc.add(p);return p;});
-const steerTrajLines=views.map(v=>{const l=new THREE.Line(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:STEER_COL,transparent:true,opacity:0.95,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
+const steerTrajLines=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:STEER_COL,transparent:true,opacity:0.95,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
 // Walk trail: PAST steps as a fading cyan point cloud (one Points/view, per-vertex
 // color = age fade) + recent per-step paths as thin lines in traj views. The CURRENT
 // step reuses the live marker above. ONE geometry per viewport, rebuilt per step/layer.
@@ -502,24 +502,33 @@ function _positionMarker(mk,v,vi,idx){const pos=mk.geometry.attributes.position.
 // --- Live inhabitant rendering (uses the SAME cached per-axis scales as the frozen cloud) ---
 function _liveVec(l){const s=_liveScores&&_liveScores[String(l)];return s&&s[0]?s[0]:null;}
 function _liveCoordCloud(v,l,vec){const mx=v._layerMx&&v._layerMx[l],b=v._clampBounds&&v._clampBounds[l];if(!mx||!b||!vec)return null;
-  return [_clampTraj((vec[v.pcX]||0)/(mx[0]||1),b[0]),_clampTraj((vec[v.pcY]||0)/(mx[1]||1),b[1]),_clampTraj((vec[v.pcZ]||0)/(mx[2]||1),b[2])];}
+  const rx=(vec[v.pcX]||0)/(mx[0]||1),ry=(vec[v.pcY]||0)/(mx[1]||1),rz=(vec[v.pcZ]||0)/(mx[2]||1);
+  const out=[_clampTraj(rx,b[0]),_clampTraj(ry,b[1]),_clampTraj(rz,b[2])];
+  out.clamped=(out[0]!==rx)||(out[1]!==ry)||(out[2]!==rz);return out;}
 function _liveCoordTraj(v,l,vec){const mx=v._trajLayerMx&&v._trajLayerMx[l],b=v._trajClampBounds&&v._trajClampBounds[l];if(!mx||!b||!vec)return null;
   const z=(typeof _layerZ!=='undefined'&&_layerZ&&_layerZ[l]!=null)?_layerZ[l]:0;
-  return [_clampTraj((vec[v.pcX]||0)/(mx[0]||1),b[0]),_clampTraj((vec[v.pcY]||0)/(mx[1]||1),b[1]),z];}
+  const rx=(vec[v.pcX]||0)/(mx[0]||1),ry=(vec[v.pcY]||0)/(mx[1]||1);
+  const out=[_clampTraj(rx,b[0]),_clampTraj(ry,b[1]),z];
+  out.clamped=(out[0]!==rx)||(out[1]!==ry);return out;}
+// Off-manifold states peg at the clamp walls on many layers; connecting those
+// vertices draws wall-bounce polygons that look like structure but are pure
+// render artifact. Honest rule: a segment renders only when BOTH endpoints are
+// genuinely in-range — clamped stretches are omitted, not faked.
+function _pairPush(pts,prev,c){if(c&&prev&&!c.clamped&&!prev.clamped)pts.push(prev[0],prev[1],prev[2],c[0],c[1],c[2]);}
 function _updateLiveMarkers(){
   if(!_liveScores){liveCloudMarkers.forEach(m=>m.visible=false);return;}
   const vec=_liveVec(cL);
   views.forEach((v,vi)=>{const mk=liveCloudMarkers[vi];
     const c=vec?(vi<NC?_liveCoordCloud(v,cL,vec):_liveCoordTraj(v,cL,vec)):null;
-    if(c){const a=mk.geometry.attributes.position.array;a[0]=c[0];a[1]=c[1];a[2]=c[2];mk.geometry.attributes.position.needsUpdate=true;mk.visible=true;}
+    if(c){const a=mk.geometry.attributes.position.array;a[0]=c[0];a[1]=c[1];a[2]=c[2];mk.geometry.attributes.position.needsUpdate=true;mk.material.opacity=c.clamped?0.35:1.0;mk.visible=true;}
     else mk.visible=false;});
   _needsRender=true;
 }
 function _renderLivePoint(d){
   _liveScores=(d&&d.scores)||null;
   for(let vi=NC;vi<views.length;vi++){const v=views[vi];const line=liveTrajLines[vi];const pts=[];
-    if(_liveScores){const layers=Object.keys(_liveScores).map(Number).sort((a,b)=>a-b);
-      for(const l of layers){const vec=_liveVec(l);const c=vec?_liveCoordTraj(v,l,vec):null;if(c)pts.push(c[0],c[1],c[2]);}}
+    if(_liveScores){const layers=Object.keys(_liveScores).map(Number).sort((a,b)=>a-b);let prev=null;
+      for(const l of layers){const vec=_liveVec(l);const c=vec?_liveCoordTraj(v,l,vec):null;_pairPush(pts,prev,c);prev=c;}}
     if(pts.length>=6){line.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pts),3));line.geometry.computeBoundingSphere&&line.geometry.computeBoundingSphere();line.visible=true;}
     else line.visible=false;}
   _updateLiveMarkers();
@@ -533,15 +542,15 @@ function _updateSteerMarkers(){
   const vec=_steerVec(cL);
   views.forEach((v,vi)=>{const mk=steerCloudMarkers[vi];
     const c=vec?(vi<NC?_liveCoordCloud(v,cL,vec):_liveCoordTraj(v,cL,vec)):null;
-    if(c){const a=mk.geometry.attributes.position.array;a[0]=c[0];a[1]=c[1];a[2]=c[2];mk.geometry.attributes.position.needsUpdate=true;mk.visible=true;}
+    if(c){const a=mk.geometry.attributes.position.array;a[0]=c[0];a[1]=c[1];a[2]=c[2];mk.geometry.attributes.position.needsUpdate=true;mk.material.opacity=c.clamped?0.35:1.0;mk.visible=true;}
     else mk.visible=false;});
   _needsRender=true;
 }
 function _renderSteerPoint(scores){
   _steerScores=scores||null;
   for(let vi=NC;vi<views.length;vi++){const v=views[vi];const line=steerTrajLines[vi];const pts=[];
-    if(_steerScores){const layers=Object.keys(_steerScores).map(Number).sort((a,b)=>a-b);
-      for(const l of layers){const vec=_steerVec(l);const c=vec?_liveCoordTraj(v,l,vec):null;if(c)pts.push(c[0],c[1],c[2]);}}
+    if(_steerScores){const layers=Object.keys(_steerScores).map(Number).sort((a,b)=>a-b);let prev=null;
+      for(const l of layers){const vec=_steerVec(l);const c=vec?_liveCoordTraj(v,l,vec):null;_pairPush(pts,prev,c);prev=c;}}
     if(pts.length>=6){line.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pts),3));line.geometry.computeBoundingSphere&&line.geometry.computeBoundingSphere();line.visible=true;}
     else line.visible=false;}
   _updateSteerMarkers();
@@ -564,7 +573,7 @@ function _renderWalkTrail(){
   for(let vi=NC;vi<views.length;vi++){const v=views[vi];const line=walkTrailLines[vi];const seg=[];
     for(const st of recent){const sc=st.scores;const layers=Object.keys(sc).map(Number).sort((a,b)=>a-b);let prev=null;
       for(const l of layers){const vec=sc[String(l)]&&sc[String(l)][0];const c=vec?_liveCoordTraj(v,l,vec):null;
-        if(c){if(prev)seg.push(prev[0],prev[1],prev[2],c[0],c[1],c[2]);prev=c;}}}
+        _pairPush(seg,prev,c);prev=c;}}}
     if(seg.length){line.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(seg),3));line.geometry.computeBoundingSphere&&line.geometry.computeBoundingSphere();line.visible=true;}
     else line.visible=false;}
   _needsRender=true;
@@ -614,7 +623,7 @@ let _vocabTextsKey='';
 let _vocabMetaCache=null,_vocabMetaKey='';// noise floor + frame falsification
 const TGT1_COL=0xFFD700,TGT2_COL=0x66A8FF;// gold, cyan-blue (distinct from pin B 0x4477AA / live 0x66ffcc)
 function _mkTargetMarkers(col){return views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.18,color:col,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=12;p.visible=false;v.sc.add(p);return p;});}
-function _mkTargetLines(col){return views.map(v=>{const l=new THREE.Line(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:col,transparent:true,opacity:0.85,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});}
+function _mkTargetLines(col){return views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:col,transparent:true,opacity:0.85,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});}
 const targetCloudMarkers=_mkTargetMarkers(TGT1_COL),targetTrajLines=_mkTargetLines(TGT1_COL);
 const targetCloudMarkers2=_mkTargetMarkers(TGT2_COL),targetTrajLines2=_mkTargetLines(TGT2_COL);
 // Generic target machinery — one slot's vec/markers/lines. T1 and T2 share it.
@@ -625,13 +634,14 @@ function _updTgtMarkers(tgt,markers){
   const vec=cL<_tgtRealLayers(tgt)?_tgtVec(tgt,cL):null;
   views.forEach((v,vi)=>{const mk=markers[vi];
     const c=vec?(vi<NC?_liveCoordCloud(v,cL,vec):_liveCoordTraj(v,cL,vec)):null;
-    if(c){const a=mk.geometry.attributes.position.array;a[0]=c[0];a[1]=c[1];a[2]=c[2];mk.geometry.attributes.position.needsUpdate=true;mk.visible=true;}
+    if(c){const a=mk.geometry.attributes.position.array;a[0]=c[0];a[1]=c[1];a[2]=c[2];mk.geometry.attributes.position.needsUpdate=true;mk.material.opacity=c.clamped?0.35:1.0;mk.visible=true;}
     else mk.visible=false;});
   _needsRender=true;
 }
 function _renderTgt(tgt,markers,lines){
   for(let vi=NC;vi<views.length;vi++){const v=views[vi];const line=lines[vi];const pts=[];
-    if(tgt){const rl=_tgtRealLayers(tgt);for(let l=0;l<rl;l++){const vec=_tgtVec(tgt,l);const c=vec?_liveCoordTraj(v,l,vec):null;if(c)pts.push(c[0],c[1],c[2]);}}
+    if(tgt){const rl=_tgtRealLayers(tgt);let prev=null;
+      for(let l=0;l<rl;l++){const vec=_tgtVec(tgt,l);const c=vec?_liveCoordTraj(v,l,vec):null;_pairPush(pts,prev,c);prev=c;}}
     if(pts.length>=6){line.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pts),3));line.geometry.computeBoundingSphere&&line.geometry.computeBoundingSphere();line.visible=true;}
     else line.visible=false;}
   _updTgtMarkers(tgt,markers);
