@@ -295,6 +295,22 @@ async function vocabToken(env, prefix, row) {
   return octet([out]);
 }
 
+// vocab_pc16.bin (VP16): header <4sIII magic,n_layers,n_pcs,n_rows ; [layers x pcs x rows] f16
+// /api/vocab-pc-column?layer=L&pc=P → <III layer,pc,n_rows> + raw f16[n_rows]
+async function vocabPcColumn(env, prefix, layer, pc) {
+  const key = `${prefix}/decomp/vocab_pc16.bin`;
+  const h = await r2range(env, key, 0, 16);
+  if (!h) return jsonResponse({ error: "no vocab_pc16" }, 404);
+  const dv = new DataView(h);
+  const nLayers = dv.getUint32(4, true), nPcs = dv.getUint32(8, true), nRows = dv.getUint32(12, true);
+  if (layer < 0 || layer >= nLayers || pc < 0 || pc >= nPcs)
+    return jsonResponse({ error: `layer ${layer}/pc ${pc} out of range` }, 400);
+  const col = await r2range(env, key, 16 + (layer * nPcs + pc) * nRows * 2, nRows * 2);
+  const head = new ArrayBuffer(12); const hv = new DataView(head);
+  hv.setUint32(0, layer, true); hv.setUint32(4, pc, true); hv.setUint32(8, nRows, true);
+  return octet([head, col]);
+}
+
 // token_neurons.bin (TOKN): header <4sIII magic,n_tok,n_layers,intermediate ; [N x layers x inter] f16
 // /api/neuron-field?token=N → raw f16[n_layers*intermediate]
 async function neuronField(env, prefix, token) {
@@ -456,6 +472,7 @@ export default {
         if (ep === "pc-column") return await pcColumn(env, prefix, parseInt(q("pc", "0")), parseInt(q("layer", "0")));
         if (ep === "token-pca") return await tokenPca(env, prefix, parseInt(q("token", "0")));
         if (ep === "vocab-token") return await vocabToken(env, prefix, parseInt(q("row", "-1")));
+        if (ep === "vocab-pc-column") return await vocabPcColumn(env, prefix, parseInt(q("layer", "0")), parseInt(q("pc", "0")));
         if (ep === "vocab-meta") {
           const vm = await r2json(env, `${prefix}/decomp/vocab_meta.json`);
           return vm ? jsonResponse(vm) : jsonResponse({ error: "no full-vocab projection" }, 404);
