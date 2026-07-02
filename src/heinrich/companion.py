@@ -2143,6 +2143,59 @@ def _causal_truth_test(
     }
 
 
+def _load_frozen_frame(mri_path: str, n_layers: int) -> dict:
+    """Load the frozen PCA frame ONCE: baselines, per-layer components + means.
+
+    The .shrt/.mri frozen scores are (exit - baseline) - sample_mean; a live
+    residual must subtract the SAME per-layer baseline and mean before it can be
+    projected through the SAME components. Loading these once (instead of per
+    forward) is what makes the streaming walk cheap — every step reuses this.
+    """
+    decomp = Path(mri_path) / "decomp"
+    bl_path = Path(mri_path) / "baselines.npz"
+    _bl = {k: np.asarray(v).astype(np.float32)
+           for k, v in np.load(str(bl_path)).items()} if bl_path.exists() else {}
+    comps: dict[int, np.ndarray] = {}
+    means: dict[int, np.ndarray] = {}
+    for layer in range(n_layers):
+        comp_path = decomp / f"L{layer:02d}_components.npy"
+        if comp_path.exists():
+            comps[layer] = np.load(str(comp_path)).astype(np.float32)
+        mean_path = decomp / f"L{layer:02d}_mean.npy"
+        if mean_path.exists():
+            means[layer] = np.load(str(mean_path)).astype(np.float32)
+    return {"bl": _bl, "comps": comps, "means": means}
+
+
+def _project_frozen(frame: dict, residuals: dict, n_layers: int) -> tuple[dict, int]:
+    """Project per-layer last-position residuals through the frozen frame.
+
+    Returns (live_scores {layer: [[K]]}, centered_layer_count). Every live point
+    carries the same per-layer offset removal as the frozen cloud — otherwise it
+    floats off the population by a constant.
+    """
+    live_scores: dict[int, list] = {}
+    centered = 0
+    for layer in range(n_layers):
+        components = frame["comps"].get(layer)
+        if components is None or layer not in residuals:
+            continue
+        residual = residuals[layer]
+        if residual.ndim == 1:
+            residual = residual.reshape(1, -1)
+        residual = residual.astype(np.float32)
+        bl = frame["bl"].get(f"exit_L{layer}")
+        if bl is not None:
+            residual = residual - bl
+        mean = frame["means"].get(layer)
+        if mean is not None:
+            residual = residual - mean
+            centered += 1
+        scores = residual @ components.T  # [1, K]
+        live_scores[layer] = scores.tolist()
+    return live_scores, centered
+
+
 def _live_forward(mri_path: str, prompt: str, model_id: str = "") -> dict:
     """Run a prompt through the live model, project residuals into MRI's PCA space.
 
@@ -2181,33 +2234,13 @@ def _live_forward(mri_path: str, prompt: str, model_id: str = "") -> dict:
     if not residuals:
         return {"error": "Backend did not return residuals. Check residual_layers support."}
 
-    # Project each layer's residual through stored PCA components.
-    # The frozen scores are (exit - baseline) - sample_mean, so the live
-    # residual must subtract the same stored baseline (zeros in raw mode)
-    # and the same mean — otherwise every live point carries a constant
-    # per-layer offset relative to the frozen cloud.
-    bl_path = Path(mri_path) / "baselines.npz"
-    _bl = np.load(str(bl_path)) if bl_path.exists() else {}
-    live_scores = {}
-    centered_layers = 0
-    for layer in range(n_layers):
-        comp_path = decomp / f"L{layer:02d}_components.npy"
-        if not comp_path.exists() or layer not in residuals:
-            continue
-        components = np.load(str(comp_path))  # [K, hidden_dim]
-        residual = residuals[layer]  # [hidden_dim] (last position)
-        if residual.ndim == 1:
-            residual = residual.reshape(1, -1)
-        residual = residual.astype(np.float32)
-        bl_key = f"exit_L{layer}"
-        if bl_key in _bl:
-            residual = residual - _bl[bl_key].astype(np.float32)
-        mean_path = decomp / f"L{layer:02d}_mean.npy"
-        if mean_path.exists():
-            residual = residual - np.load(str(mean_path)).astype(np.float32)
-            centered_layers += 1
-        scores = (residual @ components.T)  # [1, K] or [seq_len, K]
-        live_scores[layer] = scores.tolist()
+    # Project each layer's residual through the frozen PCA frame (baselines +
+    # per-layer components + means, loaded once). The frozen scores are
+    # (exit - baseline) - sample_mean, so the live residual subtracts the same
+    # baseline (zeros in raw mode) and mean — otherwise every live point carries
+    # a constant per-layer offset relative to the frozen cloud.
+    frame = _load_frozen_frame(mri_path, n_layers)
+    live_scores, centered_layers = _project_frozen(frame, residuals, n_layers)
 
     # Tokenize the prompt for display
     token_texts = []
@@ -2236,6 +2269,118 @@ def _live_forward(mri_path: str, prompt: str, model_id: str = "") -> dict:
         ],
         "prediction": result.top_token,
         "entropy": float(result.entropy),
+    }
+
+
+_live_walk_lock = threading.Lock()
+_live_walk_busy = False
+
+
+def _live_walk(mri_path: str, prompt: str, model_id: str = "",
+               max_tokens: int = 24) -> dict:
+    """Greedy-decode the live model, streaming each generated token as its own
+    point in the frozen PCA frame.
+
+    One walk at a time (busy guard). At every step the model forwards the growing
+    text, the last-position residual is projected through the frozen frame (the
+    same frame the vocabulary cloud lives in), and the step is BROADCAST to every
+    paired browser via _poll_push so the walk animates live. The HTTP response is
+    light — scores already streamed; it only carries the summary.
+
+    Tokenization caveat: the backend.forward API accepts a text prompt and
+    re-encodes it internally (no token-id forward is exposed, and we don't touch
+    backend files). We therefore grow the prompt by DECODING the accumulated
+    generated ids and appending to the fixed prompt prefix. For a well-behaved
+    BPE tokenizer greedy generation round-trips exactly; pathological merges at
+    the boundary could in principle re-tokenize, which would shift the last
+    position by a token. Acceptable for a visualization walk; documented here.
+    """
+    global _live_walk_busy
+    with _live_walk_lock:
+        if _live_walk_busy:
+            return {"error": "walk in progress"}
+        _live_walk_busy = True
+    try:
+        return _live_walk_inner(mri_path, prompt, model_id, max_tokens)
+    finally:
+        with _live_walk_lock:
+            _live_walk_busy = False
+
+
+def _live_walk_inner(mri_path: str, prompt: str, model_id: str,
+                     max_tokens: int) -> dict:
+    decomp = Path(mri_path) / "decomp"
+    meta_path = decomp / "meta.json"
+    if not meta_path.exists():
+        return {"error": "No decomposition metadata"}
+    meta = json.loads(meta_path.read_text())
+    n_layers = meta.get("n_real_layers", len(meta["layers"]))
+    max_tokens = max(1, min(int(max_tokens), 64))
+
+    started = time.perf_counter()
+    model_id = _resolve_live_model_id(mri_path, model_id)
+    if not model_id:
+        return {"error": "No live model id available"}
+    try:
+        backend = _get_steer_backend(model_id)
+    except Exception as e:
+        return {"error": f"Cannot load model {model_id}: {e}"}
+
+    tokenizer = getattr(backend, "tokenizer", None)
+    eos_id = getattr(tokenizer, "eos_token_id", None) if tokenizer is not None else None
+
+    frame = _load_frozen_frame(mri_path, n_layers)
+    all_layers = list(range(n_layers))
+
+    generated_ids: list[int] = []
+    steps: list[dict] = []
+    text_so_far = ""
+    centered = 0
+    n_live = 0
+    for i in range(max_tokens):
+        cur_text = prompt + text_so_far
+        try:
+            result = backend.forward(cur_text, return_residual=True,
+                                     residual_layers=all_layers)
+        except Exception as e:
+            return {"error": f"Forward pass failed at step {i}: {e}"}
+        residuals = getattr(result, "residuals", None)
+        if not residuals:
+            return {"error": "Backend did not return residuals. "
+                             "Check residual_layers support."}
+        live_scores, centered = _project_frozen(frame, residuals, n_layers)
+        n_live = len(live_scores)
+
+        top_id = int(result.top_id)
+        prob = float(result.probs[top_id])
+        tok_text = (tokenizer.decode([top_id]) if tokenizer is not None
+                    else str(top_id))
+        step = {"step": i, "token": tok_text, "token_id": top_id,
+                "prob": prob, "entropy": float(result.entropy)}
+        # Broadcast this step to every paired browser. Scores travel with the
+        # push (not the final response) so the walk animates as it computes.
+        _poll_push({"cmd": "navigate",
+                    "live_step": {**step, "scores": live_scores,
+                                  "n_steps": max_tokens}})
+        steps.append(step)
+        generated_ids.append(top_id)
+        text_so_far = (tokenizer.decode(generated_ids) if tokenizer is not None
+                       else text_so_far + tok_text)
+        if eos_id is not None and top_id == eos_id:
+            break
+
+    total_ms = (time.perf_counter() - started) * 1000.0
+    return {
+        "prompt": prompt,
+        "resolved_model_id": model_id,
+        "backend_type": type(backend).__name__,
+        "generated_text": text_so_far,
+        "n_steps": len(steps),
+        "n_layers": n_layers,
+        "steps": steps,  # tokens/probs/entropies only — scores already streamed
+        "centered": centered == n_live and centered > 0,
+        "latency_ms": round(total_ms, 1),
+        "per_step_ms": round(total_ms / max(1, len(steps)), 1),
     }
 
 
@@ -3631,6 +3776,15 @@ class CompanionHandler(SimpleHTTPRequestHandler):
         origin = self.headers.get('Origin')
         if not origin or origin in self._LOCAL_ORIGINS:
             return True
+        # The SPA served from the companion is same-origin — trust any loopback
+        # origin regardless of port (only local processes can bind loopback), so
+        # a companion on a non-default port (e.g. a test instance) still works.
+        try:
+            host = urlparse(origin).hostname
+        except ValueError:
+            host = None
+        if host in ("127.0.0.1", "localhost", "::1"):
+            return True
         if origin in self.allow_origins:
             return bool(self.pair_token) and \
                 self.headers.get('X-Heinrich-Pair') == self.pair_token
@@ -4549,6 +4703,23 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 return
             mri_path = self._mri_path(mri_model, mode_name)
             result = _live_forward(mri_path, prompt, model_id=model_id)
+            self._send_json(result)
+
+        elif path == '/api/live-walk':
+            # Streaming-token walk: greedy-decode, broadcasting each generated
+            # token as its own point in the frozen frame. Scores stream over the
+            # poll channel; this response is the light summary.
+            prompt = args.get("prompt", "")
+            model_id = args.get("model_id", "")  # HF model ID for loading
+            mri_model = args.get("mri_model", "qwen-0.5b")  # MRI directory name
+            mode_name = args.get("mode", "raw")
+            max_tokens = int(args.get("max_tokens", 24))
+            if not prompt:
+                self._send_json({"error": "prompt required"})
+                return
+            mri_path = self._mri_path(mri_model, mode_name)
+            result = _live_walk(mri_path, prompt, model_id=model_id,
+                                max_tokens=max_tokens)
             self._send_json(result)
 
         elif path == '/api/homing-run':

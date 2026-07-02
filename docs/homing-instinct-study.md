@@ -73,6 +73,43 @@ Falsifiable expectations:
 - If homing is an artifact of the lm_head geometry only: no early crossover
   structure; d_T ≈ d_D until the final norm/lmhead layers.
 
+## Results — first batch (July 2026, smollm2-135m)
+
+28 prompt pairs (capitals, colors, antonyms, arithmetic, common sense), answer +
+distractor + 16-token background panel per run, both populations, exact full-K
+distances via `/api/homing-run`. Raw data: `docs/data/homing-study-v{1,2}.json`.
+
+**v1 taught us the design, not the answer:**
+- ChatML framing breaks the base model (0/28 correct predictions inside the
+  assistant slot vs 17/28 with plain prompts) — the trajectory homes to what the
+  model will *actually* say, so answer keys must be conditioned on prediction.
+- Absolute argmin-distance L\* is scale-dominated (always L0: layer norms grow
+  with depth). The meaningful measure is **relative**: the answer's rank among
+  background vocabulary per layer.
+
+**v2 verdict: the L2-proximity form of the homing hypothesis is FALSIFIED for
+this model.** Plain prompts, template (crystal-free) population, conditioned on
+the 17/28 correct predictions:
+- Answer's mean final-layer rank among 16 background tokens: **9.4** (chance ≈ 8).
+- Answer beats all background from some layer onward in only 3/17 correct runs
+  (all late: L19–L29). Raw population: 2/17 (both L11).
+- Weak directional signal in raw mode only: correct runs mean rank 6.59 vs
+  incorrect 8.09.
+
+**Interpretation.** The final-position residual does not migrate toward the
+answer token's own frozen state. This is consistent with Session 4's
+first-token-selection finding: the prediction is carried as an **lm_head
+readout direction** (which token the state *projects onto*), not as proximity
+to that token's location in state space. Distance-to-state and
+preference-to-emit are different geometries.
+
+**Next falsifiable variant (v3):** replace L2-to-frozen-exit with the live
+state's per-layer projection onto the answer's **lmh virtual-layer row**
+(already in `vocab_scores.bin`, row index nL−1) vs the background panel — i.e.,
+measure when the readout direction, not the state distance, commits. If that
+also fails to show a commit layer before the final layers, the "decision layer"
+concept itself is wrong for this model class.
+
 ## Provenance requirements
 
 Every published number carries: frame source (sample n, seed), capture noise floor,
