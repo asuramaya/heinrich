@@ -2910,6 +2910,48 @@ def _live_chat(mri_path: str, message: str, *, history: list[dict] | None = None
     }
 
 
+def _pins_direction(mri_path: str, a: int, b: int, layer: int
+                    ) -> tuple[np.ndarray | None, dict]:
+    """Build the A->B unit steering direction in HIDDEN space from two pinned
+    sample tokens' full-K PCA scores at `layer`.
+
+    The frozen decomposition gives per-token PC scores (L{NN}_scores.npy) and the
+    per-layer components (L{NN}_components.npy [K, hidden]). The A-B difference in
+    PC space, mapped back through components.T, is the hidden-space displacement
+    that separates the two tokens at this layer. Normalised to a unit vector so
+    the caller's alpha is the only magnitude knob. Shared by _direction_steer_test
+    and _live_steer so both build the exact same direction.
+
+    Returns (direction | None, meta). meta carries an "error" key on failure.
+    """
+    decomp = Path(mri_path) / "decomp"
+    score_path = decomp / f"L{layer:02d}_scores.npy"
+    if not score_path.exists():
+        return None, {"error": f"No scores at L{layer}"}
+    comp_path = decomp / f"L{layer:02d}_components.npy"
+    if not comp_path.exists():
+        return None, {"error": f"No components at L{layer} — "
+                               "needed to map PC direction to hidden space"}
+    scores = np.load(str(score_path), mmap_mode="r")
+    components = np.load(str(comp_path))  # [K, hidden_dim]
+    N = scores.shape[0]
+    if not (0 <= a < N and 0 <= b < N):
+        return None, {"error": f"Token index out of range (a={a}, b={b}, N={N})"}
+    diff = scores[a].astype(np.float32) - scores[b].astype(np.float32)
+    pc_norm = float(np.linalg.norm(diff))
+    dir_pc = diff / (pc_norm + 1e-8)
+    direction = (components.T @ dir_pc[:components.shape[0]]).astype(np.float32)
+    hidden_norm = float(np.linalg.norm(direction))
+    direction = direction / (hidden_norm + 1e-8)
+    meta = {
+        "a": int(a), "b": int(b), "layer": int(layer),
+        "pc_norm": round(pc_norm, 4),
+        "hidden_norm_pre": round(hidden_norm, 4),
+        "direction_norm_check": round(float(np.linalg.norm(direction)), 6),
+    }
+    return direction, meta
+
+
 def _direction_steer_test(mri_path: str, a: int, b: int, layer: int,
                           prompt: str, alpha: float = 2.0,
                           max_tokens: int = 30,
@@ -2919,33 +2961,15 @@ def _direction_steer_test(mri_path: str, a: int, b: int, layer: int,
     Generates text with and without steering, compares outputs.
     If output changes meaningfully, the direction is causal.
     """
-    decomp = Path(mri_path) / "decomp"
-    score_path = decomp / f"L{layer:02d}_scores.npy"
-    if not score_path.exists():
-        return {"error": f"No scores at L{layer}"}
+    direction, dmeta = _pins_direction(mri_path, a, b, layer)
+    if direction is None:
+        return dmeta
 
-    # Load direction from full-K components
-    comp_path = decomp / f"L{layer:02d}_components.npy"
-    if not comp_path.exists():
-        return {"error": f"No components at L{layer} — needed to map PC direction to hidden space"}
-
-    scores = np.load(str(score_path), mmap_mode="r")
-    components = np.load(str(comp_path))  # [K, hidden_dim]
-    N, K = scores.shape
-
-    # Direction in PC space
-    diff = scores[a].astype(np.float32) - scores[b].astype(np.float32)
-    mag = float(np.linalg.norm(diff))
-    dir_pc = diff / (mag + 1e-8)
-
-    # Map to hidden space: direction_hidden = components.T @ dir_pc
-    direction = (components.T @ dir_pc[:components.shape[0]]).astype(np.float32)
-    direction = direction / (np.linalg.norm(direction) + 1e-8)
-
-    # Get backend
+    # Resolve the live model id (metadata alone stores an architecture family
+    # name like "llama", not a loadable hub id — the caller supplies the real id).
+    model_id = _resolve_live_model_id(mri_path, model_id)
     if not model_id:
-        meta = json.loads((Path(mri_path) / "metadata.json").read_text())
-        model_id = meta["model"]["name"]
+        return {"error": "No live model id available"}
 
     try:
         backend = _get_steer_backend(model_id)
@@ -2955,9 +2979,13 @@ def _direction_steer_test(mri_path: str, a: int, b: int, layer: int,
     # Generate clean
     clean = backend.generate(prompt, max_tokens=max_tokens)
 
-    # Generate steered (A->B direction, positive alpha)
-    steer_dirs = {layer: (direction, alpha)}
-    steered_pos = backend.generate(prompt, steer_dirs=steer_dirs, max_tokens=max_tokens)
+    # Generate steered (A->B direction). mean_gap=1.0 in the tuple, magnitude
+    # carried by the alpha kwarg — the hf backend only installs steer hooks when
+    # `alpha != 0`, so the alpha MUST travel as the kwarg, not folded into the
+    # tuple (the prior code folded it in and never steered).
+    steer_dirs = {layer: (direction, 1.0)}
+    steered_pos = backend.generate(prompt, steer_dirs=steer_dirs,
+                                   alpha=float(alpha), max_tokens=max_tokens)
 
     # Simple change metric: character-level edit distance ratio
     def _change_ratio(a_text, b_text):
@@ -2974,6 +3002,107 @@ def _direction_steer_test(mri_path: str, a: int, b: int, layer: int,
         "steered": steered_pos,
         "change": change_pos,
         "changed": change_pos > 0.2,
+    }
+
+
+def _live_steer(mri_path: str, prompt: str, layer: int, a: int, b: int,
+                alpha: float = 4.0, model_id: str = "",
+                max_tokens: int = 24) -> dict:
+    """Live steering v1: inject the A->B pin direction into the live forward and
+    return BOTH trajectories (clean + steered) in the frozen frame, plus the two
+    short continuations, so the viewer can watch the trajectory AND the output
+    text bend under the injected direction.
+
+    Two forwards with residual capture at every layer (clean, steered) reuse the
+    same frozen frame as live-forward/walk, so the returned scores land in the
+    same coordinate system as the vocabulary cloud. Two generations (clean,
+    steered) give the text bend. alpha=0 collapses to the clean pass (the hf
+    backend gates steer hooks on `alpha != 0`).
+    """
+    decomp = Path(mri_path) / "decomp"
+    meta_path = decomp / "meta.json"
+    if not meta_path.exists():
+        return {"error": "No decomposition metadata"}
+    meta = json.loads(meta_path.read_text())
+    n_layers = meta.get("n_real_layers", len(meta["layers"]))
+    layer = max(0, min(int(layer), n_layers - 1))
+    max_tokens = max(1, min(int(max_tokens), 64))
+
+    started = time.perf_counter()
+    model_id = _resolve_live_model_id(mri_path, model_id)
+    if not model_id:
+        return {"error": "No live model id available"}
+
+    direction, dmeta = _pins_direction(mri_path, a, b, layer)
+    if direction is None:
+        return dmeta
+
+    try:
+        backend = _get_steer_backend(model_id)
+    except Exception as e:
+        return {"error": f"Cannot load model {model_id}: {e}"}
+    if not _backend_supports_generate(backend):
+        return {"error": f"{type(backend).__name__} does not support steering generation"}
+
+    all_layers = list(range(n_layers))
+    steer_dirs = {layer: (direction, 1.0)}  # magnitude travels via the alpha kwarg
+    frame = _load_frozen_frame(mri_path, n_layers)
+
+    # Two forwards: clean, then steered (steer hook adds direction*alpha at the
+    # last position of `layer`'s output; the perturbation flows through every
+    # later layer — that is the bend we project into the frozen frame).
+    try:
+        clean_res = backend.forward(prompt, return_residual=True,
+                                    residual_layers=all_layers)
+        steered_res = backend.forward(prompt, return_residual=True,
+                                      residual_layers=all_layers,
+                                      steer_dirs=steer_dirs, alpha=float(alpha))
+    except Exception as e:
+        return {"error": f"Forward pass failed: {e}"}
+
+    clean_resid = getattr(clean_res, "residuals", None)
+    steered_resid = getattr(steered_res, "residuals", None)
+    if not clean_resid or not steered_resid:
+        return {"error": "Backend did not return residuals. "
+                         "Check residual_layers support."}
+
+    clean_scores, _ = _project_frozen(frame, clean_resid, n_layers)
+    steered_scores, _ = _project_frozen(frame, steered_resid, n_layers)
+
+    # Two generations: the text bend.
+    try:
+        clean_text = backend.generate(prompt, max_tokens=max_tokens)
+        steered_text = backend.generate(prompt, steer_dirs=steer_dirs,
+                                        alpha=float(alpha), max_tokens=max_tokens)
+    except Exception as e:
+        return {"error": f"Generation failed: {e}"}
+
+    def _strip(t: str) -> str:
+        if isinstance(t, str) and t.startswith(prompt):
+            return t[len(prompt):].lstrip()
+        return t or ""
+
+    tokenizer = getattr(backend, "tokenizer", None)
+
+    def _pred(res) -> str:
+        tid = int(getattr(res, "top_id", -1))
+        if tid < 0:
+            return ""
+        return tokenizer.decode([tid]) if tokenizer is not None else str(tid)
+
+    return {
+        "prompt": prompt,
+        "resolved_model_id": model_id,
+        "backend_type": type(backend).__name__,
+        "n_layers": n_layers,
+        "clean_scores": clean_scores,
+        "steered_scores": steered_scores,
+        "clean_text": _strip(clean_text),
+        "steered_text": _strip(steered_text),
+        "clean_prediction": _pred(clean_res),
+        "steered_prediction": _pred(steered_res),
+        "direction_meta": {**dmeta, "alpha": float(alpha)},
+        "latency_ms": round((time.perf_counter() - started) * 1000.0, 1),
     }
 
 
@@ -4832,11 +4961,40 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 self._send_json({"error": "model required"})
                 return
             mri_path = self._mri_path(model_name, mode_name or "raw")
-            model_meta = json.loads((Path(mri_path) / "metadata.json").read_text())
-            model_id = model_meta["model"]["name"]
+            # Accept the live model id from args; fall back to the metadata-resolved
+            # id. (The MRI's model.name is an architecture family like "llama", not
+            # a loadable hub id — the SPA passes the real id; _direction_steer_test
+            # resolves it either way.)
+            model_id = str(args.get("model_id", "") or "").strip()
+            if not model_id:
+                model_id = _resolve_live_model_id(mri_path, "")
             result = _direction_steer_test(
                 mri_path, a, b, layer, prompt, alpha, max_tokens, model_id)
             self._send_json(result)
+
+        elif path == '/api/live-steer':
+            prompt = args.get("prompt", "")
+            model_id = args.get("model_id", "")
+            mri_model = args.get("mri_model", "")
+            mode_name = args.get("mode", "raw")
+            layer = int(args.get("layer", 0))
+            a = int(args.get("a", -1))
+            b = int(args.get("b", -1))
+            alpha = float(args.get("alpha", 4.0))
+            max_tokens = int(args.get("max_tokens", 24))
+            if not prompt:
+                self._send_json({"error": "prompt required"})
+                return
+            if not mri_model:
+                self._send_json({"error": "mri_model required"})
+                return
+            if a < 0 or b < 0:
+                self._send_json({"error": "pins a and b required"})
+                return
+            mri_path = self._mri_path(mri_model, mode_name)
+            self._send_json(_live_steer(
+                mri_path, prompt, layer, a, b,
+                alpha=alpha, model_id=model_id, max_tokens=max_tokens))
 
         else:
             self.send_error(404)

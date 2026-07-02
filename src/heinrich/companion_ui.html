@@ -297,6 +297,17 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
             <div id="liveResult" style="font-size:7px;color:#888;margin-top:4px"></div>
             <div id="walkReadout" style="display:none;font-size:7px;color:#8fc;margin-top:4px;border-top:1px solid #233;padding-top:3px;line-height:1.4"></div>
           </div>
+          <div id="steerPanel" class="panel-card" style="display:none">
+            <div class="pane-head"><div class="pane-title">Steer</div><div class="pane-note">inject A&minus;B into the live forward</div></div>
+            <div style="display:flex;gap:6px;align-items:center;font-size:8px;color:#888;margin-bottom:3px">
+              <span>layer</span><input id="steerLayer" type="number" min="0" step="1" style="width:46px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:8px;font-family:inherit;border-radius:2px">
+              <span>&alpha;</span><span id="steerAlphaVal" style="color:#F4C;min-width:30px;text-align:right">+4.0</span>
+            </div>
+            <input id="steerAlpha" type="range" min="-6" max="6" step="0.5" value="4" style="width:100%">
+            <button id="steerBtn" style="width:100%;margin-top:4px;background:#3a1030;border:1px solid #a2c;color:#f9d;padding:3px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">steer</button>
+            <div id="steerStatus" style="color:#555;font-size:7px;margin-top:3px"></div>
+            <div id="steerResult" style="font-size:7px;color:#888;margin-top:4px"></div>
+          </div>
         </div>
       </div>
     </div>
@@ -464,6 +475,15 @@ let _walkSteps=[];// [{step,token,token_id,prob,entropy,scores}] — full walk i
 let _walkActive=false,_walkText='',_liveWalkTick=0;// tick bumps per step so homing recomputes
 const liveCloudMarkers=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.2,color:0x66ffcc,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=12;p.visible=false;v.sc.add(p);return p;});
 const liveTrajLines=views.map(v=>{const l=new THREE.Line(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0x66ffcc,transparent:true,opacity:0.95,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
+// Steered-forward inhabitant: the SAME live prompt run through the model with the
+// A-B pin direction injected at one layer, projected into the SAME frozen frame.
+// Magenta, so the clean (cyan) and steered (magenta) trajectories can be watched
+// bending apart. Mirrors the live-point machinery exactly.
+const STEER_COL=0xFF44CC;
+let _steerScores=null;// {layerStr:[[k]]} steered forward scores from the last /api/live-steer
+let _steerInfo=null;// {alpha,layer,cleanPrediction,steeredPrediction,differs} — bridge getter
+const steerCloudMarkers=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.2,color:STEER_COL,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=12;p.visible=false;v.sc.add(p);return p;});
+const steerTrajLines=views.map(v=>{const l=new THREE.Line(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:STEER_COL,transparent:true,opacity:0.95,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
 // Walk trail: PAST steps as a fading cyan point cloud (one Points/view, per-vertex
 // color = age fade) + recent per-step paths as thin lines in traj views. The CURRENT
 // step reuses the live marker above. ONE geometry per viewport, rebuilt per step/layer.
@@ -504,7 +524,28 @@ function _renderLivePoint(d){
   _updateLiveMarkers();
   try{_homingUpdate();}catch(e){}// distance-to-pinned readout
 }
-function _clearLivePoint(){_liveScores=null;liveCloudMarkers.forEach(m=>m.visible=false);liveTrajLines.forEach(l=>l.visible=false);_homingCache=null;const hp=document.getElementById('homingPanel');if(hp)hp.style.display='none';_clearWalk();_needsRender=true;}
+function _clearLivePoint(){_liveScores=null;liveCloudMarkers.forEach(m=>m.visible=false);liveTrajLines.forEach(l=>l.visible=false);_homingCache=null;const hp=document.getElementById('homingPanel');if(hp)hp.style.display='none';_clearWalk();_clearSteerPoint();_needsRender=true;}
+// --- Steered inhabitant rendering (magenta) — mirrors the live-point machinery ---
+function _steerVec(l){const s=_steerScores&&_steerScores[String(l)];return s&&s[0]?s[0]:null;}
+function _updateSteerMarkers(){
+  if(!_steerScores){steerCloudMarkers.forEach(m=>m.visible=false);return;}
+  const vec=_steerVec(cL);
+  views.forEach((v,vi)=>{const mk=steerCloudMarkers[vi];
+    const c=vec?(vi<NC?_liveCoordCloud(v,cL,vec):_liveCoordTraj(v,cL,vec)):null;
+    if(c){const a=mk.geometry.attributes.position.array;a[0]=c[0];a[1]=c[1];a[2]=c[2];mk.geometry.attributes.position.needsUpdate=true;mk.visible=true;}
+    else mk.visible=false;});
+  _needsRender=true;
+}
+function _renderSteerPoint(scores){
+  _steerScores=scores||null;
+  for(let vi=NC;vi<views.length;vi++){const v=views[vi];const line=steerTrajLines[vi];const pts=[];
+    if(_steerScores){const layers=Object.keys(_steerScores).map(Number).sort((a,b)=>a-b);
+      for(const l of layers){const vec=_steerVec(l);const c=vec?_liveCoordTraj(v,l,vec):null;if(c)pts.push(c[0],c[1],c[2]);}}
+    if(pts.length>=6){line.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pts),3));line.geometry.computeBoundingSphere&&line.geometry.computeBoundingSphere();line.visible=true;}
+    else line.visible=false;}
+  _updateSteerMarkers();
+}
+function _clearSteerPoint(){_steerScores=null;_steerInfo=null;steerCloudMarkers.forEach(m=>m.visible=false);steerTrajLines.forEach(l=>l.visible=false);const sr=document.getElementById('steerResult');if(sr)while(sr.firstChild)sr.removeChild(sr.firstChild);const ss=document.getElementById('steerStatus');if(ss)ss.textContent='';_needsRender=true;}
 // --- Streaming-token walk rendering ---
 function _clearWalk(){_walkSteps=[];_walkActive=false;_walkText='';walkTrailPts.forEach(p=>p.visible=false);walkTrailLines.forEach(l=>l.visible=false);const wr=document.getElementById('walkReadout');if(wr)wr.style.display='none';_needsRender=true;}
 // Rebuild the fading trail from the PAST steps (all but the current). Cheap: ≤64 pts.
@@ -546,7 +587,7 @@ function _onLiveStep(st){
   _updateWalkReadout(st,null);
 }
 async function _startWalk(prompt,max){
-  _clearWalk();_walkActive=true;
+  _clearWalk();_clearSteerPoint();_walkActive=true;
   const model_id=document.getElementById('liveModelId')?.value.trim()||'';
   const mx=Math.max(1,Math.min(parseInt(max)||24,64));
   const stEl=document.getElementById('liveStatus');
@@ -4477,6 +4518,7 @@ async function _onPinChange(){
     _pinChangeDebounce=setTimeout(async()=>{
       _pinChangeDebounce=null;
       const gen=++_pinChangeGen;
+      try{_updateSteerPanel();}catch(e){}// steer needs both pins + a live model
       _nfUpdateActivations();
       try{_homingUpdate();}catch(e){}// pinned token(s) are the homing target(s)
       const tokA=pinnedToken,tokB=pinnedTokenB;
@@ -4551,6 +4593,7 @@ function updateHUD(){
 let _briefLayerTimer=null;
 function setLayer(l,light){cL=l;updateAllViewports();updateHUD();
   _updateLiveMarkers();// live point follows the layer slider
+  _updateSteerMarkers();// steered point follows the layer slider too
   if(_walkActive)_renderWalkTrail();// walk trail dots sit at the current layer too
   _updateTargetMarkers();// vocab target follows too
   try{_homingDraw();}catch(e){}// move the current-layer marker on the homing curve
@@ -5423,6 +5466,13 @@ async function _handleNavigate(msg){
   if(msg.walk_prompt&&typeof _startWalk==='function'){
     try{await _startWalk(String(msg.walk_prompt),msg.walk_max);}catch(e){}
   }
+  // Live steering driven by the agent — inject the A-B direction (defaulting to
+  // the current pins) into the live forward and bend the trajectory + output.
+  if(msg.steer&&typeof _doSteer==='function'){
+    const s=msg.steer||{};
+    try{await _doSteer(s.layer!=null?s.layer:null,s.alpha!=null?s.alpha:null,
+                       s.a!=null?s.a:null,s.b!=null?s.b:null);}catch(e){}
+  }
 }
 
 // --- Remote capture handler ---
@@ -5614,6 +5664,7 @@ function _applyCapabilities(){
   if(CAP.live)_enableLiveUI();else _disableLiveUI();
   const pill=document.getElementById('unlockPill');
   if(pill)pill.style.display=(!CAP.live||!CAP.weights)?'inline-block':'none';
+  try{_updateSteerPanel();}catch(e){}// steer availability tracks CAP.live
 }
 // Fallback for the legacy static-poll path — CAP is authoritative, but if a poll
 // ever sees `static:true` we still degrade the live UI.
@@ -6066,6 +6117,7 @@ async function _runLiveForward(prompt){
   const st=document.getElementById('liveStatus');
   const res=document.getElementById('liveResult');
   _lastLivePrompt=prompt;// stash for homing export
+  _clearSteerPoint();// a fresh forward supersedes the previous steered comparison
   try{
     if(st){st.textContent='running forward... (model load on first run ~5-30s)';st.style.color='#a84';}
     const model_id=document.getElementById('liveModelId')?.value.trim()||'';
@@ -6086,6 +6138,60 @@ async function _runLiveForward(prompt){
     if(st){st.style.color='#f77';st.textContent='fetch failed: '+e.message;}
   }finally{_liveBusy=false;try{_refreshLiveStatus();}catch(e){}}
 }
+// --- Live steering v1 ---
+// Grab the A-B pin direction, inject it into the live forward, watch the
+// trajectory (magenta vs cyan) and the output text bend.
+function _updateSteerAlphaLabel(){const sl=document.getElementById('steerAlpha'),v=document.getElementById('steerAlphaVal');if(!sl||!v)return;const a=parseFloat(sl.value);v.textContent=(a>=0?'+':'')+(Number.isFinite(a)?a.toFixed(1):'0.0');}
+function _updateSteerPanel(){
+  const p=document.getElementById('steerPanel');if(!p)return;
+  const live=(typeof CAP!=='undefined'&&CAP&&CAP.live);
+  const ok=live&&pinnedToken>=0&&pinnedTokenB>=0;
+  p.style.display=ok?'':'none';
+  if(ok){const li=document.getElementById('steerLayer');
+    if(li){if((nL||0)>0)li.max=String((nL||1)-1);if(!li.value)li.value=String(cL);}}
+}
+function _renderSteerResult(el,d,differs){
+  if(!el)return;while(el.firstChild)el.removeChild(el.firstChild);
+  const row=(label,text,col)=>{const r=document.createElement('div');r.style.fontFamily='monospace';r.style.whiteSpace='pre-wrap';r.style.wordBreak='break-word';r.style.color=col;
+    const b=document.createElement('span');b.style.color='#666';b.textContent=label+' ';r.appendChild(b);r.appendChild(document.createTextNode(text||''));return r;};
+  el.appendChild(row('clean:',d.clean_text,'#8fc'));
+  el.appendChild(row('steered:',d.steered_text,differs?'#F4C':'#8fc'));
+  const p=document.createElement('div');p.style.marginTop='2px';p.style.fontSize='7px';p.style.color=differs?'#F4C':'#666';
+  p.textContent='next: '+(d.clean_prediction||'?')+' → '+(d.steered_prediction||'?')+(differs?'  ✦ differs':'  (same)');
+  el.appendChild(p);
+}
+async function _doSteer(optLayer,optAlpha,optA,optB){
+  const a=(optA!=null?parseInt(optA):pinnedToken), b=(optB!=null?parseInt(optB):pinnedTokenB);
+  const st=document.getElementById('steerStatus'),res=document.getElementById('steerResult');
+  if(!(a>=0&&b>=0)){if(st){st.style.color='#f77';st.textContent='pin A and B first';}return {error:'pins a and b required'};}
+  const prompt=_lastLivePrompt||(document.getElementById('liveInput')?.value.trim()||'');
+  if(!prompt){if(st){st.style.color='#f77';st.textContent='run a live forward first (no prompt)';}return {error:'no prompt'};}
+  const li=document.getElementById('steerLayer');
+  let layer=optLayer!=null?parseInt(optLayer):(li?parseInt(li.value):cL);
+  if(!Number.isFinite(layer))layer=cL;
+  layer=Math.max(0,Math.min(layer,(nL||1)-1));
+  if(li)li.value=String(layer);
+  const sl=document.getElementById('steerAlpha');
+  let alpha=optAlpha!=null?parseFloat(optAlpha):(sl?parseFloat(sl.value):4);
+  if(!Number.isFinite(alpha))alpha=4;
+  if(sl&&optAlpha!=null){sl.value=String(alpha);_updateSteerAlphaLabel();}
+  const model_id=_liveCurrentModelId();
+  if(st){st.style.color='#a84';st.textContent='steering L'+layer+' α='+alpha+'…';}
+  try{
+    const d=await _fetchJSON('/api/live-steer',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({prompt,mri_model:model,mode,model_id,layer,a,b,alpha,max_tokens:24})},60000);
+    if(d.error){if(st){st.style.color='#f77';st.textContent='error: '+d.error;}_clearSteerPoint();return d;}
+    if(d.clean_scores)_renderLivePoint({scores:d.clean_scores});// refresh the cyan reference
+    _renderSteerPoint(d.steered_scores);// magenta steered trajectory
+    const differs=((d.clean_prediction||'')!==(d.steered_prediction||''))||((d.clean_text||'')!==(d.steered_text||''));
+    _steerInfo={alpha,layer,cleanPrediction:d.clean_prediction||'',steeredPrediction:d.steered_prediction||'',differs};
+    if(st){st.style.color=differs?'#f6c':'#6c8';st.textContent='done · '+(d.latency_ms||'?')+' ms'+(differs?' · OUTPUT BENT':' · no change');}
+    _renderSteerResult(res,d,differs);
+    return d;
+  }catch(e){if(st){st.style.color='#f77';st.textContent='fetch failed: '+e.message;}return {error:e.message};}
+}
+document.getElementById('steerBtn')?.addEventListener('click',()=>_doSteer());
+document.getElementById('steerAlpha')?.addEventListener('input',_updateSteerAlphaLabel);
 document.getElementById('liveInput')?.addEventListener('keydown',e=>{
   if(e.key!=='Enter')return;
   const v=e.target.value.trim();if(!v)return;
@@ -6391,6 +6497,10 @@ window.__heinrich = {
   startWalk:(p,m)=>_startWalk(p,m),
   get walk(){return {n:_walkSteps.length,cur:_walkSteps.length?_walkSteps[_walkSteps.length-1].step:-1,text:_walkText||'',active:_walkActive};},
   get liveVisible(){return liveCloudMarkers.some(m=>m.visible)||liveTrajLines.some(l=>l.visible);},
+  // --- live steering (agent-drivable): inject the A-B pin direction ---
+  steer:(layerOrNull,alpha)=>_doSteer(layerOrNull!=null?layerOrNull:null,alpha!=null?alpha:null),
+  get steered(){return _steerInfo?{alpha:_steerInfo.alpha,layer:_steerInfo.layer,cleanPrediction:_steerInfo.cleanPrediction,steeredPrediction:_steerInfo.steeredPrediction,differs:_steerInfo.differs}:null;},
+  get steerVisible(){return steerCloudMarkers.some(m=>m.visible)||steerTrajLines.some(l=>l.visible);},
   get pollActive(){return _pollActive;}, handleNav:(m)=>_handleNavigate(m), get homing(){return _homingCache;},
   setTarget:(row,text)=>_setVocabTarget(row,text), clearTarget:()=>_clearVocabTarget(),
   get target(){return _vocabTarget?{row:_vocabTarget.row,text:_vocabTarget.text,nL:_vocabTarget.vec.nL}:null;},
