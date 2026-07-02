@@ -203,7 +203,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
   <div class="lvp" id="lv1"><div class="llbl" id="lv1i">Internals Δ</div><div class="cbtn" data-v="l1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="lvp" id="lv2"><div class="llbl" id="lv2i">Internals B</div><div class="cbtn" data-v="l2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div id="rightcol">
-    <div class="rvp" id="rv0"><div class="rlbl">Direction Depth</div><div class="cbtn" data-v="r0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+    <div class="rvp" id="rv0"><div class="rlbl">Readout River</div><div class="cbtn" data-v="r0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
     <div class="rvp" id="rv1"><div class="rlbl">Neurons</div><div class="cbtn" data-v="r1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
     <div class="rvp" id="rv2"><div class="rlbl">Interference</div><div class="cbtn" data-v="r2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   </div>
@@ -449,7 +449,7 @@ const MPANES=[
   {tag:'0',name:'Cloud A'},{tag:'1',name:'Delta'},{tag:'2',name:'Cloud B'},
   {tag:'3',name:'Traj A'},{tag:'4',name:'Traj Δ'},{tag:'5',name:'Traj B'},
   {tag:'l0',name:'Flower A'},{tag:'l1',name:'Flower Δ'},{tag:'l2',name:'Flower B'},
-  {tag:'r0',name:'Depth'},{tag:'r1',name:'Neurons'},{tag:'r2',name:'Superpos.'},
+  {tag:'r0',name:'River'},{tag:'r1',name:'Neurons'},{tag:'r2',name:'Superpos.'},
   {tag:'br0',name:'Prism'},{tag:'pcs',name:'Spectrum'},
 ];
 // 2-up compare pairs the focused lane with its meaningful counterpart (A↔B clouds,
@@ -570,7 +570,7 @@ function _renderLivePoint(d){
   _updateLiveMarkers();
   try{_homingUpdate();}catch(e){}// distance-to-pinned readout
 }
-function _clearLivePoint(){_liveScores=null;liveCloudMarkers.forEach(m=>m.visible=false);liveTrajLines.forEach(l=>l.visible=false);_homingCache=null;const hp=document.getElementById('homingPanel');if(hp)hp.style.display='none';_clearWalk();_clearSteerPoint();_needsRender=true;}
+function _clearLivePoint(){_liveScores=null;liveCloudMarkers.forEach(m=>m.visible=false);liveTrajLines.forEach(l=>l.visible=false);_homingCache=null;const hp=document.getElementById('homingPanel');if(hp)hp.style.display='none';_clearWalk();_clearSteerPoint();try{_clearRiver();}catch(e){}_needsRender=true;}
 // --- Steered inhabitant rendering (magenta) — mirrors the live-point machinery ---
 function _steerVec(l){const s=_steerScores&&_steerScores[String(l)];return s&&s[0]?s[0]:null;}
 function _updateSteerMarkers(){
@@ -3209,6 +3209,271 @@ function getGateRow(tokIdx){
   return row;
 }
 
+// ============ Readout River (rv0) ============
+// The live trajectory renders through depth (Z=layers). At EVERY layer the model
+// has a top-k READOUT (logit lens — what it would say if forced to speak now). From
+// the live node at layer l we draw TETHERS to the frozen positions of those top-k
+// candidate tokens (width/brightness ∝ probability). Across depth this forms a FAN
+// that collapses to one dominant tether at the COMMIT layer — the waist. The
+// trajectory never moves toward the answer; the stream of *selection* grows toward it.
+// Data: POST /api/live-river → {clean:[{l,top:[{id,row,text,p,logit}]}], scores, ...}.
+// Anchors use the SAME transform as trajectory-A (views[NC]) so the fan lives in the
+// captured population's frame. Clamped anchors are OMITTED, never faked (sacred).
+const _RIVER_NC=NC;                 // views[NC] = trajectory A — the anchor transform
+let _riverData=null;                // last /api/live-river response
+let _riverFetchGen=0;               // bump supersedes in-flight fetches
+let _riverAutoTimer=null;           // debounce for auto-fetch
+let _riverCommit=null;              // {l,text,runLen}|null — clean waist
+let _riverCommitS=null;             // steered waist (tag only)
+const _riverVecCache=new Map();     // vocab row → {nL,fK,data} — bounded, per model|mode
+const _RIVER_VEC_MAX=64;
+let _riverTethers=null,_riverTethersSteer=null; // LineSegments (clean gold / steered magenta)
+let _riverRing=null,_riverCLPlane=null,_riverSpine=null; // waist ring / current-layer frame / neuron aliveness
+let _riverSprites=[];               // [{row,text,floater,off,sprite,tex}] distinct candidates
+let _riverTagEl=null,_riverTipEl=null; // corner truth tag + hover tooltip
+const _riverRay=new THREE.Raycaster();
+function _riverZAt(l){return (typeof _layerZ!=='undefined'&&_layerZ&&_layerZ[l]!=null)?_layerZ[l]:0;}
+function _riverModelId(){return document.getElementById('liveModelId')?.value.trim()||'';}
+// Build scene objects once — the rv0 scene persists across pin/model changes, so this
+// is idempotent. Also creates the corner tag / tooltip DOM and wires click+hover.
+function _riverInit(){
+  const rv=rightViews&&rightViews[0];if(!rv)return;
+  if(!_riverTethers){
+    _riverTethers=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.95,blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false}));
+    _riverTethers.frustumCulled=false;_riverTethers.visible=false;rv.sc.add(_riverTethers);
+    _riverTethersSteer=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.9,blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false}));
+    _riverTethersSteer.frustumCulled=false;_riverTethersSteer.visible=false;rv.sc.add(_riverTethersSteer);
+    // Waist ring
+    const seg=64,rpos=[];for(let i=0;i<seg;i++){const a=i/seg*Math.PI*2;rpos.push(Math.cos(a)*1.35,Math.sin(a)*1.35,0);}
+    const rg=new THREE.BufferGeometry();rg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(rpos),3));
+    _riverRing=new THREE.LineLoop(rg,new THREE.LineBasicMaterial({color:0xfff2b0,transparent:true,opacity:0.9,depthTest:false}));
+    _riverRing.frustumCulled=false;_riverRing.visible=false;rv.sc.add(_riverRing);
+    // Current-layer frame (faint square)
+    const sq=[-1.4,-1.4,0, 1.4,-1.4,0, 1.4,1.4,0, -1.4,1.4,0];
+    const cg=new THREE.BufferGeometry();cg.setAttribute('position',new THREE.BufferAttribute(new Float32Array(sq),3));
+    _riverCLPlane=new THREE.LineLoop(cg,new THREE.LineBasicMaterial({color:0x44586a,transparent:true,opacity:0.4,depthTest:false}));
+    _riverCLPlane.frustumCulled=false;rv.sc.add(_riverCLPlane);
+    // Neuron aliveness spine (pinned token A) — reuses the preloaded gate heatmap
+    const sgeo=new THREE.BufferGeometry();sgeo.setAttribute('position',new THREE.BufferAttribute(new Float32Array(0),3));sgeo.setAttribute('color',new THREE.BufferAttribute(new Float32Array(0),3));
+    _riverSpine=new THREE.Points(sgeo,new THREE.PointsMaterial({size:6,vertexColors:true,sizeAttenuation:false,transparent:true,opacity:0.9,depthWrite:false,depthTest:false}));
+    _riverSpine.frustumCulled=false;_riverSpine.visible=false;rv.sc.add(_riverSpine);
+    rv.cam.position.set(2.4,1.5,2.6);rv.ctl.target.set(0,0,0);rv.ctl.update();
+  }
+  const rvEl=rv.el;
+  if(rvEl&&!_riverTagEl){
+    _riverTagEl=document.createElement('div');
+    _riverTagEl.style.cssText='position:absolute;bottom:3px;left:4px;font-size:8px;color:#c8b06a;pointer-events:none;z-index:3;text-shadow:0 0 3px #000;max-width:88%;white-space:nowrap;overflow:hidden;text-overflow:ellipsis';
+    _riverTagEl.textContent='no live forward yet';rvEl.appendChild(_riverTagEl);
+    const rf=document.createElement('div');rf.textContent='↻';rf.title='refresh readout river';
+    rf.style.cssText='position:absolute;bottom:1px;right:4px;font-size:11px;color:#88aa99;cursor:pointer;pointer-events:auto;z-index:4;text-shadow:0 0 3px #000';
+    rf.addEventListener('click',e=>{e.stopPropagation();_riverFetch();});rvEl.appendChild(rf);
+    _riverTipEl=document.createElement('div');
+    _riverTipEl.style.cssText='position:absolute;display:none;z-index:20;background:rgba(10,10,10,0.92);border:1px solid #4a4020;padding:2px 5px;font-size:9px;color:#e8d9a8;pointer-events:none;border-radius:3px;white-space:nowrap';
+    rvEl.appendChild(_riverTipEl);
+  }
+  if(rvEl&&!rvEl._riverWired){rvEl._riverWired=true;
+    rvEl.addEventListener('click',e=>{const h=_riverPick(e);if(h&&h.row>=0){try{_setVocabTarget(h.row,h.text);}catch(_){}}});
+    rvEl.addEventListener('pointermove',e=>_riverHover(e));
+    rvEl.addEventListener('pointerleave',()=>{if(_riverTipEl)_riverTipEl.style.display='none';});
+  }
+}
+function _riverVecPut(row,v){_riverVecCache.set(row,v);
+  if(_riverVecCache.size>_RIVER_VEC_MAX){const k=_riverVecCache.keys().next().value;if(k!==row)_riverVecCache.delete(k);}}
+async function _riverFetchVecs(rows){
+  const gen=_riverFetchGen;let i=0;
+  const worker=async()=>{while(i<rows.length){const row=rows[i++];if(row<0||_riverVecCache.has(row))continue;
+    try{const v=await _fetchVocabVec(row);if(v)_riverVecPut(row,v);}catch(_){}
+    if(gen!==_riverFetchGen)return;}};
+  const pool=Math.min(6,Math.max(1,rows.length));
+  await Promise.all(Array.from({length:pool},()=>worker()));
+}
+// Anchor of a vocab candidate at layer l in the trajectory-A frame (returns [x,y,z]+clamped).
+function _riverAnchor(l,vec){if(!vec)return null;const{nL,fK,data}=vec;if(l>=nL)return null;
+  const sub=data.subarray(l*fK,(l+1)*fK);return _liveCoordTraj(views[_RIVER_NC],l,sub);}
+function _riverLiveNode(l){const v=_liveVec(l);return v?_liveCoordTraj(views[_RIVER_NC],l,v):null;}
+// One canvas-texture text sprite — small, pale, positioned each layer (textures reused).
+function _riverMakeSprite(text,color){
+  const cnv=document.createElement('canvas');const ctx=cnv.getContext('2d');
+  const fs=30;const disp=String(text==null?'':text).replace(/\n/g,'\\n')||'∅';
+  ctx.font=fs+'px monospace';const tw=Math.max(8,ctx.measureText(disp).width);
+  cnv.width=Math.ceil(tw+14);cnv.height=fs+14;
+  ctx.font=fs+'px monospace';ctx.textBaseline='middle';
+  ctx.fillStyle='rgba(6,8,10,0.6)';ctx.fillRect(0,0,cnv.width,cnv.height);
+  ctx.fillStyle=color||'#e8d9a8';ctx.fillText(disp,7,cnv.height/2);
+  const tex=new THREE.CanvasTexture(cnv);tex.minFilter=THREE.LinearFilter;
+  const spr=new THREE.Sprite(new THREE.SpriteMaterial({map:tex,transparent:true,depthTest:false,depthWrite:false}));
+  spr.renderOrder=20;const asp=cnv.width/cnv.height;spr.scale.set(0.12*asp,0.12,1);
+  return {sprite:spr,tex};
+}
+function _riverDisposeSprites(){for(const s of _riverSprites){if(s.sprite.parent)s.sprite.parent.remove(s.sprite);if(s.tex)s.tex.dispose();if(s.sprite.material)s.sprite.material.dispose();}_riverSprites=[];}
+function _riverBuildSprites(){
+  _riverDisposeSprites();
+  if(!_riverData||!_riverTethers)return;const rv=rightViews[0];
+  const seen=new Map();let fi=0;
+  for(const e of (_riverData.clean||[]))for(const c of (e.top||[])){
+    const floater=(c.row==null||c.row<0);const key=floater?('t:'+c.text):('r:'+c.row);
+    if(seen.has(key)||seen.size>=60)continue;
+    const ent={row:floater?-1:c.row,text:c.text,floater};
+    if(floater){ent.off=[0.22+0.13*(fi%4),0.16*((fi%3)-1)];fi++;}
+    seen.set(key,ent);
+  }
+  for(const ent of seen.values()){
+    const {sprite,tex}=_riverMakeSprite(ent.text,ent.floater?'#8a8a8a':'#e8d9a8');
+    sprite.visible=false;rv.sc.add(sprite);
+    _riverSprites.push({row:ent.row,text:ent.text,floater:ent.floater,off:ent.off,sprite,tex});
+  }
+}
+// Build the tether fan (+ optional steered fan) and locate the waist.
+function _riverRebuild(){
+  if(!_riverTethers)return;
+  const clean=_riverData&&_riverData.clean;
+  if(!clean||!clean.length){_riverTethers.visible=false;if(_riverTethersSteer)_riverTethersSteer.visible=false;if(_riverRing)_riverRing.visible=false;_riverCommit=null;_riverCommitS=null;return;}
+  const _fan=(entries,warm)=>{
+    const pos=[],col=[];
+    for(const e of entries){const l=e.l;const node=_riverLiveNode(l);if(!node||node.clamped)continue;
+      const top=e.top||[];
+      for(let ci=0;ci<top.length;ci++){const c=top[ci];if(c.row==null||c.row<0)continue;
+        const vec=_riverVecCache.get(c.row);if(!vec)continue;
+        const a=_riverAnchor(l,vec);if(!a||a.clamped)continue;
+        const p=Math.max(0.03,Math.min(0.9,c.p||0));const t1=ci===0;
+        // gold-white for clean (top-1 whiter+brighter); magenta for steered
+        const R=warm?1.0:1.0,G=warm?(t1?0.96:0.8):(t1?0.5:0.35),B=warm?(t1?0.85:0.42):(t1?0.95:0.8);
+        const inN=p*(t1?1.0:0.85),inA=inN*0.45;
+        pos.push(node[0],node[1],node[2], a[0],a[1],a[2]);
+        col.push(R*inN,G*inN,B*inN, R*inA,G*inA,B*inA);
+      }
+    }
+    return {pos,col};
+  };
+  const c=_fan(clean,true);
+  if(c.pos.length){_riverTethers.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(c.pos),3));
+    _riverTethers.geometry.setAttribute('color',new THREE.BufferAttribute(new Float32Array(c.col),3));
+    _riverTethers.geometry.computeBoundingSphere&&_riverTethers.geometry.computeBoundingSphere();_riverTethers.visible=true;}
+  else _riverTethers.visible=false;
+  // Steered fan (magenta). Note: the steered residual trajectory is not returned by the
+  // endpoint (only the steered readout), so these tethers share the CLEAN trajectory nodes
+  // as origin — they show where the STEERED selection points, not a displaced path.
+  const steered=_riverData.steered;
+  if(_riverTethersSteer){
+    if(steered&&steered.length){const s=_fan(steered,false);
+      if(s.pos.length){_riverTethersSteer.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(s.pos),3));
+        _riverTethersSteer.geometry.setAttribute('color',new THREE.BufferAttribute(new Float32Array(s.col),3));
+        _riverTethersSteer.geometry.computeBoundingSphere&&_riverTethersSteer.geometry.computeBoundingSphere();_riverTethersSteer.visible=true;}
+      else _riverTethersSteer.visible=false;}
+    else _riverTethersSteer.visible=false;
+  }
+  _riverCommit=_riverFindWaist(clean);
+  _riverCommitS=steered&&steered.length?_riverFindWaist(steered):null;
+  if(_riverRing){if(_riverCommit){_riverRing.position.z=_riverZAt(_riverCommit.l);_riverRing.visible=true;}else _riverRing.visible=false;}
+  _markDirty();
+}
+// Waist: earliest layer whose top-1 token stays top-1 through the last layer.
+function _riverFindWaist(entries){
+  if(!entries||!entries.length)return null;
+  const t1=i=>{const t=entries[i].top;return t&&t[0]?t[0].text:null;};
+  const last=entries.length-1;const T=t1(last);if(T==null)return null;
+  let start=last;while(start-1>=0&&t1(start-1)===T)start--;
+  const runLen=last-start+1;if(runLen<2)return null;// never stabilized → no commit
+  return {l:entries[start].l,text:T,runLen};
+}
+function _riverPAt(text,l){const e=(_riverData&&_riverData.clean||[]).find(x=>x.l===l);
+  if(!e||!e.top)return null;const c=e.top.find(x=>x.text===text);return c?c.p:null;}
+// Neuron aliveness of pinned token A along Z — reuses the preloaded gate heatmap.
+function _riverUpdateSpine(){
+  if(!_riverSpine)return;
+  if(pinnedToken<0||!_gateHeat){_riverSpine.visible=false;return;}
+  const row=getGateRow(pinnedToken);if(!row){_riverSpine.visible=false;return;}
+  let mx=0;for(let l=0;l<row.length;l++)mx=Math.max(mx,Math.abs(row[l]));
+  if(mx<=0){_riverSpine.visible=false;return;}
+  const pos=[],col=[];
+  for(let l=0;l<row.length;l++){const a=Math.abs(row[l])/mx;pos.push(1.5,-1.45,_riverZAt(l));col.push(0.25*a+0.05,1.0*a+0.06,0.5*a+0.05);}
+  _riverSpine.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
+  _riverSpine.geometry.setAttribute('color',new THREE.BufferAttribute(new Float32Array(col),3));
+  _riverSpine.geometry.computeBoundingSphere&&_riverSpine.geometry.computeBoundingSphere();
+  _riverSpine.visible=true;_markDirty();
+}
+// Reposition sprites to their frozen anchor at the CURRENT layer + move the layer frame.
+function _riverSetLayer(){
+  if(_riverCLPlane)_riverCLPlane.position.z=_riverZAt(cL);
+  const node=_riverLiveNode(cL);
+  for(const s of _riverSprites){let pos=null;
+    if(!s.floater){const vec=_riverVecCache.get(s.row);if(vec){const a=_riverAnchor(cL,vec);if(a&&!a.clamped)pos=a;}}
+    else if(node&&!node.clamped&&s.off){pos=[node[0]+s.off[0],node[1]+s.off[1],node[2]];}
+    if(pos){s.sprite.position.set(pos[0],pos[1],pos[2]);s.sprite.visible=true;}
+    else s.sprite.visible=false;}
+  _riverTagUpdate();_markDirty();
+}
+function _riverTagUpdate(){
+  if(!_riverTagEl)return;
+  if(!_riverData){_riverTagEl.textContent='no live forward yet';return;}
+  const k=_riverData.k||8;
+  const commit=_riverCommit?`commit L${_riverCommit.l} → "${_riverCommit.text}"`:'no commit';
+  let steer='';if(_riverData.steered&&_riverData.steered.length)steer=_riverCommitS?` · steer L${_riverCommitS.l}→"${_riverCommitS.text}"`:' · steer✦';
+  let atL='';const e=(_riverData.clean||[]).find(x=>x.l===cL);
+  if(e&&e.top&&e.top[0])atL=` · @L${cL}:"${e.top[0].text}" ${(e.top[0].p||0).toFixed(2)}`;
+  _riverTagEl.textContent=`readout k=${k} · ${commit}${steer}${atL}`;
+}
+function _riverPick(e){
+  if(!_riverSprites.length)return null;const rv=rightViews[0];if(!rv)return null;
+  const r=rv.el.getBoundingClientRect();if(!r.width||!r.height)return null;
+  const x=((e.clientX-r.left)/r.width)*2-1,y=-((e.clientY-r.top)/r.height)*2+1;
+  _riverRay.setFromCamera({x,y},rv.cam);
+  const objs=_riverSprites.filter(s=>s.sprite.visible).map(s=>s.sprite);
+  const hits=_riverRay.intersectObjects(objs,false);if(!hits.length)return null;
+  const s=_riverSprites.find(s=>s.sprite===hits[0].object);return s?{row:s.row,text:s.text}:null;
+}
+function _riverHover(e){
+  const h=_riverPick(e);
+  if(!h||!_riverTipEl){if(_riverTipEl)_riverTipEl.style.display='none';return;}
+  const rv=rightViews[0];const r=rv.el.getBoundingClientRect();const p=_riverPAt(h.text,cL);
+  _riverTipEl.textContent=`"${h.text}"`+(p!=null?`  p=${p.toFixed(3)} @L${cL}`:`  (not top-k @L${cL})`);
+  _riverTipEl.style.left=(e.clientX-r.left+10)+'px';_riverTipEl.style.top=(e.clientY-r.top+10)+'px';
+  _riverTipEl.style.display='block';
+}
+async function _riverBuild(){
+  if(!_riverData)return;const gen=_riverFetchGen;
+  try{_renderLivePoint({scores:_riverData.scores});}catch(_){}// cyan trajectory + tether origins from the SAME forward
+  const rows=new Set();
+  const scan=arr=>{(arr||[]).forEach(e=>(e.top||[]).forEach(c=>{if(c.row!=null&&c.row>=0)rows.add(c.row);}));};
+  scan(_riverData.clean);scan(_riverData.steered);
+  await _riverFetchVecs([...rows]);
+  if(gen!==_riverFetchGen)return;// superseded by a newer run
+  _riverBuildSprites();_riverRebuild();_riverUpdateSpine();_riverSetLayer();_riverTagUpdate();_markDirty();
+}
+async function _riverFetch(promptOpt){
+  _riverInit();
+  const prompt=(promptOpt||_lastLivePrompt||document.getElementById('liveInput')?.value.trim()||'').trim();
+  if(!prompt){_riverTag('no live forward yet');return null;}
+  const gen=++_riverFetchGen;
+  if(_riverTagEl)_riverTagEl.textContent='readout… fetching';
+  let steer=null;// opt-in steered fan when a steer is active on both pins
+  if(_steerInfo&&pinnedToken>=0&&pinnedTokenB>=0)steer={layer:_steerInfo.layer,a:pinnedToken,b:pinnedTokenB,alpha:_steerInfo.alpha};
+  try{
+    const body={mri_model:model,mode,model_id:_riverModelId(),prompt,k:8};if(steer)body.steer=steer;
+    const d=await _fetchJSON('/api/live-river',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)},60000);
+    if(gen!==_riverFetchGen)return null;// superseded
+    if(d.error){if(_riverTagEl)_riverTagEl.textContent='river error: '+d.error;return d;}
+    _riverData=d;await _riverBuild();return d;
+  }catch(e){if(gen===_riverFetchGen&&_riverTagEl)_riverTagEl.textContent='river fetch failed: '+e.message;return {error:e.message};}
+}
+function _riverTag(msg){if(_riverTagEl)_riverTagEl.textContent=msg;}
+function _riverAutoFetch(force){
+  if(_riverAutoTimer)clearTimeout(_riverAutoTimer);
+  _riverAutoTimer=setTimeout(()=>{_riverAutoTimer=null;_riverFetch();},force?0:400);
+}
+function _clearRiver(){
+  _riverData=null;_riverCommit=null;_riverCommitS=null;_riverVecCache.clear();_riverFetchGen++;
+  if(_riverAutoTimer){clearTimeout(_riverAutoTimer);_riverAutoTimer=null;}
+  if(_riverTethers)_riverTethers.visible=false;
+  if(_riverTethersSteer)_riverTethersSteer.visible=false;
+  if(_riverRing)_riverRing.visible=false;
+  if(_riverSpine)_riverSpine.visible=false;
+  _riverDisposeSprites();
+  if(_riverTipEl)_riverTipEl.style.display='none';
+  _riverTag('no live forward yet');
+  _markDirty();
+}
+
 // Weight landscape: reacts to selected PCs — shows weight alignment for current pairs
 const _WL_COLORS=[0xFF4444,0xFF8844,0xFFCC44,0x44CC44,0x44CCCC,0x4488FF,0xAA44FF];
 const _WL_NAMES=['Q','K','V','O','gate','up','down'];
@@ -3824,9 +4089,13 @@ function _buildRV0Variance(){
   // just restated the trajectory viewports and sat flattened in a 3D orbit slot.
   // rv0 is a free slot now; the original body below is unreachable (kept until
   // rv0 gets a real spatial viewport).
-  {const _rv=rightViews[0];if(_rv){_clearRV(_rv);_rv._rvSlices=[];_rv.built=true;
-    const _l=_rv.el?.querySelector('.rlbl');if(_l){_l.textContent='';_l._asinhBadge=null;}
-    _rv.cam.position.set(0,0,2.5);_rv.ctl.target.set(0,0,0);_rv.ctl.update();}
+  // rv0 now hosts the Readout River (logit-lens fan). Called on init AND pin change,
+  // so it's cheap + idempotent: scene objects are built once by _riverInit and survive;
+  // here we refresh the label, re-attach the fan from cached data, and rebuild the
+  // pin-dependent neuron spine. Machinery lives in the Readout River module above.
+  {const _rv=rightViews[0];if(_rv){_rv._rvSlices=[];_rv.built=true;_rv._dirCursor=null;_rv._dirSeq=null;_rv._dirNSteps=0;
+    const _l=_rv.el?.querySelector('.rlbl');if(_l&&_l.textContent!=='Readout River'){_l.textContent='Readout River';_l._asinhBadge=null;}
+    _riverInit();_riverBuildSprites();_riverRebuild();_riverUpdateSpine();_riverSetLayer();}
    return;}
   const rv=rightViews[0];if(!rv||!_layerVar.length)return;
   _clearRV(rv);rv._rvSlices=[];rv.built=true;
@@ -4910,6 +5179,7 @@ function updateHUD(){
 let _briefLayerTimer=null;
 function setLayer(l,light){cL=l;updateAllViewports();updateHUD();
   _updateLiveMarkers();// live point follows the layer slider
+  try{_riverSetLayer();}catch(e){}// readout-river sprites + current-layer frame follow
   _updateSteerMarkers();// steered point follows the layer slider too
   if(_walkActive)_renderWalkTrail();// walk trail dots sit at the current layer too
   _updateTargetMarkers();// vocab target follows too
@@ -5430,7 +5700,7 @@ function captureComposite(rid){
     const panels=[];
     if(views[0])panels.push({cv:_renderViewportToCanvas(views[0].sc,views[0].cam,views[0].el,0,scale),label:'Cloud'});
     if(views[3])panels.push({cv:_renderViewportToCanvas(views[3].sc,views[3].cam,views[3].el,3,scale),label:'Trajectory'});
-    if(rightViews[0]?.built)panels.push({cv:_renderViewportToCanvas(rightViews[0].sc,rightViews[0].cam,rightViews[0].el,'r0',scale),label:'Depth'});
+    if(rightViews[0]?.built)panels.push({cv:_renderViewportToCanvas(rightViews[0].sc,rightViews[0].cam,rightViews[0].el,'r0',scale),label:'River'});
     if(rightViews[2]?.built)panels.push({cv:_renderViewportToCanvas(rightViews[2].sc,rightViews[2].cam,rightViews[2].el,'r2',scale),label:'Superposition'});
     if(!panels.length){_captureError(rid,'composite: no viewports built (pin tokens first?)');return;}
     const cols=2,rows=Math.ceil(panels.length/cols);
@@ -6549,6 +6819,7 @@ async function _runLiveForward(prompt){
     _renderLiveSession(d);
     _renderLivePoint(d);// plot the prompt's landing in the frozen frame
     try{_cardTouched('liveForward');}catch(e){}
+    try{_riverAutoFetch();}catch(e){}// auto-fetch the Readout River for this prompt (debounced, superseded)
   }catch(e){
     if(st){st.style.color='#f77';st.textContent='fetch failed: '+e.message;}
   }finally{_liveBusy=false;try{_refreshLiveStatus();}catch(e){}}
@@ -7001,6 +7272,12 @@ window.__heinrich = {
   steer:(layerOrNull,alpha)=>_doSteer(layerOrNull!=null?layerOrNull:null,alpha!=null?alpha:null),
   get steered(){return _steerInfo?{alpha:_steerInfo.alpha,layer:_steerInfo.layer,cleanPrediction:_steerInfo.cleanPrediction,steeredPrediction:_steerInfo.steeredPrediction,differs:_steerInfo.differs}:null;},
   get steerVisible(){return steerCloudMarkers.some(m=>m.visible)||steerTrajLines.some(l=>l.visible);},
+  // --- Readout River (rv0): live logit-lens fan ---
+  get river(){if(!_riverData)return null;const cands=[],seen=new Set();
+    (_riverData.clean||[]).forEach(e=>(e.top||[]).forEach(c=>{if(!seen.has(c.text)){seen.add(c.text);cands.push(c.text);}}));
+    return {n_layers:_riverData.n_layers,k:_riverData.k,commit:_riverCommit?{l:_riverCommit.l,text:_riverCommit.text}:null,candidates:cands,steered:!!(_riverData.steered&&_riverData.steered.length),tetherVerts:(_riverTethers&&_riverTethers.geometry.attributes.position)?_riverTethers.geometry.attributes.position.count:0};},
+  riverFetch:(prompt)=>_riverFetch(prompt||null),
+  get riverSprites(){return _riverSprites.map(s=>({text:s.text,row:s.row,floater:s.floater,visible:s.sprite.visible,x:s.sprite.position.x,y:s.sprite.position.y,z:s.sprite.position.z}));},
   get pollActive(){return _pollActive;}, handleNav:(m)=>_handleNavigate(m), get homing(){return _homingCache;},
   setTarget:(row,text)=>_setVocabTarget(row,text), clearTarget:()=>_clearVocabTarget(),
   setCam:(spec)=>_setCamera(spec), getCam:(vi)=>_getCamera(vi||0),
