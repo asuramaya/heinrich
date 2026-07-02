@@ -463,9 +463,9 @@ let hoveredToken=-1,pinnedToken=-1;
 const highlightMarkers=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.06,color:0xFFFFFF,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=10;p.visible=false;v.sc.add(p);return p;});
 const pinMarkers=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.14,color:0xFF6644,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=10;p.visible=false;v.sc.add(p);return p;});
 const pinMarkersB=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.14,color:0x4477AA,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=10;p.visible=false;v.sc.add(p);return p;});
-const hoverPaths=views.map(v=>{const l=new THREE.Line(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFFFFFF,transparent:true,opacity:0.45,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
-const pinPaths=views.map(v=>{const l=new THREE.Line(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFF6644,transparent:true,opacity:0.95,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
-const pinPathsB=views.map(v=>{const l=new THREE.Line(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0x4477AA,transparent:true,opacity:0.95,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
+const hoverPaths=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFFFFFF,transparent:true,opacity:0.45,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
+const pinPaths=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFF6644,transparent:true,opacity:0.95,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
+const pinPathsB=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0x4477AA,transparent:true,opacity:0.95,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
 // Live-forward inhabitant: a prompt run through the live model, projected into the
 // FROZEN frame (same L{n}_components) and rendered as a bright point (per cloud view,
 // at the current layer) + a per-layer trajectory line (traj views). The living token
@@ -573,7 +573,7 @@ function _renderWalkTrail(){
   for(let vi=NC;vi<views.length;vi++){const v=views[vi];const line=walkTrailLines[vi];const seg=[];
     for(const st of recent){const sc=st.scores;const layers=Object.keys(sc).map(Number).sort((a,b)=>a-b);let prev=null;
       for(const l of layers){const vec=sc[String(l)]&&sc[String(l)][0];const c=vec?_liveCoordTraj(v,l,vec):null;
-        _pairPush(seg,prev,c);prev=c;}}}
+        _pairPush(seg,prev,c);prev=c;}}
     if(seg.length){line.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(seg),3));line.geometry.computeBoundingSphere&&line.geometry.computeBoundingSphere();line.visible=true;}
     else line.visible=false;}
   _needsRender=true;
@@ -1390,12 +1390,30 @@ function _precomputeTraj(vi){
 }
 // Delta is now handled by viewports 1 (cloud) and 4 (trajectory) in the main pipeline
 function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
-  // Use model-order sequence so emb→L0→...→LN→lmh draws without loopback
-  const seq=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
-  const n=seq.length;let buf=line.geometry.attributes.position?.array;
-  if(!buf||buf.length!==n*3){line.geometry.dispose();const a=new Float32Array(n*3);line.geometry=new THREE.BufferGeometry();line.geometry.setAttribute('position',new THREE.BufferAttribute(a,3));buf=a;}
-  if(vi<NC){for(let si=0;si<n;si++){const l=seq[si];const lm=v._layerMx?v._layerMx[l]:null;const mxX=lm?lm[0]:1,mxY=lm?lm[1]:1,mxZ=lm?lm[2]:1;const cb=v._clampBounds?v._clampBounds[l]:null;const bX=cb?cb[0]:1.75,bY=cb?cb[1]:1.75,bZ=cb?cb[2]:1.75;buf[si*3]=_clampTraj(_getScore(l,idx,v.pcX)/mxX,bX);buf[si*3+1]=_clampTraj(_getScore(l,idx,v.pcY)/mxY,bY);buf[si*3+2]=_clampTraj(_getScore(l,idx,v.pcZ)/mxZ,bZ);}}else{const tlMx=v._trajLayerMx;for(let si=0;si<n;si++){const l=seq[si];const lm=tlMx?tlMx[l]:[1,1];const cb=v._trajClampBounds?v._trajClampBounds[l]:null;const bX=cb?cb[0]:1.75,bY=cb?cb[1]:1.75;buf[si*3]=_clampTraj(_getScore(l,idx,v.pcX)/lm[0],bX);buf[si*3+1]=_clampTraj(_getScore(l,idx,v.pcY)/lm[1],bY);buf[si*3+2]=_layerZ[l]!==undefined?_layerZ[l]:(si/(n-1))*2-1;}}
-  line.geometry.attributes.position.needsUpdate=true;line.visible=true;}
+  // Use model-order sequence so emb→L0→...→LN→lmh draws without loopback.
+  // Pair-emitting LineSegments: vertices whose coordinates were CLAMPED to the
+  // render bounds are omitted (their segments would be wall-bounce artifact,
+  // not data). setDrawRange keeps the preallocated buffer.
+  const seqAll=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
+  // Cloud views live in ONE layer's space; a full 32-layer path there is a
+  // scribble of per-layer normalization changes, not motion. Show a local
+  // window (±5 layers around cL) in clouds; traj views keep the full path —
+  // depth is their axis, the full path is their subject.
+  const seq=(vi<NC)?seqAll.filter(l=>Math.abs(l-cL)<=5):seqAll;
+  const n=seq.length;const cap=Math.max(1,(n-1))*6;let buf=line.geometry.attributes.position?.array;
+  if(!buf||buf.length!==cap){line.geometry.dispose();const a=new Float32Array(cap);line.geometry=new THREE.BufferGeometry();line.geometry.setAttribute('position',new THREE.BufferAttribute(a,3));buf=a;}
+  let w=0,px=0,py=0,pz=0,pOk=false;
+  for(let si=0;si<n;si++){const l=seq[si];let x,y,z,ok;
+    if(vi<NC){const lm=v._layerMx?v._layerMx[l]:null;const mxX=lm?lm[0]:1,mxY=lm?lm[1]:1,mxZ=lm?lm[2]:1;const cb=v._clampBounds?v._clampBounds[l]:null;const bX=cb?cb[0]:1.75,bY=cb?cb[1]:1.75,bZ=cb?cb[2]:1.75;
+      const rx=_getScore(l,idx,v.pcX)/mxX,ry=_getScore(l,idx,v.pcY)/mxY,rz=_getScore(l,idx,v.pcZ)/mxZ;
+      x=_clampTraj(rx,bX);y=_clampTraj(ry,bY);z=_clampTraj(rz,bZ);ok=(x===rx)&&(y===ry)&&(z===rz);}
+    else{const lm=(v._trajLayerMx?v._trajLayerMx[l]:null)||[1,1];const cb=v._trajClampBounds?v._trajClampBounds[l]:null;const bX=cb?cb[0]:1.75,bY=cb?cb[1]:1.75;
+      const rx=_getScore(l,idx,v.pcX)/lm[0],ry=_getScore(l,idx,v.pcY)/lm[1];
+      x=_clampTraj(rx,bX);y=_clampTraj(ry,bY);z=_layerZ[l]!==undefined?_layerZ[l]:(si/(n-1))*2-1;ok=(x===rx)&&(y===ry);}
+    if(ok&&pOk){buf[w++]=px;buf[w++]=py;buf[w++]=pz;buf[w++]=x;buf[w++]=y;buf[w++]=z;}
+    px=x;py=y;pz=z;pOk=ok;}
+  line.geometry.setDrawRange(0,w/3);
+  line.geometry.attributes.position.needsUpdate=true;line.visible=w>0;}
 let _lastDimState=-1;
 function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC)v.mtl.opacity=dim?0.35:0.85;if(vi>=NC&&v.trajGroup){const baseOp=dim?0.08:0.15;v.trajGroup.children.forEach(c=>{if(c.material)c.material.opacity=baseOp;});if(v.trajMarker)v.trajMarker.material.opacity=dim?0.35:0.9;}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible){m.material.opacity=0.95;m.material.size=dim?0.08:0.06;}});}
 let _hoverTimer=0,_hoverTok=-1,_hoverLoading='';
