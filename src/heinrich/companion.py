@@ -2091,8 +2091,12 @@ def _live_forward(mri_path: str, prompt: str, model_id: str = "") -> dict:
     if not residuals:
         return {"error": "Backend did not return residuals. Check residual_layers support."}
 
-    # Project each layer's residual through stored PCA components
+    # Project each layer's residual through stored PCA components.
+    # The frozen scores are mean-centered (decompose subtracts the sample
+    # mean before SVD), so the live residual must subtract the same mean —
+    # otherwise every live point carries a constant per-layer offset.
     live_scores = {}
+    centered_layers = 0
     for layer in range(n_layers):
         comp_path = decomp / f"L{layer:02d}_components.npy"
         if not comp_path.exists() or layer not in residuals:
@@ -2101,7 +2105,12 @@ def _live_forward(mri_path: str, prompt: str, model_id: str = "") -> dict:
         residual = residuals[layer]  # [hidden_dim] (last position)
         if residual.ndim == 1:
             residual = residual.reshape(1, -1)
-        scores = (residual.astype(np.float32) @ components.T)  # [1, K] or [seq_len, K]
+        residual = residual.astype(np.float32)
+        mean_path = decomp / f"L{layer:02d}_mean.npy"
+        if mean_path.exists():
+            residual = residual - np.load(str(mean_path)).astype(np.float32)
+            centered_layers += 1
+        scores = (residual @ components.T)  # [1, K] or [seq_len, K]
         live_scores[layer] = scores.tolist()
 
     # Tokenize the prompt for display
@@ -2122,6 +2131,7 @@ def _live_forward(mri_path: str, prompt: str, model_id: str = "") -> dict:
         "n_layers": n_layers,
         "token_texts": token_texts,
         "scores": live_scores,
+        "centered": centered_layers == len(live_scores) and centered_layers > 0,
         "logits_top5": [
             {"id": int(result.probs.argsort()[-1-i]),
              "token": str(backend.tokenizer.decode([int(result.probs.argsort()[-1-i])])) if getattr(backend, "tokenizer", None) is not None else str(int(result.probs.argsort()[-1-i])),

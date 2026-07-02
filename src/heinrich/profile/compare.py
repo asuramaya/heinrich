@@ -6567,7 +6567,9 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
         if exit_path is None:
             return li, None, None, {"layer": li, "pc1_pct": 0, "intrinsic_dim": 0, "neighbor_stability": 0}
         vecs = np.load(str(exit_path), mmap_mode='r')[_idx].astype(np.float32)
-        centered = vecs - vecs.mean(axis=0)
+        mu = vecs.mean(axis=0)
+        centered = vecs - mu
+        np.save(_decomp_dir / f'L{li:02d}_mean.npy', mu.astype(np.float32))
 
         result = _svd_mlx(centered, _K)
         if result:
@@ -6652,15 +6654,20 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
         print(f"  {vname} PCA...", file=sys.stderr)
         raw = np.load(str(vf), mmap_mode='r')
         vecs = raw[token_ids[idx]].astype(np.float32) if raw.shape[0] > n_sample else raw[idx].astype(np.float32)
-        centered = vecs - vecs.mean(axis=0)
+        v_mu = vecs.mean(axis=0)
+        centered = vecs - v_mu
+        np.save(decomp_dir / f'{vname}_mean.npy', v_mu.astype(np.float32))
         from sklearn.utils.extmath import randomized_svd
         U, S, Vt = randomized_svd(centered, n_components=K, random_state=42)
         k = min(K, len(S))
         scores = (U[:, :k] * S[:k]).astype(np.float16)
         variance = ((S[:k] ** 2) / (S ** 2).sum()).astype(np.float32)
+        v_components = Vt[:k].astype(np.float32)
         if k < K:
             scores = np.pad(scores, ((0, 0), (0, K - k)))
             variance = np.pad(variance, (0, K - k))
+            v_components = np.pad(v_components, ((0, K - k), (0, 0)))
+        np.save(decomp_dir / f'{vname}_components.npy', v_components)
         all_variances.append(variance)              # full K
         all_scores.append(scores[:, :BIN_K].copy())  # capped
         var_ratio = (S ** 2) / (S ** 2).sum()
@@ -7115,3 +7122,76 @@ def mri_decompose(mri_path: str, *, n_sample: int = 0,
         "bin_size_mb": round(bin_size / 1024 / 1024, 1),
         "layers": layer_meta,
     }
+
+
+def backfill_decomp_means(mri_path: str) -> dict:
+    """Backfill per-layer PCA means (and virtual-layer components) into an
+    existing decomp/ directory.
+
+    The decomposition centers each layer (``vecs - vecs.mean(axis=0)``) but
+    older decomps never stored the mean, so out-of-sample projection
+    (live forwards, full-vocab rows) carried a constant per-layer offset.
+    The mean is exactly recoverable: recompute it over the same sample rows.
+    Virtual layers (emb/lmh) also get their components re-derived — the SVD
+    is deterministic (``random_state=42`` on identical data), so the basis
+    matches the stored scores.
+    """
+    import sys
+
+    mri_dir = Path(mri_path)
+    decomp_dir = mri_dir / 'decomp'
+    meta_path = decomp_dir / 'meta.json'
+    if not meta_path.exists():
+        return {"error": f"No decomp/meta.json under {mri_dir}"}
+    dmeta = json.loads(meta_path.read_text())
+    n_real = int(dmeta.get('n_real_layers', 0))
+    K = int(dmeta.get('n_components', 0))
+
+    tokens = dict(np.load(mri_dir / 'tokens.npz', allow_pickle=True))
+    token_ids = tokens['token_ids']
+    n_tok = len(token_ids)
+    si = dmeta.get('sample_indices', 'all')
+    idx = np.arange(n_tok) if si == 'all' else np.asarray(si, dtype=np.int64)
+    n_sample = len(idx)
+
+    def _find_exit(li):
+        nested = mri_dir / 'layers' / f'L{li:02d}' / 'exit.npy'
+        flat = mri_dir / f'L{li:02d}_exit.npy'
+        return nested if nested.exists() else flat if flat.exists() else None
+
+    written = []
+    for li in range(n_real):
+        mp = decomp_dir / f'L{li:02d}_mean.npy'
+        if mp.exists():
+            continue
+        ep = _find_exit(li)
+        if ep is None:
+            continue
+        vecs = np.load(str(ep), mmap_mode='r')[idx].astype(np.float32)
+        np.save(mp, vecs.mean(axis=0))
+        written.append(f'L{li:02d}')
+
+    for vname, vpath in [('emb', 'embedding.npy'), ('lmh', 'lmhead.npy')]:
+        vf = mri_dir / vpath
+        if not vf.exists():
+            continue
+        mp = decomp_dir / f'{vname}_mean.npy'
+        cp = decomp_dir / f'{vname}_components.npy'
+        if mp.exists() and cp.exists():
+            continue
+        raw = np.load(str(vf), mmap_mode='r')
+        vecs = raw[token_ids[idx]].astype(np.float32) if raw.shape[0] > n_sample else raw[idx].astype(np.float32)
+        v_mu = vecs.mean(axis=0)
+        np.save(mp, v_mu.astype(np.float32))
+        if not cp.exists():
+            from sklearn.utils.extmath import randomized_svd
+            _, S, Vt = randomized_svd(vecs - v_mu, n_components=K, random_state=42)
+            k = min(K, len(S))
+            v_components = Vt[:k].astype(np.float32)
+            if k < K:
+                v_components = np.pad(v_components, ((0, K - k), (0, 0)))
+            np.save(cp, v_components)
+        written.append(vname)
+
+    print(f"  Backfilled means: {len(written)} layers ({mri_dir.name})", file=sys.stderr)
+    return {"mri_path": str(mri_dir), "backfilled": written, "n_sample": n_sample}

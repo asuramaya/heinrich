@@ -331,6 +331,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_decompose.add_argument("--mri", required=True, help=".mri directory")
     p_decompose.add_argument("--n-sample", type=int, default=0, help="Tokens to sample (0 = full vocabulary)")
     p_decompose.add_argument("--n-components", type=int, default=0, help="PCA components (0 = all directions = hidden_size)")
+    p_decompose.add_argument("--backfill-means", action="store_true",
+                             help="Only backfill missing L{NN}_mean.npy (+ emb/lmh means and components) into an existing decomp — no re-decomposition")
 
     p_serve = sub.add_parser("mri-serve", help="Build query-shaped serve/ artifacts for the companion viewer from an existing decomposition")
     p_serve.add_argument("--mri", required=True, help=".mri directory")
@@ -3601,6 +3603,16 @@ def _cmd_mri_health(args: argparse.Namespace) -> None:
 def _cmd_mri_decompose(args: argparse.Namespace) -> None:
     """PCA decompose MRI for the companion viewer."""
     from .profile.compare import mri_decompose
+
+    if getattr(args, "backfill_means", False):
+        from .profile.compare import backfill_decomp_means
+        result = backfill_decomp_means(args.mri)
+        if "error" in result:
+            print(f"Error: {result['error']}")
+            return
+        print(f"Backfilled {len(result['backfilled'])} layer means into "
+              f"{result['mri_path']}/decomp (sample n={result['n_sample']})")
+        return
 
     result = mri_decompose(args.mri, n_sample=args.n_sample,
                            n_components=args.n_components)
