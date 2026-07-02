@@ -52,9 +52,31 @@ _capture_results: dict[str, dict] = {}
 _capture_lock = threading.Lock()
 _CAPTURE_DIR = Path("/tmp/heinrich/captures")
 
-# --- Long-poll command queue ---
-_poll_commands: list[dict] = []  # pending commands for the browser
-_poll_event = threading.Event()  # signals when a new command is available
+# --- Long-poll command queue (per-consumer fan-out) ---
+# Each consumer (browser tab / MCP watcher) gets its own queue + wake event,
+# keyed by a consumer id (cid). /api/navigate broadcasts to ALL live consumers.
+# A poll without a cid uses _POLL_DEFAULT_CID so the deployed SPA keeps working
+# unchanged. Named consumers expire after _POLL_STALE_S without a poll (checked
+# lazily on push) to bound memory; the default consumer never expires so a push
+# arriving before the first poll is not lost (matches the old single-queue
+# behaviour).
+_POLL_DEFAULT_CID = "_default"
+_POLL_STALE_S = 60.0
+_POLL_RECEIPT_MAX = 100
+
+
+class _PollConsumer:
+    __slots__ = ("queue", "event", "last_seen")
+
+    def __init__(self) -> None:
+        self.queue: list[tuple[int, dict]] = []  # (push_id, cmd)
+        self.event = threading.Event()
+        self.last_seen = time.time()
+
+
+_poll_consumers: dict[str, _PollConsumer] = {_POLL_DEFAULT_CID: _PollConsumer()}
+_poll_receipts: "OrderedDict[int, dict]" = OrderedDict()  # push_id -> {delivered:set, pending:set, ts, cmd_kind}
+_poll_push_id = 0
 _poll_lock = threading.Lock()
 
 # --- Chat inbox: browser → MCP client ---
@@ -120,30 +142,97 @@ def chat_reply(text: str, request_id: str = "") -> None:
         _chat_event.set()  # inside the lock — same set/clear race as the poll channel
 
 
-def _poll_push(cmd: dict):
-    """Push a command for the browser to pick up."""
-    with _poll_lock:
-        _poll_commands.append(cmd)
-        _poll_event.set()  # set INSIDE the lock so a concurrent _poll_take can't clear it afterward
+def _poll_expire_stale_locked(now: float) -> None:
+    """Drop named consumers idle > _POLL_STALE_S. Caller holds _poll_lock.
 
-
-def _poll_take(timeout: float = 30.0) -> dict | None:
-    """Block until a command is available or timeout.
-
-    The set (push) and clear (take) both happen under _poll_lock: otherwise a
-    command pushed in the window between wait() returning and clear() would have
-    its wake-up clobbered, so the next poll blocked for a full timeout and the
-    command looked 'lost'. Serializing set/clear closes that race.
+    The default consumer is never dropped: a push that arrives before the SPA's
+    first poll must still be delivered on that first poll.
     """
-    _poll_event.wait(timeout=timeout)
+    for cid in [c for c in _poll_consumers
+                if c != _POLL_DEFAULT_CID
+                and (now - _poll_consumers[c].last_seen) > _POLL_STALE_S]:
+        _poll_consumers.pop(cid, None)
+
+
+def _poll_push(cmd: dict) -> int:
+    """Broadcast a command to every live consumer. Returns the push id.
+
+    Each live consumer's wake event is set INSIDE the lock so a concurrent
+    _poll_take can't clear it in the window between wait() returning and clear()
+    — the same set/clear race the single-queue version guarded. A delivery
+    receipt records which consumers still owe an ack (pending) vs have taken the
+    message (delivered, filled in by _poll_take).
+    """
+    global _poll_push_id
     with _poll_lock:
-        if _poll_commands:
-            cmd = _poll_commands.pop(0)
-            if not _poll_commands:
-                _poll_event.clear()
+        now = time.time()
+        _poll_expire_stale_locked(now)
+        _poll_push_id += 1
+        pid = _poll_push_id
+        targets = set(_poll_consumers.keys())
+        for consumer in _poll_consumers.values():
+            consumer.queue.append((pid, cmd))
+            consumer.event.set()  # inside the lock — closes the set/clear race
+        _poll_receipts[pid] = {
+            "delivered": set(),
+            "pending": set(targets),
+            "ts": now,
+            "cmd_kind": cmd.get("cmd", "?"),
+        }
+        while len(_poll_receipts) > _POLL_RECEIPT_MAX:
+            _poll_receipts.popitem(last=False)
+    return pid
+
+
+def _poll_take(timeout: float = 30.0, cid: str | None = None) -> dict | None:
+    """Block until a command is available for this consumer or timeout.
+
+    Registers/refreshes the consumer under `cid` (default consumer when omitted,
+    so a cid-less poll from the deployed SPA keeps working). set (push) and clear
+    (take) both happen under _poll_lock so a command pushed in the window between
+    wait() returning and clear() isn't clobbered.
+    """
+    cid = cid or _POLL_DEFAULT_CID
+    with _poll_lock:
+        consumer = _poll_consumers.get(cid)
+        if consumer is None:
+            consumer = _PollConsumer()
+            _poll_consumers[cid] = consumer
+        consumer.last_seen = time.time()
+        ev = consumer.event
+    ev.wait(timeout=timeout)
+    with _poll_lock:
+        # Re-fetch: a stale-expiry on another thread's push could have dropped us.
+        consumer = _poll_consumers.get(cid)
+        if consumer is None:
+            return None
+        consumer.last_seen = time.time()
+        if consumer.queue:
+            pid, cmd = consumer.queue.pop(0)
+            if not consumer.queue:
+                consumer.event.clear()
+            receipt = _poll_receipts.get(pid)
+            if receipt is not None:
+                receipt["pending"].discard(cid)
+                receipt["delivered"].add(cid)
             return cmd
-        _poll_event.clear()
+        consumer.event.clear()
         return None
+
+
+def _poll_status(pid: int) -> dict:
+    """Delivery receipt for a push id: which consumers took it vs still owe."""
+    with _poll_lock:
+        receipt = _poll_receipts.get(pid)
+        if receipt is None:
+            return {"error": f"unknown or evicted push id {pid}",
+                    "id": pid}
+        return {
+            "id": pid,
+            "cmd": receipt["cmd_kind"],
+            "delivered": sorted(receipt["delivered"]),
+            "pending": sorted(receipt["pending"]),
+        }
 
 
 def notify_companions(event: dict):
@@ -2150,6 +2239,195 @@ def _live_forward(mri_path: str, prompt: str, model_id: str = "") -> dict:
     }
 
 
+def _homing_resolve_targets(mri_path: str, targets: list) -> list[dict]:
+    """Resolve each target text to its frozen per-layer full-K scores.
+
+    Two sources, in order of preference:
+      - the full-vocab projection (decomp/vocab_scores.bin) via vocab_resolve —
+        answers "does the tokenizer have this token at all";
+      - the sampled cloud (decomp/L{NN}_scores.npy) via _find_token_by_text —
+        the fallback when there's no vocab artifact or the token wasn't in it.
+
+    Returns one spec per target: {"meta": {...}, "mat": [L,K] or None,
+    "cloud_idx": int or None}. Unresolved targets carry meta["error"].
+    """
+    specs: list[dict] = []
+    for text in targets:
+        vr = vocab_resolve(mri_path, text)
+        if vr is not None:
+            raw = vocab_token_row(mri_path, int(vr["vocab_row"]))
+            if isinstance(raw, (bytes, bytearray)):
+                raw = bytes(raw)
+                n_l, k = struct.unpack("<II", raw[:8])
+                mat = np.frombuffer(raw[8:], dtype=np.float32).reshape(n_l, k)
+                specs.append({
+                    "meta": {"text": text, "vocab_row": int(vr["vocab_row"]),
+                             "token_id": int(vr["token_id"]), "source": "vocab"},
+                    "mat": mat, "cloud_idx": None,
+                })
+                continue
+        idx = _find_token_by_text(mri_path, text)
+        if idx >= 0:
+            specs.append({
+                "meta": {"text": text, "idx": int(idx), "source": "cloud"},
+                "mat": None, "cloud_idx": int(idx),
+            })
+            continue
+        specs.append({
+            "meta": {"text": text,
+                     "error": "unresolved (not in vocab projection or sampled cloud)"},
+            "mat": None, "cloud_idx": None,
+        })
+    return specs
+
+
+def _homing_layer_vec(mri_path: str, spec: dict, layer: int) -> np.ndarray | None:
+    """Target's frozen full-K score vector at one layer, or None if absent.
+
+    Real transformer layers are 0..n_real-1; the vocab matrix also carries
+    virtual emb/lmh rows after them, so indexing by the live real-layer id
+    lines up directly.
+    """
+    mat = spec.get("mat")
+    if mat is not None:
+        return mat[layer] if 0 <= layer < mat.shape[0] else None
+    cidx = spec.get("cloud_idx")
+    if cidx is not None:
+        sm = _get_scores_mmap(mri_path, layer)
+        if sm is None or cidx >= sm.shape[0]:
+            return None
+        return sm[cidx].astype(np.float32)
+    return None
+
+
+def _homing_crossover(a: dict, b: dict) -> dict:
+    """First layer (ascending) where target a is closer than target b."""
+    da = {c["l"]: c["d"] for c in a.get("curve", [])}
+    db = {c["l"]: c["d"] for c in b.get("curve", [])}
+    for L in sorted(set(da) & set(db)):
+        if da[L] < db[L]:
+            return {"pair": [a["text"], b["text"]], "layer": L}
+    return {"pair": [a["text"], b["text"]], "layer": None}
+
+
+def _homing_single(mri_path: str, prompt: str, model_id: str,
+                   specs: list[dict]) -> dict:
+    """One prompt: per-layer L2 in full-K score space to each target.
+
+    Distances in full-K score space ARE exact hidden-space distances
+    (orthonormal PCA frame, K = hidden). Live last-token residuals are
+    projected through the same frozen frame by _live_forward.
+    """
+    lf = _live_forward(mri_path, prompt, model_id=model_id)
+    if "error" in lf:
+        return {"prompt": prompt, "error": lf["error"]}
+
+    live: dict[int, np.ndarray] = {}
+    for layer, sc in lf.get("scores", {}).items():
+        arr = np.asarray(sc, dtype=np.float32)
+        if arr.ndim == 2:
+            arr = arr[-1]  # last token position
+        live[int(layer)] = arr
+    layers_sorted = sorted(live.keys())
+
+    targets_out: list[dict] = []
+    for spec in specs:
+        meta = dict(spec["meta"])
+        curve: list[dict] = []
+        for L in layers_sorted:
+            tv = _homing_layer_vec(mri_path, spec, L)
+            if tv is None:
+                continue
+            lv = live[L]
+            k = min(lv.shape[0], tv.shape[0])
+            curve.append({"l": L, "d": float(np.linalg.norm(lv[:k] - tv[:k]))})
+        entry = dict(meta)
+        entry["curve"] = curve
+        if curve:
+            dmin = min(curve, key=lambda c: c["d"])
+            entry["l_star"] = dmin["l"]
+            entry["d_min"] = dmin["d"]
+        else:
+            entry.setdefault("error", "no shared layers between live and target")
+            entry["l_star"] = None
+            entry["d_min"] = None
+        targets_out.append(entry)
+
+    crossovers = [_homing_crossover(targets_out[i], targets_out[i + 1])
+                  for i in range(len(targets_out) - 1)]
+
+    return {
+        "prompt": prompt,
+        "n_layers": len(layers_sorted),
+        "prediction": lf.get("prediction"),
+        "entropy": lf.get("entropy"),
+        "centered": lf.get("centered"),
+        "latency_ms": lf.get("latency_ms"),
+        "targets": targets_out,
+        "crossovers": crossovers,
+    }
+
+
+def _homing_run(mri_path: str, model_id: str = "", prompt: str = "",
+                prompts: list | None = None, targets: list | None = None) -> dict:
+    """Headless homing driver: how a prompt's residual approaches target tokens.
+
+    For each target text, resolves its frozen full-K scores (vocab projection or
+    sampled cloud) and reports per-layer L2 distance from the live last-token
+    residual, the closest layer (l_star), and pairwise crossover layers. Supports
+    a single ``prompt`` or a ``prompts`` list (BATCH mode: sequential, with an
+    l_star histogram over the first target). Correctness over speed.
+    """
+    decomp_meta = Path(mri_path) / "decomp" / "meta.json"
+    if not decomp_meta.exists():
+        return {"error": f"No decomposition at {mri_path}. Run mri-decompose."}
+    targets = targets or []
+    if not targets:
+        return {"error": "targets required (list of token texts)"}
+
+    specs = _homing_resolve_targets(mri_path, targets)
+
+    # Noise floor (trust band) travels with every result.
+    vm = vocab_meta(mri_path)
+    noise_floor = (vm.get("sample_agreement", {}).get("layers", [])
+                   if isinstance(vm, dict) and "error" not in vm else [])
+
+    started = time.perf_counter()
+
+    if prompts:
+        results: list[dict] = []
+        l_star_hist: dict[str, int] = {}
+        first_target = targets[0]
+        for p in prompts:
+            single = _homing_single(mri_path, p, model_id, specs)
+            single["noise_floor"] = noise_floor
+            results.append(single)
+            # Aggregate l_star for the first target only. Small ints — no arrays.
+            for t in single.get("targets", []):
+                if t.get("text") == first_target and t.get("l_star") is not None:
+                    key = str(t["l_star"])
+                    l_star_hist[key] = l_star_hist.get(key, 0) + 1
+                    break
+        return {
+            "batch": True,
+            "mri_path": mri_path,
+            "model_id": model_id,
+            "n_prompts": len(results),
+            "results": results,
+            "aggregate": {"target": first_target, "l_star_histogram": l_star_hist},
+            "noise_floor": noise_floor,
+            "total_latency_ms": round((time.perf_counter() - started) * 1000.0, 1),
+        }
+
+    if not prompt:
+        return {"error": "prompt or prompts required"}
+    out = _homing_single(mri_path, prompt, model_id, specs)
+    out["mri_path"] = mri_path
+    out["model_id"] = model_id
+    out["noise_floor"] = noise_floor
+    return out
+
+
 _steer_backend_cache = {}
 _steer_backend_lock = threading.Lock()
 _steer_backend_pending: dict[str, threading.Event] = {}
@@ -3394,8 +3672,9 @@ class CompanionHandler(SimpleHTTPRequestHandler):
         return (qs.get('model', [''])[0] or qs.get('mri_model', [''])[0])
 
     # Endpoints that never name a model — exempt from the gallery proxy.
-    _NO_MODEL_EP = ('/api/poll', '/api/chat-poll', '/api/chat-drain',
-                    '/api/models', '/api/capabilities', '/api/live-status', '/api/signals')
+    _NO_MODEL_EP = ('/api/poll', '/api/push-status', '/api/chat-poll',
+                    '/api/chat-drain', '/api/models', '/api/capabilities',
+                    '/api/live-status', '/api/signals')
 
     def _proxy_gallery(self, parsed) -> None:
         """models:both — fetch a published model's bytes from the public base and
@@ -3435,14 +3714,27 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             if model and model not in self._local_model_names():
                 return self._proxy_gallery(parsed)
 
-        # Long-poll: browser blocks here waiting for commands
+        # Long-poll: browser blocks here waiting for commands.
+        # ?cid=<id> selects a per-consumer queue (fan-out); omitting it uses the
+        # default consumer so the deployed SPA keeps working unchanged.
         if path == '/api/poll':
             timeout = float(qs.get('timeout', ['30'])[0])
-            cmd = _poll_take(timeout)
+            cid = qs.get('cid', [''])[0] or None
+            cmd = _poll_take(timeout, cid=cid)
             if cmd:
                 self._send_json(cmd)
             else:
                 self._send_json({"cmd": "none"})
+            return
+
+        # Delivery receipt for a broadcast push id (fan-out ack tracking).
+        if path == '/api/push-status':
+            try:
+                pid = int(qs.get('id', ['0'])[0])
+            except (TypeError, ValueError):
+                self._send_json({"error": "id must be an integer"})
+                return
+            self._send_json(_poll_status(pid))
             return
 
         # Chat outbox long-poll: browser waits for MCP replies
@@ -4048,8 +4340,8 @@ class CompanionHandler(SimpleHTTPRequestHandler):
         if path == '/api/navigate':
             cmd = {"cmd": "navigate"}
             cmd.update(args)
-            _poll_push(cmd)
-            self._send_json({"ok": True})
+            pid = _poll_push(cmd)
+            self._send_json({"ok": True, "push_id": pid, "status": _poll_status(pid)})
 
         elif path == '/api/chat-reply':
             # External MCP client posts a reply; browser picks it up via /api/chat-poll.
@@ -4258,6 +4550,29 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             mri_path = self._mri_path(mri_model, mode_name)
             result = _live_forward(mri_path, prompt, model_id=model_id)
             self._send_json(result)
+
+        elif path == '/api/homing-run':
+            # Headless homing study driver. Body:
+            #   {mri_model, mode, model_id, prompt|prompts, targets:[...]}
+            mri_model = args.get("mri_model", "")
+            mode_name = args.get("mode", "raw")
+            model_id = args.get("model_id", "")
+            prompt = args.get("prompt", "")
+            prompts = args.get("prompts")
+            targets = args.get("targets") or []
+            if not mri_model:
+                self._send_json({"error": "mri_model required"})
+                return
+            if not targets:
+                self._send_json({"error": "targets required"})
+                return
+            if not prompt and not prompts:
+                self._send_json({"error": "prompt or prompts required"})
+                return
+            mri_path = self._mri_path(mri_model, mode_name)
+            self._send_json(_homing_run(
+                mri_path, model_id=model_id, prompt=prompt,
+                prompts=prompts, targets=targets))
 
         elif path == '/api/live-chat':
             message = args.get("message", "")

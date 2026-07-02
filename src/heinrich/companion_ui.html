@@ -225,7 +225,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
       <div id="dirColorStatus" class="dcs" style="display:none">projecting direction&hellip;</div>
       <div id="sepPanel" class="panel-card" style="display:none" title="Run exact direction analysis for the pinned pair"><div class="pane-head"><div><div class="pane-title">Direction Analysis</div><div class="pane-note" id="sepNote">exact, on demand</div></div><button id="sepRun" class="mini-btn" type="button">Analyze</button></div><div style="color:#555;font-size:7px;margin-bottom:2px">Max separation PCs <span id="sepDist" style="color:#888"></span></div><div id="sepList" style="font-size:8px"></div></div>
       <div id="attnPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Attention</div><div class="pane-note">Token A · current layer</div></div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
-      <div id="homingPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Homing</div><div class="pane-note">live &rarr; pinned, per layer</div></div><canvas id="homingChart" height="54" style="width:100%;height:54px"></canvas><div id="homingText" style="font-size:8px;color:#888;margin-top:2px"></div><div id="homingTarget" style="display:none;font-size:8px;color:#FFD700;margin-top:2px">&#9673; target <span id="homingTargetText"></span> <span id="homingTargetClear" style="cursor:pointer;color:#888;text-decoration:underline">clear</span></div></div>
+      <div id="homingPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Homing</div><span style="display:flex;gap:3px;align-items:center"><span class="pane-note">live &rarr; pinned</span><span id="homingLogBtn" title="log-scale y (asinh) so the crystal plateau doesn't crush early structure" style="cursor:pointer;font-size:7px;color:#888;border:1px solid #333;border-radius:2px;padding:0 3px">log</span><span id="homingJsonBtn" title="download this homing run as JSON" style="cursor:pointer;font-size:7px;color:#888;border:1px solid #333;border-radius:2px;padding:0 3px">json</span></span></div><canvas id="homingChart" height="110" style="width:100%;height:110px"></canvas><div id="homingLegend" style="font-size:8px;color:#888;margin-top:1px;line-height:1.4"></div><div id="homingText" style="font-size:8px;color:#888;margin-top:2px"></div><div id="homingTarget" style="display:none;font-size:8px;margin-top:2px"><div id="homingTargetT1" style="display:none;color:#FFD700">&#9673; T <span id="homingTargetText"></span> <span id="homingTargetClear" style="cursor:pointer;color:#888;text-decoration:underline">clear</span></div><div id="homingTargetT2" style="display:none;color:#66A8FF">&#9673; T2 <span id="homingTargetText2"></span> <span id="homingTargetClear2" style="cursor:pointer;color:#888;text-decoration:underline">clear</span></div></div></div>
     </div>
     <div class="tok-tabs" id="tokTabs">
       <button class="tab-btn active" data-tab="find">Find</button>
@@ -498,48 +498,77 @@ function _clearLivePoint(){_liveScores=null;liveCloudMarkers.forEach(m=>m.visibl
 // makes EVERY tokenizer token addressable in the same frozen frame. A vocab
 // target renders as a gold marker + trajectory at its true frozen coordinates
 // even though it isn't one of the sampled dots — the homing study's answer slot.
-let _vocabTarget=null;// {row, text, vec:{nL,fK,data}}
+let _vocabTarget=null;// T1: {row, text, vec:{nL,fK,data}} — gold answer slot
+let _vocabTarget2=null;// T2: the distractor slot — cyan-blue, mirrors T1
 let _vocabTexts=null,_vocabTextsPending=null;// full-vocab text list (lazy, per model|mode)
 let _vocabTextsKey='';
 let _vocabMetaCache=null,_vocabMetaKey='';// noise floor + frame falsification
-const targetCloudMarkers=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.18,color:0xFFD700,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=12;p.visible=false;v.sc.add(p);return p;});
-const targetTrajLines=views.map(v=>{const l=new THREE.Line(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFFD700,transparent:true,opacity:0.85,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
-function _targetVec(l){if(!_vocabTarget)return null;const{nL,fK,data}=_vocabTarget.vec;
-  return l<nL?data.subarray(l*fK,(l+1)*fK):null;}
-function _targetRealLayers(){if(!_vocabTarget)return 0;return Math.max(0,_vocabTarget.vec.nL-2);}// last 2 rows are emb/lmh virtual
-function _updateTargetMarkers(){
-  if(!_vocabTarget){targetCloudMarkers.forEach(m=>m.visible=false);return;}
-  const vec=cL<_targetRealLayers()?_targetVec(cL):null;
-  views.forEach((v,vi)=>{const mk=targetCloudMarkers[vi];
+const TGT1_COL=0xFFD700,TGT2_COL=0x66A8FF;// gold, cyan-blue (distinct from pin B 0x4477AA / live 0x66ffcc)
+function _mkTargetMarkers(col){return views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.18,color:col,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=12;p.visible=false;v.sc.add(p);return p;});}
+function _mkTargetLines(col){return views.map(v=>{const l=new THREE.Line(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:col,transparent:true,opacity:0.85,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});}
+const targetCloudMarkers=_mkTargetMarkers(TGT1_COL),targetTrajLines=_mkTargetLines(TGT1_COL);
+const targetCloudMarkers2=_mkTargetMarkers(TGT2_COL),targetTrajLines2=_mkTargetLines(TGT2_COL);
+// Generic target machinery — one slot's vec/markers/lines. T1 and T2 share it.
+function _tgtVec(tgt,l){if(!tgt)return null;const{nL,fK,data}=tgt.vec;return l<nL?data.subarray(l*fK,(l+1)*fK):null;}
+function _tgtRealLayers(tgt){return tgt?Math.max(0,tgt.vec.nL-2):0;}// last 2 rows are emb/lmh virtual
+function _updTgtMarkers(tgt,markers){
+  if(!tgt){markers.forEach(m=>m.visible=false);return;}
+  const vec=cL<_tgtRealLayers(tgt)?_tgtVec(tgt,cL):null;
+  views.forEach((v,vi)=>{const mk=markers[vi];
     const c=vec?(vi<NC?_liveCoordCloud(v,cL,vec):_liveCoordTraj(v,cL,vec)):null;
     if(c){const a=mk.geometry.attributes.position.array;a[0]=c[0];a[1]=c[1];a[2]=c[2];mk.geometry.attributes.position.needsUpdate=true;mk.visible=true;}
     else mk.visible=false;});
   _needsRender=true;
 }
-function _renderTarget(){
-  for(let vi=NC;vi<views.length;vi++){const v=views[vi];const line=targetTrajLines[vi];const pts=[];
-    if(_vocabTarget){for(let l=0;l<_targetRealLayers();l++){const vec=_targetVec(l);const c=vec?_liveCoordTraj(v,l,vec):null;if(c)pts.push(c[0],c[1],c[2]);}}
+function _renderTgt(tgt,markers,lines){
+  for(let vi=NC;vi<views.length;vi++){const v=views[vi];const line=lines[vi];const pts=[];
+    if(tgt){const rl=_tgtRealLayers(tgt);for(let l=0;l<rl;l++){const vec=_tgtVec(tgt,l);const c=vec?_liveCoordTraj(v,l,vec):null;if(c)pts.push(c[0],c[1],c[2]);}}
     if(pts.length>=6){line.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pts),3));line.geometry.computeBoundingSphere&&line.geometry.computeBoundingSphere();line.visible=true;}
     else line.visible=false;}
-  _updateTargetMarkers();
+  _updTgtMarkers(tgt,markers);
+}
+function _updateTargetMarkers(){_updTgtMarkers(_vocabTarget,targetCloudMarkers);_updTgtMarkers(_vocabTarget2,targetCloudMarkers2);}// both follow the layer
+function _renderTarget(){_renderTgt(_vocabTarget,targetCloudMarkers,targetTrajLines);}
+function _renderTarget2(){_renderTgt(_vocabTarget2,targetCloudMarkers2,targetTrajLines2);}
+async function _fetchVocabVec(row){
+  const buf=await(await _apiFetch(`/api/vocab-token/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?row=${row}`)).arrayBuffer();
+  if(buf.byteLength<8)return null;
+  const dv=new DataView(buf);const nL=dv.getUint32(0,true),fK=dv.getUint32(4,true);
+  if(!nL||!fK||buf.byteLength<8+nL*fK*4)return null;
+  return {nL,fK,data:new Float32Array(buf,8,nL*fK)};
 }
 async function _setVocabTarget(row,text){
   try{
-    const buf=await(await _apiFetch(`/api/vocab-token/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?row=${row}`)).arrayBuffer();
-    if(buf.byteLength<8)return false;
-    const dv=new DataView(buf);const nL=dv.getUint32(0,true),fK=dv.getUint32(4,true);
-    if(!nL||!fK||buf.byteLength<8+nL*fK*4)return false;
-    _vocabTarget={row,text,vec:{nL,fK,data:new Float32Array(buf,8,nL*fK)}};
+    const vec=await _fetchVocabVec(row);if(!vec)return false;
+    _vocabTarget={row,text,vec};
     _homingCache=null;_renderTarget();
-    const tl=document.getElementById('homingTarget'),tt=document.getElementById('homingTargetText');
-    if(tl&&tt){tt.textContent=`"${text}" (vocab row ${row})`;tl.style.display='block';}
-    try{_homingUpdate();}catch(e){}
+    const tl=document.getElementById('homingTarget'),r1=document.getElementById('homingTargetT1'),tt=document.getElementById('homingTargetText');
+    if(tt)tt.textContent=`"${text}" (vocab row ${row})`;
+    if(r1)r1.style.display='block';if(tl)tl.style.display='block';
+    _saveState();try{_homingUpdate();}catch(e){}
     return true;
   }catch(e){return false;}
 }
-function _clearVocabTarget(){_vocabTarget=null;targetCloudMarkers.forEach(m=>m.visible=false);targetTrajLines.forEach(l=>l.visible=false);_homingCache=null;
-  const tl=document.getElementById('homingTarget');if(tl)tl.style.display='none';
-  try{_homingUpdate();}catch(e){}_needsRender=true;}
+async function _setVocabTarget2(row,text){
+  try{
+    const vec=await _fetchVocabVec(row);if(!vec)return false;
+    _vocabTarget2={row,text,vec};
+    _homingCache=null;_renderTarget2();
+    const tl=document.getElementById('homingTarget'),r2=document.getElementById('homingTargetT2'),tt=document.getElementById('homingTargetText2');
+    if(tt)tt.textContent=`"${text}" (vocab row ${row})`;
+    if(r2)r2.style.display='block';if(tl)tl.style.display='block';
+    _saveState();try{_homingUpdate();}catch(e){}
+    return true;
+  }catch(e){return false;}
+}
+function _maybeHideTargetPanel(){// hide the target list only when BOTH slots are empty
+  if(!_vocabTarget&&!_vocabTarget2){const tl=document.getElementById('homingTarget');if(tl)tl.style.display='none';}}
+function _clearVocabTarget(save=true){_vocabTarget=null;targetCloudMarkers.forEach(m=>m.visible=false);targetTrajLines.forEach(l=>l.visible=false);_homingCache=null;
+  const r1=document.getElementById('homingTargetT1');if(r1)r1.style.display='none';_maybeHideTargetPanel();
+  if(save)_saveState();try{_homingUpdate();}catch(e){}_needsRender=true;}
+function _clearVocabTarget2(save=true){_vocabTarget2=null;targetCloudMarkers2.forEach(m=>m.visible=false);targetTrajLines2.forEach(l=>l.visible=false);_homingCache=null;
+  const r2=document.getElementById('homingTargetT2');if(r2)r2.style.display='none';_maybeHideTargetPanel();
+  if(save)_saveState();try{_homingUpdate();}catch(e){}_needsRender=true;}
 async function _ensureVocabTexts(){
   const key=model+'|'+mode;
   if(_vocabTextsKey===key&&_vocabTexts)return _vocabTexts;
@@ -569,6 +598,7 @@ async function _ensureVocabMeta(){
 // frozen token's scores (token-pca, same components) share the basis, so raw L2
 // over the shared PCs is the geometric distance — watch it collapse at L*.
 let _homingCache=null;
+let _lastLivePrompt=null,_lastLiveMeta=null;// last live-forward prompt + response metadata (for homing export)
 function _homingDistances(vec){
   const out=[];const layers=Object.keys(_liveScores).map(Number).sort((a,b)=>a-b);
   for(const l of layers){
@@ -580,59 +610,122 @@ function _homingDistances(vec){
   }
   return out;
 }
+let _homingLog=null;// null=auto (log when max/min ratio>50); true/false=user override
 async function _homingUpdate(){
   const panel=document.getElementById('homingPanel');if(!panel)return;
-  if(!_liveScores||(pinnedToken<0&&!_vocabTarget)){panel.style.display='none';_homingCache=null;return;}
+  const anyTgt=_vocabTarget||_vocabTarget2;
+  if(!_liveScores||(pinnedToken<0&&!anyTgt)){panel.style.display='none';_homingCache=null;return;}
   const nLayers=Object.keys(_liveScores).length;
-  const sig=model+'|'+mode+'|'+pinnedToken+'|'+pinnedTokenB+'|T'+(_vocabTarget?_vocabTarget.row:-1)+'|'+nLayers;
+  const sig=model+'|'+mode+'|'+pinnedToken+'|'+pinnedTokenB+'|T'+(_vocabTarget?_vocabTarget.row:-1)+'|U'+(_vocabTarget2?_vocabTarget2.row:-1)+'|'+nLayers;
   if(_homingCache&&_homingCache.sig===sig){_homingDraw();return;}
   panel.style.display='block';
   const vecA=pinnedToken>=0?await _fetchTokenVec(model,mode,pinnedToken):null;
   const vecB=pinnedTokenB>=0?await _fetchTokenVec(model,mode,pinnedTokenB):null;
   const distT=_vocabTarget?_homingDistances(_vocabTarget.vec):null;
-  if(!vecA&&!distT){panel.style.display='none';return;}
+  const distT2=_vocabTarget2?_homingDistances(_vocabTarget2.vec):null;
+  if(!vecA&&!distT&&!distT2){panel.style.display='none';return;}
   const vmeta=await _ensureVocabMeta();// noise floor for the trust band (null if unpublished)
-  _homingCache={sig,distA:vecA?_homingDistances(vecA):null,distB:vecB?_homingDistances(vecB):null,distT,
+  _homingCache={sig,distA:vecA?_homingDistances(vecA):null,distB:vecB?_homingDistances(vecB):null,distT,distT2,
     floor:(vmeta&&vmeta.sample_agreement&&vmeta.sample_agreement.layers)||null};
   _homingDraw();
 }
+// Interpolate the measured per-layer capture noise floor to layer l.
+function _homingFloorAt(floor,l){if(!floor||!floor.length)return null;
+  let lo=floor[0],hi=floor[floor.length-1];
+  for(let j=0;j<floor.length-1;j++){if(l>=floor[j].layer&&l<=floor[j+1].layer){lo=floor[j];hi=floor[j+1];break;}}
+  const t=hi.layer>lo.layer?(l-lo.layer)/(hi.layer-lo.layer):0;
+  return lo.noise_floor_p99+t*(hi.noise_floor_p99-lo.noise_floor_p99);}
 function _homingDraw(){
   const c=document.getElementById('homingChart');if(!c||!_homingCache)return;
-  const dpr=window.devicePixelRatio||1;const W=c.width=Math.max(1,c.clientWidth*dpr),H=c.height=54*dpr;
+  const dpr=window.devicePixelRatio||1;const W=c.width=Math.max(1,c.clientWidth*dpr),H=c.height=110*dpr;
   const ctx=c.getContext('2d');ctx.clearRect(0,0,W,H);
-  const {distA,distB,distT,floor}=_homingCache;
-  const ref=distA||distT;if(!ref)return;
-  const all=[...(distA?distA.map(x=>x.d):[]),...(distB?distB.map(x=>x.d):[]),...(distT?distT.map(x=>x.d):[])].filter(x=>x!=null);
+  const {distA,distB,distT,distT2,floor}=_homingCache;
+  const ref=distA||distT||distT2;if(!ref)return;
+  const series=[distA,distB,distT,distT2].filter(Boolean);
+  const all=[].concat(...series.map(s=>s.map(x=>x.d))).filter(x=>x!=null);
   if(!all.length)return;
-  const mx=Math.max(...all)||1,nL=ref.length,layers=ref.map(x=>x.l);
-  const X=i=>nL>1?(i/(nL-1))*(W-6)+3:W/2,Y=d=>H-4-(d/mx)*(H-8);
-  // Trust band: the capture noise floor per layer (measured, from vocab_meta).
-  // Distances at or below this line are indistinguishable from f16 capture noise.
+  const mx=Math.max(...all)||1,mn=Math.min(...all.filter(x=>x>0))||1,nL=ref.length,layers=ref.map(x=>x.l);
+  const useLog=_homingLog==null?(mx/Math.max(mn,1e-9)>50):_homingLog;
+  _homingCache.useLog=useLog;
+  const ML=30*dpr,MR=6*dpr,MT=5*dpr,MB=14*dpr,PW=Math.max(1,W-ML-MR),PH=Math.max(1,H-MT-MB);
+  const X=i=>ML+(nL>1?(i/(nL-1))*PW:PW/2);
+  const lmx=Math.log10(mx+1)||1;
+  const frac=d=>useLog?(Math.log10(Math.max(d,0)+1)/lmx):(d/mx);
+  const Y=d=>MT+PH-Math.max(0,Math.min(1,frac(d)))*PH;
+  const fAt=l=>_homingFloorAt(floor,l);
+  // Trust band: shade below the measured capture noise floor per layer.
   if(floor&&floor.length>1){
-    ctx.fillStyle='rgba(150,150,150,0.18)';ctx.beginPath();ctx.moveTo(X(0),Y(0));
-    const fY=l=>{let lo=floor[0],hi=floor[floor.length-1];
-      for(let j=0;j<floor.length-1;j++){if(l>=floor[j].layer&&l<=floor[j+1].layer){lo=floor[j];hi=floor[j+1];break;}}
-      const t=hi.layer>lo.layer?(l-lo.layer)/(hi.layer-lo.layer):0;
-      return lo.noise_floor_p99+t*(hi.noise_floor_p99-lo.noise_floor_p99);};
-    layers.forEach((l,i)=>ctx.lineTo(X(i),Y(Math.min(fY(l),mx))));
+    ctx.fillStyle='rgba(150,150,150,0.16)';ctx.beginPath();ctx.moveTo(X(0),Y(0));
+    layers.forEach((l,i)=>ctx.lineTo(X(i),Y(Math.min(fAt(l),mx))));
     ctx.lineTo(X(nL-1),Y(0));ctx.closePath();ctx.fill();
   }
-  const curve=(dist,col)=>{ctx.strokeStyle=col;ctx.lineWidth=1.5*dpr;ctx.beginPath();let st=false;
-    dist.forEach((p,i)=>{if(p.d==null)return;const x=X(i),y=Y(p.d);st?ctx.lineTo(x,y):(ctx.moveTo(x,y),st=true);});ctx.stroke();};
-  if(distB)curve(distB,'#4477AA');
-  if(distA)curve(distA,'#FF6644');
-  if(distT)curve(distT,'#FFD700');
+  // X-axis: layer ticks every 5 layers.
+  ctx.fillStyle='rgba(160,160,160,0.55)';ctx.font=(7*dpr)+'px monospace';ctx.textAlign='center';ctx.textBaseline='top';
+  ctx.strokeStyle='rgba(120,120,120,0.2)';ctx.lineWidth=dpr;
+  layers.forEach((l,i)=>{if(l%5===0){ctx.beginPath();ctx.moveTo(X(i),MT);ctx.lineTo(X(i),MT+PH);ctx.stroke();ctx.fillText('L'+l,X(i),MT+PH+2*dpr);}});
+  // Y-axis: max distance (top) + interpolated floor value + zero baseline.
+  ctx.textAlign='right';ctx.textBaseline='middle';ctx.fillStyle='rgba(170,170,170,0.6)';
+  const fmt=v=>v>=1000?(v/1000).toFixed(1)+'k':v>=10?v.toFixed(0):v.toFixed(1);
+  ctx.fillText(fmt(mx),ML-2*dpr,Y(mx)+4*dpr);
+  ctx.fillText('0',ML-2*dpr,Y(0));
+  if(floor&&floor.length){const fv=floor.map(f=>f.noise_floor_p99).sort((a,b)=>a-b)[Math.floor(floor.length/2)];
+    ctx.fillStyle='rgba(150,150,150,0.5)';ctx.fillText('flr '+fmt(fv),ML-2*dpr,Math.min(MT+PH,Math.max(MT,Y(fv))));}
+  // Curves: solid above the floor, dashed+dim below it (honest noise cue).
+  const belowFloor=(l,d)=>floor&&d!=null&&fAt(l)!=null&&d<=fAt(l);
+  const curve=(dist,col)=>{if(!dist)return;ctx.lineWidth=1.5*dpr;
+    for(let i=0;i<dist.length-1;i++){const p=dist[i],q=dist[i+1];if(p.d==null||q.d==null)continue;
+      const bf=belowFloor(p.l,p.d)&&belowFloor(q.l,q.d);
+      ctx.strokeStyle=bf?col+'55':col;ctx.setLineDash(bf?[3*dpr,3*dpr]:[]);
+      ctx.beginPath();ctx.moveTo(X(i),Y(p.d));ctx.lineTo(X(i+1),Y(q.d));ctx.stroke();}
+    ctx.setLineDash([]);};
+  curve(distB,'#4477AA');curve(distA,'#FF6644');curve(distT,'#FFD700');curve(distT2,'#66A8FF');
   const ci=layers.indexOf(cL);
-  if(ci>=0){ctx.strokeStyle='rgba(255,255,255,0.35)';ctx.lineWidth=dpr;ctx.beginPath();ctx.moveTo(X(ci),0);ctx.lineTo(X(ci),H);ctx.stroke();}
+  if(ci>=0){ctx.strokeStyle='rgba(255,255,255,0.35)';ctx.lineWidth=dpr;ctx.beginPath();ctx.moveTo(X(ci),MT);ctx.lineTo(X(ci),MT+PH);ctx.stroke();}
   const starOf=(dist)=>{let s=-1,sd=1e9;dist.forEach((p,i)=>{if(p.d!=null&&p.d<sd){sd=p.d;s=i;}});return [s,sd];};
-  const dot=(dist,col)=>{const [s,sd]=starOf(dist);if(s>=0){ctx.fillStyle=col;ctx.beginPath();ctx.arc(X(s),Y(sd),3*dpr,0,7);ctx.fill();}return starOf(dist);};
+  const dot=(dist,col)=>{const [s,sd]=starOf(dist);if(s>=0){ctx.fillStyle=col;ctx.beginPath();ctx.arc(X(s),Y(sd),3*dpr,0,7);ctx.fill();}return [s,sd];};
+  // Legend line (swatches for present series + the noise-floor note).
+  const leg=document.getElementById('homingLegend');
+  if(leg){const sw=(cc,lbl)=>`<span style="color:${cc}">&#9632;</span> ${lbl}`;const lp=[];
+    if(distA)lp.push(sw('#FF6644','A'));if(distB)lp.push(sw('#4477AA','B'));
+    if(distT)lp.push(sw('#FFD700','T'));if(distT2)lp.push(sw('#66A8FF','T2'));
+    if(floor)lp.push('<span style="color:#999">&#9638;</span> shaded = capture noise floor');
+    lp.push(`<span style="color:#666">${useLog?'log-y':'linear-y'}</span>`);
+    leg.innerHTML=lp.join(' &nbsp; ');}
   const t=document.getElementById('homingText');
   let parts=[];
   if(distA){const [s,sd]=dot(distA,'#FF6644');if(s>=0)parts.push(`A nearest @ L${distA[s].l} (d=${sd.toFixed(1)})`);}
   if(distT){const [s,sd]=dot(distT,'#FFD700');if(s>=0)parts.push(`T"${_vocabTarget?_vocabTarget.text:''}" @ L${distT[s].l} (d=${sd.toFixed(1)})`);}
-  if(distA&&distB){let dec=-1;for(let i=0;i<distA.length;i++){if(distA[i].d!=null&&distB[i]&&distB[i].d!=null&&distA[i].d<distB[i].d){dec=distA[i].l;break;}}parts.push(dec>=0?`A<B from L${dec}`:'A never < B');}
-  if(distT&&distB){let dec=-1;for(let i=0;i<distT.length&&i<distB.length;i++){if(distT[i].d!=null&&distB[i]&&distB[i].d!=null&&distT[i].d<distB[i].d){dec=distT[i].l;break;}}parts.push(dec>=0?`T<B from L${dec}`:'T never < B');}
+  if(distT2){const [s,sd]=dot(distT2,'#66A8FF');if(s>=0)parts.push(`T2"${_vocabTarget2?_vocabTarget2.text:''}" @ L${distT2[s].l} (d=${sd.toFixed(1)})`);}
+  const crossAt=(u,v)=>{for(let i=0;i<u.length&&i<v.length;i++){if(u[i].d!=null&&v[i]&&v[i].d!=null&&u[i].d<v[i].d)return u[i].l;}return -1;};
+  if(distA&&distB){const dec=crossAt(distA,distB);parts.push(dec>=0?`A<B from L${dec}`:'A never < B');}
+  if(distT&&distB){const dec=crossAt(distT,distB);parts.push(dec>=0?`T<B from L${dec}`:'T never < B');}
+  if(distT&&distT2){const dec=crossAt(distT,distT2);parts.push(dec>=0?`T<T2 from L${dec}`:'T never < T2');}// the study readout
   if(t)t.textContent=parts.join(' · ');
+}
+// --- Homing run export: the current curves + context as a downloadable JSON blob ---
+function _homingExport(){
+  if(!_homingCache){return;}
+  const {distA,distB,distT,distT2,floor,useLog}=_homingCache;
+  const ser=d=>d?d.map(p=>({l:p.l,d:p.d==null?null:+p.d.toFixed(4)})):null;
+  const obj={
+    model,mode,live_prompt:_lastLivePrompt||null,
+    prediction:(_lastLiveMeta&&_lastLiveMeta.prediction)||null,
+    entropy:(_lastLiveMeta&&_lastLiveMeta.entropy!=null)?_lastLiveMeta.entropy:null,
+    logits_top5:(_lastLiveMeta&&_lastLiveMeta.logits_top5)||null,
+    latency_ms:(_lastLiveMeta&&_lastLiveMeta.latency_ms)||null,
+    targets:[_vocabTarget?{slot:'T',text:_vocabTarget.text,row:_vocabTarget.row}:null,
+             _vocabTarget2?{slot:'T2',text:_vocabTarget2.text,row:_vocabTarget2.row}:null].filter(Boolean),
+    pins:{a:pinnedToken,a_text:(pinnedToken>=0&&texts[pinnedToken])||null,b:pinnedTokenB,b_text:(pinnedTokenB>=0&&texts[pinnedTokenB])||null},
+    log_scale:!!useLog,
+    curves:{A:ser(distA),B:ser(distB),T:ser(distT),T2:ser(distT2)},
+    floor:floor?floor.map(f=>({layer:f.layer,noise_floor_p99:f.noise_floor_p99})):null,
+    timestamp:Date.now()
+  };
+  const blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'});
+  const a=document.createElement('a');a.href=URL.createObjectURL(blob);
+  a.download=`homing_${model}_${mode}_${Date.now()}.json`;
+  document.body.appendChild(a);a.click();setTimeout(()=>{URL.revokeObjectURL(a.href);a.remove();},1000);
+  return obj;
 }
 // === Three-tier PC data cache ===
 // Full: [nLayers * nTokens] per PC — for selected PCs. Clouds + trajectories.
@@ -4303,6 +4396,9 @@ function _saveState(){
   if(!model)return;
   const s={m:model,d:mode,l:cL,p:[vpPairs[0],vpPairs[2]].map(p=>p.join('-')).join(',')};
   if(pinnedToken>=0)s.a=pinnedToken;if(pinnedTokenB>=0)s.b=pinnedTokenB;
+  // Vocab targets are per model|mode — persist row+text, restored only if m|d matches.
+  if(_vocabTarget){s.t=_vocabTarget.row;s.tx=_vocabTarget.text;}
+  if(_vocabTarget2){s.t2=_vocabTarget2.row;s.t2x=_vocabTarget2.text;}
   const h=Object.entries(s).map(([k,v])=>k+'='+encodeURIComponent(v)).join('&');
   history.replaceState(null,'','#'+h);
 }
@@ -4320,7 +4416,7 @@ async function loadAll(){
   const newModel=document.getElementById('sm').value,newMode=document.getElementById('smd').value;
   const isSameModel=newModel===_prevModel;
   if(!isSameModel&&typeof _clearLivePoint==='function')_clearLivePoint();// stale live point is in the old model's frame
-  if(!isSameModel&&typeof _clearVocabTarget==='function')_clearVocabTarget();// target coords are frame-specific too
+  if(!isSameModel&&typeof _clearVocabTarget==='function'){_clearVocabTarget(false);_clearVocabTarget2(false);}// target coords are frame-specific too (don't wipe saved hash — restored below)
   const prevTexts=texts;
   const prevPinTextA=pinnedToken>=0&&prevTexts[pinnedToken]!==undefined?prevTexts[pinnedToken]:null;
   const prevPinTextB=pinnedTokenB>=0&&prevTexts[pinnedTokenB]!==undefined?prevTexts[pinnedTokenB]:null;
@@ -4416,6 +4512,9 @@ async function loadAll(){
     if(_rst.l!==undefined)_rstL=Math.min(parseInt(_rst.l)||0,nL-1);
     if(_rst.a!==undefined){const a=parseInt(_rst.a);if(a>=0&&a<nN)pinnedToken=a;}
     if(_rst.b!==undefined){const b=parseInt(_rst.b);if(b>=0&&b<nN)pinnedTokenB=b;}
+    // Restore vocab targets (per model|mode) — async, fire-and-forget after frame is ready.
+    if(_rst.t!==undefined){const r=parseInt(_rst.t);if(r>=0)_setVocabTarget(r,_rst.tx||'');}
+    if(_rst.t2!==undefined){const r=parseInt(_rst.t2);if(r>=0)_setVocabTarget2(r,_rst.t2x||'');}
   }else if(prevPairs){
     vpPairs[0]=prevPairs[0].map(p=>Math.min(p,nK-1));
     vpPairs[2]=prevPairs[1].map(p=>Math.min(p,nK-1));
@@ -4486,9 +4585,9 @@ async function init(){const models=await api('models');const sel=document.getEle
   const _tsResults=document.getElementById('tsresults');
   _tsResults.addEventListener('click',e=>{
     const vr=e.target.closest('[data-vr]');
-    if(vr){_setVocabTarget(parseInt(vr.dataset.vr),vr.dataset.vt||'');return;}
+    if(vr){if(e.shiftKey||_isRightClick(e))_setVocabTarget2(parseInt(vr.dataset.vr),vr.dataset.vt||'');else _setVocabTarget(parseInt(vr.dataset.vr),vr.dataset.vt||'');return;}
     const d=e.target.closest('[data-ti]');if(!d)return;const i=parseInt(d.dataset.ti);if(e.shiftKey||_isRightClick(e)){pinnedTokenB=i;}else{pinnedToken=i;}updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();});
-  _tsResults.addEventListener('contextmenu',e=>{e.preventDefault();const d=e.target.closest('[data-ti]');if(!d)return;pinnedTokenB=parseInt(d.dataset.ti);updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();});
+  _tsResults.addEventListener('contextmenu',e=>{e.preventDefault();const vr=e.target.closest('[data-vr]');if(vr){_setVocabTarget2(parseInt(vr.dataset.vr),vr.dataset.vt||'');return;}const d=e.target.closest('[data-ti]');if(!d)return;pinnedTokenB=parseInt(d.dataset.ti);updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();});
   document.getElementById('tsearch').addEventListener('input',e=>{
     clearTimeout(_searchTimer);
     _searchTimer=setTimeout(()=>{
@@ -4544,6 +4643,12 @@ async function init(){const models=await api('models');const sel=document.getEle
   });
   const _htClear=document.getElementById('homingTargetClear');
   if(_htClear)_htClear.addEventListener('click',()=>_clearVocabTarget());
+  const _htClear2=document.getElementById('homingTargetClear2');
+  if(_htClear2)_htClear2.addEventListener('click',()=>_clearVocabTarget2());
+  const _hLog=document.getElementById('homingLogBtn');
+  if(_hLog)_hLog.addEventListener('click',()=>{const cur=_homingCache&&_homingCache.useLog;_homingLog=!cur;_hLog.style.color=_homingLog?'#6c8':'#888';_homingDraw();});
+  const _hJson=document.getElementById('homingJsonBtn');
+  if(_hJson)_hJson.addEventListener('click',()=>{try{_homingExport();}catch(e){}});
   // --- Discover features button ---
   const _discBtn=document.getElementById('discoverBtn');
   const _discRes=document.getElementById('discoverResults');
@@ -5098,7 +5203,14 @@ async function _handleNavigate(msg){
       else if(r&&r.idx>=0){pinnedToken=r.idx;updatePinMarkers();_onPinChange();}
     }catch(e){}
   }
-  if(msg.target_clear&&typeof _clearVocabTarget==='function'){try{_clearVocabTarget();}catch(e){}}
+  // Distractor slot (T2) — the study's answer-vs-distractor comparison.
+  if(msg.target_text_b&&typeof _setVocabTarget2==='function'){
+    try{
+      const r=await(await _apiFetch(`/api/token-resolve/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?text=${encodeURIComponent(String(msg.target_text_b))}`)).json();
+      if(r&&typeof r.vocab_row==='number')await _setVocabTarget2(r.vocab_row,String(msg.target_text_b));
+    }catch(e){}
+  }
+  if(msg.target_clear){try{_clearVocabTarget();}catch(e){}try{_clearVocabTarget2();}catch(e){}}
   // Live forward driven by the agent — runs a prompt through the live model and
   // lands it on THIS canvas (the shared frame). Requires a paired companion.
   if(msg.live_prompt&&typeof _runLiveForward==='function'){
@@ -5746,6 +5858,7 @@ async function _runLiveForward(prompt){
   // stuck true — a stuck flag silently no-ops every later call (incl. agent pushes).
   const st=document.getElementById('liveStatus');
   const res=document.getElementById('liveResult');
+  _lastLivePrompt=prompt;// stash for homing export
   try{
     if(st){st.textContent='running forward... (model load on first run ~5-30s)';st.style.color='#a84';}
     const model_id=document.getElementById('liveModelId')?.value.trim()||'';
@@ -5753,6 +5866,7 @@ async function _runLiveForward(prompt){
       method:'POST',headers:{'Content-Type':'application/json'},
       body:JSON.stringify({prompt,mri_model:model,mode,model_id})
     },60000);
+    if(!d.error)_lastLiveMeta={prediction:d.prediction,entropy:d.entropy,logits_top5:d.logits_top5,latency_ms:d.latency_ms,n_layers:d.n_layers};
     if(d.error){
       if(st){st.style.color='#f77';st.textContent='error: '+d.error;}
       if(res)while(res.firstChild)res.removeChild(res.firstChild);return;
@@ -6070,6 +6184,9 @@ window.__heinrich = {
   get pollActive(){return _pollActive;}, handleNav:(m)=>_handleNavigate(m), get homing(){return _homingCache;},
   setTarget:(row,text)=>_setVocabTarget(row,text), clearTarget:()=>_clearVocabTarget(),
   get target(){return _vocabTarget?{row:_vocabTarget.row,text:_vocabTarget.text,nL:_vocabTarget.vec.nL}:null;},
+  setTarget2:(row,text)=>_setVocabTarget2(row,text), clearTarget2:()=>_clearVocabTarget2(),
+  get target2(){return _vocabTarget2?{row:_vocabTarget2.row,text:_vocabTarget2.text,nL:_vocabTarget2.vec.nL}:null;},
+  homingExport:()=>_homingExport(),
   // --- state readers ---
   get views(){return views;}, get leftViews(){return leftViews;}, get rightViews(){return rightViews;},
   get vpPairs(){return vpPairs;}, get dirDepth(){return _dirDepthData;},

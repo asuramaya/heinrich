@@ -863,6 +863,35 @@ TOOLS = {
             "port": {"type": "integer", "description": "Companion server port (default: 8377)"},
         },
     },
+    "heinrich_live_forward": {
+        "description": "Run a prompt through the live model behind the companion and project its per-layer last-token residuals into the MRI's frozen PCA frame. Returns a summary (n_layers, prediction, entropy, centered, per-layer score norms) — the bulky raw scores are omitted. Requires `heinrich companion` running with a live-capable backend.",
+        "parameters": {
+            "prompt": {"type": "string", "description": "Prompt to forward.", "required": True},
+            "mri_model": {"type": "string", "description": "MRI directory name (e.g. smollm2-135m).", "required": True},
+            "mode": {"type": "string", "description": "raw / naked / template (default raw)."},
+            "model_id": {"type": "string", "description": "HF model id override (auto-inferred from MRI metadata if omitted)."},
+            "port": {"type": "integer", "description": "Companion server port (default 8377)."},
+        },
+    },
+    "heinrich_homing_run": {
+        "description": "Headless homing study driver. For each target token text, reports per-layer L2 distance in full-K score space from the prompt's live last-token residual, the closest layer (l_star), and pairwise crossover layers between consecutive targets. Distances are exact hidden-space distances (orthonormal PCA frame). Supply a single `prompt` or a `prompts` list (BATCH: returns per-prompt results plus an l_star histogram over the first target). Each result carries the vocab_meta noise-floor trust band. Requires `heinrich companion` running.",
+        "parameters": {
+            "mri_model": {"type": "string", "description": "MRI directory name (e.g. smollm2-135m).", "required": True},
+            "targets": {"type": "array", "description": "Target token texts to home toward, e.g. [' Paris', ' London'].", "required": True},
+            "prompt": {"type": "string", "description": "Single prompt (use this OR prompts)."},
+            "prompts": {"type": "array", "description": "Prompt list for BATCH mode (use this OR prompt)."},
+            "mode": {"type": "string", "description": "raw / naked / template (default raw)."},
+            "model_id": {"type": "string", "description": "HF model id override (auto-inferred from MRI metadata if omitted)."},
+            "port": {"type": "integer", "description": "Companion server port (default 8377)."},
+        },
+    },
+    "heinrich_canvas_push": {
+        "description": "Push a command/message from the agent to every paired browser viewer (agent → all live consumers via /api/navigate broadcast). Returns the push id and a delivery-status snapshot taken ~1s later ({delivered:[cids], pending:[cids]}) so you can see which viewers picked it up. Requires `heinrich companion` running.",
+        "parameters": {
+            "message_json": {"type": "object", "description": "The message object to broadcast (merged into a {cmd:'navigate', ...} envelope).", "required": True},
+            "port": {"type": "integer", "description": "Companion server port (default 8377)."},
+        },
+    },
 }
 
 
@@ -1192,6 +1221,12 @@ class ToolServer:
             return self._do_chat_drain(arguments)
         if name == "heinrich_chat_reply":
             return self._do_chat_reply(arguments)
+        if name == "heinrich_live_forward":
+            return self._do_live_forward(arguments)
+        if name == "heinrich_homing_run":
+            return self._do_homing_run(arguments)
+        if name == "heinrich_canvas_push":
+            return self._do_canvas_push(arguments)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -1564,6 +1599,104 @@ class ToolServer:
                 return json.loads(resp.read())
         except urllib.error.URLError as e:
             return {"error": f"Companion not reachable at localhost:{port}: {e}"}
+
+    @staticmethod
+    def _companion_post(port: int, endpoint: str, payload: dict,
+                        timeout: float = 60.0) -> dict[str, Any]:
+        """POST JSON to the local companion. Shared plumbing for live tools."""
+        import urllib.error
+        import urllib.request
+        req = urllib.request.Request(
+            f"http://127.0.0.1:{port}{endpoint}",
+            data=json.dumps(payload).encode(),
+            headers={"Content-Type": "application/json"},
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as resp:
+                return json.loads(resp.read())
+        except urllib.error.URLError as e:
+            return {"error": f"Companion not reachable at 127.0.0.1:{port}: {e}. "
+                             "Start `heinrich companion` first."}
+
+    def _do_live_forward(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Live forward via the companion, summarized (raw scores dropped)."""
+        port = args.get("port", 8377)
+        result = self._companion_post(port, "/api/live-forward", {
+            "prompt": args["prompt"],
+            "mri_model": args["mri_model"],
+            "mode": args.get("mode", "raw"),
+            "model_id": args.get("model_id", ""),
+        }, timeout=600.0)
+        if "error" in result:
+            return result
+        # Summarize: the per-layer score arrays are [seq_len, K] each — too
+        # bulky for a tool result. Report per-layer last-token score norms.
+        import math
+        scores = result.pop("scores", {}) or {}
+        norms = {}
+        for layer, rows in scores.items():
+            last = rows[-1] if rows and isinstance(rows[0], list) else rows
+            norms[str(layer)] = round(math.sqrt(sum(float(x) * float(x)
+                                                    for x in last)), 3)
+        return {
+            "prompt": result.get("prompt"),
+            "model_id": result.get("resolved_model_id"),
+            "backend": result.get("backend_type"),
+            "n_layers": result.get("n_layers"),
+            "prediction": result.get("prediction"),
+            "entropy": result.get("entropy"),
+            "centered": result.get("centered"),
+            "logits_top5": result.get("logits_top5"),
+            "token_texts": result.get("token_texts"),
+            "latency_ms": result.get("latency_ms"),
+            "score_norms": norms,
+            "hint": "Per-layer last-token norms of the live PCA scores; use "
+                    "heinrich_homing_run for distances to specific targets.",
+        }
+
+    def _do_homing_run(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Pass-through to the companion's /api/homing-run study driver."""
+        port = args.get("port", 8377)
+        payload = {
+            "mri_model": args["mri_model"],
+            "mode": args.get("mode", "raw"),
+            "model_id": args.get("model_id", ""),
+            "targets": args["targets"],
+        }
+        if args.get("prompts"):
+            payload["prompts"] = args["prompts"]
+        else:
+            payload["prompt"] = args.get("prompt", "")
+        n_prompts = len(payload.get("prompts", [])) or 1
+        return self._companion_post(port, "/api/homing-run", payload,
+                                    timeout=max(120.0, 120.0 * n_prompts))
+
+    def _do_canvas_push(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Broadcast a message to all paired browsers, then snapshot delivery."""
+        import time as _time
+        import urllib.error
+        import urllib.request
+        port = args.get("port", 8377)
+        message = args.get("message_json")
+        if not isinstance(message, dict):
+            return {"error": "message_json must be a JSON object"}
+        result = self._companion_post(port, "/api/navigate", message,
+                                      timeout=15.0)
+        if "error" in result:
+            return result
+        pid = result.get("push_id")
+        if pid is None:
+            return result
+        _time.sleep(1.0)
+        try:
+            with urllib.request.urlopen(
+                    f"http://127.0.0.1:{port}/api/push-status?id={pid}",
+                    timeout=10) as resp:
+                status = json.loads(resp.read())
+        except urllib.error.URLError as e:
+            status = {"error": f"push-status unreachable: {e}"}
+        return {"ok": True, "push_id": pid, "status": status}
 
     def _do_loop(self, args: dict[str, Any]) -> dict[str, Any]:
         import numpy as np
