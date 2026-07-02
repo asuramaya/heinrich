@@ -449,6 +449,13 @@ const pinMarkersB=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribut
 const hoverPaths=views.map(v=>{const l=new THREE.Line(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFFFFFF,transparent:true,opacity:0.45,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
 const pinPaths=views.map(v=>{const l=new THREE.Line(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFF6644,transparent:true,opacity:0.95,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
 const pinPathsB=views.map(v=>{const l=new THREE.Line(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0x4477AA,transparent:true,opacity:0.95,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
+// Live-forward inhabitant: a prompt run through the live model, projected into the
+// FROZEN frame (same L{n}_components) and rendered as a bright point (per cloud view,
+// at the current layer) + a per-layer trajectory line (traj views). The living token
+// standing in the graveyard — same coordinates as the captured population.
+let _liveScores=null;// {layerStr: [[k]]} last-token PCA scores from the last live forward
+const liveCloudMarkers=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.2,color:0x66ffcc,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=12;p.visible=false;v.sc.add(p);return p;});
+const liveTrajLines=views.map(v=>{const l=new THREE.Line(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0x66ffcc,transparent:true,opacity:0.95,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
 // Position marker from PRECOMPUTED buffers (not filtered geometry) — always correct
 function _positionMarker(mk,v,vi,idx){const pos=mk.geometry.attributes.position.array;
   // Read from precomputed source, not the filtered geometry
@@ -458,6 +465,32 @@ function _positionMarker(mk,v,vi,idx){const pos=mk.geometry.attributes.position.
     if(cpos&&cpos.length>0&&idx*3+2<cpos.length){pos[0]=cpos[idx*3];pos[1]=cpos[idx*3+1];pos[2]=cpos[idx*3+2];}
     else{pos[0]=0;pos[1]=0;pos[2]=0;}}
   mk.geometry.attributes.position.needsUpdate=true;}
+// --- Live inhabitant rendering (uses the SAME cached per-axis scales as the frozen cloud) ---
+function _liveVec(l){const s=_liveScores&&_liveScores[String(l)];return s&&s[0]?s[0]:null;}
+function _liveCoordCloud(v,l,vec){const mx=v._layerMx&&v._layerMx[l],b=v._clampBounds&&v._clampBounds[l];if(!mx||!b||!vec)return null;
+  return [_clampTraj((vec[v.pcX]||0)/(mx[0]||1),b[0]),_clampTraj((vec[v.pcY]||0)/(mx[1]||1),b[1]),_clampTraj((vec[v.pcZ]||0)/(mx[2]||1),b[2])];}
+function _liveCoordTraj(v,l,vec){const mx=v._trajLayerMx&&v._trajLayerMx[l],b=v._trajClampBounds&&v._trajClampBounds[l];if(!mx||!b||!vec)return null;
+  const z=(typeof _layerZ!=='undefined'&&_layerZ&&_layerZ[l]!=null)?_layerZ[l]:0;
+  return [_clampTraj((vec[v.pcX]||0)/(mx[0]||1),b[0]),_clampTraj((vec[v.pcY]||0)/(mx[1]||1),b[1]),z];}
+function _updateLiveMarkers(){
+  if(!_liveScores){liveCloudMarkers.forEach(m=>m.visible=false);return;}
+  const vec=_liveVec(cL);
+  views.forEach((v,vi)=>{const mk=liveCloudMarkers[vi];
+    const c=vec?(vi<NC?_liveCoordCloud(v,cL,vec):_liveCoordTraj(v,cL,vec)):null;
+    if(c){const a=mk.geometry.attributes.position.array;a[0]=c[0];a[1]=c[1];a[2]=c[2];mk.geometry.attributes.position.needsUpdate=true;mk.visible=true;}
+    else mk.visible=false;});
+  _needsRender=true;
+}
+function _renderLivePoint(d){
+  _liveScores=(d&&d.scores)||null;
+  for(let vi=NC;vi<views.length;vi++){const v=views[vi];const line=liveTrajLines[vi];const pts=[];
+    if(_liveScores){const layers=Object.keys(_liveScores).map(Number).sort((a,b)=>a-b);
+      for(const l of layers){const vec=_liveVec(l);const c=vec?_liveCoordTraj(v,l,vec):null;if(c)pts.push(c[0],c[1],c[2]);}}
+    if(pts.length>=6){line.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pts),3));line.geometry.computeBoundingSphere&&line.geometry.computeBoundingSphere();line.visible=true;}
+    else line.visible=false;}
+  _updateLiveMarkers();
+}
+function _clearLivePoint(){_liveScores=null;liveCloudMarkers.forEach(m=>m.visible=false);liveTrajLines.forEach(l=>l.visible=false);_needsRender=true;}
 // === Three-tier PC data cache ===
 // Full: [nLayers * nTokens] per PC — for selected PCs. Clouds + trajectories.
 // Medium: [nLayers * nSample] per PC — for radial neighbors.
@@ -4096,6 +4129,7 @@ function updateHUD(){
 }
 let _briefLayerTimer=null;
 function setLayer(l,light){cL=l;updateAllViewports();updateHUD();
+  _updateLiveMarkers();// live point follows the layer slider
   _updateBrowserLayer();_updateBrowserSelBoxes();
   if(!light)_updateBrowserOverlay();
   updateLeftViewports();
@@ -4139,6 +4173,7 @@ function _yieldFrame(){return new Promise(r=>requestAnimationFrame(r));}
 async function loadAll(){
   const newModel=document.getElementById('sm').value,newMode=document.getElementById('smd').value;
   const isSameModel=newModel===_prevModel;
+  if(!isSameModel&&typeof _clearLivePoint==='function')_clearLivePoint();// stale live point is in the old model's frame
   const prevTexts=texts;
   const prevPinTextA=pinnedToken>=0&&prevTexts[pinnedToken]!==undefined?prevTexts[pinnedToken]:null;
   const prevPinTextB=pinnedTokenB>=0&&prevTexts[pinnedTokenB]!==undefined?prevTexts[pinnedTokenB]:null;
@@ -5538,6 +5573,7 @@ async function _runLiveForward(prompt){
     st.textContent=(d.n_layers||'?')+' layers, '+((d.token_texts||[]).length)+' tokens · '+(d.latency_ms||'?')+' ms';
     _liveRender(res,d);
     _renderLiveSession(d);
+    _renderLivePoint(d);// plot the prompt's landing in the frozen frame
   }catch(e){
     st.style.color='#f77';st.textContent='fetch failed: '+e.message;
   }finally{_liveBusy=false;_refreshLiveStatus();}
@@ -5841,6 +5877,9 @@ _applyMobile();
 window.__heinrich = {
   // --- companion pairing (LNA) ---
   connect:(code,port)=>connectCompanion(port,code), get localBase(){return _localBase;}, get cap(){return CAP;},
+  // --- live model (agent-drivable): run a prompt through the live model, render its landing ---
+  liveForward:(prompt)=>_runLiveForward(prompt), get liveScores(){return _liveScores;},
+  get liveVisible(){return liveCloudMarkers.some(m=>m.visible)||liveTrajLines.some(l=>l.visible);},
   // --- state readers ---
   get views(){return views;}, get leftViews(){return leftViews;}, get rightViews(){return rightViews;},
   get vpPairs(){return vpPairs;}, get dirDepth(){return _dirDepthData;},
