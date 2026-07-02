@@ -2092,9 +2092,12 @@ def _live_forward(mri_path: str, prompt: str, model_id: str = "") -> dict:
         return {"error": "Backend did not return residuals. Check residual_layers support."}
 
     # Project each layer's residual through stored PCA components.
-    # The frozen scores are mean-centered (decompose subtracts the sample
-    # mean before SVD), so the live residual must subtract the same mean —
-    # otherwise every live point carries a constant per-layer offset.
+    # The frozen scores are (exit - baseline) - sample_mean, so the live
+    # residual must subtract the same stored baseline (zeros in raw mode)
+    # and the same mean — otherwise every live point carries a constant
+    # per-layer offset relative to the frozen cloud.
+    bl_path = Path(mri_path) / "baselines.npz"
+    _bl = np.load(str(bl_path)) if bl_path.exists() else {}
     live_scores = {}
     centered_layers = 0
     for layer in range(n_layers):
@@ -2106,6 +2109,9 @@ def _live_forward(mri_path: str, prompt: str, model_id: str = "") -> dict:
         if residual.ndim == 1:
             residual = residual.reshape(1, -1)
         residual = residual.astype(np.float32)
+        bl_key = f"exit_L{layer}"
+        if bl_key in _bl:
+            residual = residual - _bl[bl_key].astype(np.float32)
         mean_path = decomp / f"L{layer:02d}_mean.npy"
         if mean_path.exists():
             residual = residual - np.load(str(mean_path)).astype(np.float32)

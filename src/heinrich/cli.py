@@ -334,6 +334,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_decompose.add_argument("--backfill-means", action="store_true",
                              help="Only backfill missing L{NN}_mean.npy (+ emb/lmh means and components) into an existing decomp — no re-decomposition")
 
+    p_vocab = sub.add_parser("mri-vocab", help="Project the FULL vocabulary through an existing frozen decomposition. Writes decomp/vocab_scores.bin (+ ids/texts/meta) so every token is addressable in the sample frame")
+    p_vocab.add_argument("--model", required=True, help="Model id or path (must match the MRI's model)")
+    p_vocab.add_argument("--mri", required=True, help=".mri directory with an existing decomp/")
+    p_vocab.add_argument("--batch-size", type=int, default=0, help="Forward batch size (0 = adaptive)")
+    p_vocab.add_argument("--backend", default="auto", choices=["auto", "mlx", "hf"], help="Inference backend")
+    p_vocab.add_argument("--no-verify", action="store_true", help="Skip the sample-agreement check")
+
     p_serve = sub.add_parser("mri-serve", help="Build query-shaped serve/ artifacts for the companion viewer from an existing decomposition")
     p_serve.add_argument("--mri", required=True, help=".mri directory")
     p_serve.add_argument("--steps", default="10,25,50", help="Precompute sampled PC indexes for these token strides")
@@ -1311,6 +1318,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_mri_health(args)
     elif args.command == "mri-decompose":
         _cmd_mri_decompose(args)
+    elif args.command == "mri-vocab":
+        _cmd_mri_vocab(args)
     elif args.command == "mri-serve":
         _cmd_mri_serve(args)
     elif args.command == "publish":
@@ -3598,6 +3607,32 @@ def _cmd_mri_health(args: argparse.Namespace) -> None:
                     print(f"           ! {iss}")
         print(f"\n  {r['n_healthy']} healthy, {r['n_issues']} with issues, {r['n_total']} total\n")
     _json_or(args, result, _fmt)
+
+
+def _cmd_mri_vocab(args: argparse.Namespace) -> None:
+    """Project the full vocabulary through an existing frozen decomposition."""
+    from .backend.protocol import load_backend
+    from .profile.vocab import capture_vocab_projection
+
+    backend = load_backend(args.model, backend=args.backend)
+    result = capture_vocab_projection(backend, args.mri,
+                                      batch_size=args.batch_size,
+                                      verify=not args.no_verify)
+    if "error" in result:
+        print(f"Error: {result['error']}")
+        return
+    print(f"\n=== Vocab projection: {result['n_rows']} tokens × "
+          f"{result['n_layers']} layers × {result['n_components']} PCs "
+          f"({result['size_mb']} MB, {result['elapsed_s']}s) ===")
+    print(f"  distance_exact: {result['distance_exact']}")
+    if result.get("sample_agreement"):
+        sa = result["sample_agreement"]
+        print(f"  capture noise floor: worst median rel {sa['worst_median_rel']} "
+              f"over {sa['n_rows_checked']} sample rows")
+        for pl in sa.get("layers", []):
+            print(f"    L{pl['layer']:02d}: |Δ|={pl['noise_floor_abs']} "
+                  f"vs median |row|={pl['median_row_norm']}")
+    print(f"  → {result['mri_path']}/decomp/vocab_scores.bin")
 
 
 def _cmd_mri_decompose(args: argparse.Namespace) -> None:
