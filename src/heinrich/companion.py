@@ -116,7 +116,7 @@ def chat_reply(text: str, request_id: str = "") -> None:
         _chat_outbox.append({"reply": text, "request_id": request_id})
         while len(_chat_outbox) > _CHAT_MAX:
             _chat_outbox.pop(0)
-    _chat_event.set()
+        _chat_event.set()  # inside the lock — same set/clear race as the poll channel
 
 
 def _poll_push(cmd: dict):
@@ -4026,7 +4026,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 })
                 while len(_chat_inbox) > _CHAT_MAX:
                     _chat_inbox.pop(0)
-            _chat_inbox_event.set()
+                _chat_inbox_event.set()  # inside the lock — closes the set/clear race with chat_drain
             self._send_json({"ok": True, "request_id": rid,
                              "pending": "queued for MCP client"})
 
