@@ -179,6 +179,18 @@ class HFBackend:
             hooks.extend(self._install_steer_hooks(steer_dirs, alpha))
 
         want_hidden = return_residual or bool(residual_layers)
+        # transformers appends the POST-final-norm state as the last
+        # hidden_states entry — the final layer's true (pre-norm) exit is
+        # never in the tuple. Capture it with a hook so live L{last} sits in
+        # the same frame as the frozen capture (which stores pre-norm exits).
+        _last_exit: dict = {}
+        _model_layers = getattr(getattr(self.hf_model, "model", None), "layers", None)
+        if residual_layers and _model_layers is not None and \
+                (len(_model_layers) - 1) in set(residual_layers):
+            def _cap_last(module, inp, output):
+                hs = output[0] if isinstance(output, tuple) else output
+                _last_exit["h"] = hs[0, -1, :].float().cpu().numpy()
+            hooks.append(_model_layers[-1].register_forward_hook(_cap_last))
         try:
             input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
             with torch.no_grad():
@@ -201,10 +213,16 @@ class HFBackend:
                 layer_idx = residual_layer if residual_layer >= 0 else -1
                 residual = outputs.hidden_states[layer_idx][0, -1, :].float().cpu().numpy()
             if residual_layers:
-                # MRI layer l = exit of layer l = hidden_states[l+1] (hidden_states[0] is embeddings)
+                # MRI layer l = exit of layer l = hidden_states[l+1] (hidden_states[0] is embeddings).
+                # Exception: the FINAL layer's tuple entry is post-final-norm —
+                # use the pre-norm exit captured by the hook instead.
                 nh = len(outputs.hidden_states)
+                n_real = len(_model_layers) if _model_layers is not None else nh - 1
                 residuals = {}
                 for l in residual_layers:
+                    if l == n_real - 1 and "h" in _last_exit:
+                        residuals[l] = _last_exit["h"]
+                        continue
                     idx = l + 1 if l + 1 < nh else -1
                     residuals[l] = outputs.hidden_states[idx][0, -1, :].float().cpu().numpy()
 

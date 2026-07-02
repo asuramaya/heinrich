@@ -2510,13 +2510,10 @@ def _homing_single(mri_path: str, prompt: str, model_id: str,
                   for i in range(len(targets_out) - 1)]
 
     if readout and layers_sorted:
-        nz_path = Path(mri_path) / "norms.npz"
         lh_path = Path(mri_path) / "lmhead.npy"
-        if nz_path.exists() and lh_path.exists():
+        if lh_path.exists():
             frame = _load_frozen_frame(mri_path, max(layers_sorted) + 1)
-            norms = np.load(str(nz_path))
-            if "final" in norms:
-                w_final = norms["final"].astype(np.float32)
+            if True:
                 lmhead = np.load(str(lh_path), mmap_mode="r")
                 tids = {}
                 for spec in specs:
@@ -2537,7 +2534,9 @@ def _homing_single(mri_path: str, prompt: str, model_id: str,
                     bl = frame["bl"].get(f"exit_L{L}")
                     if bl is not None:
                         h = h + bl
-                    normed = (h / np.sqrt(np.mean(h * h) + 1e-6)) * w_final
+                    # lmhead.npy has the final norm folded in (probed with
+                    # one-hot basis vectors) — L2-normalize only, no w.
+                    normed = h / (np.linalg.norm(h) + 1e-9)
                     ro_layers.append(L)
                     for t, row in tids.items():
                         per_t[t].append(float(normed @ row))
@@ -2696,6 +2695,162 @@ def _nn_check(mri_path: str, prompt: str, model_id: str = "",
         del pop, d2
     return {"prompt": prompt, "prediction": lf.get("prediction"),
             "n_vocab_rows": int(n_rows), "layers": out_layers}
+
+
+_river_vocab_cache: dict[str, tuple] = {}
+_river_lmh_cache: dict[str, np.ndarray] = {}
+
+
+def _river_vocab_maps(mri_path: str) -> tuple:
+    """(id->vocab_row dict, row->text tuple) for naming readout candidates."""
+    key = str(mri_path)
+    if key in _river_vocab_cache:
+        return _river_vocab_cache[key]
+    decomp = Path(mri_path) / "decomp"
+    id2row: dict[int, int] = {}
+    texts: tuple = ()
+    ids_p = decomp / "vocab_ids.npy"
+    if ids_p.exists():
+        ids = np.load(str(ids_p))
+        id2row = {int(t): r for r, t in enumerate(ids)}
+    vt = decomp / "vocab_tokens.json"
+    if vt.exists():
+        texts = tuple(json.loads(vt.read_text()))
+    if len(_river_vocab_cache) > 4:
+        _river_vocab_cache.clear()
+    _river_vocab_cache[key] = (id2row, texts)
+    return id2row, texts
+
+
+def _river_lmhead(mri_path: str) -> np.ndarray | None:
+    key = str(mri_path)
+    if key not in _river_lmh_cache:
+        lh = Path(mri_path) / "lmhead.npy"
+        if not lh.exists():
+            return None
+        if len(_river_lmh_cache) > 1:
+            _river_lmh_cache.clear()
+        _river_lmh_cache[key] = np.load(str(lh)).astype(np.float32)
+    return _river_lmh_cache[key]
+
+
+def _river_from_scores(mri_path: str, live: dict, n_layers: int, k: int = 8) -> list | dict:
+    """Per-layer top-k READOUT (logit lens) from frozen-frame scores.
+
+    The Readout River's data: reconstruct the hidden state exactly from
+    full-K scores (orthonormal frame), apply the stored final RMSNorm, push
+    through lm_head, and report the top-k tokens with softmax probability at
+    EVERY layer. This is output space — what the model would say if forced
+    to speak from layer l.
+    """
+    lmh = _river_lmhead(mri_path)
+    if lmh is None:
+        return {"error": "lmhead.npy missing from this MRI"}
+    frame = _load_frozen_frame(mri_path, n_layers)
+    id2row, texts = _river_vocab_maps(mri_path)
+
+    out = []
+    for L in sorted(live.keys()):
+        comps = frame["comps"].get(L)
+        if comps is None:
+            continue
+        vec = live[L]
+        kk = min(vec.shape[0], comps.shape[0])
+        h = vec[:kk] @ comps[:kk]
+        mean = frame["means"].get(L)
+        if mean is not None:
+            h = h + mean
+        bl = frame["bl"].get(f"exit_L{L}")
+        if bl is not None:
+            h = h + bl
+        # lmhead.npy was probed through the model's OWN final norm with
+        # one-hot basis vectors (RMSNorm(e_i) = e_i*sqrt(D)*w_i), so the norm
+        # is already folded in columnwise. Correct readout: L2-normalize h,
+        # dot with the probed rows. Applying w again double-weights dims.
+        normed = h / (np.linalg.norm(h) + 1e-9)
+        logits = lmh @ normed
+        top = np.argpartition(logits, -k)[-k:]
+        top = top[np.argsort(logits[top])[::-1]]
+        mx = float(logits.max())
+        Z = float(np.exp(logits - mx).sum())
+        entry = []
+        for tid in top:
+            tid = int(tid)
+            row = id2row.get(tid, -1)
+            entry.append({
+                "id": tid, "row": row,
+                "text": texts[row] if 0 <= row < len(texts) else f"#{tid}",
+                "p": round(float(np.exp(float(logits[tid]) - mx) / Z), 5),
+                "logit": round(float(logits[tid]), 2),
+            })
+        out.append({"l": int(L), "top": entry})
+    return out
+
+
+def _live_river(mri_path: str, prompt: str, model_id: str = "", k: int = 8,
+                steer: dict | None = None) -> dict:
+    """The Readout River: per-layer top-k readout for a live prompt, with an
+    optional steered variant (same fan, different waist)."""
+    k = max(2, min(int(k), 16))
+    lf = _live_forward(mri_path, prompt, model_id=model_id)
+    if "error" in lf:
+        return lf
+    started = time.perf_counter()
+
+    def _vecs(scores_dict):
+        out = {}
+        for layer, sc in scores_dict.items():
+            arr = np.asarray(sc, dtype=np.float32)
+            out[int(layer)] = arr[-1] if arr.ndim == 2 else arr
+        return out
+
+    n_layers = int(lf.get("n_layers", 0)) or len(lf.get("scores", {}))
+    clean = _river_from_scores(mri_path, _vecs(lf["scores"]), n_layers, k=k)
+    if isinstance(clean, dict):
+        return clean
+
+    steered = None
+    steer_meta = None
+    if steer:
+        layer = max(0, min(int(steer.get("layer", 0)), n_layers - 1))
+        direction, dmeta = _pins_direction(mri_path, int(steer.get("a", 0)),
+                                           int(steer.get("b", 0)), layer)
+        if direction is None:
+            steer_meta = dmeta
+        else:
+            model_rid = _resolve_live_model_id(mri_path, model_id)
+            try:
+                backend = _get_steer_backend(model_rid)
+                res = backend.forward(prompt, return_residual=True,
+                                      residual_layers=list(range(n_layers)),
+                                      steer_dirs={layer: (direction, 1.0)},
+                                      alpha=float(steer.get("alpha", 1.0)))
+                resid = getattr(res, "residuals", None)
+                if resid:
+                    frame = _load_frozen_frame(mri_path, n_layers)
+                    s_scores, _ = _project_frozen(frame, resid, n_layers)
+                    steered = _river_from_scores(mri_path, _vecs(s_scores),
+                                                 n_layers, k=k)
+                    if isinstance(steered, dict):
+                        steered = None
+                    steer_meta = dict(dmeta)
+                    steer_meta["alpha"] = float(steer.get("alpha", 1.0))
+                    steer_meta["prediction"] = str(getattr(res, "top_token", ""))
+            except Exception as e:  # noqa: BLE001 - steered fan is optional
+                steer_meta = {"error": f"steered river failed: {e}"}
+
+    return {
+        "prompt": prompt,
+        "k": k,
+        "n_layers": n_layers,
+        "prediction": lf.get("prediction"),
+        "entropy": lf.get("entropy"),
+        "clean": clean,
+        "steered": steered,
+        "steer_meta": steer_meta,
+        "scores": lf.get("scores"),
+        "latency_ms": round((time.perf_counter() - started) * 1000.0, 1),
+    }
 
 
 _steer_backend_cache = {}
@@ -4999,6 +5154,19 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             result = _live_walk(mri_path, prompt, model_id=model_id,
                                 max_tokens=max_tokens)
             self._send_json(result)
+
+        elif path == '/api/live-river':
+            # The Readout River: per-layer top-k logit lens for a live prompt.
+            # Body: {mri_model, mode, model_id, prompt, k?, steer:{layer,a,b,alpha}?}
+            mri_model = args.get("mri_model", "")
+            prompt = args.get("prompt", "")
+            if not mri_model or not prompt:
+                self._send_json({"error": "mri_model and prompt required"})
+                return
+            self._send_json(_live_river(
+                self._mri_path(mri_model, args.get("mode", "raw")),
+                prompt, model_id=args.get("model_id", ""),
+                k=int(args.get("k", 8)), steer=args.get("steer")))
 
         elif path == '/api/nn-check':
             # Is the live state near ANY token's frozen position? Body:

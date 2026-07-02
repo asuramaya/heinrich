@@ -103,11 +103,26 @@ readout direction** (which token the state *projects onto*), not as proximity
 to that token's location in state space. Distance-to-state and
 preference-to-emit are different geometries.
 
-**v3 verdict: the READOUT form of the hypothesis is CONFIRMED — with a sharp
-decision band at L22–L24.** Same prompts and panel; measure = per-layer logit
-lens (hidden state reconstructed exactly from full-K scores, final RMSNorm,
-dot with the answer's lm_head row; `/api/homing-run` with `readout: true`).
-Results (`docs/data/homing-study-v3.json`):
+**v3 verdict: the READOUT form of the hypothesis is CONFIRMED — commit
+concentrated in a late band, L20–L27.** Same prompts and panel; measure =
+per-layer logit lens (hidden state reconstructed exactly from full-K scores,
+projected through the norm-folded lm_head; `/api/homing-run` readout: true).
+
+**Instrument correction (July 2026, after first publication):** the original
+v3 run double-applied the final norm weight — `lmhead.npy` is probed through
+the model's own RMSNorm with one-hot bases, so w·√D is already folded in
+columnwise; the correct readout is `lmhead.npy @ (h/‖h‖)` with NO further w.
+A related backend fix: transformers' last hidden_states entry is POST-final-
+norm, so live L{last} residuals were in the wrong frame (now hooked pre-norm).
+Corrected results (`docs/data/homing-study-v3-corrected.json`; original kept
+as `homing-study-v3.json` for the record):
+- The headline is unchanged: answer out-reads the whole panel at the final
+  layer in 28/28 runs (mean final rank 0.0).
+- The commit band is broader than first reported: L20–L27 holds 23/28 runs
+  (was: "L22–L24 in 20/28", partly an artifact of the mis-weighted readout).
+- The correct-vs-incorrect timing separation weakens under the corrected
+  measure and should not be leaned on.
+Original (superseded) numbers below for provenance:
 - Final layer: the answer out-reads the whole background panel in **28/28**
   runs (mean final rank 0.0) — even when the model's actual top-1 is a
   function word outside the panel.
