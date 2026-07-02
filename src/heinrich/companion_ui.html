@@ -225,6 +225,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
       <div id="dirColorStatus" class="dcs" style="display:none">projecting direction&hellip;</div>
       <div id="sepPanel" class="panel-card" style="display:none" title="Run exact direction analysis for the pinned pair"><div class="pane-head"><div><div class="pane-title">Direction Analysis</div><div class="pane-note" id="sepNote">exact, on demand</div></div><button id="sepRun" class="mini-btn" type="button">Analyze</button></div><div style="color:#555;font-size:7px;margin-bottom:2px">Max separation PCs <span id="sepDist" style="color:#888"></span></div><div id="sepList" style="font-size:8px"></div></div>
       <div id="attnPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Attention</div><div class="pane-note">Token A · current layer</div></div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
+      <div id="homingPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Homing</div><div class="pane-note">live &rarr; pinned, per layer</div></div><canvas id="homingChart" height="54" style="width:100%;height:54px"></canvas><div id="homingText" style="font-size:8px;color:#888;margin-top:2px"></div></div>
     </div>
     <div class="tok-tabs" id="tokTabs">
       <button class="tab-btn active" data-tab="find">Find</button>
@@ -489,8 +490,60 @@ function _renderLivePoint(d){
     if(pts.length>=6){line.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pts),3));line.geometry.computeBoundingSphere&&line.geometry.computeBoundingSphere();line.visible=true;}
     else line.visible=false;}
   _updateLiveMarkers();
+  try{_homingUpdate();}catch(e){}// distance-to-pinned readout
 }
-function _clearLivePoint(){_liveScores=null;liveCloudMarkers.forEach(m=>m.visible=false);liveTrajLines.forEach(l=>l.visible=false);_needsRender=true;}
+function _clearLivePoint(){_liveScores=null;liveCloudMarkers.forEach(m=>m.visible=false);liveTrajLines.forEach(l=>l.visible=false);_homingCache=null;const hp=document.getElementById('homingPanel');if(hp)hp.style.display='none';_needsRender=true;}
+// --- Homing: per-layer distance from the live trajectory to the pinned token(s) ---
+// The study's core measurement. Live scores (residual @ L{l}_components) and the
+// frozen token's scores (token-pca, same components) share the basis, so raw L2
+// over the shared PCs is the geometric distance — watch it collapse at L*.
+let _homingCache=null;
+function _homingDistances(vec){
+  const out=[];const layers=Object.keys(_liveScores).map(Number).sort((a,b)=>a-b);
+  for(const l of layers){
+    const lv=_liveScores[String(l)]&&_liveScores[String(l)][0];
+    if(!lv||l>=vec.nL){out.push({l,d:null});continue;}
+    const K=Math.min(lv.length,vec.fK);let s=0;
+    for(let k=0;k<K;k++){const diff=lv[k]-vec.data[l*vec.fK+k];s+=diff*diff;}
+    out.push({l,d:Math.sqrt(s)});
+  }
+  return out;
+}
+async function _homingUpdate(){
+  const panel=document.getElementById('homingPanel');if(!panel)return;
+  if(!_liveScores||pinnedToken<0){panel.style.display='none';_homingCache=null;return;}
+  const nLayers=Object.keys(_liveScores).length;
+  const sig=model+'|'+mode+'|'+pinnedToken+'|'+pinnedTokenB+'|'+nLayers;
+  if(_homingCache&&_homingCache.sig===sig){_homingDraw();return;}
+  panel.style.display='block';
+  const vecA=await _fetchTokenVec(model,mode,pinnedToken);
+  if(!vecA){panel.style.display='none';return;}
+  const vecB=pinnedTokenB>=0?await _fetchTokenVec(model,mode,pinnedTokenB):null;
+  _homingCache={sig,distA:_homingDistances(vecA),distB:vecB?_homingDistances(vecB):null};
+  _homingDraw();
+}
+function _homingDraw(){
+  const c=document.getElementById('homingChart');if(!c||!_homingCache)return;
+  const dpr=window.devicePixelRatio||1;const W=c.width=Math.max(1,c.clientWidth*dpr),H=c.height=54*dpr;
+  const ctx=c.getContext('2d');ctx.clearRect(0,0,W,H);
+  const {distA,distB}=_homingCache;
+  const all=[...distA.map(x=>x.d),...(distB?distB.map(x=>x.d):[])].filter(x=>x!=null);
+  if(!all.length)return;
+  const mx=Math.max(...all)||1,nL=distA.length,layers=distA.map(x=>x.l);
+  const X=i=>nL>1?(i/(nL-1))*(W-6)+3:W/2,Y=d=>H-4-(d/mx)*(H-8);
+  const curve=(dist,col)=>{ctx.strokeStyle=col;ctx.lineWidth=1.5*dpr;ctx.beginPath();let st=false;
+    dist.forEach((p,i)=>{if(p.d==null)return;const x=X(i),y=Y(p.d);st?ctx.lineTo(x,y):(ctx.moveTo(x,y),st=true);});ctx.stroke();};
+  if(distB)curve(distB,'#4477AA');
+  curve(distA,'#FF6644');
+  const ci=layers.indexOf(cL);
+  if(ci>=0){ctx.strokeStyle='rgba(255,255,255,0.35)';ctx.lineWidth=dpr;ctx.beginPath();ctx.moveTo(X(ci),0);ctx.lineTo(X(ci),H);ctx.stroke();}
+  let star=-1,sd=1e9;distA.forEach((p,i)=>{if(p.d!=null&&p.d<sd){sd=p.d;star=i;}});
+  if(star>=0){ctx.fillStyle='#FF6644';ctx.beginPath();ctx.arc(X(star),Y(sd),3*dpr,0,7);ctx.fill();}
+  const t=document.getElementById('homingText');
+  if(t){let s=star>=0?`A nearest @ L${distA[star].l} (d=${sd.toFixed(1)})`:'';
+    if(distB){let dec=-1;for(let i=0;i<distA.length;i++){if(distA[i].d!=null&&distB[i]&&distB[i].d!=null&&distA[i].d<distB[i].d){dec=distA[i].l;break;}}s+=dec>=0?` · A<B from L${dec}`:' · A never < B';}
+    t.textContent=s;}
+}
 // === Three-tier PC data cache ===
 // Full: [nLayers * nTokens] per PC — for selected PCs. Clouds + trajectories.
 // Medium: [nLayers * nSample] per PC — for radial neighbors.
@@ -4058,6 +4111,7 @@ async function _onPinChange(){
       _pinChangeDebounce=null;
       const gen=++_pinChangeGen;
       _nfUpdateActivations();
+      try{_homingUpdate();}catch(e){}// pinned token(s) are the homing target(s)
       const tokA=pinnedToken,tokB=pinnedTokenB;
       // Critical path: fire each endpoint in parallel. Each Python http
       // thread does its own work; mmap + Gram + random-bm caches make
@@ -4130,6 +4184,7 @@ function updateHUD(){
 let _briefLayerTimer=null;
 function setLayer(l,light){cL=l;updateAllViewports();updateHUD();
   _updateLiveMarkers();// live point follows the layer slider
+  try{_homingDraw();}catch(e){}// move the current-layer marker on the homing curve
   _updateBrowserLayer();_updateBrowserSelBoxes();
   if(!light)_updateBrowserOverlay();
   updateLeftViewports();
@@ -5885,7 +5940,7 @@ window.__heinrich = {
   // --- live model (agent-drivable): run a prompt through the live model, render its landing ---
   liveForward:(prompt)=>_runLiveForward(prompt), get liveScores(){return _liveScores;},
   get liveVisible(){return liveCloudMarkers.some(m=>m.visible)||liveTrajLines.some(l=>l.visible);},
-  get pollActive(){return _pollActive;}, handleNav:(m)=>_handleNavigate(m),
+  get pollActive(){return _pollActive;}, handleNav:(m)=>_handleNavigate(m), get homing(){return _homingCache;},
   // --- state readers ---
   get views(){return views;}, get leftViews(){return leftViews;}, get rightViews(){return rightViews;},
   get vpPairs(){return vpPairs;}, get dirDepth(){return _dirDepthData;},
