@@ -240,6 +240,9 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
             <div class="search-row" style="margin-bottom:0">
               <input id="tsearch" type="text" placeholder="search tokens...">
             </div>
+            <div class="search-row" style="margin-bottom:0;margin-top:4px">
+              <input id="ovinput" type="text" placeholder="overlay: texts, or /regex/" title="Spotlight up to 200 full-vocabulary tokens as gold points in the clouds. Comma-separated texts, or /regex/ over the vocab.">
+            </div>
             <div id="tsresults" style="max-height:140px;overflow-y:auto;font-size:8px;color:#555;margin-top:6px"></div>
           </div>
           <div class="panel-card">
@@ -656,6 +659,111 @@ async function _ensureVocabMeta(){
   try{const j=await(await _apiFetch(`/api/vocab-meta/${encodeURIComponent(model)}/${encodeURIComponent(mode)}`)).json();
     if(!j.error&&_vocabMetaKey===key)_vocabMetaCache=j;}catch(e){}
   return _vocabMetaCache;
+}
+// --- Vocab overlay: query-driven LOD into the FULL vocabulary ---
+// The published cloud is a ~2K sample. The overlay renders up to 200 vocab
+// tokens (from search matches or an explicit list) as dim-gold points at their
+// true frozen coordinates in the SAME frame, following the layer slider. It is
+// NOT "render all 48K" — it's a spotlight resolved on demand via /api/vocab-token
+// (concurrency-limited fetch pool, bounded row cache).
+const OVERLAY_MAX=200,OVERLAY_ROW_CACHE_MAX=500,OVERLAY_POOL=6;
+let _overlayEntries=[];// [{row,text,vec:{nL,fK,data}}] currently rendered (index-aligned to points)
+const _overlayRowCache=new Map();// key model|mode|row -> vec, insertion-ordered LRU
+let _overlaySeq=0;// bump to supersede in-flight resolves on switch/retype
+const overlayCloudPts=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(0),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.10,color:0xAA8800,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=11;p.visible=false;p.frustumCulled=false;v.sc.add(p);return p;});
+const _overlayTagEls=[];// per-cloud-viewport honesty tag (bottom-left)
+for(let _ovi=0;_ovi<NC;_ovi++){const host=document.getElementById('vp'+_ovi);if(host){const el=document.createElement('div');el.className='ovtag';el.style.cssText='position:absolute;bottom:3px;left:4px;font-size:8px;color:#9a8636;pointer-events:none;z-index:2;text-shadow:0 0 3px #000';host.appendChild(el);_overlayTagEls[_ovi]=el;}else _overlayTagEls[_ovi]=null;}
+function _overlayCacheGet(row){return _overlayRowCache.get(model+'|'+mode+'|'+row);}
+function _overlayCachePut(row,vec){const k=model+'|'+mode+'|'+row;if(_overlayRowCache.has(k))_overlayRowCache.delete(k);_overlayRowCache.set(k,vec);
+  while(_overlayRowCache.size>OVERLAY_ROW_CACHE_MAX){const fk=_overlayRowCache.keys().next().value;_overlayRowCache.delete(fk);}}
+function _overlayVec(entry,l){const{nL,fK,data}=entry.vec;return l<nL?data.subarray(l*fK,(l+1)*fK):null;}
+// Resolve+fetch up to OVERLAY_MAX rows through a pool of OVERLAY_POOL workers.
+async function _overlayFetchRows(pairs,seq){
+  const out=new Array(pairs.length).fill(null);let idx=0;
+  async function worker(){
+    while(idx<pairs.length){const my=idx++;const{row,text}=pairs[my];
+      if(seq!==_overlaySeq)return;// superseded
+      let vec=_overlayCacheGet(row);
+      if(!vec){try{vec=await _fetchVocabVec(row);}catch(e){vec=null;}if(vec&&seq===_overlaySeq)_overlayCachePut(row,vec);}
+      if(seq!==_overlaySeq)return;
+      if(vec)out[my]={row,text,vec};}
+  }
+  const ws=[];for(let w=0;w<Math.min(OVERLAY_POOL,pairs.length);w++)ws.push(worker());
+  await Promise.all(ws);
+  return out.filter(Boolean);
+}
+// Set the overlay to a list of {row,text}. Deduped, capped, last-writer-wins.
+async function _setOverlay(pairs){
+  const seq=++_overlaySeq;
+  const seen=new Set(),uniq=[];
+  for(const p of (pairs||[])){if(!p||p.row==null||seen.has(p.row))continue;seen.add(p.row);uniq.push({row:p.row,text:p.text||''});if(uniq.length>=OVERLAY_MAX)break;}
+  if(!uniq.length){_overlayEntries=[];_updateOverlayMarkers();_updateOverlayTag();return 0;}
+  const entries=await _overlayFetchRows(uniq,seq);
+  if(seq!==_overlaySeq)return _overlayEntries.length;// a newer set already landed
+  _overlayEntries=entries;_updateOverlayMarkers();_updateOverlayTag();
+  return entries.length;
+}
+function _clearOverlay(){_overlaySeq++;_overlayEntries=[];_updateOverlayMarkers();_updateOverlayTag();}
+// Resolve an array of texts to vocab rows (exact match first, then substring).
+async function _resolveOverlayTexts(arr){
+  const vt=await _ensureVocabTexts();if(!vt)return [];
+  const pairs=[],seen=new Set();
+  for(const w of (arr||[])){if(w==null)continue;
+    let found=-1;
+    for(let r=0;r<vt.length;r++){if(vt[r]===w){found=r;break;}}
+    if(found<0){const wl=String(w).trim().toLowerCase();if(wl)for(let r=0;r<vt.length;r++){if((vt[r]||'').toLowerCase().includes(wl)){found=r;break;}}}
+    if(found>=0&&!seen.has(found)){seen.add(found);pairs.push({row:found,text:vt[found]});}
+    if(pairs.length>=OVERLAY_MAX)break;}
+  return pairs;
+}
+// Parse the overlay-input spec: /regex/flags OR comma-separated texts.
+async function _resolveOverlayQuery(spec){
+  spec=(spec||'').trim();if(!spec)return [];
+  const rx=spec.match(/^\/(.*)\/([a-z]*)$/);
+  if(rx){const vt=await _ensureVocabTexts();if(!vt)return [];
+    let re;try{re=new RegExp(rx[1],rx[2]||'');}catch(e){return [];}
+    const pairs=[];for(let r=0;r<vt.length&&pairs.length<OVERLAY_MAX;r++){if(vt[r]&&re.test(vt[r]))pairs.push({row:r,text:vt[r]});}
+    return pairs;}
+  return _resolveOverlayTexts(spec.split(',').map(s=>s).filter(s=>s.length));
+}
+function _ovInputActive(){const el=document.getElementById('ovinput');return !!(el&&el.value.trim());}
+// Recompute overlay point positions at the current layer, index-aligned to
+// _overlayEntries so raycast hits map back to the right token. Invalid coords
+// (missing frame or out-of-range layer) park off-screen but keep their slot.
+function _updateOverlayMarkers(){
+  const n=_overlayEntries.length;
+  for(let vi=0;vi<views.length;vi++){const v=views[vi];const pts=overlayCloudPts[vi];
+    if(vi>=NC||!n){pts.visible=false;continue;}
+    let arr=pts.geometry.attributes.position.array;
+    if(arr.length!==n*3){arr=new Float32Array(n*3);pts.geometry.setAttribute('position',new THREE.BufferAttribute(arr,3));}
+    for(let j=0;j<n;j++){const vec=_overlayVec(_overlayEntries[j],cL);const c=vec?_liveCoordCloud(v,cL,vec):null;
+      if(c){arr[j*3]=c[0];arr[j*3+1]=c[1];arr[j*3+2]=c[2];}
+      else{arr[j*3]=9999;arr[j*3+1]=9999;arr[j*3+2]=9999;}}
+    pts.geometry.attributes.position.needsUpdate=true;
+    pts.geometry.computeBoundingSphere&&pts.geometry.computeBoundingSphere();
+    pts.visible=true;}
+  _needsRender=true;
+}
+async function _updateOverlayTag(){
+  const vmeta=await _ensureVocabMeta();
+  const nRows=(vmeta&&(vmeta.n_rows||vmeta.n_tokens||vmeta.vocab_size))||null;
+  const nSamp=nN||0;
+  const base=nRows?`${nSamp.toLocaleString()} of ${nRows.toLocaleString()} sampled`:`${nSamp.toLocaleString()} sampled`;
+  const n=_overlayEntries.length;
+  const txt=n>0?`cloud: ${base} · overlay: ${n} vocab`:base;
+  for(let vi=0;vi<NC;vi++){const el=_overlayTagEls[vi];if(el)el.textContent=txt;}
+}
+// Raycast the gold overlay points in a cloud viewport -> _overlayEntries index.
+function _overlayRayHit(vi,e){
+  if(vi>=NC)return -1;const pts=overlayCloudPts[vi];if(!pts||!pts.visible||!_overlayEntries.length)return -1;
+  const v=views[vi];const r=v.cv.getBoundingClientRect();
+  ms.x=((e.clientX-r.left)/r.width)*2-1;ms.y=-((e.clientY-r.top)/r.height)*2+1;
+  ray.setFromCamera(ms,v.cam);
+  const vpH=r.height||1;const fovRad=v.cam.fov*Math.PI/180;const pixelToWorld=2*Math.tan(fovRad/2)/vpH;const d=v.cam.position.length()||1;
+  ray.params.Points.threshold=7*pixelToWorld*d;
+  const h=ray.intersectObject(pts);if(!h.length)return -1;
+  h.sort((a,b)=>a.distanceToRay-b.distanceToRay);
+  return h[0].index<_overlayEntries.length?h[0].index:-1;
 }
 // --- Homing: per-layer distance from the live trajectory to the pinned token(s) ---
 // The study's core measurement. Live scores (residual @ L{l}_components) and the
@@ -1903,7 +2011,15 @@ let _hoverPending=null,_hoverRAF=0;
 function _processHover(){
   _hoverRAF=0;const pend=_hoverPending;_hoverPending=null;
   if(!pend||!nN)return;
-  const {vi,e}=pend;const i=_rayHit(vi,e);const td=document.getElementById('detail');
+  const {vi,e}=pend;
+  // Overlay points sit on top (renderOrder 11) — pick them first.
+  const ov=_overlayRayHit(vi,e);
+  if(ov>=0){const ent=_overlayEntries[ov];const td2=document.getElementById('detail');highlightToken(-1);
+    const ttEl=document.getElementById('tt');ttEl.textContent=ent.text||'?';ttEl.style.color='#FFD700';
+    document.getElementById('tm').textContent=`vocab row ${ent.row} · overlay (click=T1, shift=T2)`;
+    let _px=e.clientX+15,_py=e.clientY-10;if(_px+220>window.innerWidth)_px=e.clientX-225;if(_py+120>window.innerHeight)_py=window.innerHeight-125;if(_py<5)_py=5;
+    td2.style.left=_px+'px';td2.style.top=_py+'px';td2.style.transform='none';td2.style.display='block';return;}
+  const i=_rayHit(vi,e);const td=document.getElementById('detail');
   if(i>=0){highlightToken(i);document.getElementById('tt').textContent=texts[i]||'?';document.getElementById('tt').style.color=CLh[scripts[i]]||'#aaa';document.getElementById('tm').textContent=_popupText(i,vi);let _px=e.clientX+15,_py=e.clientY-10;if(_px+220>window.innerWidth)_px=e.clientX-225;if(_py+120>window.innerHeight)_py=window.innerHeight-125;if(_py<5)_py=5;td.style.left=_px+'px';td.style.top=_py+'px';td.style.transform='none';td.style.display='block';}
   else{highlightToken(-1);td.style.display='none';}
 }
@@ -2026,6 +2142,9 @@ function setupInteraction(vi){const v=views[vi];
   v.cv.addEventListener('pointerup',e=>{_clearLP();
     if(_lpFired){_lpFired=false;return;}// long-press already pinned B; the lift is not a tap
     if(!nN||Math.abs(e.clientX-_dx)+Math.abs(e.clientY-_dy)>5)return;
+    // Overlay points take priority: click sets the gold target T1, shift/right sets T2.
+    const ov=_overlayRayHit(vi,e);
+    if(ov>=0){const ent=_overlayEntries[ov];if(_isRightClick(e))_setVocabTarget2(ent.row,ent.text);else _setVocabTarget(ent.row,ent.text);return;}
     const i=_rayHit(vi,e);
     if(i>=0){if(_isRightClick(e)){pinnedTokenB=i;}else{pinnedToken=i;loadAttnData(i);}updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();}
     else if(!_isRightClick(e)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();}});}
@@ -2295,7 +2414,7 @@ function updateAllViewports(){
       for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];updateVP(i,a,b,thirdPC(a,b),cL);}
       for(let i=NC;i<NV;i++)updateTrajMarker(i);
       if(pinnedToken>=0||pinnedTokenB>=0)_syncAllPins(true);
-      buildBrowser();_markDirty();
+      buildBrowser();_updateOverlayMarkers();_markDirty();
     }
     // Async: fetch missing PC data, rebuild when ready
     _ensurePCData().then(()=>{
@@ -2303,7 +2422,7 @@ function updateAllViewports(){
       for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];updateVP(i,a,b,thirdPC(a,b),cL);}
       for(let i=NC;i<NV;i++)updateTrajMarker(i);
       if(pinnedToken>=0||pinnedTokenB>=0)_syncAllPins(true);
-      buildBrowser();
+      buildBrowser();_updateOverlayMarkers();
     });
     _lastPK=pk;
     return;
@@ -2312,6 +2431,7 @@ function updateAllViewports(){
   for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];updateVP(i,a,b,thirdPC(a,b),cL);}
   for(let i=NC;i<NV;i++)updateTrajMarker(i);
   if(pinnedToken>=0||pinnedTokenB>=0)_syncAllPins(true);
+  _updateOverlayMarkers();
 }
 
 // 3D prism — all PC pairs as mini point clouds. One merged geometry per layer.
@@ -4566,6 +4686,8 @@ async function loadAll(){
   const _liveSessionStatus=document.getElementById('liveSessionStatus');if(_liveSessionStatus){_liveSessionStatus.style.color='#777';_liveSessionStatus.textContent='session idle';}
   const _tsEl=document.getElementById('tsearch');if(_tsEl)_tsEl.value='';
   const _tsR=document.getElementById('tsresults');if(_tsR)_tsR.textContent='';
+  const _ovIn=document.getElementById('ovinput');if(_ovIn)_ovIn.value='';
+  _clearOverlay();// vocab overlay is per model|mode — drop it on switch
 
   // Preserve cameras across switches (don't reset if user has been orbiting)
   if(!isSameModel){views.forEach(v=>{v.cam.position.set(0,0,2.5);v.ctl.target.set(0,0,0);v.ctl.update();v._fitted=false;});brCam._fitted=false;}
@@ -4611,6 +4733,7 @@ async function loadAll(){
   _initPCSScene();
   _clearBrowserSelBoxes();_lastPK='';
   setLayer(_rstL);showPinDetail(pinnedToken);updatePinMarkers();
+  _updateOverlayTag();// render the honesty tag (sample-of-vocab counts) even with no overlay
   document.getElementById('st').textContent=`${model}/${mode} ${nN}tok ${nL}L`;
   _prevModel=model;_prevMode=mode;
   // If both pins restored from URL, trigger the dependent fetches so
@@ -4657,8 +4780,8 @@ async function init(){const models=await api('models');const sel=document.getEle
     clearTimeout(_searchTimer);
     _searchTimer=setTimeout(()=>{
       const q=e.target.value.toLowerCase().trim();_tsResults.textContent='';
-      if(!q||q.length<1||!texts.length)return;
-      const frag=document.createDocumentFragment();let count=0;
+      if(!q||q.length<1||!texts.length){if(!_ovInputActive())_clearOverlay();return;}
+      const frag=document.createDocumentFragment();let count=0;const _ovPairs=[];
       // Direction context: if dir colors active, annotate A-side / B-side and magnitude.
       const dp=_dirColorActive&&_dirProjLast;
       for(let i=0;i<texts.length&&count<20;i++){
@@ -4694,10 +4817,13 @@ async function init(){const models=await api('models');const sel=document.getEle
             const tag=document.createElement('span');tag.style.cssText='color:#FFD700;font-size:8px;min-width:38px;text-align:right';
             tag.textContent='vocab';tag.title='Not in the sampled cloud — click to set as homing target at its true frozen coordinates';d.appendChild(tag);
             d.dataset.vr=r;d.dataset.vt=vt;
-            frag.appendChild(d);vcount++;
+            frag.appendChild(d);vcount++;_ovPairs.push({row:r,text:vt});
           }
         }
         count+=vcount;
+        // Search doubles as a cloud spotlight: the gold vocab rows populate the
+        // overlay (unless the explicit overlay input is driving it).
+        if(!_ovInputActive())_setOverlay(_ovPairs);
       }else if(count<20&&_vocabTexts===null&&_vocabTextsKey!==model+'|'+mode){
         // kick off the lazy vocab list fetch; re-run this search when it lands
         _ensureVocabTexts().then(v=>{if(v)document.getElementById('tsearch').dispatchEvent(new Event('input'));});
@@ -4706,6 +4832,15 @@ async function init(){const models=await api('models');const sel=document.getEle
       _tsResults.appendChild(frag);
     },150);
   });
+  // Explicit overlay spotlight: comma-separated texts or /regex/, up to 200 vocab tokens.
+  const _ovEl=document.getElementById('ovinput');
+  if(_ovEl){let _ovTimer=null;_ovEl.addEventListener('input',ev=>{clearTimeout(_ovTimer);
+    _ovTimer=setTimeout(async()=>{const spec=ev.target.value.trim();
+      if(!spec){_clearOverlay();
+        // fall back to the current search spotlight if the box has text
+        const _sq=(document.getElementById('tsearch')||{}).value;if(_sq&&_sq.trim())document.getElementById('tsearch').dispatchEvent(new Event('input'));
+        return;}
+      const pairs=await _resolveOverlayQuery(spec);await _setOverlay(pairs);},250);});}
   const _htClear=document.getElementById('homingTargetClear');
   if(_htClear)_htClear.addEventListener('click',()=>_clearVocabTarget());
   const _htClear2=document.getElementById('homingTargetClear2');
@@ -6262,6 +6397,14 @@ window.__heinrich = {
   setTarget2:(row,text)=>_setVocabTarget2(row,text), clearTarget2:()=>_clearVocabTarget2(),
   get target2(){return _vocabTarget2?{row:_vocabTarget2.row,text:_vocabTarget2.text,nL:_vocabTarget2.vec.nL}:null;},
   homingExport:()=>_homingExport(),
+  // --- vocab cloud overlay (query-driven LOD) ---
+  get overlay(){return {n:_overlayEntries.length,texts:_overlayEntries.map(e=>e.text),rows:_overlayEntries.map(e=>e.row)};},
+  setOverlay:async(arr)=>{const pairs=await _resolveOverlayTexts(Array.isArray(arr)?arr:[]);return _setOverlay(pairs);},
+  setOverlayQuery:async(spec)=>{const pairs=await _resolveOverlayQuery(String(spec||''));return _setOverlay(pairs);},
+  clearOverlay:()=>_clearOverlay(),
+  overlayPickT1:(i=0)=>{const e=_overlayEntries[i];return e?_setVocabTarget(e.row,e.text):false;},
+  overlayPickT2:(i=0)=>{const e=_overlayEntries[i];return e?_setVocabTarget2(e.row,e.text):false;},
+  overlayPoint:(i=0,vi=0)=>{const e=_overlayEntries[i];if(!e)return null;const v=views[vi];const vec=_overlayVec(e,cL);const c=(v&&vec)?_liveCoordCloud(v,cL,vec):null;return {row:e.row,text:e.text,layer:cL,x:c?c[0]:null,y:c?c[1]:null,z:c?c[2]:null};},
   // --- state readers ---
   get views(){return views;}, get leftViews(){return leftViews;}, get rightViews(){return rightViews;},
   get vpPairs(){return vpPairs;}, get dirDepth(){return _dirDepthData;},
