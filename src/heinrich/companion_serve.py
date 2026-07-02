@@ -289,3 +289,27 @@ def vocab_meta(mri_path: str) -> dict:
     if not p.exists():
         return {"error": "No full-vocab projection — run: heinrich mri-vocab"}
     return json.loads(p.read_text())
+
+
+_VP16_MAGIC = b"VP16"
+
+
+def vocab_pc_column(mri_path: str, layer: int, pc: int) -> bytes | dict:
+    """One (layer, pc) display column for ALL vocab rows from vocab_pc16.bin.
+
+    Wire: <III layer, pc, n_rows> + float16[n_rows]. O(1) seek — this is what
+    makes the zoom-progressive full-vocab cloud one range-read per axis.
+    """
+    vp = Path(mri_path) / "decomp" / "vocab_pc16.bin"
+    if not vp.exists():
+        return {"error": "No vocab_pc16.bin — run: heinrich mri-vocab --pc16-only"}
+    with open(vp, "rb") as f:
+        magic, n_layers, n_pcs, n_rows = struct.unpack("<4sIII", f.read(16))
+        if magic != _VP16_MAGIC:
+            return {"error": f"Bad vocab_pc16.bin magic: {magic!r}"}
+        if not (0 <= layer < n_layers) or not (0 <= pc < n_pcs):
+            return {"error": f"layer {layer}/pc {pc} out of range "
+                             f"({n_layers} layers, {n_pcs} pcs)"}
+        f.seek(16 + (layer * n_pcs + pc) * n_rows * 2)
+        data = f.read(n_rows * 2)
+    return struct.pack("<III", layer, pc, n_rows) + data

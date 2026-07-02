@@ -27,7 +27,8 @@ from typing import Any
 import numpy as np
 
 from .companion_serve import (load_serve_meta, resolve_pc_index, resolve_token_index,
-                              vocab_resolve, vocab_token_row, vocab_meta)
+                              vocab_resolve, vocab_token_row, vocab_meta,
+                              vocab_pc_column)
 
 
 _CLOUD_BUNDLE_MAGIC = b"CLDB"
@@ -2620,6 +2621,83 @@ def _homing_run(mri_path: str, model_id: str = "", prompt: str = "",
     return out
 
 
+def _nn_check(mri_path: str, prompt: str, model_id: str = "",
+              layers: list | None = None, k: int = 5) -> dict:
+    """Is the live state actually near ANY token's frozen position?
+
+    The rendered cloud is a sample; 'the live point sits off-cloud' could
+    mean 'off-sample'. This measures it exactly: per layer, the live
+    last-token state's nearest neighbors across the ENTIRE full-vocab
+    projection, against a baseline of typical token-to-token NN distance
+    (100 random frozen rows vs the whole population). ratio >> 1 means the
+    live contextual state is genuinely far from every token's frozen
+    position — a fact about the model, not the sampling.
+    """
+    import struct as _struct
+
+    decomp = Path(mri_path) / "decomp"
+    vpath = decomp / "vocab_scores.bin"
+    if not vpath.exists():
+        return {"error": "No full-vocab projection — run: heinrich mri-vocab"}
+    with open(vpath, "rb") as f:
+        magic, n_rows, n_layers_v, K = _struct.unpack("<4sIII", f.read(16))
+    if magic != b"VSCR":
+        return {"error": f"Bad vocab_scores.bin magic: {magic!r}"}
+    blob = np.memmap(str(vpath), dtype=np.float16, mode="r", offset=16,
+                     shape=(n_rows, n_layers_v, K))
+
+    lf = _live_forward(mri_path, prompt, model_id=model_id)
+    if "error" in lf:
+        return {"error": lf["error"]}
+    live: dict[int, np.ndarray] = {}
+    for layer, sc in lf.get("scores", {}).items():
+        arr = np.asarray(sc, dtype=np.float32)
+        live[int(layer)] = arr[-1] if arr.ndim == 2 else arr
+    avail = sorted(live.keys())
+    if not avail:
+        return {"error": "no live layers"}
+    if not layers:
+        n = len(avail)
+        layers = sorted({avail[0], avail[n // 4], avail[n // 2],
+                         avail[(3 * n) // 4], avail[-1]})
+
+    texts = []
+    vt_path = decomp / "vocab_tokens.json"
+    if vt_path.exists():
+        texts = json.loads(vt_path.read_text())
+
+    rng = np.random.RandomState(42)
+    base_idx = rng.choice(n_rows, min(100, n_rows), replace=False)
+
+    out_layers = []
+    for L in layers:
+        if L not in live or L >= n_layers_v:
+            continue
+        pop = np.asarray(blob[:, L, :]).astype(np.float32)     # [n_rows, K]
+        lv = live[L][:pop.shape[1]]
+        d = np.linalg.norm(pop - lv, axis=1)
+        order = np.argsort(d)[:k]
+        # Baseline: NN distance of random frozen tokens to the rest
+        base = pop[base_idx]
+        d2 = ((base ** 2).sum(1)[:, None] - 2 * base @ pop.T
+              + (pop ** 2).sum(1)[None, :])
+        d2[np.arange(len(base_idx)), base_idx] = np.inf  # exclude self
+        token_nn = np.sqrt(np.maximum(d2.min(axis=1), 0))
+        med = float(np.median(token_nn))
+        out_layers.append({
+            "layer": int(L),
+            "live_nn_dist": round(float(d[order[0]]), 2),
+            "live_nn": [{"text": texts[i] if i < len(texts) else f"#{i}",
+                         "d": round(float(d[i]), 2)} for i in order],
+            "token_nn_median": round(med, 2),
+            "token_nn_p90": round(float(np.percentile(token_nn, 90)), 2),
+            "off_manifold_ratio": round(float(d[order[0]]) / (med + 1e-9), 2),
+        })
+        del pop, d2
+    return {"prompt": prompt, "prediction": lf.get("prediction"),
+            "n_vocab_rows": int(n_rows), "layers": out_layers}
+
+
 _steer_backend_cache = {}
 _steer_backend_lock = threading.Lock()
 _steer_backend_pending: dict[str, threading.Event] = {}
@@ -4515,6 +4593,20 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 self._send_json(vocab_meta(self._mri_path(parts[3], parts[4])))
             else:
                 self._send_json({"error": "Usage: /api/vocab-meta/<model>/<mode>"})
+        elif path.startswith('/api/vocab-pc-column/'):
+            # /api/vocab-pc-column/<model>/<mode>?layer=L&pc=P — one display
+            # column for ALL vocab rows (<III layer,pc,n_rows> + f16[n_rows])
+            parts = path.split('/')
+            if len(parts) >= 5:
+                result = vocab_pc_column(self._mri_path(parts[3], parts[4]),
+                                         int(qs.get('layer', ['0'])[0]),
+                                         int(qs.get('pc', ['0'])[0]))
+                if isinstance(result, dict):
+                    self._send_json(result)
+                else:
+                    self._send_bytes(result)
+            else:
+                self._send_json({"error": "Usage: /api/vocab-pc-column/<model>/<mode>?layer=L&pc=P"})
         elif path.startswith('/api/vocab-tokens/'):
             # /api/vocab-tokens/<model>/<mode> — full-vocab text list (row-ordered)
             parts = path.split('/')
@@ -4897,6 +4989,19 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             result = _live_walk(mri_path, prompt, model_id=model_id,
                                 max_tokens=max_tokens)
             self._send_json(result)
+
+        elif path == '/api/nn-check':
+            # Is the live state near ANY token's frozen position? Body:
+            #   {mri_model, mode, model_id, prompt, layers?: [..], k?: 5}
+            mri_model = args.get("mri_model", "")
+            prompt = args.get("prompt", "")
+            if not mri_model or not prompt:
+                self._send_json({"error": "mri_model and prompt required"})
+                return
+            self._send_json(_nn_check(
+                self._mri_path(mri_model, args.get("mode", "raw")),
+                prompt, model_id=args.get("model_id", ""),
+                layers=args.get("layers"), k=int(args.get("k", 5))))
 
         elif path == '/api/homing-run':
             # Headless homing study driver. Body:

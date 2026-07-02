@@ -372,3 +372,53 @@ def frame_falsification(mri_path: str, *, k: int = 50, z_cut: float = 6.0) -> di
         vm["frame_falsification"] = result
         vm_path.write_text(json.dumps(vm, indent=2))
     return result
+
+
+def build_vocab_pc16(mri_path: str, *, n_pcs: int = 16) -> dict:
+    """Layer-major display companion to vocab_scores.bin: vocab_pc16.bin.
+
+    vocab_scores.bin is row-major ([token, layer, K]) — perfect for "one
+    token, all layers" (targeting, homing), useless for "all tokens, one
+    view" (a cloud needs per-layer PC columns; at the edge that would be
+    48K strided range reads). This writes the transpose truncated to the
+    top n_pcs DISPLAY components:
+
+        vocab_pc16.bin  VP16 header <4sIII (magic, n_layers, n_pcs, n_rows)
+                        + [n_layers, n_pcs, n_rows] float16
+
+    One (layer, pc) column = one O(1) range read (~2 bytes * n_rows).
+    Display truncation only — measurement stays exact in the row-major blob.
+    """
+    import struct as _struct
+
+    decomp = Path(mri_path) / 'decomp'
+    vpath = decomp / 'vocab_scores.bin'
+    if not vpath.exists():
+        return {"error": f"No vocab_scores.bin at {decomp} — run mri-vocab first"}
+    with open(vpath, 'rb') as f:
+        magic, n_rows, n_layers, K = _struct.unpack('<4sIII', f.read(16))
+    if magic != b'VSCR':
+        return {"error": f"Bad magic {magic!r} in vocab_scores.bin"}
+    n_pcs = min(n_pcs, K)
+
+    blob = np.memmap(str(vpath), dtype=np.float16, mode='r', offset=16,
+                     shape=(n_rows, n_layers, K))
+    out_path = decomp / 'vocab_pc16.bin'
+    hdr = _struct.pack('<4sIII', b'VP16', n_layers, n_pcs, n_rows)
+    with open(out_path, 'wb') as f:
+        f.write(hdr)
+        f.write(b'\x00' * (n_layers * n_pcs * n_rows * 2))
+    out = np.memmap(str(out_path), dtype=np.float16, mode='r+', offset=16,
+                    shape=(n_layers, n_pcs, n_rows))
+    # Chunk over rows: one sequential pass through the row-major blob.
+    for c0 in range(0, n_rows, 8192):
+        c1 = min(c0 + 8192, n_rows)
+        chunk = np.asarray(blob[c0:c1, :, :n_pcs])          # [rows, layers, pcs]
+        out[:, :, c0:c1] = np.transpose(chunk, (1, 2, 0))   # [layers, pcs, rows]
+    out.flush()
+    size_mb = (16 + n_layers * n_pcs * n_rows * 2) / (1024 * 1024)
+    print(f"  vocab_pc16: {n_layers} layers x {n_pcs} PCs x {n_rows} rows "
+          f"= {size_mb:.0f}MB", file=sys.stderr)
+    return {"mri_path": str(mri_path), "n_layers": int(n_layers),
+            "n_pcs": int(n_pcs), "n_rows": int(n_rows),
+            "size_mb": round(size_mb, 1)}
