@@ -103,12 +103,31 @@ readout direction** (which token the state *projects onto*), not as proximity
 to that token's location in state space. Distance-to-state and
 preference-to-emit are different geometries.
 
-**Next falsifiable variant (v3):** replace L2-to-frozen-exit with the live
-state's per-layer projection onto the answer's **lmh virtual-layer row**
-(already in `vocab_scores.bin`, row index nL−1) vs the background panel — i.e.,
-measure when the readout direction, not the state distance, commits. If that
-also fails to show a commit layer before the final layers, the "decision layer"
-concept itself is wrong for this model class.
+**v3 verdict: the READOUT form of the hypothesis is CONFIRMED — with a sharp
+decision band at L22–L24.** Same prompts and panel; measure = per-layer logit
+lens (hidden state reconstructed exactly from full-K scores, final RMSNorm,
+dot with the answer's lm_head row; `/api/homing-run` with `readout: true`).
+Results (`docs/data/homing-study-v3.json`):
+- Final layer: the answer out-reads the whole background panel in **28/28**
+  runs (mean final rank 0.0) — even when the model's actual top-1 is a
+  function word outside the panel.
+- **L\*read** (first layer from which the answer beats all background
+  *persistently*): concentrated at **L22–L24 in 20/28 runs** (30-layer model,
+  ~75% depth). Range L15–L29.
+- Correctness contrast: correct predictions all commit by L24 (spread
+  L15–L24); incorrect runs supply all the late stragglers (4/11 at L27–L29).
+  Earlier commit ↔ the model actually saying the answer.
+- Commit vs the matched distractor (correct runs): spread from L0 to L29 —
+  beating one near neighbor is easy early; beating the whole panel is what
+  happens at the decision band.
+
+**Combined interpretation (v2 + v3).** The final-token trajectory does not
+migrate toward the answer token's location in state space (v2, falsified); it
+**rotates its readout** so the answer's lm_head direction becomes dominant,
+and that rotation completes in a narrow band around 75% depth (v3, confirmed).
+"Homing" is a selection process in readout space, not an approach process in
+state space — consistent with Session 4's first-token-selection finding, now
+with a measured decision layer.
 
 ## Provenance requirements
 

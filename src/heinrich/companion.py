@@ -2456,12 +2456,19 @@ def _homing_crossover(a: dict, b: dict) -> dict:
 
 
 def _homing_single(mri_path: str, prompt: str, model_id: str,
-                   specs: list[dict]) -> dict:
+                   specs: list[dict], readout: bool = False) -> dict:
     """One prompt: per-layer L2 in full-K score space to each target.
 
     Distances in full-K score space ARE exact hidden-space distances
     (orthonormal PCA frame, K = hidden). Live last-token residuals are
     projected through the same frozen frame by _live_forward.
+
+    readout=True adds the logit-lens variant per target: reconstruct the
+    hidden state from the full-K scores (exact — orthonormal frame:
+    h = scores @ C + mean + baseline), apply the stored final RMSNorm
+    weight, and dot with the target token's lm_head row. This measures
+    when the READOUT DIRECTION commits to the target — the v3 form of the
+    homing hypothesis after v2 falsified the L2-proximity form.
     """
     lf = _live_forward(mri_path, prompt, model_id=model_id)
     if "error" in lf:
@@ -2501,6 +2508,45 @@ def _homing_single(mri_path: str, prompt: str, model_id: str,
     crossovers = [_homing_crossover(targets_out[i], targets_out[i + 1])
                   for i in range(len(targets_out) - 1)]
 
+    if readout and layers_sorted:
+        nz_path = Path(mri_path) / "norms.npz"
+        lh_path = Path(mri_path) / "lmhead.npy"
+        if nz_path.exists() and lh_path.exists():
+            frame = _load_frozen_frame(mri_path, max(layers_sorted) + 1)
+            norms = np.load(str(nz_path))
+            if "final" in norms:
+                w_final = norms["final"].astype(np.float32)
+                lmhead = np.load(str(lh_path), mmap_mode="r")
+                tids = {}
+                for spec in specs:
+                    t = spec["meta"].get("token_id", -1)
+                    if isinstance(t, int) and 0 <= t < lmhead.shape[0]:
+                        tids[t] = lmhead[t].astype(np.float32)
+                per_t: dict[int, list] = {t: [] for t in tids}
+                ro_layers: list[int] = []
+                for L in layers_sorted:
+                    comps = frame["comps"].get(L)
+                    if comps is None:
+                        continue
+                    k = min(live[L].shape[0], comps.shape[0])
+                    h = live[L][:k] @ comps[:k]  # centered hidden (exact)
+                    mean = frame["means"].get(L)
+                    if mean is not None:
+                        h = h + mean
+                    bl = frame["bl"].get(f"exit_L{L}")
+                    if bl is not None:
+                        h = h + bl
+                    normed = (h / np.sqrt(np.mean(h * h) + 1e-6)) * w_final
+                    ro_layers.append(L)
+                    for t, row in tids.items():
+                        per_t[t].append(float(normed @ row))
+                for entry, spec in zip(targets_out, specs):
+                    t = spec["meta"].get("token_id", -1)
+                    if t in per_t:
+                        entry["readout_curve"] = [
+                            {"l": l, "v": round(v, 4)}
+                            for l, v in zip(ro_layers, per_t[t])]
+
     return {
         "prompt": prompt,
         "n_layers": len(layers_sorted),
@@ -2514,7 +2560,8 @@ def _homing_single(mri_path: str, prompt: str, model_id: str,
 
 
 def _homing_run(mri_path: str, model_id: str = "", prompt: str = "",
-                prompts: list | None = None, targets: list | None = None) -> dict:
+                prompts: list | None = None, targets: list | None = None,
+                readout: bool = False) -> dict:
     """Headless homing driver: how a prompt's residual approaches target tokens.
 
     For each target text, resolves its frozen full-K scores (vocab projection or
@@ -2544,7 +2591,7 @@ def _homing_run(mri_path: str, model_id: str = "", prompt: str = "",
         l_star_hist: dict[str, int] = {}
         first_target = targets[0]
         for p in prompts:
-            single = _homing_single(mri_path, p, model_id, specs)
+            single = _homing_single(mri_path, p, model_id, specs, readout=readout)
             single["noise_floor"] = noise_floor
             results.append(single)
             # Aggregate l_star for the first target only. Small ints — no arrays.
@@ -2566,7 +2613,7 @@ def _homing_run(mri_path: str, model_id: str = "", prompt: str = "",
 
     if not prompt:
         return {"error": "prompt or prompts required"}
-    out = _homing_single(mri_path, prompt, model_id, specs)
+    out = _homing_single(mri_path, prompt, model_id, specs, readout=readout)
     out["mri_path"] = mri_path
     out["model_id"] = model_id
     out["noise_floor"] = noise_floor
@@ -4743,7 +4790,8 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             mri_path = self._mri_path(mri_model, mode_name)
             self._send_json(_homing_run(
                 mri_path, model_id=model_id, prompt=prompt,
-                prompts=prompts, targets=targets))
+                prompts=prompts, targets=targets,
+                readout=bool(args.get("readout"))))
 
         elif path == '/api/live-chat':
             message = args.get("message", "")
