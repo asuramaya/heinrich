@@ -214,6 +214,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
       <span id="st" style="color:#444;font-size:7px"></span>
       <div id="legendWrap" style="margin-top:2px">
         <div id="legendToggle" class="legend-compact">scripts &#9656;</div>
+        <div id="vocabToggle" class="legend-compact" title="zoom a cloud viewport to reveal points from the full vocabulary">vocab reveal: on</div>
         <div id="legend2" style="font-size:7px;color:#555;display:none;margin-top:2px"></div>
       </div>
     </div>
@@ -714,6 +715,13 @@ let _overlaySeq=0;// bump to supersede in-flight resolves on switch/retype
 const overlayCloudPts=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(0),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.10,color:0xAA8800,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=11;p.visible=false;p.frustumCulled=false;v.sc.add(p);return p;});
 const _overlayTagEls=[];// per-cloud-viewport honesty tag (bottom-left)
 for(let _ovi=0;_ovi<NC;_ovi++){const host=document.getElementById('vp'+_ovi);if(host){const el=document.createElement('div');el.className='ovtag';el.style.cssText='position:absolute;bottom:3px;left:4px;font-size:8px;color:#9a8636;pointer-events:none;z-index:2;text-shadow:0 0 3px #000';host.appendChild(el);_overlayTagEls[_ovi]=el;}else _overlayTagEls[_ovi]=null;}
+// Trajectory honesty tag (Part B.4): real path counts, per traj viewport (NC..NV).
+let _trajAdditive=true;// additive blending on the merged trajectory LineSegments
+const _trajTagEls=[];
+for(let _tvi=NC;_tvi<NV;_tvi++){const host=document.getElementById('vp'+_tvi);if(host){const el=document.createElement('div');el.className='ovtag';el.style.cssText='position:absolute;bottom:3px;left:4px;font-size:8px;color:#7a8a99;pointer-events:none;z-index:2;text-shadow:0 0 3px #000';host.appendChild(el);_trajTagEls[_tvi]=el;}else _trajTagEls[_tvi]=null;}
+async function _setTrajTag(vi,shown,topK){const el=_trajTagEls[vi];if(!el)return;
+  let total=_vocabNRows;if(!total){const vm=await _ensureVocabMeta();total=(vm&&(vm.n_rows||vm.n_tokens||vm.vocab_size))||shown;if(total)_vocabNRows=total;}
+  el.textContent=`${shown.toLocaleString()} of ${(total||shown).toLocaleString()} paths (top-${topK} by displacement + stratified)`;}
 function _overlayCacheGet(row){return _overlayRowCache.get(model+'|'+mode+'|'+row);}
 function _overlayCachePut(row,vec){const k=model+'|'+mode+'|'+row;if(_overlayRowCache.has(k))_overlayRowCache.delete(k);_overlayRowCache.set(k,vec);
   while(_overlayRowCache.size>OVERLAY_ROW_CACHE_MAX){const fk=_overlayRowCache.keys().next().value;_overlayRowCache.delete(fk);}}
@@ -787,12 +795,21 @@ function _updateOverlayMarkers(){
 }
 async function _updateOverlayTag(){
   const vmeta=await _ensureVocabMeta();
-  const nRows=(vmeta&&(vmeta.n_rows||vmeta.n_tokens||vmeta.vocab_size))||null;
-  const nSamp=nN||0;
-  const base=nRows?`${nSamp.toLocaleString()} of ${nRows.toLocaleString()} sampled`:`${nSamp.toLocaleString()} sampled`;
-  const n=_overlayEntries.length;
-  const txt=n>0?`cloud: ${base} · overlay: ${n} vocab`:base;
-  for(let vi=0;vi<NC;vi++){const el=_overlayTagEls[vi];if(el)el.textContent=txt;}
+  const nRows=(vmeta&&(vmeta.n_rows||vmeta.n_tokens||vmeta.vocab_size))||_vocabNRows||null;
+  if(nRows)_vocabNRows=nRows;
+  const nSamp=nN||0;const nOv=_overlayEntries.length;
+  // Per-viewport tag: when the zoom-reveal is active in that viewport, state the
+  // real fraction of the FULL vocabulary now shown; otherwise the sample baseline.
+  for(let vi=0;vi<NC;vi++){const el=_overlayTagEls[vi];if(!el)continue;
+    const rev=views[vi]._rev;let txt;
+    if(rev&&rev.active&&rev.shown>0&&nRows){
+      txt=`showing ${rev.shown.toLocaleString()} of ${nRows.toLocaleString()} — zoom to reveal more`;
+    }else{
+      txt=nRows?`${nSamp.toLocaleString()} of ${nRows.toLocaleString()} sampled`:`${nSamp.toLocaleString()} sampled`;
+    }
+    if(nOv>0)txt+=` · overlay: ${nOv} vocab`;
+    el.textContent=txt;
+  }
 }
 // Raycast the gold overlay points in a cloud viewport -> _overlayEntries index.
 function _overlayRayHit(vi,e){
@@ -806,6 +823,157 @@ function _overlayRayHit(vi,e){
   h.sort((a,b)=>a.distanceToRay-b.distanceToRay);
   return h[0].index<_overlayEntries.length?h[0].index:-1;
 }
+// ============================================================================
+// Part A — zoom-progressive full-vocabulary cloud reveal.
+// The published cloud renders a ~2K sample. When the reader zooms a cloud
+// viewport IN, we progressively reveal points drawn from the FULL vocabulary
+// (n_rows, ~48,660) — fetched one (layer,pc) column at a time via
+// /api/vocab-pc-column and normalized into the EXACT SAME coordinate frame as
+// the sample (v._layerMx / v._clampBounds — the same math _liveCoordCloud uses).
+// Points are binned into a uniform grid so the density budget favors cells
+// nearest the camera and inside the frustum; more points appear the further you
+// zoom. Honesty by construction: the corner tag always states the real fraction
+// shown, and we never imply completeness. The reveal set is drawn from the full
+// vocab which already CONTAINS the 2K sample, so up to ~2K points are drawn
+// twice (once pale-reveal, once sample-colored) — acceptable, and the tag counts
+// the reveal set against the full vocab, not sample+reveal, so nothing is
+// double-counted in the honesty number.
+let _vocabRevealEnabled=true;      // master toggle ([vocab] button, default ON)
+const REVEAL_CAP=50000;            // per-viewport preallocated point capacity
+const REVEAL_ZOOM_ON=1.5;          // zoomFactor (2.5/dist) past which reveal activates
+const REVEAL_GRID=32;              // grid cells per axis over the normalized cube
+const REVEAL_CUBE=1.75;            // half-extent of the binned cube (normalized coords)
+const VPC_CACHE_MAX=64;            // LRU bound on decoded columns
+const _vpcCache=new Map();         // key model|mode|layer|pc -> Float32Array(nRows), LRU
+const _vpcInflight=new Map();      // key -> Promise (dedupe concurrent fetches)
+let _vocabNRows=0;                 // full-vocab row count (from vocab-meta)
+// Pale, neutral, distinct from the script palette; renders BELOW the sample.
+const revealPts=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(REVEAL_CAP*3),3));g.setDrawRange(0,0);const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.02,color:0x8899AA,transparent:true,opacity:0.5,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=-1;p.visible=false;p.frustumCulled=false;v.sc.add(p);return p;});
+function _vpcGet(layer,pc){const k=model+'|'+mode+'|'+layer+'|'+pc;const v=_vpcCache.get(k);if(v){_vpcCache.delete(k);_vpcCache.set(k,v);}return v;}
+function _vpcPut(layer,pc,arr){const k=model+'|'+mode+'|'+layer+'|'+pc;if(_vpcCache.has(k))_vpcCache.delete(k);_vpcCache.set(k,arr);while(_vpcCache.size>VPC_CACHE_MAX){const fk=_vpcCache.keys().next().value;_vpcCache.delete(fk);}}
+// One ~97KB float16 read per (layer,pc); decoded to Float32 once, then cached.
+async function _fetchVocabColumn(layer,pc){
+  const cached=_vpcGet(layer,pc);if(cached)return cached;
+  const k=model+'|'+mode+'|'+layer+'|'+pc;
+  const inf=_vpcInflight.get(k);if(inf)return inf;
+  const p=(async()=>{
+    try{
+      const resp=await _apiFetch(`/api/vocab-pc-column/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?layer=${layer}&pc=${pc}`);
+      if(!resp.ok)return null;
+      const buf=await resp.arrayBuffer();
+      if(buf.byteLength<12)return null;
+      const dv=new DataView(buf);const nRows=dv.getUint32(8,true);// header <III layer,pc,n_rows>
+      if(!nRows||buf.byteLength<12+nRows*2)return null;
+      const u16=new Uint16Array(buf,12,nRows);const f32=new Float32Array(nRows);
+      for(let i=0;i<nRows;i++)f32[i]=f16(u16[i]);
+      if(nRows>_vocabNRows)_vocabNRows=nRows;
+      _vpcPut(layer,pc,f32);return f32;
+    }catch(e){return null;}
+    finally{_vpcInflight.delete(k);}
+  })();
+  _vpcInflight.set(k,p);return p;
+}
+// Build (or reuse) the per-viewport spatial grid for the current (layer,pcTriple).
+// Coordinates use the SAME normalization the sample cloud used at this layer.
+async function _revBuildGrid(vi){
+  const v=views[vi];const layer=cL,pcX=v.pcX,pcY=v.pcY,pcZ=v.pcZ;
+  const key=layer+'|'+pcX+'|'+pcY+'|'+pcZ;
+  if(v._rev&&v._rev.gridKey===key&&v._rev.grid)return v._rev;
+  _ensureVocabTexts();// warm the text list so hover/click have labels ready
+  const lm=v._layerMx&&v._layerMx[layer],cb=v._clampBounds&&v._clampBounds[layer];
+  if(!lm||!cb)return null;// sample normalization for this layer not built yet
+  const cols=await Promise.all([_fetchVocabColumn(layer,pcX),_fetchVocabColumn(layer,pcY),_fetchVocabColumn(layer,pcZ)]);
+  const cx=cols[0],cy=cols[1],cz=cols[2];if(!cx||!cy||!cz)return null;
+  const mxX=lm[0]||1,mxY=lm[1]||1,mxZ=lm[2]||1,bX=cb[0],bY=cb[1],bZ=cb[2];
+  const nRows=Math.min(cx.length,cy.length,cz.length);
+  const G=REVEAL_GRID,C=REVEAL_CUBE,invc=G/(2*C);
+  const grid=new Array(G*G*G);const coords=new Float32Array(nRows*3);
+  const bin=(c)=>{const b=((c+C)*invc)|0;return b<0?0:(b>=G?G-1:b);};
+  for(let r=0;r<nRows;r++){
+    const x=_clampTraj(cx[r]/mxX,bX),y=_clampTraj(cy[r]/mxY,bY),z=_clampTraj(cz[r]/mxZ,bZ);
+    coords[r*3]=x;coords[r*3+1]=y;coords[r*3+2]=z;
+    const ci=bin(x)*G*G+bin(y)*G+bin(z);let cell=grid[ci];if(!cell){cell=[];grid[ci]=cell;}cell.push(r);
+  }
+  v._rev=Object.assign(v._rev||{},{grid,gridKey:key,coords,nRows,shown:0,zoom:0,active:false,shownRows:new Int32Array(REVEAL_CAP)});
+  return v._rev;
+}
+const _revFrustum=new THREE.Frustum(),_revPV=new THREE.Matrix4(),_revCC=new THREE.Vector3();
+// Density-budget fill: in-frustum cells, nearest-to-camera first, up to N/cell
+// (N grows with zoom), until the buffer or the cell list is exhausted.
+function _revFill(vi){
+  const v=views[vi],pts=revealPts[vi],rev=v._rev;
+  if(!rev||!rev.grid){pts.visible=false;return;}
+  const cam=v.cam;cam.updateMatrixWorld();cam.updateProjectionMatrix();
+  _revPV.multiplyMatrices(cam.projectionMatrix,cam.matrixWorldInverse);_revFrustum.setFromProjectionMatrix(_revPV);
+  const G=REVEAL_GRID,C=REVEAL_CUBE,cw=2*C/G;
+  const dist=cam.position.distanceTo(v.ctl.target)||1;const zoom=2.5/dist;rev.zoom=zoom;
+  const perCell=Math.max(1,Math.min(40,Math.round(zoom*zoom*2)));// budget per cell scales with zoom
+  const cp=cam.position,grid=rev.grid,cells=[];
+  for(let gx=0;gx<G;gx++){const cxw=-C+(gx+0.5)*cw;
+    for(let gy=0;gy<G;gy++){const cyw=-C+(gy+0.5)*cw;
+      for(let gz=0;gz<G;gz++){const idx=gx*G*G+gy*G+gz;const arr=grid[idx];if(!arr||!arr.length)continue;
+        const czw=-C+(gz+0.5)*cw;_revCC.set(cxw,cyw,czw);
+        if(!_revFrustum.containsPoint(_revCC))continue;
+        const dx=cxw-cp.x,dy=cyw-cp.y,dz=czw-cp.z;cells.push({d:dx*dx+dy*dy+dz*dz,arr});
+      }}}
+  cells.sort((a,b)=>a.d-b.d);
+  const pos=pts.geometry.attributes.position.array,coords=rev.coords,sr=rev.shownRows;let w=0;
+  for(let ci=0;ci<cells.length&&w<REVEAL_CAP;ci++){const arr=cells[ci].arr;const take=Math.min(perCell,arr.length);
+    for(let j=0;j<take&&w<REVEAL_CAP;j++){const r=arr[j];pos[w*3]=coords[r*3];pos[w*3+1]=coords[r*3+1];pos[w*3+2]=coords[r*3+2];sr[w]=r;w++;}}
+  rev.shown=w;rev.active=true;
+  pts.geometry.setDrawRange(0,w);pts.geometry.attributes.position.needsUpdate=true;
+  pts.geometry.computeBoundingSphere&&pts.geometry.computeBoundingSphere();
+  pts.visible=w>0;_needsRender=true;
+}
+function _revClear(vi){const v=views[vi],pts=revealPts[vi];pts.visible=false;pts.geometry.setDrawRange(0,0);if(v._rev){v._rev.active=false;v._rev.shown=0;}_needsRender=true;_updateOverlayTag();}
+const _revTimers=[];
+// Debounced fill on zoom/orbit change for one cloud viewport.
+function _revScheduleFill(vi,delay=150){
+  if(_revTimers[vi])clearTimeout(_revTimers[vi]);
+  _revTimers[vi]=setTimeout(async()=>{
+    _revTimers[vi]=null;
+    if(!_vocabRevealEnabled){_revClear(vi);return;}
+    const v=views[vi];const dist=v.cam.position.distanceTo(v.ctl.target)||1;
+    if(2.5/dist<REVEAL_ZOOM_ON){_revClear(vi);return;}
+    const rev=await _revBuildGrid(vi);if(!rev)return;
+    _revFill(vi);_updateOverlayTag();
+  },delay);
+}
+// Camera 'change' handler per cloud viewport: activate above the zoom threshold,
+// clear below it. Rotation also refills (frustum changed) — debounced.
+function _revOnZoom(vi){
+  if(!_vocabRevealEnabled)return;
+  const v=views[vi];const dist=v.cam.position.distanceTo(v.ctl.target)||1;const zoom=2.5/dist;
+  if(zoom<REVEAL_ZOOM_ON){if(v._rev&&v._rev.active)_revClear(vi);return;}
+  _revScheduleFill(vi,150);
+}
+let _revLayerTimer=null;
+// Layer scrub / pair change: refetch columns for the new layer, rebuild grid,
+// refill. Debounced (mirrors _updateSeparation's 180ms) so arrow-key playback
+// doesn't flood the column endpoint.
+function _revOnLayer(){
+  if(_revLayerTimer)clearTimeout(_revLayerTimer);
+  _revLayerTimer=setTimeout(async()=>{
+    _revLayerTimer=null;if(!_vocabRevealEnabled)return;
+    for(let vi=0;vi<NC;vi++){const v=views[vi];const dist=v.cam.position.distanceTo(v.ctl.target)||1;
+      if(2.5/dist<REVEAL_ZOOM_ON){_revClear(vi);continue;}
+      const rev=await _revBuildGrid(vi);if(!rev)continue;_revFill(vi);}
+    _updateOverlayTag();
+  },180);
+}
+// Raycast the pale reveal points -> buffer index (row = rev.shownRows[index]).
+function _revRayHit(vi,e){
+  if(vi>=NC)return -1;const pts=revealPts[vi];const rev=views[vi]._rev;
+  if(!pts||!pts.visible||!rev||!rev.shown)return -1;
+  const v=views[vi];const r=v.cv.getBoundingClientRect();
+  ms.x=((e.clientX-r.left)/r.width)*2-1;ms.y=-((e.clientY-r.top)/r.height)*2+1;ray.setFromCamera(ms,v.cam);
+  const vpH=r.height||1;const fovRad=v.cam.fov*Math.PI/180;const pixelToWorld=2*Math.tan(fovRad/2)/vpH;const d=v.cam.position.length()||1;
+  ray.params.Points.threshold=6*pixelToWorld*d;
+  const h=ray.intersectObject(pts);if(!h.length)return -1;
+  h.sort((a,b)=>a.distanceToRay-b.distanceToRay);
+  const bi=h[0].index;return bi<rev.shown?bi:-1;
+}
+function _revRowAt(vi,bi){const rev=views[vi]._rev;return (rev&&rev.shownRows&&bi>=0&&bi<rev.shown)?rev.shownRows[bi]:-1;}
 // --- Homing: per-layer distance from the live trajectory to the pinned token(s) ---
 // The study's core measurement. Live scores (residual @ L{l}_components) and the
 // frozen token's scores (token-pca, same components) share the basis, so raw L2
@@ -1186,6 +1354,9 @@ function _precomputeCloud(vi){
       }
     }
   }
+  // Normalization changed (model/mode/pair switch) — force the vocab-reveal grid
+  // to rebuild against the fresh per-axis scales next time it fills.
+  const _rv=views[vi]&&views[vi]._rev;if(_rv){_rv.gridKey='';_rv.grid=null;}
 }
 function _precomputeTraj(vi){
   const v=views[vi];const{pcX,pcY}=v;const tlMx=v._trajLayerMx;
@@ -2061,8 +2232,15 @@ function _processHover(){
     let _px=e.clientX+15,_py=e.clientY-10;if(_px+220>window.innerWidth)_px=e.clientX-225;if(_py+120>window.innerHeight)_py=window.innerHeight-125;if(_py<5)_py=5;
     td2.style.left=_px+'px';td2.style.top=_py+'px';td2.style.transform='none';td2.style.display='block';return;}
   const i=_rayHit(vi,e);const td=document.getElementById('detail');
-  if(i>=0){highlightToken(i);document.getElementById('tt').textContent=texts[i]||'?';document.getElementById('tt').style.color=CLh[scripts[i]]||'#aaa';document.getElementById('tm').textContent=_popupText(i,vi);let _px=e.clientX+15,_py=e.clientY-10;if(_px+220>window.innerWidth)_px=e.clientX-225;if(_py+120>window.innerHeight)_py=window.innerHeight-125;if(_py<5)_py=5;td.style.left=_px+'px';td.style.top=_py+'px';td.style.transform='none';td.style.display='block';}
-  else{highlightToken(-1);td.style.display='none';}
+  if(i>=0){highlightToken(i);document.getElementById('tt').textContent=texts[i]||'?';document.getElementById('tt').style.color=CLh[scripts[i]]||'#aaa';document.getElementById('tm').textContent=_popupText(i,vi);let _px=e.clientX+15,_py=e.clientY-10;if(_px+220>window.innerWidth)_px=e.clientX-225;if(_py+120>window.innerHeight)_py=window.innerHeight-125;if(_py<5)_py=5;td.style.left=_px+'px';td.style.top=_py+'px';td.style.transform='none';td.style.display='block';return;}
+  // Revealed full-vocab points sit below the sample — pick them last.
+  const rb=_revRayHit(vi,e);
+  if(rb>=0){const row=_revRowAt(vi,rb);const txt=(_vocabTexts&&_vocabTexts[row])||('vocab row '+row);highlightToken(-1);
+    const ttEl=document.getElementById('tt');ttEl.textContent=txt;ttEl.style.color='#8899AA';
+    document.getElementById('tm').textContent=`vocab row ${row} · reveal (click=T1, shift=T2)`;
+    let _px=e.clientX+15,_py=e.clientY-10;if(_px+220>window.innerWidth)_px=e.clientX-225;if(_py+120>window.innerHeight)_py=window.innerHeight-125;if(_py<5)_py=5;
+    td.style.left=_px+'px';td.style.top=_py+'px';td.style.transform='none';td.style.display='block';return;}
+  highlightToken(-1);td.style.display='none';
 }
 function _isRightClick(e){return e.button===2||(e.button===0&&e.ctrlKey);} // ctrl+click=right on Mac
 function _popupText(i,vi){
@@ -2187,8 +2365,11 @@ function setupInteraction(vi){const v=views[vi];
     const ov=_overlayRayHit(vi,e);
     if(ov>=0){const ent=_overlayEntries[ov];if(_isRightClick(e))_setVocabTarget2(ent.row,ent.text);else _setVocabTarget(ent.row,ent.text);return;}
     const i=_rayHit(vi,e);
-    if(i>=0){if(_isRightClick(e)){pinnedTokenB=i;}else{pinnedToken=i;loadAttnData(i);}updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();}
-    else if(!_isRightClick(e)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();}});}
+    if(i>=0){if(_isRightClick(e)){pinnedTokenB=i;}else{pinnedToken=i;loadAttnData(i);}updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();return;}
+    // No sample hit: a revealed full-vocab point? click targets it (T1 / T2), same as the overlay.
+    const rb=_revRayHit(vi,e);
+    if(rb>=0){const row=_revRowAt(vi,rb);const txt=(_vocabTexts&&_vocabTexts[row])||'';if(_isRightClick(e))_setVocabTarget2(row,txt);else _setVocabTarget(row,txt);return;}
+    if(!_isRightClick(e)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();}});}
 views.forEach((_,i)=>setupInteraction(i));
 
 // Viewport updates
@@ -2351,6 +2532,7 @@ function updateVP(vi,pcX,pcY,pcZ,layer){const v=views[vi];v.pcX=pcX;v.pcY=pcY;v.
 function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
   // Dispose old
   if(v.trajGroup){v.sc.remove(v.trajGroup);v.trajGroup.geometry?.dispose();v.trajGroup.material?.dispose();v.trajGroup=null;}
+  if(v.trajGroupCoarse){v.sc.remove(v.trajGroupCoarse);v.trajGroupCoarse.geometry?.dispose();v.trajGroupCoarse.material?.dispose();v.trajGroupCoarse=null;}
   if(v.trajMarker){v.trajMarker.geometry.dispose();v.trajMarker.material.dispose();v.sc.remove(v.trajMarker);}
   // Robust per-layer scale — outliers don't crush the cloud into near-zero
   const _tlMx=new Array(nL);
@@ -2366,35 +2548,62 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
     _tlMx[l]=[mxX,mxY];
   }
   v._trajLayerMx=_tlMx;v._trajScaleXY=[1,1];v._trajScale=1;
-  // Merged LineSegments: sample tokens, all layer transitions in one geometry
-  // Each token: (nL-1) segments × 2 vertices = (nL-1)*2 vertices per token
-  const maxTokens=Math.min(nN,5000);
-  const step=Math.max(1,Math.floor(nN/maxTokens));
   const _trajSeq=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
   const nSegs=_trajSeq.length-1;// segments per token
-  const nSampledTokens=Math.ceil(nN/step);
-  const totalVerts=nSampledTokens*nSegs*2;
-  const tPos=new Float32Array(totalVerts*3);
-  const tCol=new Float32Array(totalVerts*3);
-  // Track vertex ranges per sampled token for script filtering
+  // --- Importance sampling (Part B.2) ---
+  // Flat random sampling can drop the very tokens that carry the signal — the
+  // outlier crystals with huge displacement. Instead: keep the top-K paths by
+  // total displacement DETERMINISTICALLY, then fill the rest of the budget with
+  // a deterministic stratified pass across token-id space (uniform coverage).
+  // Outlier paths shouldn't lose the lottery.
+  const budget=Math.min(nN,5000);
+  const disp=new Float32Array(nN);
+  for(let i=0;i<nN;i++){let s=0,px=0,py=0,first=true;
+    for(let si=0;si<_trajSeq.length;si++){const l=_trajSeq[si];
+      const x=_getScore(l,i,pcX)/_tlMx[l][0],y=_getScore(l,i,pcY)/_tlMx[l][1];
+      if(!first)s+=Math.abs(x-px)+Math.abs(y-py);px=x;py=y;first=false;}
+    disp[i]=s;}
+  const topK=Math.min(500,budget,nN);
+  const order=Array.from({length:nN},(_,i)=>i).sort((a,b)=>disp[b]-disp[a]);
+  const sel=new Set();for(let i=0;i<topK;i++)sel.add(order[i]);
+  const remain=budget-sel.size;
+  if(remain>0){const stride=Math.max(1,Math.floor(nN/remain));
+    for(let i=0;i<nN&&sel.size<budget;i+=stride)sel.add(i);
+    for(let i=0;i<nN&&sel.size<budget;i++)sel.add(i);// top up any stride shortfall
+  }
+  const selected=[...sel];
+  v._trajTopK=topK;v._trajBudget=selected.length;
+  // Coarse LOD sequence: every 4th layer (+ the final layer) — a lower-res polyline
+  // shown while the camera moves (never hidden; degrading resolution is honest).
+  const coarseSeq=[];for(let si=0;si<_trajSeq.length;si+=4)coarseSeq.push(_trajSeq[si]);
+  if(coarseSeq[coarseSeq.length-1]!==_trajSeq[_trajSeq.length-1])coarseSeq.push(_trajSeq[_trajSeq.length-1]);
+  const nSegsC=coarseSeq.length-1;
+  const totalVerts=selected.length*nSegs*2;
+  const tPos=new Float32Array(totalVerts*3),tCol=new Float32Array(totalVerts*3);
+  const cPos=new Float32Array(selected.length*nSegsC*2*3),cCol=new Float32Array(selected.length*nSegsC*2*3);
+  const _z=(l)=>_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1;
+  const _bx=(l)=>{const cb=v._trajClampBounds?v._trajClampBounds[l]:null;return cb?cb[0]:1.75;};
+  const _by=(l)=>{const cb=v._trajClampBounds?v._trajClampBounds[l]:null;return cb?cb[1]:1.75;};
+  // Track vertex ranges per sampled token for script filtering / direction coloring
   v._trajTokenMap=[];// [{ti, start, count}]
-  let vi2=0;
-  for(let ii=0;ii<nN;ii+=step){
+  let vi2=0,ci2=0;
+  for(let s=0;s<selected.length;s++){const ii=selected[s];
     const vStart=vi2;
     const hex=CL[scripts[ii]]||0xAAAAAA;
     const cr=((hex>>16)&0xFF)/255,cg=((hex>>8)&0xFF)/255,cb=(hex&0xFF)/255;
     for(let si=0;si<nSegs;si++){
       const l0=_trajSeq[si],l1=_trajSeq[si+1];
-      const z0=_layerZ[l0]!==undefined?_layerZ[l0]:(l0/(nL-1))*2-1;
-      const z1=_layerZ[l1]!==undefined?_layerZ[l1]:(l1/(nL-1))*2-1;
-      const cb0=v._trajClampBounds?v._trajClampBounds[l0]:null;
-      const cb1=v._trajClampBounds?v._trajClampBounds[l1]:null;
-      const b0X=cb0?cb0[0]:1.75,b0Y=cb0?cb0[1]:1.75;
-      const b1X=cb1?cb1[0]:1.75,b1Y=cb1?cb1[1]:1.75;
-      tPos[vi2*3]=_clampTraj(_getScore(l0,ii,pcX)/_tlMx[l0][0],b0X);tPos[vi2*3+1]=_clampTraj(_getScore(l0,ii,pcY)/_tlMx[l0][1],b0Y);tPos[vi2*3+2]=z0;
+      tPos[vi2*3]=_clampTraj(_getScore(l0,ii,pcX)/_tlMx[l0][0],_bx(l0));tPos[vi2*3+1]=_clampTraj(_getScore(l0,ii,pcY)/_tlMx[l0][1],_by(l0));tPos[vi2*3+2]=_z(l0);
       tCol[vi2*3]=cr;tCol[vi2*3+1]=cg;tCol[vi2*3+2]=cb;vi2++;
-      tPos[vi2*3]=_clampTraj(_getScore(l1,ii,pcX)/_tlMx[l1][0],b1X);tPos[vi2*3+1]=_clampTraj(_getScore(l1,ii,pcY)/_tlMx[l1][1],b1Y);tPos[vi2*3+2]=z1;
+      tPos[vi2*3]=_clampTraj(_getScore(l1,ii,pcX)/_tlMx[l1][0],_bx(l1));tPos[vi2*3+1]=_clampTraj(_getScore(l1,ii,pcY)/_tlMx[l1][1],_by(l1));tPos[vi2*3+2]=_z(l1);
       tCol[vi2*3]=cr;tCol[vi2*3+1]=cg;tCol[vi2*3+2]=cb;vi2++;
+    }
+    for(let si=0;si<nSegsC;si++){
+      const l0=coarseSeq[si],l1=coarseSeq[si+1];
+      cPos[ci2*3]=_clampTraj(_getScore(l0,ii,pcX)/_tlMx[l0][0],_bx(l0));cPos[ci2*3+1]=_clampTraj(_getScore(l0,ii,pcY)/_tlMx[l0][1],_by(l0));cPos[ci2*3+2]=_z(l0);
+      cCol[ci2*3]=cr;cCol[ci2*3+1]=cg;cCol[ci2*3+2]=cb;ci2++;
+      cPos[ci2*3]=_clampTraj(_getScore(l1,ii,pcX)/_tlMx[l1][0],_bx(l1));cPos[ci2*3+1]=_clampTraj(_getScore(l1,ii,pcY)/_tlMx[l1][1],_by(l1));cPos[ci2*3+2]=_z(l1);
+      cCol[ci2*3]=cr;cCol[ci2*3+1]=cg;cCol[ci2*3+2]=cb;ci2++;
     }
     v._trajTokenMap.push({ti:ii,start:vStart,count:vi2-vStart});
   }
@@ -2402,8 +2611,25 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
   tGeo.setAttribute('position',new THREE.BufferAttribute(tPos,3));
   tGeo.setAttribute('color',new THREE.BufferAttribute(tCol,3));
   tGeo.setDrawRange(0,vi2);
-  v.trajGroup=new THREE.LineSegments(tGeo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.15,depthWrite:false}));
+  // Additive blending (Part B.1): overlapping paths accumulate into brightness —
+  // ink = mass, honest by construction. Opacity is deliberately VERY LOW (0.008):
+  // in raw mode the trajectories crystallize and pile up (100s of the 2000 paths
+  // converge), so a higher alpha saturates the convergence core to a flat white
+  // disk and destroys the density gradient. At 0.008 the dark background is
+  // preserved and the mass reads as a smooth radial brightness falloff — brightest
+  // where the most paths pass, fading to dark at the sparse edges — with outlier
+  // paths still legible as faint lines. Chosen over NormalBlending, which produces
+  // a flat uniform haze where concentration is invisible (kept as escape hatch).
+  v.trajGroup=new THREE.LineSegments(tGeo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:_trajAdditive?0.008:0.15,depthWrite:false,blending:_trajAdditive?THREE.AdditiveBlending:THREE.NormalBlending}));
   v.trajGroup.frustumCulled=false;v.sc.add(v.trajGroup);
+  const cGeo=new THREE.BufferGeometry();
+  cGeo.setAttribute('position',new THREE.BufferAttribute(cPos,3));
+  cGeo.setAttribute('color',new THREE.BufferAttribute(cCol,3));
+  cGeo.setDrawRange(0,ci2);
+  // Coarse has ~4× fewer segments, so it carries ~3× the alpha to match brightness.
+  v.trajGroupCoarse=new THREE.LineSegments(cGeo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:_trajAdditive?0.025:0.2,depthWrite:false,blending:_trajAdditive?THREE.AdditiveBlending:THREE.NormalBlending}));
+  v.trajGroupCoarse.frustumCulled=false;v.trajGroupCoarse.visible=false;v.sc.add(v.trajGroupCoarse);
+  _setTrajTag(vi,selected.length,topK);
   // Trajectory marker dots (all tokens, updated per layer)
   const pg=new THREE.BufferGeometry();
   const _tp=new Float32Array(nN*3),_tc=new Float32Array(nN*3);
@@ -2466,6 +2692,7 @@ function updateAllViewports(){
       buildBrowser();_updateOverlayMarkers();
     });
     _lastPK=pk;
+    _revOnLayer();// pair change: rebuild reveal grid for the new PCs (debounced)
     return;
   }
   // PCs unchanged — just update positions for current layer (layer scrub)
@@ -2473,6 +2700,7 @@ function updateAllViewports(){
   for(let i=NC;i<NV;i++)updateTrajMarker(i);
   if(pinnedToken>=0||pinnedTokenB>=0)_syncAllPins(true);
   _updateOverlayMarkers();
+  _revOnLayer();// layer scrub: refetch columns for the new layer, refill (debounced)
 }
 
 // 3D prism — all PC pairs as mini point clouds. One merged geometry per layer.
@@ -5295,7 +5523,7 @@ if(e.key==='g'||e.key==='G'){const t=_capTarget;if(t)recordViewport(t.sc,t.cam,t
 });
 let _needsRender=true,_frameCount=0,_fpsTime=performance.now();
 function _markDirty(){_needsRender=true;}
-let _trajShown=true,_lastCamMove=0;
+let _trajMoving=false,_lastCamMove=0;
 // Camera 'change' fires on every drag step; record the time so the LOD knows the
 // camera is actively moving (damping/_needsUpdate is only true during the settle,
 // not the drag itself). Also marks dirty so the frame renders.
@@ -5304,28 +5532,30 @@ views.forEach(v=>v.ctl.addEventListener('change',_onCamMove));
 brCtl.addEventListener('change',_onCamMove);
 leftViews.forEach(v=>v.ctl.addEventListener('change',_onCamMove));
 rightViews.forEach(v=>v.ctl.addEventListener('change',_onCamMove));
+// Cloud viewports: zoom/orbit change drives the progressive vocab reveal.
+for(let _vi=0;_vi<NC;_vi++){const _cvi=_vi;views[_vi].ctl.addEventListener('change',()=>_revOnZoom(_cvi));}
+function _updateVocabBtn(){const b=document.getElementById('vocabToggle');if(b){b.textContent='vocab reveal: '+(_vocabRevealEnabled?'on':'off');b.style.color=_vocabRevealEnabled?'#8899AA':'#555';}}
+(function(){const b=document.getElementById('vocabToggle');if(!b)return;
+  b.addEventListener('click',()=>{_vocabRevealEnabled=!_vocabRevealEnabled;_updateVocabBtn();
+    if(!_vocabRevealEnabled){for(let vi=0;vi<NC;vi++)_revClear(vi);}else{_revOnLayer();}});
+  _updateVocabBtn();})();
 (function anim(){requestAnimationFrame(anim);
   if(MOBILE){_animMobile();return;}// mobile renders only the focused lane (see end of file)
   const damping=views.some(v=>v.ctl.enableDamping&&v.ctl._needsUpdate)||brCtl._needsUpdate||leftViews.some(v=>v.ctl._needsUpdate)||rightViews.some(v=>v.ctl._needsUpdate);
-  // LOD: the trajectory line groups (5000 merged segments × 3 viewports) cost ~75% of
-  // the frame — measured 3fps with them, 13fps without. Hide them while the camera is
-  // moving (recent 'change' = active drag, or damping = settle) and restore + force one
-  // full render when motion stops. Smooth orbit, full detail at rest.
-  // LOD with hysteresis. A single 140ms threshold toggled trajectory visibility on/off
-  // during slow or intermittent drags (the 'change' gaps crossed the line both ways) →
-  // flicker. Now: hide the instant the camera moves (sinceMove<90 or damping), restore
-  // only after it has been still for >300ms, and HOLD the current state in the 90–300ms
-  // dead-band. Asymmetric thresholds = no oscillation. Keeps the ~10x orbit-FPS win.
+  // LOD (Part B.3): the full trajectory line groups (5000 merged segments × 3
+  // viewports) cost ~75% of the frame. Previously we HID them while the camera
+  // moved — but hiding erases information. Instead we DECIMATE: while the camera
+  // is moving (recent 'change' = active drag, or damping = settle) we show a
+  // coarse every-4th-layer polyline; ~250ms after motion stops we restore the
+  // full-resolution geometry. Never fully hidden — degrading resolution is honest.
   const sinceMove=performance.now()-_lastCamMove;
-  const moving=damping||sinceMove<90;
-  let wantTraj;
-  if(moving)wantTraj=false;
-  else if(sinceMove>300)wantTraj=true;
-  else wantTraj=_trajShown;// dead-band: keep whatever we last showed
-  if(wantTraj!==_trajShown){
-    for(let i=NC;i<views.length;i++){const v=views[i];if(v.trajGroup)v.trajGroup.visible=wantTraj;}
-    _trajShown=wantTraj;
-    _needsRender=true;// render the transition (hide or restore)
+  const moving=damping||sinceMove<250;
+  if(moving!==_trajMoving){
+    for(let i=NC;i<views.length;i++){const v=views[i];
+      if(v.trajGroup)v.trajGroup.visible=!moving;
+      if(v.trajGroupCoarse)v.trajGroupCoarse.visible=moving;}
+    _trajMoving=moving;
+    _needsRender=true;// render the resolution transition
   }
   if(!_needsRender&&!damping&&!play)return;
   _needsRender=false;
@@ -6515,6 +6745,14 @@ window.__heinrich = {
   overlayPickT1:(i=0)=>{const e=_overlayEntries[i];return e?_setVocabTarget(e.row,e.text):false;},
   overlayPickT2:(i=0)=>{const e=_overlayEntries[i];return e?_setVocabTarget2(e.row,e.text):false;},
   overlayPoint:(i=0,vi=0)=>{const e=_overlayEntries[i];if(!e)return null;const v=views[vi];const vec=_overlayVec(e,cL);const c=(v&&vec)?_liveCoordCloud(v,cL,vec):null;return {row:e.row,text:e.text,layer:cL,x:c?c[0]:null,y:c?c[1]:null,z:c?c[2]:null};},
+  // --- Part A: zoom-progressive full-vocab reveal ---
+  get vocabReveal(){let shown=0,zoom=0,active=false;for(let vi=0;vi<NC;vi++){const r=views[vi]._rev;const dist=views[vi].cam.position.distanceTo(views[vi].ctl.target)||1;zoom=Math.max(zoom,2.5/dist);if(r){shown+=r.shown||0;if(r.active)active=true;}}return {enabled:_vocabRevealEnabled,active,shown,total:_vocabNRows||48660,zoom};},
+  setVocabReveal:(b)=>{_vocabRevealEnabled=!!b;if(typeof _updateVocabBtn==='function')_updateVocabBtn();if(!_vocabRevealEnabled){for(let vi=0;vi<NC;vi++)_revClear(vi);}else{_revOnLayer();}return _vocabRevealEnabled;},
+  zoomCloud:(vi=0,factor=2)=>{const v=views[vi];if(!v)return null;v.cam.position.multiplyScalar(1/(factor||1));if(v.ctl)v.ctl.update();_revOnZoom(vi);_markDirty();const dist=v.cam.position.distanceTo(v.ctl.target)||1;return {vi,dist,zoom:2.5/dist};},
+  revealPointAt:(vi=0,i=0)=>{const pts=revealPts[vi];if(!pts)return null;const pos=pts.geometry.attributes.position.array;const rev=views[vi]._rev;return {x:pos[i*3],y:pos[i*3+1],z:pos[i*3+2],row:rev&&rev.shownRows&&i<rev.shown?rev.shownRows[i]:-1,shown:rev?rev.shown:0,zoom:rev?rev.zoom:0};},
+  revBuild:(vi=0)=>_revBuildGrid(vi).then(r=>{if(r){_revFill(vi);_updateOverlayTag();}return r?{shown:r.shown,nRows:r.nRows}:null;}),
+  // --- Part B: trajectory LOD ---
+  get trajLOD(){const v=views[NC];return {decimated:!!_trajMoving,additive:_trajAdditive,budget:v?(v._trajBudget||0):0,topK:v?(v._trajTopK||0):0,total:_vocabNRows||48660};},
   // --- state readers ---
   get views(){return views;}, get leftViews(){return leftViews;}, get rightViews(){return rightViews;},
   get vpPairs(){return vpPairs;}, get dirDepth(){return _dirDepthData;},
