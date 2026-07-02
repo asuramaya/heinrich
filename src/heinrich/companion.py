@@ -2131,14 +2131,29 @@ _steer_backend_cache = {}
 _steer_backend_lock = threading.Lock()
 _steer_backend_pending: dict[str, threading.Event] = {}
 
+def _load_generation_backend(model_id: str):
+    """Load a generation backend for a hub id or local HF dir, choosing by host:
+    MLX on Apple Silicon, else HF/transformers (CUDA/CPU). No MLX assumption."""
+    import importlib.util
+    if importlib.util.find_spec("mlx_lm") is not None:
+        try:
+            from .backend.mlx import MLXBackend
+            return MLXBackend(model_id)
+        except Exception:
+            pass  # fall through to HF/torch
+    from .backend.hf import HFBackend
+    return HFBackend(model_id)
+
+
 def _get_steer_backend(model_id: str):
-    """Get or create a model backend for steering tests.
+    """Get or create a model backend for steering / live forward.
 
     Dispatch order:
       - path ending in .checkpoint.pt → decepticon backend (causal bank)
-      - existing local directory → HF backend (local snapshot)
-      - anything else → MLX backend (HF hub ID or local HF dir)
+      - anything else (local HF dir or hub id) → MLX on Apple Silicon, else HF/torch
 
+    The generation backend is chosen by what's importable on this host, not by
+    assuming MLX — so a hub id works on a CUDA/Linux box (transformers) too.
     Raises on load failure — caller wraps in try/except.
     """
     while True:
@@ -2153,12 +2168,8 @@ def _get_steer_backend(model_id: str):
         if model_id.endswith(".checkpoint.pt") and path.exists():
             from .backend.decepticon import DecepticonBackend
             backend = DecepticonBackend(str(path))
-        elif path.is_dir() and (path / "config.json").exists():
-            from .backend.hf import HFBackend
-            backend = HFBackend(str(path))
         else:
-            from .backend.mlx import MLXBackend
-            backend = MLXBackend(model_id)
+            backend = _load_generation_backend(model_id)
         with _steer_backend_lock:
             cached = _steer_backend_cache.get(model_id)
             if cached is not None:

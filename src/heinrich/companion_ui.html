@@ -310,9 +310,11 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
       <button id="unlockCopyCmd" style="background:#1a2a1a;border:1px solid #353;color:#9c6;border-radius:3px;cursor:pointer;font-family:inherit;padding:4px 8px">copy</button>
     </div>
     <div style="color:#666;font-size:9px;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">2 &middot; connect (Chrome) &mdash; stay right here, go live</div>
-    <div style="margin-bottom:12px">
-      <button id="unlockConnect" style="width:100%;background:#16240f;border:1px solid #3a5a30;color:#bf9;border-radius:4px;cursor:pointer;font-family:inherit;padding:8px 8px;font-size:11px">&#128279; Connect companion &amp; go live</button>
+    <div style="display:flex;gap:6px;align-items:center;margin-bottom:5px">
+      <input id="unlockCode" type="text" autocomplete="off" autocapitalize="off" spellcheck="false" placeholder="pairing code from the terminal" style="flex:1;background:#161616;border:1px solid #2a2a2a;border-radius:3px;padding:7px 8px;color:#cde;font-size:11px;font-family:inherit">
+      <button id="unlockConnect" style="background:#16240f;border:1px solid #3a5a30;color:#bf9;border-radius:4px;cursor:pointer;font-family:inherit;padding:7px 14px;font-size:11px;white-space:nowrap">Connect &#8594;</button>
     </div>
+    <div id="unlockStatus" style="font-size:9px;color:#888;min-height:13px;margin-bottom:12px"></div>
     <div style="color:#666;font-size:9px;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:3px">or &middot; open this exact view in a local tab (non-Chrome fallback)</div>
     <div style="display:flex;gap:6px;align-items:center">
       <a id="unlockLink" href="#" target="_blank" rel="noopener" style="flex:1;background:#161616;border:1px solid #2a2a2a;border-radius:3px;padding:5px 8px;color:#9cd;font-size:10px;text-decoration:none;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"></a>
@@ -5094,7 +5096,9 @@ function _showUnlock(tier){
     :'Live forward, steering, and model chat run the model itself — a local heinrich with a model loaded provides them (needs torch).';
   const link=_unlockLink();
   const a=document.getElementById('unlockLink');if(a){a.href=link;a.textContent=link;}
+  _connStatus('',null);
   p.style.display='flex';
+  const inp=document.getElementById('unlockCode');if(inp)setTimeout(()=>inp.focus(),50);
 }
 function _hideUnlock(){const p=document.getElementById('unlockPanel');if(p)p.style.display='none';}
 // === Live pairing over Chrome Local Network Access ===
@@ -5111,30 +5115,36 @@ async function _refreshModelsAfterConnect(){
     models.filter(m=>m.architecture==='transformer').forEach(m=>{if(!have.has(m.model)){have.add(m.model);const o=document.createElement('option');o.value=m.model;o.textContent=m.model+' (local)';sel.appendChild(o);}});
   }catch(e){}
 }
+function _connStatus(msg,ok){const s=document.getElementById('unlockStatus');if(s){s.textContent=msg;s.style.color=ok===true?'#6c6':ok===false?'#c66':'#888';}}
 async function connectCompanion(port,code){
   const base='http://127.0.0.1:'+(port||8377);
-  code=(code||prompt('Pairing code — shown in your `heinrich companion` terminal:')||'').trim();
-  if(!code)return;
+  const inp=document.getElementById('unlockCode');
+  code=(code||(inp&&inp.value)||'').trim();
+  if(!code){_connStatus('enter the pairing code printed in your terminal',false);if(inp)inp.focus();return;}
+  _connStatus('connecting… allow the browser’s local-network prompt',null);
   let c;
   try{
     const r=await fetch(base+'/api/capabilities',{targetAddressSpace:'local',headers:{'X-Heinrich-Pair':code}});
-    if(r.status===403){alert('Pairing code rejected — check the code printed by `heinrich companion`.');return;}
+    if(r.status===403){_connStatus('pairing code rejected — recheck the terminal',false);return;}
     if(!r.ok)throw new Error('status '+r.status);
     c=await r.json();
   }catch(e){
-    _showUnlock(CAP.weights?'live':'weights');return;// LNA denied / non-Chromium / not running → deep-link handoff
+    _connStatus('couldn’t reach the companion — is `heinrich companion` running? (or use the link below)',false);return;
   }
   _localBase=base;_pairToken=code;
   if(c&&c.backend)CAP=Object.assign({},CAP,c);
-  _applyCapabilities();_hideUnlock();_startChannels();
+  _applyCapabilities();_startChannels();
   await _refreshModelsAfterConnect();
   const pill=document.getElementById('unlockPill');
   if(pill&&CAP.live&&CAP.weights){pill.textContent='● companion';pill.style.color='#6c6';pill.title='Connected to local heinrich — live analysis unlocked';pill.style.display='inline-block';}
+  _connStatus('✓ connected — live analysis unlocked',true);
   const ls=document.getElementById('loadStatus');if(ls)ls.textContent='companion connected — live analysis unlocked';
+  setTimeout(_hideUnlock,900);
 }
 (function(){
-  document.getElementById('unlockPill')?.addEventListener('click',()=>{if(_localBase)return;connectCompanion();});
+  document.getElementById('unlockPill')?.addEventListener('click',()=>{if(_localBase)return;_showUnlock(CAP.weights?'live':'weights');});
   document.getElementById('unlockConnect')?.addEventListener('click',()=>connectCompanion());
+  document.getElementById('unlockCode')?.addEventListener('keydown',e=>{if(e.key==='Enter')connectCompanion();});
   document.getElementById('unlockClose')?.addEventListener('click',_hideUnlock);
   document.getElementById('unlockPanel')?.addEventListener('click',e=>{if(e.target.id==='unlockPanel')_hideUnlock();});
   const wire=(srcId,btnId)=>document.getElementById(btnId)?.addEventListener('click',()=>{

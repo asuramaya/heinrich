@@ -167,6 +167,7 @@ class HFBackend:
         alpha=0.0,
         return_residual=False,
         residual_layer=-1,
+        residual_layers=None,
     ) -> ForwardResult:
         import torch
         from heinrich.cartography.metrics import softmax, entropy as _entropy
@@ -177,12 +178,13 @@ class HFBackend:
         if steer_dirs and alpha != 0:
             hooks.extend(self._install_steer_hooks(steer_dirs, alpha))
 
+        want_hidden = return_residual or bool(residual_layers)
         try:
             input_ids = self.tokenizer.encode(prompt, return_tensors="pt").to(self._device)
             with torch.no_grad():
                 outputs = self.hf_model(
                     input_ids,
-                    output_hidden_states=return_residual,
+                    output_hidden_states=want_hidden,
                 )
                 logits = outputs.logits[0, -1, :].float().cpu().numpy()
         finally:
@@ -193,9 +195,18 @@ class HFBackend:
         top_id = int(np.argmax(probs))
 
         residual = None
-        if return_residual and outputs.hidden_states:
-            layer_idx = residual_layer if residual_layer >= 0 else -1
-            residual = outputs.hidden_states[layer_idx][0, -1, :].float().cpu().numpy()
+        residuals = None
+        if want_hidden and outputs.hidden_states:
+            if return_residual:
+                layer_idx = residual_layer if residual_layer >= 0 else -1
+                residual = outputs.hidden_states[layer_idx][0, -1, :].float().cpu().numpy()
+            if residual_layers:
+                # MRI layer l = exit of layer l = hidden_states[l+1] (hidden_states[0] is embeddings)
+                nh = len(outputs.hidden_states)
+                residuals = {}
+                for l in residual_layers:
+                    idx = l + 1 if l + 1 < nh else -1
+                    residuals[l] = outputs.hidden_states[idx][0, -1, :].float().cpu().numpy()
 
         return ForwardResult(
             logits=logits,
@@ -205,6 +216,7 @@ class HFBackend:
             entropy=_entropy(probs),
             n_tokens=input_ids.shape[1],
             residual=residual,
+            residuals=residuals,
         )
 
     def generate(self, prompt, *, steer_dirs=None, project_out_dirs=None, alpha=0.0, max_tokens=30) -> str:

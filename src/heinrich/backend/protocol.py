@@ -18,7 +18,8 @@ class ForwardResult:
     top_token: str
     entropy: float
     n_tokens: int
-    residual: np.ndarray | None = None  # [hidden_size] if requested
+    residual: np.ndarray | None = None  # [hidden_size] if requested (single layer)
+    residuals: dict | None = None  # {layer: [hidden_size]} last-position residual per layer, if residual_layers requested
     per_layer: list[dict] | None = None  # optional per-layer data from instrumented forward
 
 
