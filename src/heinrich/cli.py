@@ -340,6 +340,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_vocab.add_argument("--batch-size", type=int, default=0, help="Forward batch size (0 = adaptive)")
     p_vocab.add_argument("--backend", default="auto", choices=["auto", "mlx", "hf"], help="Inference backend")
     p_vocab.add_argument("--no-verify", action="store_true", help="Skip the sample-agreement check")
+    p_vocab.add_argument("--falsify", action="store_true", help="Also run frame falsification (full-vocab PCA vs frozen frame) after projecting")
+    p_vocab.add_argument("--falsify-only", action="store_true", help="Skip projection; run frame falsification on an existing vocab_scores.bin")
 
     p_serve = sub.add_parser("mri-serve", help="Build query-shaped serve/ artifacts for the companion viewer from an existing decomposition")
     p_serve.add_argument("--mri", required=True, help=".mri directory")
@@ -3611,8 +3613,20 @@ def _cmd_mri_health(args: argparse.Namespace) -> None:
 
 def _cmd_mri_vocab(args: argparse.Namespace) -> None:
     """Project the full vocabulary through an existing frozen decomposition."""
+    from .profile.vocab import capture_vocab_projection, frame_falsification
+
+    if getattr(args, "falsify_only", False):
+        result = frame_falsification(args.mri)
+        if "error" in result:
+            print(f"Error: {result['error']}")
+            return
+        print(f"\n=== Frame falsification ({result['n_rows']} tokens, "
+              f"k={result['k']}, z_cut={result['z_cut']}) ===")
+        print(f"  worst var-weighted overlap: {result['worst_var_weighted_overlap']}")
+        print(f"  verdict: {result['verdict']}")
+        return
+
     from .backend.protocol import load_backend
-    from .profile.vocab import capture_vocab_projection
 
     backend = load_backend(args.model, backend=args.backend)
     result = capture_vocab_projection(backend, args.mri,
@@ -3633,6 +3647,13 @@ def _cmd_mri_vocab(args: argparse.Namespace) -> None:
             print(f"    L{pl['layer']:02d}: |Δ|={pl['noise_floor_abs']} "
                   f"vs median |row|={pl['median_row_norm']}")
     print(f"  → {result['mri_path']}/decomp/vocab_scores.bin")
+
+    if getattr(args, "falsify", False):
+        fr = frame_falsification(args.mri)
+        if "error" not in fr:
+            print(f"\n=== Frame falsification (k={fr['k']}) ===")
+            print(f"  worst var-weighted overlap: {fr['worst_var_weighted_overlap']}")
+            print(f"  verdict: {fr['verdict']}")
 
 
 def _cmd_mri_decompose(args: argparse.Namespace) -> None:

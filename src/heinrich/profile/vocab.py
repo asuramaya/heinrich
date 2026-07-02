@@ -4,6 +4,8 @@ Captures per-layer exit states for EVERY vocabulary token and projects them
 through an existing decomposition's frozen PCA frame. The frame (components +
 means) is never re-derived here — the sample decomposition stays the
 coordinate system, and the full vocabulary becomes addressable inside it.
+Supports raw, naked, and template capture modes (template splices each token
+into the chat frame exactly like capture_mri).
 
 Because the stored components are orthonormal and K = hidden_size by default,
 full-K score-space distances equal hidden-space distances exactly (up to f16
@@ -27,26 +29,28 @@ from pathlib import Path
 
 import numpy as np
 
-from .mri import _framework_ops, _is_mlx_backend
+from .mri import _ensure_chat_template, _framework_ops, _is_mlx_backend
 
 
 def capture_vocab_projection(backend, mri_path: str, *, batch_size: int = 0,
                              verify: bool = True) -> dict:
     """Project the full vocabulary through an existing frozen decomposition.
 
-    The capture replicates the MRI's exit semantics exactly: same single-token
-    forward (raw/naked), same stored per-layer baseline subtraction, same
-    mean-centering, same components. A built-in check compares the rows of
-    the original sample tokens against their stored scores and reports the
-    agreement in vocab_meta.json — if the forward path drifted from the
-    original capture, the artifact says so itself.
+    The capture replicates the MRI's exit semantics exactly: same forward
+    (single-token for raw/naked; prefix+[tid]+suffix splice with causal mask
+    for template, exit read at the LAST position), same stored per-layer
+    baseline subtraction (zeros for raw, BOS states for naked, clean-template
+    exits for template), same mean-centering, same components. A built-in
+    check compares the rows of the original sample tokens against their
+    stored scores and reports the agreement in vocab_meta.json — if the
+    forward path drifted from the original capture, the artifact says so
+    itself.
     """
     mri_dir = Path(mri_path)
     meta = json.loads((mri_dir / 'metadata.json').read_text())
     mode = meta.get('capture', {}).get('mode', 'raw')
-    if mode not in ('raw', 'naked'):
-        return {"error": f"vocab projection supports raw/naked captures; this MRI is '{mode}' "
-                         "(template mode needs prefix/suffix splice — not implemented)"}
+    if mode not in ('raw', 'naked', 'template'):
+        return {"error": f"vocab projection supports raw/naked/template captures; this MRI is '{mode}'"}
 
     decomp = mri_dir / 'decomp'
     dmeta_path = decomp / 'meta.json'
@@ -69,7 +73,8 @@ def capture_vocab_projection(backend, mri_path: str, *, batch_size: int = 0,
         means.append(np.load(str(mp)).astype(np.float32))
         comps.append(np.load(str(cp)).astype(np.float32))
 
-    # === Stored baselines (raw mode: zeros; naked: BOS forward states) ===
+    # === Stored baselines (raw mode: zeros; naked: BOS states; template:
+    # clean-template exit states — REUSE, never recompute) ===
     baselines = []
     bl_path = mri_dir / 'baselines.npz'
     bl = np.load(str(bl_path)) if bl_path.exists() else {}
@@ -77,6 +82,19 @@ def capture_vocab_projection(backend, mri_path: str, *, batch_size: int = 0,
         key = f'exit_L{li}'
         baselines.append(bl[key].astype(np.float32) if key in bl
                          else np.zeros(hidden, dtype=np.float32))
+
+    # === Template splice (template mode only): prefix + [tid] + suffix ===
+    # Same construction as capture_mri template mode. token_pos is unused for
+    # the vocab exit (which reads the LAST position), but the mask must be
+    # causal over the full spliced sequence.
+    prefix_ids: list[int] = []
+    suffix_ids: list[int] = []
+    if mode == 'template':
+        from .shrt import _extract_template_parts
+        # Match capture_mri: a base tokenizer with no chat_template gets the
+        # same ChatML fallback, so the splice reproduces the capture exactly.
+        _ensure_chat_template(backend.tokenizer)
+        prefix_ids, suffix_ids = _extract_template_parts(backend.tokenizer)
 
     # === Full token list — same filter as capture_mri (dedup by decoded text,
     # first token id wins), so sample rows land on identical ids ===
@@ -113,8 +131,14 @@ def capture_vocab_projection(backend, mri_path: str, *, batch_size: int = 0,
         _grad_ctx = torch.no_grad
 
     if batch_size <= 0:
-        # single-token rows are cheap; scale down for deep/wide models
-        batch_size = max(16, min(512, int(6e8 // max(1, n_real * hidden * 4))))
+        if mode == 'template':
+            # spliced sequences are ~20-60 tokens each; the intermediates are
+            # B x T x hidden x layers. Stay conservative — a model may already
+            # be resident in a companion process on the same 12GB GPU.
+            batch_size = 16
+        else:
+            # single-token rows are cheap; scale down for deep/wide models
+            batch_size = max(16, min(512, int(6e8 // max(1, n_real * hidden * 4))))
 
     # === Output memmap ===
     out_path = decomp / 'vocab_scores.bin'
@@ -131,14 +155,22 @@ def capture_vocab_projection(backend, mri_path: str, *, batch_size: int = 0,
     with _grad_ctx():
         for bi, b0 in enumerate(range(0, n_rows, batch_size)):
             b1 = min(b0 + batch_size, n_rows)
-            inp = ops.array([[tid] for tid, _ in real_tokens[b0:b1]])  # [B, 1]
+            if mode == 'template':
+                # prefix + [tid] + suffix — single token spliced, so every
+                # sequence is the same length: one clean batch, one triu mask.
+                inp = ops.array([prefix_ids + [tid] + suffix_ids
+                                 for tid, _ in real_tokens[b0:b1]])
+                mask = ops.triu_mask(inp.shape[1])
+            else:
+                inp = ops.array([[tid] for tid, _ in real_tokens[b0:b1]])  # [B, 1]
+                mask = None
             h = ops.embed(inp)
             for li, ly in enumerate(ops.model_inner.layers):
                 # layer_decomposed, not layer_forward: the MRI captured its
                 # exits through the decomposed path, and bf16/f16 reduction
                 # order differs between the two — coordinates must come from
                 # the identical computation to sit in the frozen frame.
-                h = ops.layer_decomposed(ly, h, None)[0]
+                h = ops.layer_decomposed(ly, h, mask)[0]
                 ex = _to_np(h[:, -1, :] if h.ndim == 3 else h)  # [B, hidden]
                 sc = (ex - baselines[li] - means[li]) @ comps[li].T
                 out[b0:b1, li, :sc.shape[1]] = sc.astype(np.float16)

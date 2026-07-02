@@ -50,6 +50,34 @@ def _is_mlx_backend(backend) -> bool:
     return type(backend).__name__ == 'MLXBackend'
 
 
+# Standard ChatML frame (SmolLM2 family). The default system block it injects
+# is stripped by shrt._extract_clean_baseline / _extract_template_parts, so
+# only the structural user/assistant scaffolding survives into the baseline.
+_CHATML_TEMPLATE = (
+    "{% for message in messages %}"
+    "{% if loop.first and messages[0]['role'] != 'system' %}"
+    "{{ '<|im_start|>system\nYou are a helpful AI assistant named SmolLM, "
+    "trained by Hugging Face<|im_end|>\n' }}{% endif %}"
+    "{{'<|im_start|>' + message['role'] + '\n' + message['content'] + "
+    "'<|im_end|>' + '\n'}}{% endfor %}"
+    "{% if add_generation_prompt %}{{ '<|im_start|>assistant\n' }}{% endif %}"
+)
+
+
+def _ensure_chat_template(tokenizer) -> bool:
+    """Give a base tokenizer a chat template so template mode can splice.
+
+    Base models (SmolLM2-135M, etc.) ship no chat_template, so template-mode
+    capture would fail at apply_chat_template. When the ChatML control tokens
+    exist in the vocab (they do for the SmolLM2 family), install the standard
+    ChatML frame. Returns True if a fallback was installed.
+    """
+    if getattr(tokenizer, 'chat_template', None):
+        return False
+    tokenizer.chat_template = _CHATML_TEMPLATE
+    return True
+
+
 def _git_sha(repo_path: str | Path | None) -> str | None:
     """Short git SHA of a repo, or None if unavailable. Used in MRI metadata
     so a capture can be traced to the exact heinrich + decepticons versions
@@ -446,10 +474,24 @@ def _framework_ops(backend):
                 last.gather(1, top1).sum().backward()
             return e.grad.float().cpu().numpy()
 
+        def _triu_mask_hf(T):
+            """Additive causal mask, 4D [1, 1, T, T] in model dtype.
+
+            transformers' eager attention slices attention_mask[:, :, :, :k],
+            so the mask must be 4D (a 2D [T,T] raises IndexError). Broadcasts
+            over batch and heads; model-dtype finfo.min avoids f16/f32 mixing.
+            """
+            if T <= 1:
+                return None
+            dt = next(backend.hf_model.parameters()).dtype
+            neg = torch.finfo(dt).min
+            m = torch.triu(torch.full((T, T), neg, device=device, dtype=dt), diagonal=1)
+            return m.unsqueeze(0).unsqueeze(0)
+
         return SimpleNamespace(
             model_inner=model_inner,
             array=lambda x: torch.tensor(x, device=device, dtype=torch.long),
-            triu_mask=lambda T: torch.triu(torch.full((T, T), float('-inf'), device=device), diagonal=1) if T > 1 else None,
+            triu_mask=_triu_mask_hf,
             stack_to_numpy=lambda tensors: torch.stack(tensors).float().cpu().numpy(),
             to_numpy_1d=lambda t: t.float().cpu().numpy(),
             to_numpy_2d=lambda t, row, col: t.float().cpu().numpy()[0, row, :],
@@ -985,6 +1027,9 @@ def capture_mri(
         bl_entropy = float(-np.sum(probs * np.log2(probs + 1e-12)))
         bl_top_token = backend.tokenizer.decode([int(np.argmax(probs))])
     else:
+        if _ensure_chat_template(backend.tokenizer):
+            print("  [template] base tokenizer had no chat_template — "
+                  "installed standard ChatML frame", flush=True)
         clean_baseline = _extract_clean_baseline(backend.tokenizer)
         prefix_ids, suffix_ids = _extract_template_parts(backend.tokenizer)
         token_pos = len(prefix_ids)
