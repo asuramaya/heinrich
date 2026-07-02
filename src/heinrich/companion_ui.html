@@ -4917,6 +4917,11 @@ async function _handleNavigate(msg){
       el.classList.toggle('off',_hiddenScripts.has(el.dataset.script));
     });
   }
+  // Live forward driven by the agent — runs a prompt through the live model and
+  // lands it on THIS canvas (the shared frame). Requires a paired companion.
+  if(msg.live_prompt&&typeof _runLiveForward==='function'){
+    try{await _runLiveForward(String(msg.live_prompt));}catch(e){}
+  }
 }
 
 // --- Remote capture handler ---
@@ -5880,6 +5885,7 @@ window.__heinrich = {
   // --- live model (agent-drivable): run a prompt through the live model, render its landing ---
   liveForward:(prompt)=>_runLiveForward(prompt), get liveScores(){return _liveScores;},
   get liveVisible(){return liveCloudMarkers.some(m=>m.visible)||liveTrajLines.some(l=>l.visible);},
+  get pollActive(){return _pollActive;}, handleNav:(m)=>_handleNavigate(m),
   // --- state readers ---
   get views(){return views;}, get leftViews(){return leftViews;}, get rightViews(){return rightViews;},
   get vpPairs(){return vpPairs;}, get dirDepth(){return _dirDepthData;},
