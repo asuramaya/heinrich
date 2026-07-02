@@ -223,3 +223,69 @@ def resolve_token_index(mri_path: str) -> Path | None:
         return serve_dir / str(tok_name)
     decomp_path = Path(mri_path) / "decomp" / "token_scores.bin"
     return decomp_path if decomp_path.exists() else None
+
+
+# === Full-vocabulary projection (decomp/vocab_scores.bin, VSCR) ===
+
+_VOCAB_MAGIC = b"VSCR"
+
+
+@lru_cache(maxsize=8)
+def _vocab_text_map(mri_path: str) -> tuple | None:
+    """(texts_tuple, {text: row}) for the full-vocab artifact, or None."""
+    p = Path(mri_path) / "decomp" / "vocab_tokens.json"
+    if not p.exists():
+        return None
+    texts = json.loads(p.read_text())
+    mapping: dict[str, int] = {}
+    for r, txt in enumerate(texts):
+        if txt not in mapping:
+            mapping[txt] = r
+    return tuple(texts), mapping
+
+
+def vocab_resolve(mri_path: str, text: str) -> dict | None:
+    """Resolve token text against the FULL vocabulary projection.
+
+    Returns {"vocab_row", "token_id"} or None (no artifact / no such token).
+    Complements _find_token_by_text: that one answers "is it in the sampled
+    cloud", this one answers "does the tokenizer have it at all".
+    """
+    vm = _vocab_text_map(mri_path)
+    if vm is None:
+        return None
+    row = vm[1].get(text)
+    if row is None:
+        return None
+    ids_path = Path(mri_path) / "decomp" / "vocab_ids.npy"
+    token_id = int(np.load(str(ids_path), mmap_mode="r")[row]) if ids_path.exists() else -1
+    return {"vocab_row": int(row), "token_id": token_id}
+
+
+def vocab_token_row(mri_path: str, row: int) -> bytes | dict:
+    """One token's full-K scores across all layers from vocab_scores.bin.
+
+    O(1) seek. Same wire format as /api/token-pca (<II nL,K> + f32), so the
+    consumer parses both with one code path.
+    """
+    vp = Path(mri_path) / "decomp" / "vocab_scores.bin"
+    if not vp.exists():
+        return {"error": "No full-vocab projection — run: heinrich mri-vocab"}
+    with open(vp, "rb") as f:
+        magic, n_rows, n_layers, k = struct.unpack("<4sIII", f.read(16))
+        if magic != _VOCAB_MAGIC:
+            return {"error": f"Bad vocab_scores.bin magic: {magic!r}"}
+        if row < 0 or row >= n_rows:
+            return {"error": f"vocab row {row} out of range (max {n_rows - 1})"}
+        stride = n_layers * k * 2
+        f.seek(16 + row * stride)
+        data = np.frombuffer(f.read(stride), dtype=np.float16).reshape(n_layers, k)
+    return struct.pack("<II", n_layers, k) + data.astype(np.float32).tobytes()
+
+
+def vocab_meta(mri_path: str) -> dict:
+    """vocab_meta.json passthrough: noise floor, frame falsification, provenance."""
+    p = Path(mri_path) / "decomp" / "vocab_meta.json"
+    if not p.exists():
+        return {"error": "No full-vocab projection — run: heinrich mri-vocab"}
+    return json.loads(p.read_text())

@@ -277,6 +277,24 @@ async function tokenLayer(env, prefix, token, layer) {
   return octet([head, row]);
 }
 
+// vocab_scores.bin (VSCR): header <4sIII magic,n_rows,n_layers,K ; [rows x layers x K] f16
+// /api/vocab-token?row=R → <II n_layers,K + f32[n_layers*K] — same wire format as token-pca
+async function vocabToken(env, prefix, row) {
+  const key = `${prefix}/decomp/vocab_scores.bin`;
+  const h = await r2range(env, key, 0, 16);
+  if (!h) return jsonResponse({ error: "no full-vocab projection" }, 404);
+  const dv = new DataView(h);
+  const nRows = dv.getUint32(4, true), nLayers = dv.getUint32(8, true), K = dv.getUint32(12, true);
+  if (row < 0 || row >= nRows) return jsonResponse({ error: `vocab row ${row} out of range` }, 400);
+  const stride = nLayers * K * 2;
+  const slab = await r2range(env, key, 16 + row * stride, stride);
+  const sdv = new DataView(slab); const n = nLayers * K;
+  const out = new ArrayBuffer(8 + n * 4); const odv = new DataView(out);
+  odv.setUint32(0, nLayers, true); odv.setUint32(4, K, true);
+  for (let i = 0; i < n; i++) odv.setFloat32(8 + i * 4, sdv.getFloat16(i * 2, true), true);
+  return octet([out]);
+}
+
 // token_neurons.bin (TOKN): header <4sIII magic,n_tok,n_layers,intermediate ; [N x layers x inter] f16
 // /api/neuron-field?token=N → raw f16[n_layers*intermediate]
 async function neuronField(env, prefix, token) {
@@ -437,6 +455,15 @@ export default {
         if (ep === "pc-full") return await pcFull(env, prefix, parseInt(q("pc", "0")));
         if (ep === "pc-column") return await pcColumn(env, prefix, parseInt(q("pc", "0")), parseInt(q("layer", "0")));
         if (ep === "token-pca") return await tokenPca(env, prefix, parseInt(q("token", "0")));
+        if (ep === "vocab-token") return await vocabToken(env, prefix, parseInt(q("row", "-1")));
+        if (ep === "vocab-meta") {
+          const vm = await r2json(env, `${prefix}/decomp/vocab_meta.json`);
+          return vm ? jsonResponse(vm) : jsonResponse({ error: "no full-vocab projection" }, 404);
+        }
+        if (ep === "vocab-tokens") {
+          const vt = await r2json(env, `${prefix}/decomp/vocab_tokens.json`);
+          return vt ? jsonResponse(vt) : jsonResponse({ error: "no full-vocab projection" }, 404);
+        }
         if (ep === "token-layer") return await tokenLayer(env, prefix, parseInt(q("token", "0")), parseInt(q("layer", "0")));
         if (ep === "token-hover") return await tokenHover(env, prefix, parseInt(q("token", "0")), parseInt(q("layer", "0")));
         if (ep === "neuron-field") return await neuronField(env, prefix, parseInt(q("token", "0")));
@@ -495,7 +522,17 @@ export default {
           const toks = await r2json(env, `${prefix}/decomp/tokens.json`);
           const txt = q("text", "");
           const idx = toks && Array.isArray(toks.token_texts) ? toks.token_texts.indexOf(txt) : -1;
-          return jsonResponse({ idx, text: txt });
+          const out = { idx, text: txt };
+          if (idx < 0) {
+            // Not in the sampled cloud — the full-vocab projection may still
+            // know it (every tokenizer token is addressable there).
+            const vt = await r2json(env, `${prefix}/decomp/vocab_tokens.json`);
+            if (Array.isArray(vt)) {
+              const row = vt.indexOf(txt);
+              if (row >= 0) out.vocab_row = row;
+            }
+          }
+          return jsonResponse(out);
         }
         if (ep === "norms") return jsonResponse(await r2json(env, `${prefix}/norms.json`) ?? {});
         if (ep === "baselines") return jsonResponse(await r2json(env, `${prefix}/baselines.json`) ?? {});

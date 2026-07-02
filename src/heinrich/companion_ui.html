@@ -225,7 +225,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
       <div id="dirColorStatus" class="dcs" style="display:none">projecting direction&hellip;</div>
       <div id="sepPanel" class="panel-card" style="display:none" title="Run exact direction analysis for the pinned pair"><div class="pane-head"><div><div class="pane-title">Direction Analysis</div><div class="pane-note" id="sepNote">exact, on demand</div></div><button id="sepRun" class="mini-btn" type="button">Analyze</button></div><div style="color:#555;font-size:7px;margin-bottom:2px">Max separation PCs <span id="sepDist" style="color:#888"></span></div><div id="sepList" style="font-size:8px"></div></div>
       <div id="attnPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Attention</div><div class="pane-note">Token A · current layer</div></div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
-      <div id="homingPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Homing</div><div class="pane-note">live &rarr; pinned, per layer</div></div><canvas id="homingChart" height="54" style="width:100%;height:54px"></canvas><div id="homingText" style="font-size:8px;color:#888;margin-top:2px"></div></div>
+      <div id="homingPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Homing</div><div class="pane-note">live &rarr; pinned, per layer</div></div><canvas id="homingChart" height="54" style="width:100%;height:54px"></canvas><div id="homingText" style="font-size:8px;color:#888;margin-top:2px"></div><div id="homingTarget" style="display:none;font-size:8px;color:#FFD700;margin-top:2px">&#9673; target <span id="homingTargetText"></span> <span id="homingTargetClear" style="cursor:pointer;color:#888;text-decoration:underline">clear</span></div></div>
     </div>
     <div class="tok-tabs" id="tokTabs">
       <button class="tab-btn active" data-tab="find">Find</button>
@@ -493,6 +493,77 @@ function _renderLivePoint(d){
   try{_homingUpdate();}catch(e){}// distance-to-pinned readout
 }
 function _clearLivePoint(){_liveScores=null;liveCloudMarkers.forEach(m=>m.visible=false);liveTrajLines.forEach(l=>l.visible=false);_homingCache=null;const hp=document.getElementById('homingPanel');if(hp)hp.style.display='none';_needsRender=true;}
+// --- Vocab target: an off-cloud token pinned from the FULL vocabulary ---
+// The published cloud is a sample; the full-vocab projection (vocab_scores.bin)
+// makes EVERY tokenizer token addressable in the same frozen frame. A vocab
+// target renders as a gold marker + trajectory at its true frozen coordinates
+// even though it isn't one of the sampled dots — the homing study's answer slot.
+let _vocabTarget=null;// {row, text, vec:{nL,fK,data}}
+let _vocabTexts=null,_vocabTextsPending=null;// full-vocab text list (lazy, per model|mode)
+let _vocabTextsKey='';
+let _vocabMetaCache=null,_vocabMetaKey='';// noise floor + frame falsification
+const targetCloudMarkers=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.18,color:0xFFD700,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=12;p.visible=false;v.sc.add(p);return p;});
+const targetTrajLines=views.map(v=>{const l=new THREE.Line(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFFD700,transparent:true,opacity:0.85,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
+function _targetVec(l){if(!_vocabTarget)return null;const{nL,fK,data}=_vocabTarget.vec;
+  return l<nL?data.subarray(l*fK,(l+1)*fK):null;}
+function _targetRealLayers(){if(!_vocabTarget)return 0;return Math.max(0,_vocabTarget.vec.nL-2);}// last 2 rows are emb/lmh virtual
+function _updateTargetMarkers(){
+  if(!_vocabTarget){targetCloudMarkers.forEach(m=>m.visible=false);return;}
+  const vec=cL<_targetRealLayers()?_targetVec(cL):null;
+  views.forEach((v,vi)=>{const mk=targetCloudMarkers[vi];
+    const c=vec?(vi<NC?_liveCoordCloud(v,cL,vec):_liveCoordTraj(v,cL,vec)):null;
+    if(c){const a=mk.geometry.attributes.position.array;a[0]=c[0];a[1]=c[1];a[2]=c[2];mk.geometry.attributes.position.needsUpdate=true;mk.visible=true;}
+    else mk.visible=false;});
+  _needsRender=true;
+}
+function _renderTarget(){
+  for(let vi=NC;vi<views.length;vi++){const v=views[vi];const line=targetTrajLines[vi];const pts=[];
+    if(_vocabTarget){for(let l=0;l<_targetRealLayers();l++){const vec=_targetVec(l);const c=vec?_liveCoordTraj(v,l,vec):null;if(c)pts.push(c[0],c[1],c[2]);}}
+    if(pts.length>=6){line.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pts),3));line.geometry.computeBoundingSphere&&line.geometry.computeBoundingSphere();line.visible=true;}
+    else line.visible=false;}
+  _updateTargetMarkers();
+}
+async function _setVocabTarget(row,text){
+  try{
+    const buf=await(await _apiFetch(`/api/vocab-token/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?row=${row}`)).arrayBuffer();
+    if(buf.byteLength<8)return false;
+    const dv=new DataView(buf);const nL=dv.getUint32(0,true),fK=dv.getUint32(4,true);
+    if(!nL||!fK||buf.byteLength<8+nL*fK*4)return false;
+    _vocabTarget={row,text,vec:{nL,fK,data:new Float32Array(buf,8,nL*fK)}};
+    _homingCache=null;_renderTarget();
+    const tl=document.getElementById('homingTarget'),tt=document.getElementById('homingTargetText');
+    if(tl&&tt){tt.textContent=`"${text}" (vocab row ${row})`;tl.style.display='block';}
+    try{_homingUpdate();}catch(e){}
+    return true;
+  }catch(e){return false;}
+}
+function _clearVocabTarget(){_vocabTarget=null;targetCloudMarkers.forEach(m=>m.visible=false);targetTrajLines.forEach(l=>l.visible=false);_homingCache=null;
+  const tl=document.getElementById('homingTarget');if(tl)tl.style.display='none';
+  try{_homingUpdate();}catch(e){}_needsRender=true;}
+async function _ensureVocabTexts(){
+  const key=model+'|'+mode;
+  if(_vocabTextsKey===key&&_vocabTexts)return _vocabTexts;
+  if(_vocabTextsKey===key&&_vocabTextsPending)return _vocabTextsPending;
+  _vocabTextsKey=key;_vocabTexts=null;
+  _vocabTextsPending=(async()=>{
+    try{
+      const r=await _apiFetch(`/api/vocab-tokens/${encodeURIComponent(model)}/${encodeURIComponent(mode)}`);
+      if(!r.ok)return null;
+      const j=await r.json();
+      if(Array.isArray(j)&&_vocabTextsKey===key){_vocabTexts=j;return j;}
+    }catch(e){}
+    return null;
+  })();
+  return _vocabTextsPending;
+}
+async function _ensureVocabMeta(){
+  const key=model+'|'+mode;
+  if(_vocabMetaKey===key)return _vocabMetaCache;
+  _vocabMetaKey=key;_vocabMetaCache=null;
+  try{const j=await(await _apiFetch(`/api/vocab-meta/${encodeURIComponent(model)}/${encodeURIComponent(mode)}`)).json();
+    if(!j.error&&_vocabMetaKey===key)_vocabMetaCache=j;}catch(e){}
+  return _vocabMetaCache;
+}
 // --- Homing: per-layer distance from the live trajectory to the pinned token(s) ---
 // The study's core measurement. Live scores (residual @ L{l}_components) and the
 // frozen token's scores (token-pca, same components) share the basis, so raw L2
@@ -511,38 +582,57 @@ function _homingDistances(vec){
 }
 async function _homingUpdate(){
   const panel=document.getElementById('homingPanel');if(!panel)return;
-  if(!_liveScores||pinnedToken<0){panel.style.display='none';_homingCache=null;return;}
+  if(!_liveScores||(pinnedToken<0&&!_vocabTarget)){panel.style.display='none';_homingCache=null;return;}
   const nLayers=Object.keys(_liveScores).length;
-  const sig=model+'|'+mode+'|'+pinnedToken+'|'+pinnedTokenB+'|'+nLayers;
+  const sig=model+'|'+mode+'|'+pinnedToken+'|'+pinnedTokenB+'|T'+(_vocabTarget?_vocabTarget.row:-1)+'|'+nLayers;
   if(_homingCache&&_homingCache.sig===sig){_homingDraw();return;}
   panel.style.display='block';
-  const vecA=await _fetchTokenVec(model,mode,pinnedToken);
-  if(!vecA){panel.style.display='none';return;}
+  const vecA=pinnedToken>=0?await _fetchTokenVec(model,mode,pinnedToken):null;
   const vecB=pinnedTokenB>=0?await _fetchTokenVec(model,mode,pinnedTokenB):null;
-  _homingCache={sig,distA:_homingDistances(vecA),distB:vecB?_homingDistances(vecB):null};
+  const distT=_vocabTarget?_homingDistances(_vocabTarget.vec):null;
+  if(!vecA&&!distT){panel.style.display='none';return;}
+  const vmeta=await _ensureVocabMeta();// noise floor for the trust band (null if unpublished)
+  _homingCache={sig,distA:vecA?_homingDistances(vecA):null,distB:vecB?_homingDistances(vecB):null,distT,
+    floor:(vmeta&&vmeta.sample_agreement&&vmeta.sample_agreement.layers)||null};
   _homingDraw();
 }
 function _homingDraw(){
   const c=document.getElementById('homingChart');if(!c||!_homingCache)return;
   const dpr=window.devicePixelRatio||1;const W=c.width=Math.max(1,c.clientWidth*dpr),H=c.height=54*dpr;
   const ctx=c.getContext('2d');ctx.clearRect(0,0,W,H);
-  const {distA,distB}=_homingCache;
-  const all=[...distA.map(x=>x.d),...(distB?distB.map(x=>x.d):[])].filter(x=>x!=null);
+  const {distA,distB,distT,floor}=_homingCache;
+  const ref=distA||distT;if(!ref)return;
+  const all=[...(distA?distA.map(x=>x.d):[]),...(distB?distB.map(x=>x.d):[]),...(distT?distT.map(x=>x.d):[])].filter(x=>x!=null);
   if(!all.length)return;
-  const mx=Math.max(...all)||1,nL=distA.length,layers=distA.map(x=>x.l);
+  const mx=Math.max(...all)||1,nL=ref.length,layers=ref.map(x=>x.l);
   const X=i=>nL>1?(i/(nL-1))*(W-6)+3:W/2,Y=d=>H-4-(d/mx)*(H-8);
+  // Trust band: the capture noise floor per layer (measured, from vocab_meta).
+  // Distances at or below this line are indistinguishable from f16 capture noise.
+  if(floor&&floor.length>1){
+    ctx.fillStyle='rgba(150,150,150,0.18)';ctx.beginPath();ctx.moveTo(X(0),Y(0));
+    const fY=l=>{let lo=floor[0],hi=floor[floor.length-1];
+      for(let j=0;j<floor.length-1;j++){if(l>=floor[j].layer&&l<=floor[j+1].layer){lo=floor[j];hi=floor[j+1];break;}}
+      const t=hi.layer>lo.layer?(l-lo.layer)/(hi.layer-lo.layer):0;
+      return lo.noise_floor_p99+t*(hi.noise_floor_p99-lo.noise_floor_p99);};
+    layers.forEach((l,i)=>ctx.lineTo(X(i),Y(Math.min(fY(l),mx))));
+    ctx.lineTo(X(nL-1),Y(0));ctx.closePath();ctx.fill();
+  }
   const curve=(dist,col)=>{ctx.strokeStyle=col;ctx.lineWidth=1.5*dpr;ctx.beginPath();let st=false;
     dist.forEach((p,i)=>{if(p.d==null)return;const x=X(i),y=Y(p.d);st?ctx.lineTo(x,y):(ctx.moveTo(x,y),st=true);});ctx.stroke();};
   if(distB)curve(distB,'#4477AA');
-  curve(distA,'#FF6644');
+  if(distA)curve(distA,'#FF6644');
+  if(distT)curve(distT,'#FFD700');
   const ci=layers.indexOf(cL);
   if(ci>=0){ctx.strokeStyle='rgba(255,255,255,0.35)';ctx.lineWidth=dpr;ctx.beginPath();ctx.moveTo(X(ci),0);ctx.lineTo(X(ci),H);ctx.stroke();}
-  let star=-1,sd=1e9;distA.forEach((p,i)=>{if(p.d!=null&&p.d<sd){sd=p.d;star=i;}});
-  if(star>=0){ctx.fillStyle='#FF6644';ctx.beginPath();ctx.arc(X(star),Y(sd),3*dpr,0,7);ctx.fill();}
+  const starOf=(dist)=>{let s=-1,sd=1e9;dist.forEach((p,i)=>{if(p.d!=null&&p.d<sd){sd=p.d;s=i;}});return [s,sd];};
+  const dot=(dist,col)=>{const [s,sd]=starOf(dist);if(s>=0){ctx.fillStyle=col;ctx.beginPath();ctx.arc(X(s),Y(sd),3*dpr,0,7);ctx.fill();}return starOf(dist);};
   const t=document.getElementById('homingText');
-  if(t){let s=star>=0?`A nearest @ L${distA[star].l} (d=${sd.toFixed(1)})`:'';
-    if(distB){let dec=-1;for(let i=0;i<distA.length;i++){if(distA[i].d!=null&&distB[i]&&distB[i].d!=null&&distA[i].d<distB[i].d){dec=distA[i].l;break;}}s+=dec>=0?` · A<B from L${dec}`:' · A never < B';}
-    t.textContent=s;}
+  let parts=[];
+  if(distA){const [s,sd]=dot(distA,'#FF6644');if(s>=0)parts.push(`A nearest @ L${distA[s].l} (d=${sd.toFixed(1)})`);}
+  if(distT){const [s,sd]=dot(distT,'#FFD700');if(s>=0)parts.push(`T"${_vocabTarget?_vocabTarget.text:''}" @ L${distT[s].l} (d=${sd.toFixed(1)})`);}
+  if(distA&&distB){let dec=-1;for(let i=0;i<distA.length;i++){if(distA[i].d!=null&&distB[i]&&distB[i].d!=null&&distA[i].d<distB[i].d){dec=distA[i].l;break;}}parts.push(dec>=0?`A<B from L${dec}`:'A never < B');}
+  if(distT&&distB){let dec=-1;for(let i=0;i<distT.length&&i<distB.length;i++){if(distT[i].d!=null&&distB[i]&&distB[i].d!=null&&distT[i].d<distB[i].d){dec=distT[i].l;break;}}parts.push(dec>=0?`T<B from L${dec}`:'T never < B');}
+  if(t)t.textContent=parts.join(' · ');
 }
 // === Three-tier PC data cache ===
 // Full: [nLayers * nTokens] per PC — for selected PCs. Clouds + trajectories.
@@ -4184,6 +4274,7 @@ function updateHUD(){
 let _briefLayerTimer=null;
 function setLayer(l,light){cL=l;updateAllViewports();updateHUD();
   _updateLiveMarkers();// live point follows the layer slider
+  _updateTargetMarkers();// vocab target follows too
   try{_homingDraw();}catch(e){}// move the current-layer marker on the homing curve
   _updateBrowserLayer();_updateBrowserSelBoxes();
   if(!light)_updateBrowserOverlay();
@@ -4229,6 +4320,7 @@ async function loadAll(){
   const newModel=document.getElementById('sm').value,newMode=document.getElementById('smd').value;
   const isSameModel=newModel===_prevModel;
   if(!isSameModel&&typeof _clearLivePoint==='function')_clearLivePoint();// stale live point is in the old model's frame
+  if(!isSameModel&&typeof _clearVocabTarget==='function')_clearVocabTarget();// target coords are frame-specific too
   const prevTexts=texts;
   const prevPinTextA=pinnedToken>=0&&prevTexts[pinnedToken]!==undefined?prevTexts[pinnedToken]:null;
   const prevPinTextB=pinnedTokenB>=0&&prevTexts[pinnedTokenB]!==undefined?prevTexts[pinnedTokenB]:null;
@@ -4392,7 +4484,10 @@ async function init(){const models=await api('models');const sel=document.getEle
   // Token search (debounced, event delegation)
   let _searchTimer=null;
   const _tsResults=document.getElementById('tsresults');
-  _tsResults.addEventListener('click',e=>{const d=e.target.closest('[data-ti]');if(!d)return;const i=parseInt(d.dataset.ti);if(e.shiftKey||_isRightClick(e)){pinnedTokenB=i;}else{pinnedToken=i;}updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();});
+  _tsResults.addEventListener('click',e=>{
+    const vr=e.target.closest('[data-vr]');
+    if(vr){_setVocabTarget(parseInt(vr.dataset.vr),vr.dataset.vt||'');return;}
+    const d=e.target.closest('[data-ti]');if(!d)return;const i=parseInt(d.dataset.ti);if(e.shiftKey||_isRightClick(e)){pinnedTokenB=i;}else{pinnedToken=i;}updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();});
   _tsResults.addEventListener('contextmenu',e=>{e.preventDefault();const d=e.target.closest('[data-ti]');if(!d)return;pinnedTokenB=parseInt(d.dataset.ti);updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();});
   document.getElementById('tsearch').addEventListener('input',e=>{
     clearTimeout(_searchTimer);
@@ -4423,10 +4518,32 @@ async function init(){const models=await api('models');const sel=document.getEle
           frag.appendChild(d);count++;
         }
       }
+      // Full-vocab matches: tokens NOT in the sampled cloud but addressable via
+      // the frozen-frame projection. Click sets them as the gold homing TARGET.
+      if(count<20&&_vocabTexts){
+        const sampleSet=new Set(texts);let vcount=0;
+        for(let r=0;r<_vocabTexts.length&&count+vcount<20;r++){
+          const vt=_vocabTexts[r];
+          if(vt&&vt.toLowerCase().includes(q)&&!sampleSet.has(vt)){
+            const d=document.createElement('div');d.style.cssText='cursor:pointer;padding:1px 0;border-bottom:1px solid #111;display:flex;gap:4px;align-items:center';
+            const txt=document.createElement('span');txt.textContent=`${vt}`;txt.style.flex='1';txt.style.color='#cba54a';d.appendChild(txt);
+            const tag=document.createElement('span');tag.style.cssText='color:#FFD700;font-size:8px;min-width:38px;text-align:right';
+            tag.textContent='vocab';tag.title='Not in the sampled cloud — click to set as homing target at its true frozen coordinates';d.appendChild(tag);
+            d.dataset.vr=r;d.dataset.vt=vt;
+            frag.appendChild(d);vcount++;
+          }
+        }
+        count+=vcount;
+      }else if(count<20&&_vocabTexts===null&&_vocabTextsKey!==model+'|'+mode){
+        // kick off the lazy vocab list fetch; re-run this search when it lands
+        _ensureVocabTexts().then(v=>{if(v)document.getElementById('tsearch').dispatchEvent(new Event('input'));});
+      }
       if(!count){const d=document.createElement('div');d.textContent='no matches';frag.appendChild(d);}
       _tsResults.appendChild(frag);
     },150);
   });
+  const _htClear=document.getElementById('homingTargetClear');
+  if(_htClear)_htClear.addEventListener('click',()=>_clearVocabTarget());
   // --- Discover features button ---
   const _discBtn=document.getElementById('discoverBtn');
   const _discRes=document.getElementById('discoverResults');
@@ -4972,6 +5089,16 @@ async function _handleNavigate(msg){
       el.classList.toggle('off',_hiddenScripts.has(el.dataset.script));
     });
   }
+  // Vocab target driven by the agent — resolve token text against the FULL
+  // vocabulary and set it as the gold homing target (the answer slot).
+  if(msg.target_text&&typeof _setVocabTarget==='function'){
+    try{
+      const r=await(await _apiFetch(`/api/token-resolve/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?text=${encodeURIComponent(String(msg.target_text))}`)).json();
+      if(r&&typeof r.vocab_row==='number')await _setVocabTarget(r.vocab_row,String(msg.target_text));
+      else if(r&&r.idx>=0){pinnedToken=r.idx;updatePinMarkers();_onPinChange();}
+    }catch(e){}
+  }
+  if(msg.target_clear&&typeof _clearVocabTarget==='function'){try{_clearVocabTarget();}catch(e){}}
   // Live forward driven by the agent — runs a prompt through the live model and
   // lands it on THIS canvas (the shared frame). Requires a paired companion.
   if(msg.live_prompt&&typeof _runLiveForward==='function'){
@@ -5941,6 +6068,8 @@ window.__heinrich = {
   liveForward:(prompt)=>_runLiveForward(prompt), get liveScores(){return _liveScores;},
   get liveVisible(){return liveCloudMarkers.some(m=>m.visible)||liveTrajLines.some(l=>l.visible);},
   get pollActive(){return _pollActive;}, handleNav:(m)=>_handleNavigate(m), get homing(){return _homingCache;},
+  setTarget:(row,text)=>_setVocabTarget(row,text), clearTarget:()=>_clearVocabTarget(),
+  get target(){return _vocabTarget?{row:_vocabTarget.row,text:_vocabTarget.text,nL:_vocabTarget.vec.nL}:null;},
   // --- state readers ---
   get views(){return views;}, get leftViews(){return leftViews;}, get rightViews(){return rightViews;},
   get vpPairs(){return vpPairs;}, get dirDepth(){return _dirDepthData;},

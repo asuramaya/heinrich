@@ -26,7 +26,8 @@ from typing import Any
 
 import numpy as np
 
-from .companion_serve import load_serve_meta, resolve_pc_index, resolve_token_index
+from .companion_serve import (load_serve_meta, resolve_pc_index, resolve_token_index,
+                              vocab_resolve, vocab_token_row, vocab_meta)
 
 
 _CLOUD_BUNDLE_MAGIC = b"CLDB"
@@ -3861,9 +3862,48 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 text = qs.get('text', [''])[0]
                 mri_path = self._mri_path(model, mode)
                 idx = _find_token_by_text(mri_path, text)
-                self._send_json({"text": text, "idx": idx})
+                out = {"text": text, "idx": idx}
+                # Not in the sampled cloud? The full-vocab projection may
+                # still know it — every tokenizer token is addressable there.
+                if idx < 0:
+                    vr = vocab_resolve(mri_path, text)
+                    if vr:
+                        out.update(vr)
+                self._send_json(out)
             else:
                 self._send_json({"error": "Usage: /api/token-resolve/<model>/<mode>?text=..."})
+        elif path.startswith('/api/vocab-token/'):
+            # /api/vocab-token/<model>/<mode>?row=R — full-K scores, all layers,
+            # same wire format as /api/token-pca (<II nL,K> + f32).
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                row = int(qs.get('row', ['-1'])[0])
+                result = vocab_token_row(self._mri_path(model, mode), row)
+                if isinstance(result, dict):
+                    self._send_json(result)
+                else:
+                    self._send_bytes(result)
+            else:
+                self._send_json({"error": "Usage: /api/vocab-token/<model>/<mode>?row=R"})
+        elif path.startswith('/api/vocab-meta/'):
+            # /api/vocab-meta/<model>/<mode> — noise floor + frame falsification
+            parts = path.split('/')
+            if len(parts) >= 5:
+                self._send_json(vocab_meta(self._mri_path(parts[3], parts[4])))
+            else:
+                self._send_json({"error": "Usage: /api/vocab-meta/<model>/<mode>"})
+        elif path.startswith('/api/vocab-tokens/'):
+            # /api/vocab-tokens/<model>/<mode> — full-vocab text list (row-ordered)
+            parts = path.split('/')
+            if len(parts) >= 5:
+                vt = Path(self._mri_path(parts[3], parts[4])) / 'decomp' / 'vocab_tokens.json'
+                if vt.exists():
+                    self._send_bytes(vt.read_bytes(), content_type='application/json')
+                else:
+                    self._send_json({"error": "No full-vocab projection — run: heinrich mri-vocab"})
+            else:
+                self._send_json({"error": "Usage: /api/vocab-tokens/<model>/<mode>"})
         elif path.startswith('/api/direction-bootstrap/'):
             # /api/direction-bootstrap/<model>/<mode>?a=N&b=N&layer=L&n_boot=100
             parts = path.split('/')
@@ -4283,10 +4323,10 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             # let it bubble up and crash the request thread.
             pass
 
-    def _send_bytes(self, data: bytes):
+    def _send_bytes(self, data: bytes, content_type: str = 'application/octet-stream'):
         try:
             self.send_response(200)
-            self.send_header('Content-Type', 'application/octet-stream')
+            self.send_header('Content-Type', content_type)
             self.send_header('Content-Length', len(data))
             self._cors()
             self.send_header('Cache-Control', 'no-cache')

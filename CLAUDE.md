@@ -113,6 +113,8 @@ heinrich mri --model X.pt --mode sequence --data val.bin --output X.mri  # causa
 heinrich mri-scan --model X --output DIR                    # full workup: 3 modes + health + analysis
 heinrich mri-scan --model X.pt --data val.bin --output DIR  # causal bank: raw + sequence modes
 heinrich mri-backfill --model X --mri X.mri                 # fill missing weights in existing MRI
+heinrich mri-vocab --model X --mri X.mri                    # FULL-vocab projection through the frozen frame (vocab_scores.bin)
+heinrich mri-decompose --mri X.mri --backfill-means         # backfill PCA means into pre-existing decomps (required for live/vocab projection)
 heinrich mri-health --dir /Volumes/sharts                   # deep health check (shapes, NaN, gates, attn)
 heinrich mri-status --dir /Volumes/sharts                   # what's complete, incomplete, running
 heinrich mri-verify --model X                               # 5-token smoke test
@@ -369,6 +371,19 @@ weight_alignment.json          # per-layer per-matrix alignment with PCs
 delta_scores.bin               # delta PCA (exit-entry) scores
 meta.json                      # decomposition metadata
 ```
+
+**Full-vocab projection** (`decomp/vocab_*`, written by `mri-vocab`):
+```
+vocab_scores.bin               # VSCR blob [n_vocab, layers, K] f16 — EVERY token in the frozen frame
+vocab_ids.npy / vocab_tokens.json  # row → token id / text
+vocab_meta.json                # capture noise floor per layer + frame_falsification (principal-angle overlap)
+```
+The frame is NEVER re-derived: the full vocabulary is projected through the sample
+decomposition's components + stored means (`L{NN}_mean.npy`). K = hidden and orthonormal
+components mean full-K score distances ARE hidden-space distances. The decomp means are
+REQUIRED — older decomps need `mri-decompose --backfill-means` first (the mean was not
+stored before Session 13; without it, live projections carried a constant |mu| offset —
+64x the typical score norm at smollm2-135m L20).
 
 **Key metadata fields:**
 - `has_entry`: whether L{NN}_entry.npy files exist (False for raw/naked)

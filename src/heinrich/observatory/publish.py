@@ -23,6 +23,8 @@ _DECOMP_EXACT = {
     "all_scores.bin", "pc_scores.bin", "token_scores.bin", "token_neurons.bin",
     "gate_heatmap.npy", "weight_alignment.json", "neuron_importance.json",
     "falsification.json", "token_predicts.bin",
+    # full-vocab frozen-frame projection (mri-vocab) — every token addressable
+    "vocab_scores.bin", "vocab_tokens.json", "vocab_meta.json", "vocab_ids.npy",
 }
 
 
