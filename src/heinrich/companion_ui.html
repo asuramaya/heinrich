@@ -45,7 +45,22 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #tokpanel .pane-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}
 #tokpanel .pane-title{color:#777;font-size:7px;letter-spacing:0.08em;text-transform:uppercase}
 #tokpanel .pane-note{color:#555;font-size:7px}
-#tokpanel .inspect-stack,#tokpanel .find-stack,#tokpanel .run-stack{display:flex;flex-direction:column;gap:8px}
+#tokpanel .inspect-stack,#tokpanel .find-stack,#tokpanel .run-stack,#tokpanel .live-stack,#tokpanel .chat-stack{display:flex;flex-direction:column;gap:8px}
+/* Collapse-by-default cards: header stays, body hidden, one-line summary shows. */
+#tokpanel .panel-card>.pane-head,#tokpanel .token-card>.subhead{cursor:pointer}
+#tokpanel .card-caret{display:inline-block;width:8px;color:#555;font-size:7px;user-select:none;margin-right:2px;transition:color .1s}
+#tokpanel .panel-card>.pane-head:hover .card-caret,#tokpanel .token-card>.subhead:hover .card-caret{color:#9c9}
+#tokpanel .card-summary{display:none;color:#8a8a8a;font-size:7px;font-weight:normal;letter-spacing:0;text-transform:none;margin-left:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;text-align:right}
+/* !important beats inline display styles on card bodies (e.g. steer's flex row, live canvases) */
+#tokpanel .panel-card.clps>*:not(.pane-head){display:none!important}
+#tokpanel .token-card.clps>*:not(.subhead){display:none!important}
+#tokpanel .panel-card.clps>.pane-head .card-summary,#tokpanel .token-card.clps>.subhead .card-summary{display:inline-block}
+#tokpanel .panel-card.clps>.pane-head>.pane-note{display:none}
+#tokpanel .token-card>.subhead{display:flex;align-items:center}
+#tokpanel .tab-dot{display:none;width:5px;height:5px;border-radius:50%;background:#6c6;margin-left:5px;vertical-align:middle;box-shadow:0 0 3px rgba(110,204,110,0.6)}
+#tokpanel .tok-tabs .tab-btn.has-dot .tab-dot{display:inline-block}
+@keyframes card-flash-kf{0%{background:rgba(110,204,110,0.28)}100%{background:transparent}}
+#tokpanel .card-flash{animation:card-flash-kf .9s ease-out}
 #tokpanel .panel-card{background:rgba(18,18,18,0.85);border:1px solid #222;border-radius:4px;padding:6px}
 #tokpanel .token-card{background:rgba(18,18,18,0.85);border:1px solid #222;border-radius:4px;padding:6px}
 #tokpanel .section-row{display:flex;gap:8px;align-items:flex-start}
@@ -226,17 +241,17 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
       <div id="dirColorStatus" class="dcs" style="display:none">projecting direction&hellip;</div>
       <div id="sepPanel" class="panel-card" style="display:none" title="Run exact direction analysis for the pinned pair"><div class="pane-head"><div><div class="pane-title">Direction Analysis</div><div class="pane-note" id="sepNote">exact, on demand</div></div><button id="sepRun" class="mini-btn" type="button">Analyze</button></div><div style="color:#555;font-size:7px;margin-bottom:2px">Max separation PCs <span id="sepDist" style="color:#888"></span></div><div id="sepList" style="font-size:8px"></div></div>
       <div id="attnPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Attention</div><div class="pane-note">Token A · current layer</div></div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
-      <div id="homingPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Homing</div><span style="display:flex;gap:3px;align-items:center"><span class="pane-note">live &rarr; pinned</span><span id="homingLogBtn" title="log-scale y (asinh) so the crystal plateau doesn't crush early structure" style="cursor:pointer;font-size:7px;color:#888;border:1px solid #333;border-radius:2px;padding:0 3px">log</span><span id="homingJsonBtn" title="download this homing run as JSON" style="cursor:pointer;font-size:7px;color:#888;border:1px solid #333;border-radius:2px;padding:0 3px">json</span></span></div><canvas id="homingChart" height="110" style="width:100%;height:110px"></canvas><div id="homingLegend" style="font-size:8px;color:#888;margin-top:1px;line-height:1.4"></div><div id="homingText" style="font-size:8px;color:#888;margin-top:2px"></div><div id="homingTarget" style="display:none;font-size:8px;margin-top:2px"><div id="homingTargetT1" style="display:none;color:#FFD700">&#9673; T <span id="homingTargetText"></span> <span id="homingTargetClear" style="cursor:pointer;color:#888;text-decoration:underline">clear</span></div><div id="homingTargetT2" style="display:none;color:#66A8FF">&#9673; T2 <span id="homingTargetText2"></span> <span id="homingTargetClear2" style="cursor:pointer;color:#888;text-decoration:underline">clear</span></div></div></div>
     </div>
     <div class="tok-tabs" id="tokTabs">
-      <button class="tab-btn active" data-tab="find">Find</button>
-      <button class="tab-btn" data-tab="compare">Compare</button>
-      <button class="tab-btn" data-tab="run">Run</button>
+      <button class="tab-btn active" data-tab="find">Find<span class="tab-dot"></span></button>
+      <button class="tab-btn" data-tab="compare">Compare<span class="tab-dot"></span></button>
+      <button class="tab-btn" data-tab="live">Live<span class="tab-dot"></span></button>
+      <button class="tab-btn" data-tab="chat">Chat<span class="tab-dot"></span></button>
     </div>
     <div id="tokTabContent">
       <div class="tab-pane active" data-pane="find">
         <div class="find-stack">
-          <div class="panel-card">
+          <div class="panel-card" id="searchCard">
             <div class="pane-head"><div class="pane-title">Token Search</div><div class="pane-note">search, pin, compare</div></div>
             <div class="search-row" style="margin-bottom:0">
               <input id="tsearch" type="text" placeholder="search tokens...">
@@ -246,7 +261,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
             </div>
             <div id="tsresults" style="max-height:140px;overflow-y:auto;font-size:8px;color:#555;margin-top:6px"></div>
           </div>
-          <div class="panel-card">
+          <div class="panel-card" id="discoverCard">
             <div class="pane-head"><div class="pane-title">Discover Features</div><div class="pane-note">layer-local PCA candidates</div></div>
             <div class="search-row" style="margin-bottom:0">
               <button id="discoverBtn" title="Find the layer with the strongest A/B separation across PCs">Discover</button>
@@ -257,7 +272,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
         </div>
       </div>
       <div class="tab-pane" data-pane="compare">
-        <div class="panel-card">
+        <div class="panel-card" id="crossCard">
           <div class="pane-head"><div class="pane-title">Cross-Model Compare</div><div class="pane-note">same pair, second model</div></div>
           <div style="display:flex;gap:3px;align-items:center">
             <select id="crossModel" style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"></select>
@@ -268,9 +283,9 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
           <div id="crossResult" style="font-size:7px;color:#888;margin-top:4px"></div>
         </div>
       </div>
-      <div class="tab-pane" data-pane="run">
-        <div class="run-stack">
-          <div class="panel-card">
+      <div class="tab-pane" data-pane="live">
+        <div class="live-stack">
+          <div class="panel-card" id="liveSessionCard">
             <div class="pane-head"><div class="pane-title">Live Session</div><div class="pane-note">loaded backend for run/chat</div></div>
             <div id="liveSessionStatus" class="live-status-text">session idle</div>
             <div class="live-status-row" style="margin-top:6px">
@@ -279,18 +294,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
               <button id="liveUseSuggested" class="mini-btn" type="button">Use Current MRI</button>
             </div>
           </div>
-          <div class="panel-card">
-            <div class="pane-head"><div class="pane-title">Analysis Chat</div><div class="pane-note">MCP-backed notes and questions</div></div>
-            <div id="chatLog" style="color:#666;font-size:8px;line-height:1.5;max-height:200px;overflow-y:auto"></div>
-            <input id="chatInput" type="text" placeholder="ask about this direction...">
-          </div>
-          <div class="panel-card">
-            <div class="pane-head"><div class="pane-title">Model Chat</div><div class="pane-note">talk to the loaded model directly</div></div>
-            <div id="liveChatStatus" class="live-status-text">uses the same live backend as prompt MRI</div>
-            <div id="liveChatLog" class="live-log" style="margin-top:6px"></div>
-            <input id="liveChatInput" type="text" placeholder="ask the live model..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:8px;font-family:inherit;border-radius:2px;margin-top:6px">
-          </div>
-          <div class="panel-card">
+          <div class="panel-card" id="liveForwardCard">
             <div class="pane-head"><div class="pane-title">Live Forward</div><div class="pane-note">run a prompt through the model</div></div>
             <input id="liveModelId" type="text" placeholder="HF model id (optional, e.g. HuggingFaceTB/SmolLM2-135M)" style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:7px;font-family:inherit;border-radius:2px">
             <input id="liveInput" type="text" placeholder="type a prompt, Enter to run..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:8px;font-family:inherit;border-radius:2px;margin-top:4px">
@@ -308,6 +312,22 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
             <button id="steerBtn" style="width:100%;margin-top:4px;background:#3a1030;border:1px solid #a2c;color:#f9d;padding:3px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">steer</button>
             <div id="steerStatus" style="color:#555;font-size:7px;margin-top:3px"></div>
             <div id="steerResult" style="font-size:7px;color:#888;margin-top:4px"></div>
+          </div>
+          <div id="homingPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Homing</div><span style="display:flex;gap:3px;align-items:center"><span class="pane-note">live &rarr; pinned</span><span id="homingLogBtn" data-noclps title="log-scale y (asinh) so the crystal plateau doesn't crush early structure" style="cursor:pointer;font-size:7px;color:#888;border:1px solid #333;border-radius:2px;padding:0 3px">log</span><span id="homingJsonBtn" data-noclps title="download this homing run as JSON" style="cursor:pointer;font-size:7px;color:#888;border:1px solid #333;border-radius:2px;padding:0 3px">json</span></span></div><canvas id="homingChart" height="110" style="width:100%;height:110px"></canvas><div id="homingLegend" style="font-size:8px;color:#888;margin-top:1px;line-height:1.4"></div><div id="homingText" style="font-size:8px;color:#888;margin-top:2px"></div><div id="homingTarget" style="display:none;font-size:8px;margin-top:2px"><div id="homingTargetT1" style="display:none;color:#FFD700">&#9673; T <span id="homingTargetText"></span> <span id="homingTargetClear" style="cursor:pointer;color:#888;text-decoration:underline">clear</span></div><div id="homingTargetT2" style="display:none;color:#66A8FF">&#9673; T2 <span id="homingTargetText2"></span> <span id="homingTargetClear2" style="cursor:pointer;color:#888;text-decoration:underline">clear</span></div></div></div>
+        </div>
+      </div>
+      <div class="tab-pane" data-pane="chat">
+        <div class="chat-stack">
+          <div class="panel-card" id="analysisChatCard">
+            <div class="pane-head"><div class="pane-title">Analysis Chat</div><div class="pane-note">MCP-backed notes and questions</div></div>
+            <div id="chatLog" style="color:#666;font-size:8px;line-height:1.5;max-height:200px;overflow-y:auto"></div>
+            <input id="chatInput" type="text" placeholder="ask about this direction...">
+          </div>
+          <div class="panel-card" id="modelChatCard">
+            <div class="pane-head"><div class="pane-title">Model Chat</div><div class="pane-note">talk to the loaded model directly</div></div>
+            <div id="liveChatStatus" class="live-status-text">uses the same live backend as prompt MRI</div>
+            <div id="liveChatLog" class="live-log" style="margin-top:6px"></div>
+            <input id="liveChatInput" type="text" placeholder="ask the live model..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:8px;font-family:inherit;border-radius:2px;margin-top:6px">
           </div>
         </div>
       </div>
@@ -595,6 +615,7 @@ function _onLiveStep(st){
   _renderLivePoint({scores:st.scores});// current step = live marker; sets _liveScores, homing follows
   _renderWalkTrail();
   _updateWalkReadout(st,null);
+  try{_cardTouched('liveForward');}catch(e){}
 }
 async function _startWalk(prompt,max){
   _clearWalk();_clearSteerPoint();_walkActive=true;
@@ -1019,6 +1040,7 @@ async function _homingUpdate(){
   _homingCache={sig,distA:vecA?_homingDistances(vecA):null,distB:vecB?_homingDistances(vecB):null,distT,distT2,
     floor:(vmeta&&vmeta.sample_agreement&&vmeta.sample_agreement.layers)||null};
   _homingDraw();
+  try{_cardTouched('homing');}catch(e){}// fresh homing data — dot the Live tab if hidden
 }
 // Interpolate the measured per-layer capture noise floor to layer l.
 function _homingFloorAt(floor,l){if(!floor||!floor.length)return null;
@@ -4775,6 +4797,7 @@ async function _onPinChange(){
       _pinChangeDebounce=null;
       const gen=++_pinChangeGen;
       try{_updateSteerPanel();}catch(e){}// steer needs both pins + a live model
+      try{['tokA','tokB','sep','attn','steer'].forEach(_refreshCardSummary);}catch(e){}
       _nfUpdateActivations();
       try{_homingUpdate();}catch(e){}// pinned token(s) are the homing target(s)
       const tokA=pinnedToken,tokB=pinnedTokenB;
@@ -5868,18 +5891,102 @@ async function _captureGifRemote(sc,cam,el,vi,rid){
 // Start polling after initial load completes
 // (poll loops are started by the capability boot below, only if CAP.mcp)
 
-// --- Tokpanel tab switcher (merged from 3 former accordions: chat/cross/live) ---
+// --- Tokpanel tab switcher — Find | Compare | Live | Chat (mental modes) ---
+function _activeTabName(){return document.querySelector('#tokTabs .tab-btn.active')?.dataset.tab||'find';}
 function _activateTab(name){
   const tabs=document.getElementById('tokTabs');if(!tabs)return;
   tabs.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
   document.querySelectorAll('#tokTabContent .tab-pane').forEach(p=>p.classList.toggle('active',p.dataset.pane===name));
   if(name==='compare')_populateCrossModels();
-  if(name==='run'&&!_deployStatic){_liveSuggestModelId();_refreshLiveStatus();}
+  if(name==='live'&&!_deployStatic){_liveSuggestModelId();_refreshLiveStatus();}
+  // Opening a tab clears its attention dot and flushes any deferred header flashes.
+  _setTabDot(name,false);
+  try{_flushPendingFlashes(name);}catch(e){}
 }
 (function(){
   const tabs=document.getElementById('tokTabs');if(!tabs)return;
   tabs.addEventListener('click',e=>{const btn=e.target.closest('.tab-btn');if(!btn)return;_activateTab(btn.dataset.tab);});
 })();
+
+// === Collapsible panel cards + attention routing =========================
+// Every panel-card gets a clickable header that collapses/expands its body,
+// showing a one-line live summary when collapsed. Open/closed state persists
+// per card in localStorage (device preference — NOT the shareable hash).
+// When a card updates while its tab is inactive, a dot appears on the tab and
+// the header flashes once when the tab is next opened. _cardTouched() is the hook.
+const _CARDS={};
+function _cardSummaryText(key){
+  const trim=s=>String(s==null?'':s).replace(/\s+/g,' ').trim();
+  try{switch(key){
+    case 'tokA':{if(pinnedToken<0)return 'no pin';const t=trim(texts[pinnedToken])||'∅';return `${t} · ${scripts[pinnedToken]||'?'} #${pinnedToken}`;}
+    case 'tokB':{if(pinnedTokenB<0)return 'no pin';const t=trim(texts[pinnedTokenB])||'∅';return `${t} · ${scripts[pinnedTokenB]||'?'} #${pinnedTokenB}`;}
+    case 'sep':{if(pinnedToken<0||pinnedTokenB<0)return 'pin A + B';const d=trim(document.getElementById('sepDist')?.textContent);return d?('sep '+d):'A vs B · analyze';}
+    case 'attn':return pinnedToken>=0?`#${pinnedToken} · L${cL}`:'no pin';
+    case 'homing':{const h=trim(document.getElementById('homingText')?.textContent);return h||'no live run';}
+    case 'search':return 'search · pin · compare';
+    case 'discover':return 'layer-local PCA candidates';
+    case 'cross':return trim(document.getElementById('crossStatus')?.textContent)||'same pair, 2nd model';
+    case 'liveSession':return trim(document.getElementById('liveSessionStatus')?.textContent)||'session idle';
+    case 'liveForward':{const p=_lastLiveMeta&&_lastLiveMeta.prediction;if(_walkActive&&_walkText)return `walk: "${trim(_walkText).slice(0,40)}"`;return p!=null?`→ ${trim(p)}`:(_lastLivePrompt?`"${trim(_lastLivePrompt).slice(0,32)}"`:'no run yet');}
+    case 'steer':{const l=document.getElementById('steerLayer')?.value||cL,a=parseFloat(document.getElementById('steerAlpha')?.value||'0');const as=(a>=0?'+':'')+(Number.isFinite(a)?a.toFixed(1):'0.0');const last=_steerInfo?(_steerInfo.differs?'OUTPUT BENT':'no change'):'no run yet';return `L${l} α=${as} · ${_steerInfo?'last: '+last:last}`;}
+    case 'analysisChat':{const log=document.getElementById('chatLog');const last=log&&log.lastElementChild?trim(log.lastElementChild.textContent):'';return last?last.slice(0,44):'MCP notes & questions';}
+    case 'modelChat':{const log=document.getElementById('liveChatLog');const last=log&&log.lastElementChild?trim(log.lastElementChild.textContent):'';return last?last.slice(0,44):'talk to the loaded model';}
+  }}catch(e){}
+  return '';
+}
+function _refreshCardSummary(key){const c=_CARDS[key];if(!c||!c.summaryEl)return;c.summaryEl.textContent=_cardSummaryText(key);}
+function _updateCaret(c){if(c.caretEl)c.caretEl.textContent=c.card.classList.contains('clps')?'▸':'▾';}
+function _setCardCollapsed(c,collapsed,persist){
+  c.card.classList.toggle('clps',collapsed);
+  _updateCaret(c);
+  if(collapsed)_refreshCardSummary(c.key);
+  if(persist){try{localStorage.setItem('heinrich.card.'+c.key,collapsed?'1':'0');}catch(e){}}
+}
+function _toggleCard(c){_setCardCollapsed(c,!c.card.classList.contains('clps'),true);}
+function _setTabDot(tab,on){const b=document.querySelector(`#tokTabs .tab-btn[data-tab="${tab}"]`);if(b)b.classList.toggle('has-dot',!!on&&tab!==_activeTabName());}
+function _flashCard(c){const h=c.headerEl;if(!h)return;h.classList.remove('card-flash');void h.offsetWidth;h.classList.add('card-flash');setTimeout(()=>h.classList.remove('card-flash'),950);}
+function _flushPendingFlashes(tab){for(const k in _CARDS){const c=_CARDS[k];if(c.tab===tab&&c.pendingFlash){c.pendingFlash=false;_refreshCardSummary(k);_flashCard(c);}}}
+// The hook: call when a card's content changes. Refreshes its summary, and if
+// the card's tab isn't showing, dots the tab + defers a flash; else flashes now.
+function _cardTouched(key){
+  const c=_CARDS[key];if(!c)return;
+  _refreshCardSummary(key);
+  if(c.tab&&c.tab!==_activeTabName()){c.pendingFlash=true;_setTabDot(c.tab,true);}
+  else _flashCard(c);
+}
+function _initCollapsibles(){
+  // key → {cardId, tab, defaultCollapsed}. tab=null → always-visible inspect stack.
+  const defs=[
+    {key:'tokA',id:'tokA',tab:null,collapsed:false},
+    {key:'tokB',id:'tokB',tab:null,collapsed:false},
+    {key:'sep',id:'sepPanel',tab:null,collapsed:false},
+    {key:'attn',id:'attnPanel',tab:null,collapsed:true},
+    {key:'search',id:'searchCard',tab:'find',collapsed:false},
+    {key:'discover',id:'discoverCard',tab:'find',collapsed:true},
+    {key:'cross',id:'crossCard',tab:'compare',collapsed:false},
+    {key:'liveSession',id:'liveSessionCard',tab:'live',collapsed:true},
+    {key:'liveForward',id:'liveForwardCard',tab:'live',collapsed:true},
+    {key:'steer',id:'steerPanel',tab:'live',collapsed:true},
+    {key:'homing',id:'homingPanel',tab:'live',collapsed:true},
+    {key:'analysisChat',id:'analysisChatCard',tab:'chat',collapsed:true},
+    {key:'modelChat',id:'modelChatCard',tab:'chat',collapsed:true},
+  ];
+  for(const d of defs){
+    const card=document.getElementById(d.id);if(!card)continue;
+    const header=card.querySelector(':scope > .pane-head, :scope > .subhead');if(!header)continue;
+    const caret=document.createElement('span');caret.className='card-caret';
+    header.insertBefore(caret,header.firstChild);
+    const summary=document.createElement('span');summary.className='card-summary';
+    header.appendChild(summary);
+    const c={key:d.key,card,headerEl:header,caretEl:caret,summaryEl:summary,tab:d.tab,pendingFlash:false};
+    _CARDS[d.key]=c;
+    let collapsed=d.collapsed;
+    try{const saved=localStorage.getItem('heinrich.card.'+d.key);if(saved==='1')collapsed=true;else if(saved==='0')collapsed=false;}catch(e){}
+    _setCardCollapsed(c,collapsed,false);
+    header.addEventListener('click',e=>{if(e.target.closest('button,input,select,a,textarea,[data-noclps]'))return;_toggleCard(c);});
+  }
+}
+_initCollapsibles();
 // === Capability manifest (the inverted contract) ===
 // The backend DECLARES what it can do; the SPA composes from that — instead of
 // the SPA probing for failures. /api/capabilities is the whole boundary:
@@ -5904,7 +6011,7 @@ function _disableLiveUI(){
   const lv=document.getElementById('liveStatus');if(lv)lv.textContent=note;
   ['liveInput','liveChatInput','liveModelId','chatInput'].forEach(id=>{const el=document.getElementById(id);if(el){el.disabled=true;el.placeholder=note;}});
   ['liveStatusRefresh','liveStatusUnload','liveUseSuggested'].forEach(id=>{const el=document.getElementById(id);if(el)el.disabled=true;});
-  if(document.querySelector('#tokTabs .tab-btn[data-tab="run"]')?.classList.contains('active'))_activateTab('find');
+  if(document.querySelector('#tokTabs .tab-btn[data-tab="live"]')?.classList.contains('active'))_activateTab('find');
 }
 // Inverse of _disableLiveUI — light the live tier back up once a companion is paired.
 function _enableLiveUI(){
@@ -6059,7 +6166,7 @@ async function _chatPollLoop(){
   const MAX_BACKOFF=60000;
   let badgeEl=null;
   const _setBadge=(disconnected)=>{
-    const anchor=document.querySelector('#tokTabs .tab-btn[data-tab="run"]');
+    const anchor=document.querySelector('#tokTabs .tab-btn[data-tab="chat"]');
     if(!anchor)return;
     if(disconnected){
       if(!badgeEl){badgeEl=document.createElement('span');
@@ -6081,6 +6188,7 @@ async function _chatPollLoop(){
         d.style.cssText='color:#6c6;margin:2px 0';
         d.textContent=m.reply;
         log.appendChild(d);log.scrollTop=log.scrollHeight;
+        try{_cardTouched('analysisChat');}catch(e){}
       }
     }catch(e){
       _setBadge(true);
@@ -6216,6 +6324,7 @@ function _renderLiveSession(info){
     el.style.color='#777';
     el.textContent=`idle · ${resolved}${info.loaded_count?` · ${info.loaded_count} other cached`:''}`;
   }
+  try{_refreshCardSummary('liveSession');}catch(e){}
 }
 async function _refreshLiveStatus(){
   const el=document.getElementById('liveSessionStatus');if(!el||!model)return;
@@ -6356,6 +6465,7 @@ async function _runLiveChat(message){
     _liveChatHistory.push({role:'assistant',content:d.reply});
     if(_liveChatHistory.length>16)_liveChatHistory=_liveChatHistory.slice(-16);
     _appendLiveChatEntry('assistant',d.reply,d);
+    try{_cardTouched('modelChat');}catch(e){}
     st.style.color='#6c8';
     st.textContent=`${d.backend_type||'backend'} · ${d.latency_ms||'?'} ms`;
     _renderLiveSession(d);
@@ -6392,6 +6502,7 @@ async function _runLiveForward(prompt){
     if(res)_liveRender(res,d);
     _renderLiveSession(d);
     _renderLivePoint(d);// plot the prompt's landing in the frozen frame
+    try{_cardTouched('liveForward');}catch(e){}
   }catch(e){
     if(st){st.style.color='#f77';st.textContent='fetch failed: '+e.message;}
   }finally{_liveBusy=false;try{_refreshLiveStatus();}catch(e){}}
@@ -6445,6 +6556,7 @@ async function _doSteer(optLayer,optAlpha,optA,optB){
     _steerInfo={alpha,layer,cleanPrediction:d.clean_prediction||'',steeredPrediction:d.steered_prediction||'',differs};
     if(st){st.style.color=differs?'#f6c':'#6c8';st.textContent='done · '+(d.latency_ms||'?')+' ms'+(differs?' · OUTPUT BENT':' · no change');}
     _renderSteerResult(res,d,differs);
+    try{_cardTouched('steer');}catch(e){}
     return d;
   }catch(e){if(st){st.style.color='#f77';st.textContent='fetch failed: '+e.message;}return {error:e.message};}
 }
@@ -6785,6 +6897,14 @@ window.__heinrich = {
   get views(){return views;}, get leftViews(){return leftViews;}, get rightViews(){return rightViews;},
   get vpPairs(){return vpPairs;}, get dirDepth(){return _dirDepthData;},
   get pins(){return {a:pinnedToken,b:pinnedTokenB};}, get cap(){return CAP;},
+  // --- panel redesign: collapsible cards + tab attention routing (test surface) ---
+  activeTab:()=>_activeTabName(), gotoTab:(name)=>{_activateTab(name);return _activeTabName();},
+  cardKeys:()=>Object.keys(_CARDS),
+  cardState:(key)=>{const c=_CARDS[key];return c?{collapsed:c.card.classList.contains('clps'),summary:c.summaryEl?c.summaryEl.textContent:'',tab:c.tab,visible:!!(c.card.offsetParent),pendingFlash:c.pendingFlash}:null;},
+  toggleCard:(key)=>{const c=_CARDS[key];if(!c)return null;_toggleCard(c);return c.card.classList.contains('clps');},
+  setCard:(key,collapsed)=>{const c=_CARDS[key];if(!c)return null;_setCardCollapsed(c,!!collapsed,true);return c.card.classList.contains('clps');},
+  tabDot:(tab)=>{const b=document.querySelector(`#tokTabs .tab-btn[data-tab="${tab}"]`);return b?b.classList.contains('has-dot'):null;},
+  touchCard:(key)=>{_cardTouched(key);return _CARDS[key]?_CARDS[key].summaryEl.textContent:null;},
   get state(){return {model,mode,cL,nL,nN,nK,_nRealLayers,pinnedToken,pinnedTokenB,_dirColorActive,play};},
   get wlData(){return _wlData;}, get wlDirData(){return _wlDirData;}, get wlDirKey(){return _wlDirKey;},
   get dirProjLast(){return _dirProjLast;},
