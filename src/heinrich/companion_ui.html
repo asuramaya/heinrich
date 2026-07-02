@@ -115,6 +115,22 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   .cbtn button{min-height:28px;min-width:26px;padding:4px 7px!important;font-size:11px!important;line-height:1!important}
 }
 .cbtn button:hover{color:#ccc;border-color:#666}
+/* Corner controls: reveal on pointer-over only (mouse). Touch keeps them visible.
+   Scoped to #main so the panel's own .cbtn (in #ctrlbar) is untouched. */
+#main .cbtn{opacity:0;transition:opacity 0.12s ease}
+#main .vp:hover .cbtn,#main .lvp:hover .cbtn,#main .rvp:hover .cbtn,#main #br0bot:hover .cbtn,.vp-max .cbtn{opacity:0.9}
+@media (hover:none){#main .cbtn{opacity:0.9}}
+.cbtn button.maxbtn.on{color:#9c9;border-color:#585}
+/* Maximize one viewport to fill the viz area (mobile attention primitive, ported).
+   Stays transparent — it is a window onto the shared z-0 canvas; the render loop
+   draws only this lane while maximized, so the rest of the canvas clears to dark.
+   JS drives left/top/width/height (FLIP), CSS transitions them. */
+.vp-max{position:fixed!important;z-index:15;background:transparent;border:1px solid #333!important;border-radius:4px;grid-column:auto!important;grid-row:auto!important;transition:left .2s ease,top .2s ease,width .2s ease,height .2s ease;box-shadow:0 8px 40px rgba(0,0,0,0.7)}
+.vp-max .axes,.vp-max .llbl,.vp-max .rlbl,.vp-max .blbl{font-size:12px;color:#8a8a8a}
+.vp-max .ovtag{font-size:11px;white-space:normal;max-width:82vw}
+/* While one lane is maximized the others aren't rendered on the shared canvas — but their
+   DOM labels/controls would still bleed through the transparent maximized container. Hide them. */
+#main.maxmode .vp:not(.vp-max),#main.maxmode .lvp:not(.vp-max),#main.maxmode .rvp:not(.vp-max),#main.maxmode .browse,#main.maxmode #br0bot:not(.vp-max){visibility:hidden}
 .browse{position:relative;overflow:hidden;background:transparent}
 .browse .blbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
 #tokpanel .th{font-size:8px;color:#555;margin-bottom:4px}
@@ -173,7 +189,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
 <canvas id="glCanvas"></canvas>
 <div id="main">
   <div class="vp" id="vp0"><div class="axes" id="ax0"></div><div class="cbtn" data-v="0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
-  <div class="vp" id="vp1"><div class="axes" id="ax1"></div><div class="llbl" id="lv0lbl">Delta A×B</div><div class="cbtn" data-v="1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+  <div class="vp" id="vp1"><div class="axes" id="ax1"></div><div class="cbtn" data-v="1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="vp" id="vp2"><div class="axes" id="ax2"></div><div class="cbtn" data-v="2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div id="br0" style="grid-column:4;grid-row:1/4;display:flex;flex-direction:column;gap:1px">
     <div class="browse" id="br0topA" style="flex:1;position:relative;overflow:hidden;border-top:1px solid #FF6644"><div class="blbl" id="brLblA">click=vpA  R-click=vpB</div></div>
@@ -2599,7 +2615,7 @@ function updateVP(vi,pcX,pcY,pcZ,layer){const v=views[vi];v.pcX=pcX;v.pcY=pcY;v.
   // Apply script filter — move hidden tokens off-screen
   if(_hiddenScripts.size){for(let i=0;i<nN;i++){if(_hiddenScripts.has(scripts[i])){pos[i*3]=9999;pos[i*3+1]=9999;pos[i*3+2]=9999;}}}
   v.geo.attributes.position.needsUpdate=true;if(!play)v.geo.computeBoundingSphere();
-  document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}/${pcZ}`;
+  {const _p=vi===0?'A':vi===1?'Δ':'B';document.getElementById('ax'+vi).textContent=`${_p}: PC${pcX}×PC${pcY}`;}
   if(!v._fitted){v.cam.position.set(0,0,2.5);v.ctl.target.set(0,0,0);v.ctl.update();v._fitted=true;}}
 function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
   // Dispose old
@@ -2710,7 +2726,7 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
   pg.setAttribute('color',new THREE.BufferAttribute(_tc,3));
   v.trajMarker=new THREE.Points(pg,new THREE.PointsMaterial({size:0.018,vertexColors:true,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false}));
   v.sc.add(v.trajMarker);updateTrajMarker(vi);
-  document.getElementById('ax'+vi).textContent=`${pcX}/${pcY}+d`;
+  {const _p=(vi-NC)===0?'A':(vi-NC)===1?'Δ':'B';document.getElementById('ax'+vi).textContent=`${_p}→ PC${pcX}×PC${pcY}`;}
 }
 function updateTrajMarker(vi){const v=views[vi];
   const buf=v._trajBufs&&v._trajBufs[cL];if(!buf)return;
@@ -2742,7 +2758,7 @@ function updateAllViewports(){
   if(pk!==_lastPK){
     const _allPCs=new Set();
     for(const[a,b]of vpPairs){_allPCs.add(a);_allPCs.add(b);_allPCs.add(thirdPC(a,b));}
-    const lbl=document.getElementById('lv0lbl');if(lbl)lbl.textContent='\u0394 PC'+vpPairs[1][0]+'\u00d7PC'+vpPairs[1][1];
+    // (delta viewport title is carried by its .axes label \u2014 set in updateVP; no separate lv0lbl)
     // Compute cells FIRST so _ensurePCData loads medium data for the right PCs
     _brComputeCells();
     // Immediate render only if all needed PCs have data (blob or _pcFull)
@@ -5597,6 +5613,9 @@ if(e.key==='g'||e.key==='G'){const t=_capTarget;if(t)recordViewport(t.sc,t.cam,t
 let _needsRender=true,_frameCount=0,_fpsTime=performance.now();
 function _markDirty(){_needsRender=true;}
 let _trajMoving=false,_lastCamMove=0;
+// Desktop viewport maximize (mobile attention primitive, ported): one lane fills the
+// viz area; the render loop draws only it (see _animMaximized). Transient — persisted nowhere.
+let _maxKey=null,_maxEl=null,_maxFromRect=null,_maxAnimUntil=0,_maxRestoreTimer=0,_maxRestoring=false;
 // Camera 'change' fires on every drag step; record the time so the LOD knows the
 // camera is actively moving (damping/_needsUpdate is only true during the settle,
 // not the drag itself). Also marks dirty so the frame renders.
@@ -5614,6 +5633,7 @@ function _updateVocabBtn(){const b=document.getElementById('vocabToggle');if(b){
   _updateVocabBtn();})();
 (function anim(){requestAnimationFrame(anim);
   if(MOBILE){_animMobile();return;}// mobile renders only the focused lane (see end of file)
+  if(_maxKey){_animMaximized();return;}// maximized: render only the focused viewport
   const damping=views.some(v=>v.ctl.enableDamping&&v.ctl._needsUpdate)||brCtl._needsUpdate||leftViews.some(v=>v.ctl._needsUpdate)||rightViews.some(v=>v.ctl._needsUpdate);
   // LOD (Part B.3): the full trajectory line groups (5000 merged segments × 3
   // viewports) cost ~75% of the frame. Previously we HID them while the camera
@@ -6871,6 +6891,7 @@ function _applyMobile(){
   MOBILE=want;document.body.classList.toggle('mobile',MOBILE);
   const p=document.getElementById('tokpanel');
   if(MOBILE){
+    if(_maxKey&&typeof _forceUnmax==='function')_forceUnmax();// desktop maximize doesn't apply on mobile
     _buildMobileUI();
     if(p){p.style.left='';p.style.top='';p.style.right='';p.classList.remove('minimized','expanded');}
     _setFocusPane(_focusPane);
@@ -6883,6 +6904,89 @@ function _applyMobile(){
 addEventListener('resize',_applyMobile);
 addEventListener('orientationchange',()=>setTimeout(_applyMobile,220));
 _applyMobile();
+
+// ============ Desktop viewport maximize ============
+// One lane fills the viz area (FLIP-animated left/top/width/height so the scissor rect,
+// read live from the DOM each frame, follows). The render loop draws ONLY the maximized
+// lane while active — the shared z-0 canvas is a single surface, so any other lane painted
+// into its grid rect would punch through the transparent maximized container. Drawing one
+// lane keeps the rest of the canvas cleared to dark. Transient: persisted nowhere.
+function _resetTrajLOD(){for(let i=NC;i<views.length;i++){const v=views[i];if(v.trajGroup)v.trajGroup.visible=true;if(v.trajGroupCoarse)v.trajGroupCoarse.visible=false;}_trajMoving=false;}
+function _updateMaxBtns(){document.querySelectorAll('#main .cbtn[data-v] .maxbtn').forEach(b=>{const bar=b.closest('.cbtn');const on=!!(bar&&_maxKey===String(bar.dataset.v));b.classList.toggle('on',on);b.textContent=on?'✕':'⛶';b.title=on?'Restore (Esc)':'Maximize';});}
+function _forceUnmax(){if(_maxRestoreTimer){clearTimeout(_maxRestoreTimer);_maxRestoreTimer=0;}if(_maxEl){_maxEl.classList.remove('vp-max');_maxEl.style.left=_maxEl.style.top=_maxEl.style.width=_maxEl.style.height=_maxEl.style.transition='';}const mn=document.getElementById('main');if(mn)mn.classList.remove('maxmode');_maxEl=null;_maxKey=null;_maxRestoring=false;_resetTrajLOD();_updateMaxBtns();_markDirty();}
+function _setMaximized(vk){
+  if(vk==null){// animated restore
+    if(!_maxEl){_maxKey=null;return;}
+    const el=_maxEl;if(_maxRestoreTimer)clearTimeout(_maxRestoreTimer);
+    const to=_maxFromRect||{left:innerWidth*0.25,top:innerHeight*0.25,width:innerWidth*0.5,height:innerHeight*0.5};
+    el.style.left=to.left+'px';el.style.top=to.top+'px';el.style.width=to.width+'px';el.style.height=to.height+'px';
+    _maxRestoring=true;_maxAnimUntil=performance.now()+230;_markDirty();
+    _maxRestoreTimer=setTimeout(()=>{_forceUnmax();},210);
+    _updateMaxBtns();return;
+  }
+  if(MOBILE)return;// desktop-only attention primitive
+  const R=_resolveViewByName(vk);const el=R&&R.el;if(!el)return;
+  if(_maxEl&&_maxEl!==el)_forceUnmax();// switching lanes: drop the previous one instantly
+  const r=el.getBoundingClientRect();_maxFromRect={left:r.left,top:r.top,width:r.width,height:r.height};
+  el.style.transition='none';el.classList.add('vp-max');
+  el.style.left=r.left+'px';el.style.top=r.top+'px';el.style.width=r.width+'px';el.style.height=r.height+'px';
+  void el.offsetWidth;// reflow so the transition animates FROM the grid rect (FLIP)
+  el.style.transition='';
+  el.style.left='8px';el.style.top='8px';el.style.width=(innerWidth-16)+'px';el.style.height=(innerHeight-16)+'px';
+  {const mn=document.getElementById('main');if(mn)mn.classList.add('maxmode');}
+  _maxKey=String(vk);_maxEl=el;_maxRestoring=false;_maxAnimUntil=performance.now()+230;
+  _updateMaxBtns();_markDirty();
+}
+function _toggleMaximize(vk){if(_maxKey===String(vk)&&!_maxRestoring)_setMaximized(null);else _setMaximized(vk);}
+function _animMaximized(){
+  const R=_resolveViewByName(_maxKey);
+  if(!R||!R.el||!R.sc){_needsRender=false;return;}
+  const damping=!!(R.ctl&&R.ctl.enableDamping&&R.ctl._needsUpdate);
+  const animating=performance.now()<_maxAnimUntil;
+  if(!_needsRender&&!damping&&!play&&!animating)return;
+  _needsRender=false;
+  rdr.setScissorTest(false);rdr.setClearColor(0x151515);rdr.clear();rdr.setScissorTest(true);
+  if(R.ctl)R.ctl.update();
+  if(typeof R.vi==='number'&&views[R.vi]){
+    const v=views[R.vi];const d=v.cam.position.length();
+    v.mtl.size=Math.min(0.15,Math.max(0.004,d*0.012));
+    if(R.vi>=NC){if(v.trajMarker)v.trajMarker.material.size=Math.min(0.1,Math.max(0.006,d*0.015));
+      if(v.trajGroup&&!v.trajGroup.visible)v.trajGroup.visible=true;// focus lane always full-res
+      if(v.trajGroupCoarse&&v.trajGroupCoarse.visible)v.trajGroupCoarse.visible=false;}
+    const ms=Math.min(0.2,Math.max(0.01,d*0.04));
+    if(pinMarkers[R.vi]&&pinMarkers[R.vi].visible)pinMarkers[R.vi].material.size=ms;
+    if(pinMarkersB[R.vi]&&pinMarkersB[R.vi].visible)pinMarkersB[R.vi].material.size=ms;
+    if(highlightMarkers[R.vi]&&highlightMarkers[R.vi].visible)highlightMarkers[R.vi].material.size=ms*0.7;
+  }
+  _renderRegion(R.el,R.sc,R.cam);
+  if(animating)_needsRender=true;// keep rendering through the FLIP transition
+  _frameCount++;const now=performance.now();if(now-_fpsTime>1000){const fps=Math.round(_frameCount*1000/(now-_fpsTime));const el=document.getElementById('fpsDisplay');if(el)el.textContent=fps+'fps';_frameCount=0;_fpsTime=now;}
+}
+function _addMaxButtons(){
+  document.querySelectorAll('#main .cbtn[data-v]').forEach(bar=>{
+    if(bar.querySelector('.maxbtn'))return;
+    const vk=bar.dataset.v;
+    const btn=document.createElement('button');btn.className='maxbtn';btn.textContent='⛶';btn.title='Maximize';btn.style.cssText='margin-left:2px';
+    btn.addEventListener('pointerdown',e=>e.stopPropagation());
+    btn.addEventListener('click',e=>{e.stopPropagation();e.preventDefault();_toggleMaximize(vk);});
+    bar.appendChild(btn);
+  });
+  _updateMaxBtns();
+}
+function _wireMaximizeDblclick(){
+  document.querySelectorAll('#main .cbtn[data-v]').forEach(bar=>{
+    const host=bar.parentElement;if(!host||host._maxDbl)return;host._maxDbl=true;
+    const vk=bar.dataset.v;
+    host.addEventListener('dblclick',e=>{
+      if(MOBILE)return;
+      if(e.target.closest('.cbtn'))return;// dblclick on the controls is not a maximize gesture
+      if(typeof hoveredToken==='number'&&hoveredToken>=0)return;// hovering a token — leave click-to-pin alone
+      e.preventDefault();_toggleMaximize(vk);
+    });
+  });
+}
+_addMaxButtons();_wireMaximizeDblclick();
+document.addEventListener('keydown',e=>{if(e.key==='Escape'&&_maxKey&&!MOBILE){e.preventDefault();_setMaximized(null);}});
 
 window.__heinrich = {
   // --- companion pairing (LNA) ---
@@ -6923,7 +7027,9 @@ window.__heinrich = {
   // --- state readers ---
   get views(){return views;}, get leftViews(){return leftViews;}, get rightViews(){return rightViews;},
   get vpPairs(){return vpPairs;}, get dirDepth(){return _dirDepthData;},
-  get pins(){return {a:pinnedToken,b:pinnedTokenB};}, get cap(){return CAP;},
+  get pins(){return {a:pinnedToken,b:pinnedTokenB};}, get hovered(){return hoveredToken;}, get cap(){return CAP;},
+  // --- viewport maximize (attention primitive) ---
+  maximize:(vk)=>{_setMaximized(vk==null?null:vk);return _maxKey;}, get maximized(){return _maxKey;},
   // --- panel redesign: collapsible cards + tab attention routing (test surface) ---
   activeTab:()=>_activeTabName(), gotoTab:(name)=>{_activateTab(name);return _activeTabName();},
   cardKeys:()=>Object.keys(_CARDS),
