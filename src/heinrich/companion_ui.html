@@ -2323,6 +2323,28 @@ views.forEach((v,vi)=>{
   v.sc.add(_al([0,0,-1.2],[0,0,1.2],0x333366));// Z blue
 });
 // Camera snap
+// --- Agent camera drive: position/orbit any viewport's camera remotely.
+// spec: {vp: index|'all'|[..], pos:[x,y,z]} OR {vp, theta, phi, dist, target}
+// (theta/phi in degrees, orbit around target [0,0,0] default). Used by
+// navigate {camera: spec|[specs]} and __heinrich.setCam — the shared-viz
+// composition channel.
+function _setCamera(spec){
+  const apply=(vi)=>{const v=views[vi];if(!v||!v.cam||!v.ctl)return;
+    const t=spec.target||[0,0,0];v.ctl.target.set(t[0],t[1],t[2]);
+    if(spec.pos&&spec.pos.length===3){v.cam.position.set(spec.pos[0],spec.pos[1],spec.pos[2]);}
+    else{const d=spec.dist!=null?spec.dist:(v.cam.position.distanceTo(v.ctl.target)||2.5);
+      const th=(spec.theta!=null?spec.theta:35)*Math.PI/180,ph=(spec.phi!=null?spec.phi:60)*Math.PI/180;
+      v.cam.position.set(t[0]+d*Math.sin(ph)*Math.cos(th),t[1]+d*Math.cos(ph),t[2]+d*Math.sin(ph)*Math.sin(th));}
+    v.ctl.update();};
+  if(spec.vp==='all')views.forEach((_,i)=>apply(i));
+  else if(Array.isArray(spec.vp))spec.vp.forEach(apply);
+  else apply(typeof spec.vp==='number'?spec.vp:parseInt(spec.vp||'0'));
+  _markDirty();
+}
+function _getCamera(vi){const v=views[vi];if(!v)return null;
+  return {pos:[+v.cam.position.x.toFixed(3),+v.cam.position.y.toFixed(3),+v.cam.position.z.toFixed(3)],
+    target:[+v.ctl.target.x.toFixed(3),+v.ctl.target.y.toFixed(3),+v.ctl.target.z.toFixed(3)],
+    dist:+v.cam.position.distanceTo(v.ctl.target).toFixed(3)};}
 function _snapOne(vi,axis){
   const v=views[vi];const d=v.cam.position.length()||2.5;v.ctl.target.set(0,0,0);
   if(axis==='x')v.cam.position.set(d,0,0);
@@ -5718,6 +5740,10 @@ async function _handleNavigate(msg){
       el.classList.toggle('off',_hiddenScripts.has(el.dataset.script));
     });
   }
+  // Camera drive: compose the shot remotely. {camera: spec | [specs]}
+  if(msg.camera&&typeof _setCamera==='function'){
+    try{(Array.isArray(msg.camera)?msg.camera:[msg.camera]).forEach(c=>_setCamera(c));}catch(e){}
+  }
   // Vocab target driven by the agent — resolve token text against the FULL
   // vocabulary and set it as the gold homing target (the answer slot).
   if(msg.target_text&&typeof _setVocabTarget==='function'){
@@ -6873,6 +6899,7 @@ window.__heinrich = {
   get steerVisible(){return steerCloudMarkers.some(m=>m.visible)||steerTrajLines.some(l=>l.visible);},
   get pollActive(){return _pollActive;}, handleNav:(m)=>_handleNavigate(m), get homing(){return _homingCache;},
   setTarget:(row,text)=>_setVocabTarget(row,text), clearTarget:()=>_clearVocabTarget(),
+  setCam:(spec)=>_setCamera(spec), getCam:(vi)=>_getCamera(vi||0),
   get target(){return _vocabTarget?{row:_vocabTarget.row,text:_vocabTarget.text,nL:_vocabTarget.vec.nL}:null;},
   setTarget2:(row,text)=>_setVocabTarget2(row,text), clearTarget2:()=>_clearVocabTarget2(),
   get target2(){return _vocabTarget2?{row:_vocabTarget2.row,text:_vocabTarget2.text,nL:_vocabTarget2.vec.nL}:null;},
