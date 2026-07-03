@@ -281,7 +281,14 @@ Judge scorers disagree: qwen3guard says 97% safe, llamaguard says 63% safe on th
 - `heinrich_cb_causality` — finite-difference causality verification
 - `heinrich_cb_reproduce` — determinism check (two identical forward passes)
 
-**Note:** `heinrich_total_capture` is deprecated — use `heinrich_mri` instead. Analysis CLI commands (`profile-logit-lens`, `profile-gates`, `profile-attention`, `profile-layer-deltas`, `profile-pca-depth`) are available via CLI but not yet wired as MCP tools.
+**Live companion tools (require `heinrich companion` running; POST to 127.0.0.1:8377):**
+- `heinrich_live_forward` / `heinrich_live_walk` — forward / greedy-decode a prompt into the frozen PCA frame
+- `heinrich_live_river` — per-layer top-k logit lens (optional token-pair steer)
+- `heinrich_live_steer` — inject a token-pair direction at a layer during decode
+- `heinrich_nn_check` — nearest frozen tokens to the live state per layer + off-manifold ratio
+- `heinrich_homing_run` / `heinrich_canvas_push` / `heinrich_companion_capture` — study driver / browser broadcast / screenshot
+
+**Full coverage:** every CLI subcommand is exposed as a `heinrich_*` MCP tool (naming: `-` → `_`). All analysis commands (`profile-*`, `mri-*`, `profile-cb-*`, DiT/splat/publish, etc.) are wired — the long-tail ones via a shared subprocess runner that passes `--json` and accepts an `extra_args` array for any param without a named slot. Excluded (servers / interactive, no tool form): `serve`, `companion`/`viz`, `viz-legacy`. `heinrich_total_capture` is deprecated — use `heinrich_mri`.
 
 ## Datasets
 

@@ -892,6 +892,653 @@ TOOLS = {
             "port": {"type": "integer", "description": "Companion server port (default 8377)."},
         },
     },
+    # === pipeline / db lifecycle (CLI-faithful subprocess wrappers) ===
+    "heinrich_run": {
+        "description": "Run the full pipeline (discover → attack → eval → report) via the CLI. CLI-faithful wrapper exposing skip flags; heinrich_eval_run is the in-process equivalent.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID", "required": True},
+            "prompts": {"type": "string", "description": "Comma-separated prompt set names", "required": True},
+            "scorers": {"type": "string", "description": "Comma-separated scorer names", "required": True},
+            "output": {"type": "string", "description": "Output JSON file path"},
+            "db": {"type": "string", "description": "Database path"},
+            "max_prompts": {"type": "integer", "description": "Max prompts per set"},
+            "timeout": {"type": "integer", "description": "Subprocess timeout seconds"},
+            "skip_discover": {"type": "boolean", "description": "Skip the discover step"},
+            "skip_attack": {"type": "boolean", "description": "Skip the attack step"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_eval": {
+        "description": "Run the eval-only pipeline (generate, score, calibrate, report) — no discover/attack. Distinct from heinrich_eval_run (full pipeline).",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID", "required": True},
+            "prompts": {"type": "string", "description": "Comma-separated prompt set names", "required": True},
+            "scorers": {"type": "string", "description": "Comma-separated scorer names", "required": True},
+            "conditions": {"type": "string", "description": "Comma-separated conditions (default: clean)"},
+            "output": {"type": "string", "description": "Output JSON file path"},
+            "db": {"type": "string", "description": "Database path"},
+            "max_prompts": {"type": "integer", "description": "Max prompts per set"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_report": {
+        "description": "Generate a text report from a signals JSONL file or a directory to scan.",
+        "parameters": {
+            "source": {"type": "string", "description": "Path to signals JSONL or directory", "required": True},
+            "top": {"type": "integer", "description": "Top-N signals (default 20)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_ingest": {
+        "description": "Ingest all JSON data files into the signal database.",
+        "parameters": {
+            "data_dir": {"type": "string", "description": "Path to data directory (default: data)"},
+            "model": {"type": "string", "description": "Model name override"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_recompute": {
+        "description": "Run all recompute scripts (layer_map, basins, interpolation).",
+        "parameters": {"extra_args": {"type": "array", "description": "Additional raw CLI args"}},
+    },
+    "heinrich_reset": {
+        "description": "Clear all normalized DB tables and reingest.",
+        "parameters": {"extra_args": {"type": "array", "description": "Additional raw CLI args"}},
+    },
+    "heinrich_crystal_inspect": {
+        "description": "Scan an MRI for raw-mode crystals (isolated high-|z| tokens) per layer. Reads .mri, no model needed.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory path", "required": True},
+            "layer": {"type": "integer", "description": "Layer to scan (default: all real layers)"},
+            "z_threshold": {"type": "number", "description": "|z| cutoff on any PC (default: 6)"},
+            "top": {"type": "integer", "description": "Top-N crystals to report (default: 20)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    # === profile analysis (reads .npz/.mri, no model needed) ===
+    "heinrich_profile_chain": {
+        "description": "Three-stage correlation: connect .frt → .shrt → .sht for one model.",
+        "parameters": {
+            "frt": {"type": "string", "description": ".frt.npz file", "required": True},
+            "shrt": {"type": "string", "description": ".shrt.npz file", "required": True},
+            "sht": {"type": "string", "description": ".sht.npz file", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_cross": {
+        "description": "Compare two .shrt profiles across models (baseline-independent).",
+        "parameters": {
+            "a": {"type": "string", "description": "First .shrt.npz file", "required": True},
+            "b": {"type": "string", "description": "Second .shrt.npz file", "required": True},
+            "frt": {"type": "string", "description": ".frt.npz for script breakdown (optional)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_survey": {
+        "description": "Multi-model concordance: compare all .shrt profiles (baseline-independent).",
+        "parameters": {
+            "shrt": {"type": "array", "description": ".shrt.npz files", "required": True},
+            "frt": {"type": "array", "description": "Matching .frt.npz files (optional)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_mismatch": {
+        "description": "Tokenizer-weight mismatch for one model (per-byte displacement).",
+        "parameters": {
+            "shrt": {"type": "string", "description": ".shrt.npz file", "required": True},
+            "frt": {"type": "string", "description": ".frt.npz file", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_depth": {
+        "description": "Compare models at relative depth (needs .shrt captured with --layers all).",
+        "parameters": {
+            "shrt": {"type": "array", "description": ".shrt.npz files (run with --layers all)", "required": True},
+            "frt": {"type": "array", "description": "Matching .frt.npz files (optional)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_layer_scripts": {
+        "description": "Script rankings at every layer (needs .shrt with --layers all).",
+        "parameters": {
+            "shrt": {"type": "string", "description": ".shrt.npz file (--layers all)", "required": True},
+            "frt": {"type": "string", "description": ".frt.npz file", "required": True},
+            "safety_shrt": {"type": "string", "description": ".shrt.npz with discovered safety direction (optional)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_tokenizer_health": {
+        "description": "Where does the tokenizer break? Data-first analysis of a .frt.",
+        "parameters": {
+            "frt": {"type": "string", "description": ".frt.npz file", "required": True},
+            "shrt": {"type": "string", "description": ".shrt.npz file (optional, adds displacement context)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_scatter": {
+        "description": "Displacement × output scatter — correlational, not causal.",
+        "parameters": {
+            "shrt": {"type": "string", "description": ".shrt.npz file", "required": True},
+            "sht": {"type": "string", "description": ".sht.npz file", "required": True},
+            "frt": {"type": "string", "description": ".frt.npz file (optional, adds script breakdown)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_within_script": {
+        "description": "Within-script dispersion: tests partial-knowledge hypothesis at token level.",
+        "parameters": {
+            "shrt": {"type": "string", "description": ".shrt.npz file", "required": True},
+            "frt": {"type": "string", "description": ".frt.npz file", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_directions": {
+        "description": "Directional analysis of displacement vectors: coherence, separation, safety projection.",
+        "parameters": {
+            "shrt": {"type": "string", "description": ".shrt.npz file (must contain vectors)", "required": True},
+            "frt": {"type": "string", "description": ".frt.npz file", "required": True},
+            "safety_shrt": {"type": "string", "description": ".shrt.npz with discovered safety direction (optional)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_pca_anatomy": {
+        "description": "Name the unnamed axes: what each PC separates, extreme tokens, direction cosines.",
+        "parameters": {
+            "shrt": {"type": "string", "description": ".shrt.npz or .mri directory", "required": True},
+            "frt": {"type": "string", "description": ".frt.npz or .mri directory", "required": True},
+            "directions": {"type": "array", "description": "Named direction files: name=path.npy"},
+            "n_components": {"type": "integer", "description": "Number of PCs to analyze (default: 20)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_pca_survey": {
+        "description": "Compare PCA structure across models: which axes are shared, which are unique.",
+        "parameters": {
+            "pairs": {"type": "array", "description": "shrt:frt pairs (e.g. m1.shrt.npz:m1.frt.npz)", "required": True},
+            "n_components": {"type": "integer", "description": "PCs per model (default: 10)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_code_anatomy": {
+        "description": "Decompose 'code' tokens: do structural, keywords, operators fall the same?",
+        "parameters": {
+            "shrt": {"type": "string", "description": ".shrt.npz file", "required": True},
+            "frt": {"type": "string", "description": ".frt.npz file", "required": True},
+            "all_layers": {"type": "string", "description": "All-layers .shrt.npz for per-layer trajectories (optional)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_cross_model": {
+        "description": "Compare models on shared vocabulary: displacement, gradient, shart overlap.",
+        "parameters": {
+            "mri": {"type": "array", "description": "Two or more .mri directories to compare", "required": True},
+            "n_sample": {"type": "integer", "description": "Max shared tokens (default: all)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_layer_importance": {
+        "description": "Rank layers by contribution to output state. Reads .mri, no model needed.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_early_exit": {
+        "description": "Find tokens resolved before the final layer. Reads .mri, no model needed.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory", "required": True},
+            "threshold": {"type": "number", "description": "Cosine similarity threshold percent (default: 95)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_template_overhead": {
+        "description": "Measure template vs content contribution per layer (template vs raw MRI).",
+        "parameters": {
+            "template_mri": {"type": "string", "description": "Template-mode .mri directory", "required": True},
+            "raw_mri": {"type": "string", "description": "Raw-mode .mri directory", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_matrix": {
+        "description": "Data coverage matrix: what measurements exist per model in a data directory.",
+        "parameters": {
+            "data_dir": {"type": "string", "description": "Directory containing .npz files (default: data/runs)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_safety_rank": {
+        "description": "Project all tokens onto a safety direction, rank by safety projection.",
+        "parameters": {
+            "shrt": {"type": "string", "description": "Full-vocab .shrt.npz", "required": True},
+            "direction": {"type": "string", "description": "Safety direction .npy file", "required": True},
+            "frt": {"type": "string", "description": ".frt.npz (for script labels if .shrt is v0.2)"},
+            "trd": {"type": "string", "description": ".trd.npz (for per-head safety correlation)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    # === profile analysis (needs model) ===
+    "heinrich_profile_decompose": {
+        "description": "Decompose displacement into attention vs MLP per layer per script. Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID", "required": True},
+            "frt": {"type": "string", "description": ".frt.npz file", "required": True},
+            "n_index": {"type": "integer", "description": "Tokens to measure (default: 500)"},
+            "layers": {"type": "string", "description": "Layers (comma-separated or 'all')"},
+            "output": {"type": "string", "description": "Output .npz file"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_validate_ablation": {
+        "description": "Validate attention/MLP decomposition: does attn + mlp = full? Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID", "required": True},
+            "layer": {"type": "integer", "description": "Layer to test (default: 12)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_embedding": {
+        "description": "Examine the embedding table — the link between .frt and .shrt. Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID", "required": True},
+            "frt": {"type": "string", "description": ".frt.npz file", "required": True},
+            "shrt": {"type": "string", "description": ".shrt.npz file (optional, adds correlation)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_silence": {
+        "description": "Measure the silence: where does the baseline sit in displacement and safety space? Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID", "required": True},
+            "shrt": {"type": "string", "description": "Full-vocab .shrt.npz file", "required": True},
+            "frt": {"type": "string", "description": ".frt.npz file", "required": True},
+            "db": {"type": "string", "description": "Database path for safety direction"},
+            "direction": {"type": "string", "description": "Safety direction .npy (overrides DB lookup)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_basin": {
+        "description": "Map basin structure along a direction: where are attractors, where is void? Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID", "required": True},
+            "direction": {"type": "string", "description": "Direction .npy file", "required": True},
+            "layer": {"type": "integer", "description": "Layer to steer at", "required": True},
+            "mean_gap": {"type": "number", "description": "Direction scaling factor (default: 1.0)"},
+            "n_prompts": {"type": "integer", "description": "Number of test prompts (default: 20)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_first_token": {
+        "description": "First-token logit gap for a direction (no generation needed). Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID", "required": True},
+            "direction": {"type": "string", "description": "Direction .npy file", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_lmhead": {
+        "description": "Output matrix geometry: SVD, condition number, direction amplification. Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID", "required": True},
+            "directions": {"type": "array", "description": "Direction .npy files to project"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_profile_discover_direction": {
+        "description": "Discover a safety direction natively on a model using DB prompts. Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID", "required": True},
+            "db": {"type": "string", "description": "Database path (default: data/heinrich.db)"},
+            "n_harmful": {"type": "integer", "description": "Number of harmful prompts (default: 100)"},
+            "n_benign": {"type": "integer", "description": "Number of benign prompts (default: 100)"},
+            "output": {"type": "string", "description": "Output .npy file for direction vector"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_trd_profile": {
+        "description": "Generate a .trd per-head thread map from .shrt vectors + o_proj weights. Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID", "required": True},
+            "shrt": {"type": "string", "description": ".shrt.npz file with displacement vectors", "required": True},
+            "frt": {"type": "string", "description": ".frt.npz file", "required": True},
+            "layers": {"type": "string", "description": "Layers to decompose (comma-separated)"},
+            "output": {"type": "string", "description": "Output .trd.npz file path"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    # === MRI decomposition / publish tooling ===
+    "heinrich_mri_decompose": {
+        "description": "PCA-decompose an MRI for the companion viewer. Writes decomp/ (scores, variance, blob). No model needed.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory", "required": True},
+            "n_sample": {"type": "integer", "description": "Tokens to sample (0 = full vocabulary)"},
+            "n_components": {"type": "integer", "description": "PCA components (0 = all = hidden_size)"},
+            "backfill_means": {"type": "boolean", "description": "Only backfill missing L{NN}_mean.npy into an existing decomp"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_mri_vocab": {
+        "description": "Project the FULL vocabulary through an existing frozen decomposition. Writes decomp/vocab_scores.bin. Needs model (unless --falsify-only/--pc16-only).",
+        "parameters": {
+            "model": {"type": "string", "description": "Model id/path (must match the MRI's model)", "required": True},
+            "mri": {"type": "string", "description": ".mri directory with an existing decomp/", "required": True},
+            "batch_size": {"type": "integer", "description": "Forward batch size (0 = adaptive)"},
+            "backend": {"type": "string", "description": "Inference backend: auto, mlx, hf"},
+            "no_verify": {"type": "boolean", "description": "Skip the sample-agreement check"},
+            "falsify": {"type": "boolean", "description": "Also run frame falsification after projecting"},
+            "falsify_only": {"type": "boolean", "description": "Skip projection; run falsification on existing vocab_scores.bin (no model load)"},
+            "pc16_only": {"type": "boolean", "description": "Only build the display blob from existing vocab_scores.bin (no model load)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_mri_serve": {
+        "description": "Build query-shaped serve/ artifacts for the companion viewer from an existing decomposition.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory", "required": True},
+            "steps": {"type": "string", "description": "Token strides to precompute (default: 10,25,50)"},
+            "force": {"type": "boolean", "description": "Rebuild even if artifacts exist"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_mri_check_fixups": {
+        "description": "Scan a directory for MRIs with stale fix_level (captured before recent bug fixes).",
+        "parameters": {
+            "dir": {"type": "string", "description": "MRI directory to scan (default: /Volumes/sharts)"},
+            "min_fix_level": {"type": "integer", "description": "Minimum required fix_level (default: current)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_mri_recapture": {
+        "description": "Re-run stale MRIs using provenance in their metadata.json (dry-run unless execute=true).",
+        "parameters": {
+            "dir": {"type": "string", "description": "MRI directory to scan (default: /Volumes/sharts)"},
+            "min_fix_level": {"type": "integer", "description": "Minimum required fix_level (default: current)"},
+            "execute": {"type": "boolean", "description": "Actually run captures (default: dry-run plan)"},
+            "only": {"type": "array", "description": "Only recapture MRIs whose name contains one of these substrings"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_mri_regrad": {
+        "description": "Recompute embedding gradients for existing MRIs (fixes tied-weight bug). Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID", "required": True},
+            "mri": {"type": "array", "description": "MRI directories to fix", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_publish": {
+        "description": "Publish a decomposed .mri to an R2 bucket (or local export dir) for the Observatory viewer. Uploads only the lean consumer subset.",
+        "parameters": {
+            "mri": {"type": "string", "description": "decomposed .mri directory", "required": True},
+            "bucket": {"type": "string", "description": "R2 bucket name (S3 API; creds from env)"},
+            "local_dir": {"type": "string", "description": "Export the consumer subset to a directory instead of R2"},
+            "account_id": {"type": "string", "description": "Cloudflare account id (else $R2_ACCOUNT_ID)"},
+            "endpoint_url": {"type": "string", "description": "Override S3 endpoint"},
+            "with_hover": {"type": "boolean", "description": "Also upload mlp/ gate+up (large)"},
+            "dry_run": {"type": "boolean", "description": "Report what would be published without uploading"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    # === causal bank additions ===
+    "heinrich_cb_omega_forensics": {
+        "description": "Omega projection forensics: band allocation, Fourier survival, weight rank. Reads a checkpoint .pt.",
+        "parameters": {
+            "checkpoint": {"type": "string", "description": "Checkpoint .pt file (not MRI)", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_cb_rotation_forensics": {
+        "description": "Rotation/gate forensics for non-adaptive substrates (gated_delta, lasso, SO(N)). Reads a checkpoint .pt.",
+        "parameters": {
+            "checkpoint": {"type": "string", "description": "Checkpoint .pt file (not MRI)", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_cb_additivity": {
+        "description": "Check whether a combined mutation's measurements match the solo-mutation additive prediction.",
+        "parameters": {
+            "baseline": {"type": "string", "description": "Baseline MRI (no mutations)", "required": True},
+            "mutations": {"type": "array", "description": "One solo-mutation MRI per axis being combined", "required": True},
+            "combination": {"type": "string", "description": "MRI with all mutations applied simultaneously", "required": True},
+            "noise_floor": {"type": "number", "description": "bpb noise floor (default 0.004)"},
+            "metrics": {"type": "array", "description": "Metrics: bpb, eff_dim, pos_r2, cont_r2, active_frac (default: bpb)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_cb_pc_bands": {
+        "description": "PC-band decomposition: variance %, position R², byte R² per PC band on a CB substrate.",
+        "parameters": {
+            "mris": {"type": "array", "description": "One or more .seq.mri directories", "required": True},
+            "n_bootstrap": {"type": "integer", "description": "Bootstrap K splits for per-band pos_r2 ± SEM (default: 0)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_cb_trajectory": {
+        "description": "Trajectory analysis across multiple checkpoints: EffDim, R², mode-utilization derivatives.",
+        "parameters": {
+            "mris": {"type": "array", "description": "Ordered MRI paths (by training step)", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_cb_invertibility": {
+        "description": "How far back can the substrate reconstruct past bytes? Reads sequence-mode .mri.",
+        "parameters": {
+            "mri": {"type": "string", "description": ".mri directory (sequence mode)", "required": True},
+            "max_lookback": {"type": "integer", "description": "Maximum lookback distance (default: 512)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    # === attack / self-study ===
+    "heinrich_attack_surface": {
+        "description": "Map vulnerability surface across directions and prompts. Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or path", "required": True},
+            "directions": {"type": "string", "description": "Directory of .npy direction files", "required": True},
+            "prompts": {"type": "string", "description": "File with one prompt per line", "required": True},
+            "layer": {"type": "integer", "description": "Layer to steer", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_gemma_study": {
+        "description": "File-backed self-study harness with clean/project-out/restored sweeps. Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or path", "required": True},
+            "prompts": {"type": "string", "description": "Prompt file (.txt, .jsonl, or .json)", "required": True},
+            "backend": {"type": "string", "description": "Backend: auto, mlx, hf, decepticon"},
+            "spec_file": {"type": "string", "description": "Optional governing file/spec to prepend and audit against"},
+            "direction": {"type": "string", "description": "Direction .npy for project-out / restoration sweep"},
+            "layer": {"type": "integer", "description": "Layer for project-out / restoration"},
+            "framing": {"type": "string", "description": "Prompt framing name (default: direct)"},
+            "max_prompts": {"type": "integer", "description": "Cap number of prompts for quick runs"},
+            "output": {"type": "string", "description": "Optional JSON output path"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    # === image / DiT / splat (heavy GPU jobs; long timeouts) ===
+    "heinrich_prompt_mri": {
+        "description": "Per-prompt × per-layer × per-position residual capture (prompt-based, not vocab-based). Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Model ID or local path", "required": True},
+            "prompts": {"type": "string", "description": "JSONL file of {\"text\": ...} entries", "required": True},
+            "output": {"type": "string", "description": "Output directory", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args (e.g. --subfolder text_encoder)"},
+        },
+    },
+    "heinrich_prompt_mri_analyze": {
+        "description": "Per-layer category discrimination analysis on a prompt-mri capture. No model needed.",
+        "parameters": {
+            "input": {"type": "string", "description": "prompt-mri output directory", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args (e.g. --position last)"},
+        },
+    },
+    "heinrich_dit_mri": {
+        "description": "DiT-mode MRI: per-(layer, timestep, position) residual capture during image generation. Heavy GPU job.",
+        "parameters": {
+            "pipeline": {"type": "string", "description": "Pipeline ID, e.g. Tongyi-MAI/Z-Image-Turbo", "required": True},
+            "prompts": {"type": "string", "description": "JSONL of {\"text\": ...}", "required": True},
+            "output": {"type": "string", "description": "Output directory", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args (--steps, --lora, --offload, ...)"},
+        },
+    },
+    "heinrich_dit_mri_analyze": {
+        "description": "Per-(layer, step, position) identity-discrimination analysis on a dit-mri capture.",
+        "parameters": {
+            "input": {"type": "string", "description": "dit-mri output directory", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_dit_mri_diff": {
+        "description": "Paired-run delta analysis: compare two dit-mri captures (base vs LoRA-loaded).",
+        "parameters": {
+            "base": {"type": "string", "description": "Base run directory (no LoRA)", "required": True},
+            "treatment": {"type": "string", "description": "Treatment run directory (with LoRA)", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_dit_mri_ref": {
+        "description": "Reference-image MRI: capture DiT activations from training images via partial-noise img2img. Heavy GPU job.",
+        "parameters": {
+            "pipeline": {"type": "string", "description": "Pipeline ID", "required": True},
+            "refs": {"type": "string", "description": "Directory with NAME.png + NAME.txt pairs", "required": True},
+            "output": {"type": "string", "description": "Output directory", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_dit_mri_atlas": {
+        "description": "Build an identity atlas from contrastive ref captures (identity-mean − baseline-mean).",
+        "parameters": {
+            "identity": {"type": "string", "description": "dit-mri-ref dir for the target subject", "required": True},
+            "baseline": {"type": "string", "description": "dit-mri-ref dir for generic baseline", "required": True},
+            "output": {"type": "string", "description": "Output atlas.npz path", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_dit_steer": {
+        "description": "Generate with an identity atlas injected — no LoRA, no trigger word. Heavy GPU job.",
+        "parameters": {
+            "pipeline": {"type": "string", "description": "Pipeline ID", "required": True},
+            "atlas": {"type": "string", "description": "atlas.npz from dit-mri-atlas", "required": True},
+            "prompts": {"type": "string", "description": "JSONL of {\"text\": ...}", "required": True},
+            "output": {"type": "string", "description": "Output directory", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args (--strength, ...)"},
+        },
+    },
+    "heinrich_dit_replace": {
+        "description": "PAFF-faithful spatial token replacement from a reference image. Heavy GPU job.",
+        "parameters": {
+            "pipeline": {"type": "string", "description": "Pipeline ID", "required": True},
+            "ref_image": {"type": "string", "description": "One reference image of the subject", "required": True},
+            "ref_caption": {"type": "string", "description": "Training-style caption for the ref", "required": True},
+            "prompts": {"type": "string", "description": "JSONL of {\"text\": ...}", "required": True},
+            "output": {"type": "string", "description": "Output directory", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_dit_steer_face": {
+        "description": "Test-time latent optimization with face-encoder loss (differentiable identity guidance). Heavy GPU job.",
+        "parameters": {
+            "pipeline": {"type": "string", "description": "Pipeline ID", "required": True},
+            "ref_image": {"type": "string", "description": "Reference image", "required": True},
+            "prompts": {"type": "string", "description": "JSONL of {\"text\": ...}", "required": True},
+            "output": {"type": "string", "description": "Output directory", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args"},
+        },
+    },
+    "heinrich_flux2_ref": {
+        "description": "FLUX.2 native multi-reference generation (zero-shot identity, no adapters). Heavy GPU job.",
+        "parameters": {
+            "prompts": {"type": "string", "description": "JSONL of {\"text\": ...}", "required": True},
+            "output": {"type": "string", "description": "Output directory", "required": True},
+            "pipeline": {"type": "string", "description": "Pipeline ID (default: black-forest-labs/FLUX.2-dev)"},
+            "refs": {"type": "array", "description": "Reference image paths (up to 10)"},
+            "refs_dir": {"type": "string", "description": "Directory of reference images"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args (--top-k-refs, --identity-tag, --lora, ...)"},
+        },
+    },
+    "heinrich_profile_discover_character": {
+        "description": "Discover a character's direction in DiT weight space via contrastive gradient SVD → minimal LoRA. Heavy GPU job.",
+        "parameters": {
+            "refs": {"type": "string", "description": "Directory of (NAME.png, NAME.txt) pairs", "required": True},
+            "output": {"type": "string", "description": "Output path for the LoRA .safetensors file", "required": True},
+            "pipeline": {"type": "string", "description": "HF pipeline id (FLUX.2 family)"},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args (--rank, --resolution, ...)"},
+        },
+    },
+    "heinrich_splat_build": {
+        "description": "Build a .splat (3D Gaussian Splat) from a directory of images (SfM → gsplat). Heavy GPU job.",
+        "parameters": {
+            "refs": {"type": "string", "description": "Directory of input images", "required": True},
+            "output": {"type": "string", "description": "Output .splat directory path (must not exist)", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args (--sfm mast3r, --impl, --iterations, ...)"},
+        },
+    },
+    "heinrich_splat_render": {
+        "description": "Render a .splat at a chosen camera view to a PNG.",
+        "parameters": {
+            "splat": {"type": "string", "description": "Path to .splat directory", "required": True},
+            "output": {"type": "string", "description": "Output PNG path", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args (--view, --width, --height)"},
+        },
+    },
+    "heinrich_splat_inject": {
+        "description": "Inject a .splat through FLUX.2 to generate scenes. Heavy GPU job.",
+        "parameters": {
+            "splat": {"type": "string", "description": "Path to .splat directory", "required": True},
+            "prompts": {"type": "string", "description": "JSONL of {\"text\": ...}", "required": True},
+            "output": {"type": "string", "description": "Output directory", "required": True},
+            "extra_args": {"type": "array", "description": "Additional raw CLI args (--mode, --strength, --num-ref-views, ...)"},
+        },
+    },
+    # === live companion HTTP tools (require `heinrich companion` running) ===
+    "heinrich_live_river": {
+        "description": "The Readout River: per-layer top-k logit lens for a live prompt through the model behind the companion. Optional steer injects a token-pair direction. Requires `heinrich companion` running with a live backend.",
+        "parameters": {
+            "prompt": {"type": "string", "description": "Prompt to forward", "required": True},
+            "mri_model": {"type": "string", "description": "MRI directory name (e.g. smollm2-135m)", "required": True},
+            "mode": {"type": "string", "description": "raw / naked / template (default raw)"},
+            "model_id": {"type": "string", "description": "HF model id override (auto-inferred from MRI if omitted)"},
+            "k": {"type": "integer", "description": "Top-k logits per layer (default 8)"},
+            "steer": {"type": "object", "description": "Optional {layer, a, b, alpha} token-pair steering"},
+            "port": {"type": "integer", "description": "Companion server port (default 8377)"},
+        },
+    },
+    "heinrich_live_walk": {
+        "description": "Streaming-token walk: greedy-decode a live prompt, broadcasting each generated token as a point in the frozen PCA frame. Returns the light summary. Requires `heinrich companion` running.",
+        "parameters": {
+            "prompt": {"type": "string", "description": "Prompt to forward + generate from", "required": True},
+            "mri_model": {"type": "string", "description": "MRI directory name (e.g. smollm2-135m)", "required": True},
+            "mode": {"type": "string", "description": "raw / naked / template (default raw)"},
+            "model_id": {"type": "string", "description": "HF model id override"},
+            "max_tokens": {"type": "integer", "description": "Tokens to generate (default 24)"},
+            "port": {"type": "integer", "description": "Companion server port (default 8377)"},
+        },
+    },
+    "heinrich_live_steer": {
+        "description": "Generate with a token-pair direction (a→b) injected at a layer during live decoding, and return the steered continuation. Requires `heinrich companion` running.",
+        "parameters": {
+            "prompt": {"type": "string", "description": "Prompt to forward + generate from", "required": True},
+            "mri_model": {"type": "string", "description": "MRI directory name", "required": True},
+            "layer": {"type": "integer", "description": "Layer to inject the direction at", "required": True},
+            "a": {"type": "integer", "description": "Token index A (direction source)", "required": True},
+            "b": {"type": "integer", "description": "Token index B (direction target)", "required": True},
+            "mode": {"type": "string", "description": "raw / naked / template (default raw)"},
+            "model_id": {"type": "string", "description": "HF model id override"},
+            "alpha": {"type": "number", "description": "Steering magnitude (default 4.0)"},
+            "max_tokens": {"type": "integer", "description": "Tokens to generate (default 24)"},
+            "port": {"type": "integer", "description": "Companion server port (default 8377)"},
+        },
+    },
+    "heinrich_nn_check": {
+        "description": "Is the live state near ANY token's frozen position? Reports the k nearest frozen tokens per layer for a live prompt. Requires `heinrich companion` running.",
+        "parameters": {
+            "prompt": {"type": "string", "description": "Prompt to forward", "required": True},
+            "mri_model": {"type": "string", "description": "MRI directory name", "required": True},
+            "mode": {"type": "string", "description": "raw / naked / template (default raw)"},
+            "model_id": {"type": "string", "description": "HF model id override"},
+            "layers": {"type": "array", "description": "Specific layers to check (default: all)"},
+            "k": {"type": "integer", "description": "Nearest neighbors per layer (default 5)"},
+            "port": {"type": "integer", "description": "Companion server port (default 8377)"},
+        },
+    },
 }
 
 
@@ -1227,6 +1874,274 @@ class ToolServer:
             return self._do_homing_run(arguments)
         if name == "heinrich_canvas_push":
             return self._do_canvas_push(arguments)
+        # === pipeline / db lifecycle ===
+        if name == "heinrich_run":
+            return self._do_subprocess(arguments, "run",
+                ["--model", arguments["model"], "--prompts", arguments["prompts"],
+                 "--scorers", arguments["scorers"]],
+                optional={"output": "--output", "db": "--db",
+                          "max_prompts": "--max-prompts", "timeout": "--timeout"},
+                flags={"skip_discover": "--skip-discover", "skip_attack": "--skip-attack"},
+                timeout=3600)
+        if name == "heinrich_eval":
+            return self._do_subprocess(arguments, "eval",
+                ["--model", arguments["model"], "--prompts", arguments["prompts"],
+                 "--scorers", arguments["scorers"]],
+                optional={"conditions": "--conditions", "output": "--output",
+                          "db": "--db", "max_prompts": "--max-prompts"},
+                timeout=3600)
+        if name == "heinrich_report":
+            return self._do_subprocess(arguments, "report",
+                [arguments["source"]], optional={"top": "--top"}, timeout=120)
+        if name == "heinrich_ingest":
+            return self._do_subprocess(arguments, "ingest", [],
+                optional={"data_dir": "--data-dir", "model": "--model"}, timeout=600)
+        if name == "heinrich_recompute":
+            return self._do_subprocess(arguments, "recompute", [], timeout=600)
+        if name == "heinrich_reset":
+            return self._do_subprocess(arguments, "reset", [], timeout=600)
+        if name == "heinrich_crystal_inspect":
+            return self._do_subprocess(arguments, "crystal-inspect",
+                ["--mri", arguments["mri"]],
+                optional={"layer": "--layer", "z_threshold": "--z-threshold", "top": "--top"},
+                timeout=300)
+        # === profile analysis (no model needed) ===
+        if name == "heinrich_profile_chain":
+            return self._do_subprocess(arguments, "profile-chain",
+                ["--frt", arguments["frt"], "--shrt", arguments["shrt"], "--sht", arguments["sht"]],
+                timeout=300)
+        if name == "heinrich_profile_cross":
+            return self._do_subprocess(arguments, "profile-cross",
+                ["--a", arguments["a"], "--b", arguments["b"]],
+                optional={"frt": "--frt"}, timeout=300)
+        if name == "heinrich_profile_survey":
+            return self._do_subprocess(arguments, "profile-survey",
+                ["--shrt", *arguments["shrt"]], optional={"frt": "--frt"}, timeout=300)
+        if name == "heinrich_profile_mismatch":
+            return self._do_subprocess(arguments, "profile-mismatch",
+                ["--shrt", arguments["shrt"], "--frt", arguments["frt"]], timeout=300)
+        if name == "heinrich_profile_depth":
+            return self._do_subprocess(arguments, "profile-depth",
+                ["--shrt", *arguments["shrt"]], optional={"frt": "--frt"}, timeout=300)
+        if name == "heinrich_profile_layer_scripts":
+            return self._do_subprocess(arguments, "profile-layer-scripts",
+                ["--shrt", arguments["shrt"], "--frt", arguments["frt"]],
+                optional={"safety_shrt": "--safety-shrt"}, timeout=300)
+        if name == "heinrich_profile_tokenizer_health":
+            return self._do_subprocess(arguments, "profile-tokenizer-health",
+                ["--frt", arguments["frt"]], optional={"shrt": "--shrt"}, timeout=300)
+        if name == "heinrich_profile_scatter":
+            return self._do_subprocess(arguments, "profile-scatter",
+                ["--shrt", arguments["shrt"], "--sht", arguments["sht"]],
+                optional={"frt": "--frt"}, timeout=300)
+        if name == "heinrich_profile_within_script":
+            return self._do_subprocess(arguments, "profile-within-script",
+                ["--shrt", arguments["shrt"], "--frt", arguments["frt"]], timeout=300)
+        if name == "heinrich_profile_directions":
+            return self._do_subprocess(arguments, "profile-directions",
+                ["--shrt", arguments["shrt"], "--frt", arguments["frt"]],
+                optional={"safety_shrt": "--safety-shrt"}, timeout=300)
+        if name == "heinrich_profile_pca_anatomy":
+            return self._do_subprocess(arguments, "profile-pca-anatomy",
+                ["--shrt", arguments["shrt"], "--frt", arguments["frt"]],
+                optional={"directions": "--directions", "n_components": "--n-components"}, timeout=300)
+        if name == "heinrich_profile_pca_survey":
+            return self._do_subprocess(arguments, "profile-pca-survey",
+                ["--pairs", *arguments["pairs"]],
+                optional={"n_components": "--n-components"}, timeout=300)
+        if name == "heinrich_profile_code_anatomy":
+            return self._do_subprocess(arguments, "profile-code-anatomy",
+                ["--shrt", arguments["shrt"], "--frt", arguments["frt"]],
+                optional={"all_layers": "--all-layers"}, timeout=300)
+        if name == "heinrich_profile_cross_model":
+            return self._do_subprocess(arguments, "profile-cross-model",
+                ["--mri", *arguments["mri"]], optional={"n_sample": "--n-sample"}, timeout=600)
+        if name == "heinrich_profile_layer_importance":
+            return self._do_subprocess(arguments, "profile-layer-importance",
+                ["--mri", arguments["mri"]], timeout=300)
+        if name == "heinrich_profile_early_exit":
+            return self._do_subprocess(arguments, "profile-early-exit",
+                ["--mri", arguments["mri"]], optional={"threshold": "--threshold"}, timeout=300)
+        if name == "heinrich_profile_template_overhead":
+            return self._do_subprocess(arguments, "profile-template-overhead",
+                ["--template-mri", arguments["template_mri"], "--raw-mri", arguments["raw_mri"]],
+                timeout=300)
+        if name == "heinrich_profile_matrix":
+            return self._do_subprocess(arguments, "profile-matrix", [],
+                optional={"data_dir": "--data-dir"}, timeout=120)
+        if name == "heinrich_profile_safety_rank":
+            return self._do_subprocess(arguments, "profile-safety-rank",
+                ["--shrt", arguments["shrt"], "--direction", arguments["direction"]],
+                optional={"frt": "--frt", "trd": "--trd"}, timeout=300)
+        # === profile analysis (needs model) ===
+        if name == "heinrich_profile_decompose":
+            return self._do_subprocess(arguments, "profile-decompose",
+                ["--model", arguments["model"], "--frt", arguments["frt"]],
+                optional={"n_index": "--n-index", "layers": "--layers", "output": "--output"},
+                timeout=3600)
+        if name == "heinrich_profile_validate_ablation":
+            return self._do_subprocess(arguments, "profile-validate-ablation",
+                ["--model", arguments["model"]], optional={"layer": "--layer"}, timeout=1800)
+        if name == "heinrich_profile_embedding":
+            return self._do_subprocess(arguments, "profile-embedding",
+                ["--model", arguments["model"], "--frt", arguments["frt"]],
+                optional={"shrt": "--shrt"}, timeout=1800)
+        if name == "heinrich_profile_silence":
+            return self._do_subprocess(arguments, "profile-silence",
+                ["--model", arguments["model"], "--shrt", arguments["shrt"], "--frt", arguments["frt"]],
+                optional={"db": "--db", "direction": "--direction"}, timeout=1800)
+        if name == "heinrich_profile_basin":
+            return self._do_subprocess(arguments, "profile-basin",
+                ["--model", arguments["model"], "--direction", arguments["direction"],
+                 "--layer", str(arguments["layer"])],
+                optional={"mean_gap": "--mean-gap", "n_prompts": "--n-prompts"}, timeout=1800)
+        if name == "heinrich_profile_first_token":
+            return self._do_subprocess(arguments, "profile-first-token",
+                ["--model", arguments["model"], "--direction", arguments["direction"]], timeout=1800)
+        if name == "heinrich_profile_lmhead":
+            return self._do_subprocess(arguments, "profile-lmhead",
+                ["--model", arguments["model"]], optional={"directions": "--directions"}, timeout=1800)
+        if name == "heinrich_profile_discover_direction":
+            return self._do_subprocess(arguments, "profile-discover-direction",
+                ["--model", arguments["model"]],
+                optional={"db": "--db", "n_harmful": "--n-harmful",
+                          "n_benign": "--n-benign", "output": "--output"}, timeout=1800)
+        if name == "heinrich_trd_profile":
+            return self._do_subprocess(arguments, "trd-profile",
+                ["--model", arguments["model"], "--shrt", arguments["shrt"], "--frt", arguments["frt"]],
+                optional={"layers": "--layers", "output": "--output"}, timeout=1800)
+        # === MRI decomposition / publish ===
+        if name == "heinrich_mri_decompose":
+            return self._do_subprocess(arguments, "mri-decompose",
+                ["--mri", arguments["mri"]],
+                optional={"n_sample": "--n-sample", "n_components": "--n-components"},
+                flags={"backfill_means": "--backfill-means"}, timeout=3600)
+        if name == "heinrich_mri_vocab":
+            return self._do_subprocess(arguments, "mri-vocab",
+                ["--model", arguments["model"], "--mri", arguments["mri"]],
+                optional={"batch_size": "--batch-size", "backend": "--backend"},
+                flags={"no_verify": "--no-verify", "falsify": "--falsify",
+                       "falsify_only": "--falsify-only", "pc16_only": "--pc16-only"}, timeout=3600)
+        if name == "heinrich_mri_serve":
+            return self._do_subprocess(arguments, "mri-serve",
+                ["--mri", arguments["mri"]], optional={"steps": "--steps"},
+                flags={"force": "--force"}, timeout=600)
+        if name == "heinrich_mri_check_fixups":
+            return self._do_subprocess(arguments, "mri-check-fixups", [],
+                optional={"dir": "--dir", "min_fix_level": "--min-fix-level"}, timeout=120)
+        if name == "heinrich_mri_recapture":
+            return self._do_subprocess(arguments, "mri-recapture", [],
+                optional={"dir": "--dir", "min_fix_level": "--min-fix-level", "only": "--only"},
+                flags={"execute": "--execute"}, timeout=36000)
+        if name == "heinrich_mri_regrad":
+            return self._do_subprocess(arguments, "mri-regrad",
+                ["--model", arguments["model"], "--mri", *arguments["mri"]], timeout=3600)
+        if name == "heinrich_publish":
+            return self._do_subprocess(arguments, "publish",
+                ["--mri", arguments["mri"]],
+                optional={"bucket": "--bucket", "local_dir": "--local-dir",
+                          "account_id": "--account-id", "endpoint_url": "--endpoint-url"},
+                flags={"with_hover": "--with-hover", "dry_run": "--dry-run"}, timeout=3600)
+        # === causal bank additions ===
+        if name == "heinrich_cb_omega_forensics":
+            return self._do_subprocess(arguments, "profile-cb-omega-forensics",
+                ["--checkpoint", arguments["checkpoint"]], timeout=600)
+        if name == "heinrich_cb_rotation_forensics":
+            return self._do_subprocess(arguments, "profile-cb-rotation-forensics",
+                ["--checkpoint", arguments["checkpoint"]], timeout=600)
+        if name == "heinrich_cb_additivity":
+            return self._do_subprocess(arguments, "profile-cb-additivity",
+                ["--baseline", arguments["baseline"], "--mutations", *arguments["mutations"],
+                 "--combination", arguments["combination"]],
+                optional={"noise_floor": "--noise-floor", "metrics": "--metrics"}, timeout=600)
+        if name == "heinrich_cb_pc_bands":
+            return self._do_subprocess(arguments, "profile-cb-pc-bands",
+                ["--mris", *arguments["mris"]], optional={"n_bootstrap": "--n-bootstrap"}, timeout=600)
+        if name == "heinrich_cb_trajectory":
+            return self._do_subprocess(arguments, "profile-cb-trajectory",
+                ["--mris", *arguments["mris"]], timeout=600)
+        if name == "heinrich_cb_invertibility":
+            return self._do_subprocess(arguments, "profile-cb-invertibility",
+                ["--mri", arguments["mri"]], optional={"max_lookback": "--max-lookback"}, timeout=300)
+        # === attack / self-study ===
+        if name == "heinrich_attack_surface":
+            return self._do_subprocess(arguments, "attack-surface",
+                ["--model", arguments["model"], "--directions", arguments["directions"],
+                 "--prompts", arguments["prompts"], "--layer", str(arguments["layer"])], timeout=1800)
+        if name == "heinrich_gemma_study":
+            return self._do_subprocess(arguments, "gemma-study",
+                ["--model", arguments["model"], "--prompts", arguments["prompts"]],
+                optional={"backend": "--backend", "spec_file": "--spec-file",
+                          "direction": "--direction", "layer": "--layer",
+                          "framing": "--framing", "max_prompts": "--max-prompts",
+                          "output": "--output"}, timeout=3600)
+        # === image / DiT / splat (heavy GPU jobs) ===
+        if name == "heinrich_prompt_mri":
+            return self._do_subprocess(arguments, "prompt-mri",
+                ["--model", arguments["model"], "--prompts", arguments["prompts"],
+                 "--output", arguments["output"]], timeout=36000)
+        if name == "heinrich_prompt_mri_analyze":
+            return self._do_subprocess(arguments, "prompt-mri-analyze",
+                ["--input", arguments["input"]], timeout=600)
+        if name == "heinrich_dit_mri":
+            return self._do_subprocess(arguments, "dit-mri",
+                ["--pipeline", arguments["pipeline"], "--prompts", arguments["prompts"],
+                 "--output", arguments["output"]], timeout=36000)
+        if name == "heinrich_dit_mri_analyze":
+            return self._do_subprocess(arguments, "dit-mri-analyze",
+                ["--input", arguments["input"]], timeout=600)
+        if name == "heinrich_dit_mri_diff":
+            return self._do_subprocess(arguments, "dit-mri-diff",
+                ["--base", arguments["base"], "--treatment", arguments["treatment"]], timeout=600)
+        if name == "heinrich_dit_mri_ref":
+            return self._do_subprocess(arguments, "dit-mri-ref",
+                ["--pipeline", arguments["pipeline"], "--refs", arguments["refs"],
+                 "--output", arguments["output"]], timeout=36000)
+        if name == "heinrich_dit_mri_atlas":
+            return self._do_subprocess(arguments, "dit-mri-atlas",
+                ["--identity", arguments["identity"], "--baseline", arguments["baseline"],
+                 "--output", arguments["output"]], timeout=600)
+        if name == "heinrich_dit_steer":
+            return self._do_subprocess(arguments, "dit-steer",
+                ["--pipeline", arguments["pipeline"], "--atlas", arguments["atlas"],
+                 "--prompts", arguments["prompts"], "--output", arguments["output"]], timeout=36000)
+        if name == "heinrich_dit_replace":
+            return self._do_subprocess(arguments, "dit-replace",
+                ["--pipeline", arguments["pipeline"], "--ref-image", arguments["ref_image"],
+                 "--ref-caption", arguments["ref_caption"], "--prompts", arguments["prompts"],
+                 "--output", arguments["output"]], timeout=36000)
+        if name == "heinrich_dit_steer_face":
+            return self._do_subprocess(arguments, "dit-steer-face",
+                ["--pipeline", arguments["pipeline"], "--ref-image", arguments["ref_image"],
+                 "--prompts", arguments["prompts"], "--output", arguments["output"]], timeout=36000)
+        if name == "heinrich_flux2_ref":
+            return self._do_subprocess(arguments, "flux2-ref",
+                ["--prompts", arguments["prompts"], "--output", arguments["output"]],
+                optional={"pipeline": "--pipeline", "refs": "--refs", "refs_dir": "--refs-dir"},
+                timeout=36000)
+        if name == "heinrich_profile_discover_character":
+            return self._do_subprocess(arguments, "profile-discover-character",
+                ["--refs", arguments["refs"], "--output", arguments["output"]],
+                optional={"pipeline": "--pipeline"}, timeout=36000)
+        if name == "heinrich_splat_build":
+            return self._do_subprocess(arguments, "splat-build",
+                ["--refs", arguments["refs"], "--output", arguments["output"]], timeout=36000)
+        if name == "heinrich_splat_render":
+            return self._do_subprocess(arguments, "splat-render",
+                ["--splat", arguments["splat"], "--output", arguments["output"]], timeout=600)
+        if name == "heinrich_splat_inject":
+            return self._do_subprocess(arguments, "splat-inject",
+                ["--splat", arguments["splat"], "--prompts", arguments["prompts"],
+                 "--output", arguments["output"]], timeout=36000)
+        # === live companion HTTP tools ===
+        if name == "heinrich_live_river":
+            return self._do_live_river(arguments)
+        if name == "heinrich_live_walk":
+            return self._do_live_walk(arguments)
+        if name == "heinrich_live_steer":
+            return self._do_live_steer(arguments)
+        if name == "heinrich_nn_check":
+            return self._do_nn_check(arguments)
         return {"error": f"Unknown tool: {name}"}
 
     def _do_fetch(self, args: dict[str, Any]) -> dict[str, Any]:
@@ -1697,6 +2612,60 @@ class ToolServer:
         except urllib.error.URLError as e:
             status = {"error": f"push-status unreachable: {e}"}
         return {"ok": True, "push_id": pid, "status": status}
+
+    def _do_live_river(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Readout River via the companion: per-layer top-k logit lens."""
+        port = args.get("port", 8377)
+        payload = {
+            "prompt": args["prompt"],
+            "mri_model": args["mri_model"],
+            "mode": args.get("mode", "raw"),
+            "model_id": args.get("model_id", ""),
+            "k": args.get("k", 8),
+        }
+        if args.get("steer") is not None:
+            payload["steer"] = args["steer"]
+        return self._companion_post(port, "/api/live-river", payload, timeout=600.0)
+
+    def _do_live_walk(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Streaming-token walk via the companion. Returns the light summary."""
+        port = args.get("port", 8377)
+        return self._companion_post(port, "/api/live-walk", {
+            "prompt": args["prompt"],
+            "mri_model": args["mri_model"],
+            "mode": args.get("mode", "raw"),
+            "model_id": args.get("model_id", ""),
+            "max_tokens": args.get("max_tokens", 24),
+        }, timeout=600.0)
+
+    def _do_live_steer(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Token-pair steered live decode via the companion."""
+        port = args.get("port", 8377)
+        return self._companion_post(port, "/api/live-steer", {
+            "prompt": args["prompt"],
+            "mri_model": args["mri_model"],
+            "mode": args.get("mode", "raw"),
+            "model_id": args.get("model_id", ""),
+            "layer": int(args["layer"]),
+            "a": int(args["a"]),
+            "b": int(args["b"]),
+            "alpha": args.get("alpha", 4.0),
+            "max_tokens": args.get("max_tokens", 24),
+        }, timeout=600.0)
+
+    def _do_nn_check(self, args: dict[str, Any]) -> dict[str, Any]:
+        """Nearest-frozen-token check for a live state via the companion."""
+        port = args.get("port", 8377)
+        payload = {
+            "prompt": args["prompt"],
+            "mri_model": args["mri_model"],
+            "mode": args.get("mode", "raw"),
+            "model_id": args.get("model_id", ""),
+            "k": args.get("k", 5),
+        }
+        if args.get("layers") is not None:
+            payload["layers"] = args["layers"]
+        return self._companion_post(port, "/api/nn-check", payload, timeout=600.0)
 
     def _do_loop(self, args: dict[str, Any]) -> dict[str, Any]:
         import numpy as np
@@ -2973,19 +3942,42 @@ class ToolServer:
     def _do_subprocess(self, args: dict[str, Any], command: str,
                        required: list[str], *,
                        optional: dict[str, str] | None = None,
+                       flags: dict[str, str] | None = None,
                        timeout: int = 300) -> dict[str, Any]:
         """Generic subprocess handler for CLI commands.
 
         Uses --json flag to get structured output. Falls back to raw
         stdout if JSON parsing fails (command doesn't support --json yet).
+
+        - `optional`: {arg_key: cli_flag} for scalar-or-list value options. A
+          list value is splat after the flag (nargs); a scalar is appended as
+          [flag, value].
+        - `flags`: {arg_key: cli_flag} for store_true switches — the flag is
+          appended (no value) when the arg is truthy.
+        - Every tool honours an optional `extra_args` array of raw CLI tokens
+          appended verbatim, so callers can reach params without a named slot.
         """
         import subprocess, sys
-        cmd = [sys.executable, "-m", "heinrich.cli", "--json", command] + required
+        cmd = [sys.executable, "-m", "heinrich.cli", "--json", command]
+        cmd += [str(a) for a in required]
         if optional:
             for arg_key, cli_flag in optional.items():
                 val = args.get(arg_key)
-                if val is not None:
+                if val is None:
+                    continue
+                if isinstance(val, (list, tuple)):
+                    if len(val) > 0:
+                        cmd.append(cli_flag)
+                        cmd.extend(str(x) for x in val)
+                else:
                     cmd.extend([cli_flag, str(val)])
+        if flags:
+            for arg_key, cli_flag in flags.items():
+                if args.get(arg_key):
+                    cmd.append(cli_flag)
+        extra = args.get("extra_args")
+        if extra:
+            cmd.extend(str(x) for x in extra)
         result = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
         if result.returncode != 0:
             return {"error": result.stderr, "stdout": result.stdout}
