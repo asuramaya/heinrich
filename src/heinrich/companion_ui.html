@@ -3227,14 +3227,20 @@ let _riverCommit=null;              // {l,text,runLen}|null — clean waist
 let _riverCommitS=null;             // steered waist (tag only)
 const _riverVecCache=new Map();     // vocab row → {nL,fK,data} — bounded, per model|mode
 const _RIVER_VEC_MAX=64;
-let _riverTethers=null,_riverTethersSteer=null; // LineSegments (clean gold / steered magenta)
-// ONE anatomical object, the STEM: a live-trajectory body whose per-layer thickness+
-// brightness encode neuron aliveness (stem), wrapped in a FUNNEL of per-layer dispersion
-// rings (banks) with a single bright BAND ring sliding to the current layer.
-let _riverStemGroup=null,_riverStemSegs=[]; // stem body = cylinder segments (Group)
-let _riverRings=null,_riverBand=null,_riverCommitLabel=null; // funnel (merged) / current band / commit tag sprite
-let _riverDispersion=[],_riverStemAlive=[],_riverBankByLayer=new Map(); // per-layer floats + l→{disp,rr,node}
-let _riverSprites=[];               // [{row,text,floater,off,sprite,tex}] distinct candidates
+// RECTIFIED river: rendered in its OWN canonical space, NOT the shared traj coords.
+// Depth axis = a STRAIGHT line at x=y=0 along _layerZ. The STEM is a straight rod of
+// per-layer aliveness cylinders; BANKS are nested dispersion rings centered on the rod;
+// STRANDS are candidate polylines placed at each layer's TRUE offset from the live node
+// (dx,dy in the traj transform) × a single global scale s. Global wandering is removed;
+// local bearings/distances survive up to s. Clamped anchors are OMITTED, never faked.
+let _riverTethers=null,_riverTethersSteer=null; // LineSegments: clean gold strands+stubs / steered magenta
+let _riverStemGroup=null,_riverStemSegs=[]; // stem body = straight-axis cylinder segments (Group)
+let _riverRings=null,_riverBand=null,_riverCommitLabel=null; // funnel rings / current band / commit tag sprite
+let _riverDispersion=[],_riverStemAlive=[],_riverBankByLayer=new Map(); // [{l,disp}] / aliveness / l→{disp,r,z}
+let _riverScale=1;                  // global relative-frame scale s (p90 offset → radius ~0.9)
+let _riverStrands=[];               // [{row,text,layers:[l],maxP,maxL,committed,steered,positions:[{l,x,y,z,p}]}]
+let _riverPickPts=[];               // [{row,text,pos:[x,y,z]}] raycast targets (strand verts + stub tips)
+let _riverSprites=[];               // [{row,text,sprite,tex}] ONE static label per clean strand (at maxP layer)
 let _riverTagEl=null,_riverTipEl=null; // corner truth tag + hover tooltip
 const _riverRay=new THREE.Raycaster();
 function _riverZAt(l){return (typeof _layerZ!=='undefined'&&_layerZ&&_layerZ[l]!=null)?_layerZ[l]:0;}
@@ -3256,7 +3262,10 @@ function _riverInit(){
     // CURRENT BAND — one bright unit ring that slides to the current layer and scales to its dispersion.
     _riverBand=new THREE.LineLoop(_riverUnitRing(48),new THREE.LineBasicMaterial({color:0xfff2b0,transparent:true,opacity:0.6,blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false}));
     _riverBand.frustumCulled=false;_riverBand.renderOrder=9;_riverBand.visible=false;rv.sc.add(_riverBand);
-    rv.cam.position.set(2.4,1.5,2.6);rv.ctl.target.set(0,0,0);rv.ctl.update();
+    // Default look: a 3/4 side view (~40° off the depth axis) framing the readout region.
+    // Enough side-on to read the straight glowing rod as a line, enough axial tilt for the
+    // dispersion rings to read as a nested elliptical horn.
+    rv.cam.position.set(1.25,0.85,2.15);rv.ctl.target.set(0,0,0.32);rv.ctl.update();
   }
   const rvEl=rv.el;
   if(rvEl&&!_riverTagEl){
@@ -3309,66 +3318,116 @@ function _riverMakeSprite(text,color){
   return {sprite:spr,tex};
 }
 function _riverDisposeSprites(){for(const s of _riverSprites){if(s.sprite.parent)s.sprite.parent.remove(s.sprite);if(s.tex)s.tex.dispose();if(s.sprite.material)s.sprite.material.dispose();}_riverSprites=[];}
+// ONE label per clean strand, static, placed at the strand's peak-p layer and nudged
+// slightly outward from the spine. No other permanent labels — the rest is hover-only.
 function _riverBuildSprites(){
   _riverDisposeSprites();
-  if(!_riverData||!_riverTethers)return;const rv=rightViews[0];
-  const seen=new Map();let fi=0;
-  for(const e of (_riverData.clean||[]))for(const c of (e.top||[])){
-    const floater=(c.row==null||c.row<0);const key=floater?('t:'+c.text):('r:'+c.row);
-    if(seen.has(key)||seen.size>=60)continue;
-    const ent={row:floater?-1:c.row,text:c.text,floater};
-    if(floater){ent.off=[0.22+0.13*(fi%4),0.16*((fi%3)-1)];fi++;}
-    seen.set(key,ent);
+  if(!_riverStrands.length||!rightViews[0])return;const rv=rightViews[0];
+  for(const st of _riverStrands){
+    if(st.steered)continue;// steered braid stays hover-only → clean label budget = strands + commit
+    const at=st.positions.find(p=>p.l===st.maxL)||st.positions[st.positions.length-1];
+    if(!at)continue;
+    const rad=Math.hypot(at.x,at.y);const ux=rad>1e-4?at.x/rad:1,uy=rad>1e-4?at.y/rad:0;const off=0.09;
+    const {sprite,tex}=_riverMakeSprite(st.text,st.committed?'#fff2c0':'#e8d9a8');
+    sprite.position.set(at.x+ux*off,at.y+uy*off,at.z);sprite.renderOrder=21;
+    if(st.committed)sprite.scale.multiplyScalar(1.12);
+    sprite.visible=true;rv.sc.add(sprite);
+    _riverSprites.push({row:st.row,text:st.text,sprite,tex});
   }
-  for(const ent of seen.values()){
-    const {sprite,tex}=_riverMakeSprite(ent.text,ent.floater?'#8a8a8a':'#e8d9a8');
-    sprite.visible=false;rv.sc.add(sprite);
-    _riverSprites.push({row:ent.row,text:ent.text,floater:ent.floater,off:ent.off,sprite,tex});
-  }
+  _markDirty();
 }
-// Build the tether fan (+ optional steered fan) and locate the waist.
-function _riverRebuild(){
-  if(!_riverTethers)return;
-  const clean=_riverData&&_riverData.clean;
-  if(!clean||!clean.length){_riverTethers.visible=false;if(_riverTethersSteer)_riverTethersSteer.visible=false;if(_riverRings)_riverRings.visible=false;if(_riverBand)_riverBand.visible=false;_riverCommit=null;_riverCommitS=null;return;}
-  const _fan=(entries,warm)=>{
-    const pos=[],col=[];
-    for(const e of entries){const l=e.l;const node=_riverLiveNode(l);if(!node||node.clamped)continue;
-      const top=e.top||[];
-      for(let ci=0;ci<top.length;ci++){const c=top[ci];if(c.row==null||c.row<0)continue;
-        const vec=_riverVecCache.get(c.row);if(!vec)continue;
-        const a=_riverAnchor(l,vec);if(!a||a.clamped)continue;
-        const p=Math.max(0.03,Math.min(0.9,c.p||0));const t1=ci===0;
-        // gold-white for clean (top-1 whiter+brighter); magenta for steered
-        const R=warm?1.0:1.0,G=warm?(t1?0.96:0.8):(t1?0.5:0.35),B=warm?(t1?0.85:0.42):(t1?0.95:0.8);
-        const inN=p*(t1?1.0:0.85),inA=inN*0.45;
-        pos.push(node[0],node[1],node[2], a[0],a[1],a[2]);
-        col.push(R*inN,G*inN,B*inN, R*inA,G*inA,B*inA);
+// Gather every valid (layer, candidate) relative offset in the traj transform.
+// dx/dy = candidate anchor − live node; clamped or vec-less anchors are OMITTED (sacred).
+// Returns {byRow: Map(row→{row,text,pts:[{l,dx,dy,z,p}]}), mags:[|offset|], perLayer: Map(l→[{dx,dy,p}])}.
+function _riverGatherOffsets(entries){
+  const byRow=new Map(),mags=[],perLayer=new Map();
+  for(const e of (entries||[])){
+    const l=e.l;const node=_riverLiveNode(l);if(!node||node.clamped)continue;
+    const z=_riverZAt(l);const arr=[];
+    for(const c of (e.top||[])){
+      if(c.row==null||c.row<0)continue;// floaters have no vocab vector → no true position
+      const vec=_riverVecCache.get(c.row);if(!vec)continue;
+      const a=_riverAnchor(l,vec);if(!a||a.clamped)continue;
+      const dx=a[0]-node[0],dy=a[1]-node[1],p=Math.max(0,c.p||0);
+      mags.push(Math.hypot(dx,dy));arr.push({dx,dy,p});
+      let rec=byRow.get(c.row);if(!rec){rec={row:c.row,text:c.text,pts:[]};byRow.set(c.row,rec);}
+      rec.pts.push({l,dx,dy,z,p});
+    }
+    if(arr.length)perLayer.set(l,arr);
+  }
+  return {byRow,mags,perLayer};
+}
+function _riverPct(sorted,q){if(!sorted.length)return 0;const i=Math.max(0,Math.min(sorted.length-1,Math.floor(q*(sorted.length-1))));return sorted[i];}
+// Build strand + stub geometry for one readout (clean or steered) in the relative frame.
+// STRAND (candidate seen at ≥3 layers) = polyline of its per-layer scaled positions, with
+// per-vertex alpha ∝ p (floor 0.04, baked into RGB for additive blending); the committed
+// token's strand runs whiter+brighter. Fewer-layer candidates render as dim spine stubs.
+function _riverStrandGeo(gather,s,base,cbase,committedText,steered){
+  const pos=[],col=[],strands=[],pick=[];
+  for(const rec of gather.byRow.values()){
+    const pts=rec.pts.slice().sort((a,b)=>a.z-b.z);
+    const committed=(committedText!=null&&rec.text===committedText);
+    const positions=pts.map(pt=>({l:pt.l,x:s*pt.dx,y:s*pt.dy,z:pt.z,p:pt.p}));
+    let maxP=0,maxL=pts[0].l;for(const pt of pts)if(pt.p>maxP){maxP=pt.p;maxL=pt.l;}
+    if(positions.length>=3){
+      const B=committed?cbase:base;
+      for(let i=0;i<positions.length-1;i++){
+        const A=positions[i],C=positions[i+1];
+        const aA=Math.min(1.3,Math.max(0.04,A.p)*(committed?1.4:1.0)),aC=Math.min(1.3,Math.max(0.04,C.p)*(committed?1.4:1.0));
+        pos.push(A.x,A.y,A.z, C.x,C.y,C.z);
+        col.push(B[0]*aA,B[1]*aA,B[2]*aA, B[0]*aC,B[1]*aC,B[2]*aC);
+      }
+      for(const P of positions)pick.push({row:rec.row,text:rec.text,pos:[P.x,P.y,P.z]});
+      strands.push({row:rec.row,text:rec.text,layers:pts.map(pt=>pt.l),maxP,maxL,committed,steered,positions});
+    }else{
+      for(const P of positions){// stub: dim spoke from the spine to the candidate at its layer
+        const a=Math.max(0.04,P.p)*0.38;
+        pos.push(0,0,P.z, P.x,P.y,P.z);
+        col.push(base[0]*a*0.12,base[1]*a*0.12,base[2]*a*0.12, base[0]*a,base[1]*a,base[2]*a);
+        pick.push({row:rec.row,text:rec.text,pos:[P.x,P.y,P.z]});
       }
     }
-    return {pos,col};
-  };
-  const c=_fan(clean,true);
-  if(c.pos.length){_riverTethers.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(c.pos),3));
-    _riverTethers.geometry.setAttribute('color',new THREE.BufferAttribute(new Float32Array(c.col),3));
-    _riverTethers.geometry.computeBoundingSphere&&_riverTethers.geometry.computeBoundingSphere();_riverTethers.visible=true;}
-  else _riverTethers.visible=false;
-  // Steered fan (magenta). Note: the steered residual trajectory is not returned by the
-  // endpoint (only the steered readout), so these tethers share the CLEAN trajectory nodes
-  // as origin — they show where the STEERED selection points, not a displaced path.
+  }
+  return {pos,col,strands,pick};
+}
+function _riverApplyGeo(obj,geo){
+  if(geo.pos.length){obj.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(geo.pos),3));
+    obj.geometry.setAttribute('color',new THREE.BufferAttribute(new Float32Array(geo.col),3));
+    obj.geometry.computeBoundingSphere&&obj.geometry.computeBoundingSphere();obj.visible=true;}
+  else obj.visible=false;
+}
+// Rebuild the relative frame: choose the global scale s, build clean + steered
+// strands/stubs, compute per-layer dispersion, and locate the waist. Rings and labels
+// are built by _riverBuildBanks / _riverBuildSprites, which the caller runs after.
+function _riverRebuild(){
+  if(!_riverTethers)return;
+  _riverStrands=[];_riverPickPts=[];_riverDispersion=[];_riverScale=1;
+  const clean=_riverData&&_riverData.clean;
+  if(!clean||!clean.length){_riverTethers.visible=false;if(_riverTethersSteer)_riverTethersSteer.visible=false;if(_riverRings)_riverRings.visible=false;if(_riverBand)_riverBand.visible=false;_riverCommit=null;_riverCommitS=null;return;}
+  _riverCommit=_riverFindWaist(clean);
   const steered=_riverData.steered;
+  _riverCommitS=steered&&steered.length?_riverFindWaist(steered):null;
+  const gc=_riverGatherOffsets(clean);
+  const gs=(steered&&steered.length)?_riverGatherOffsets(steered):null;
+  // Global scale: 90th-pct offset magnitude → radius ~0.9. Local bearings/distances survive.
+  const mags=gc.mags.slice().sort((a,b)=>a-b);
+  const p90=_riverPct(mags,0.9);
+  _riverScale=(p90>1e-6)?0.9/p90:1;const s=_riverScale;
+  const GOLD=[1.0,0.84,0.42],GOLDC=[1.0,0.96,0.86],MAG=[1.0,0.32,0.92],MAGC=[1.0,0.6,0.98];
+  const cg=_riverStrandGeo(gc,s,GOLD,GOLDC,_riverCommit?_riverCommit.text:null,false);
+  _riverApplyGeo(_riverTethers,cg);
+  _riverStrands.push(...cg.strands);_riverPickPts.push(...cg.pick);
   if(_riverTethersSteer){
-    if(steered&&steered.length){const s=_fan(steered,false);
-      if(s.pos.length){_riverTethersSteer.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(s.pos),3));
-        _riverTethersSteer.geometry.setAttribute('color',new THREE.BufferAttribute(new Float32Array(s.col),3));
-        _riverTethersSteer.geometry.computeBoundingSphere&&_riverTethersSteer.geometry.computeBoundingSphere();_riverTethersSteer.visible=true;}
-      else _riverTethersSteer.visible=false;}
+    if(gs){const sg=_riverStrandGeo(gs,s,MAG,MAGC,_riverCommitS?_riverCommitS.text:null,true);
+      _riverApplyGeo(_riverTethersSteer,sg);_riverStrands.push(...sg.strands);_riverPickPts.push(...sg.pick);}
     else _riverTethersSteer.visible=false;
   }
-  _riverCommit=_riverFindWaist(clean);
-  _riverCommitS=steered&&steered.length?_riverFindWaist(steered):null;
-  // Funnel rings (banks) are rebuilt separately in _riverBuildBanks — they need the
-  // commit layer for the brighter commit ring, so the caller runs banks AFTER rebuild.
+  // Per-layer dispersion = probability-weighted RMS of the DRAWN (scaled) offsets.
+  for(const [l,arr] of gc.perLayer){
+    let sw=0,sd2=0;for(const o of arr){const w=o.p;sw+=w;sd2+=w*s*s*(o.dx*o.dx+o.dy*o.dy);}
+    _riverDispersion.push({l,disp:sw>0?Math.sqrt(sd2/sw):0});
+  }
+  _riverDispersion.sort((a,b)=>a.l-b.l);
   _markDirty();
 }
 // Waist: earliest layer whose top-1 token stays top-1 through the last layer.
@@ -3385,34 +3444,31 @@ function _riverPAt(text,l){const e=(_riverData&&_riverData.clean||[]).find(x=>x.
 function _riverDisposeStemSegs(){if(!_riverStemGroup)return;
   for(const m of _riverStemSegs){_riverStemGroup.remove(m);if(m.geometry)m.geometry.dispose();if(m.material)m.material.dispose();}
   _riverStemSegs=[];}
-// The STEM is the live trajectory rendered as a solid body: one cylinder per depth
-// segment, whose radius + brightness encode that layer's neuron aliveness (gate×up of
-// pinned token A; uniform thin when no pin). Dead=dim grey-green, awake=bright green-white.
+// The STEM is the depth axis rendered as a solid STRAIGHT rod: one cylinder per depth
+// segment on the (0,0,z) spine, whose radius + brightness encode that layer's neuron
+// aliveness (gate×up of pinned token A; uniform thin when no pin). Dead=dim grey-green,
+// awake=bright green-white. Ghost rod when there's no live forward yet.
 function _riverUpdateStem(){
   if(!_riverStemGroup)return;
   _riverDisposeStemSegs();
-  const nodes=[];
-  if(_liveScores){const layers=Object.keys(_liveScores).map(Number).sort((a,b)=>a-b);
-    for(const l of layers){const n=_riverLiveNode(l);nodes.push({l,pos:n,clamped:!n||!!n.clamped});}}
+  const layers=_liveScores?Object.keys(_liveScores).map(Number).sort((a,b)=>a-b):[];
   // Aliveness per layer from pin-A gate heatmap; else uniform base (thin, dim).
   let gate=null,gmx=0;
   if(pinnedToken>=0&&_gateHeat){const row=getGateRow(pinnedToken);if(row){for(let i=0;i<row.length;i++)gmx=Math.max(gmx,Math.abs(row[i]));if(gmx>0)gate=row;}}
   const aliveAt=(l)=>(gate&&l<gate.length&&gmx>0)?Math.min(1,Math.abs(gate[l])/gmx):0.16;
-  _riverStemAlive=nodes.map(nd=>aliveAt(nd.l));
-  if(!nodes.length){_riverBuildGhostStem();_riverStemGroup.visible=true;_markDirty();return;}
+  _riverStemAlive=layers.map(aliveAt);
+  if(layers.length<2){_riverBuildGhostStem();_riverStemGroup.visible=true;_markDirty();return;}
   const up=new THREE.Vector3(0,1,0);let built=0;
-  for(let i=0;i<nodes.length-1;i++){const a=nodes[i],b=nodes[i+1];
-    if(a.clamped||b.clamped)continue;
-    const pa=new THREE.Vector3(a.pos[0],a.pos[1],a.pos[2]);
-    const dir=new THREE.Vector3(b.pos[0]-a.pos[0],b.pos[1]-a.pos[1],b.pos[2]-a.pos[2]);
-    const len=dir.length();if(len<1e-6)continue;
-    const av=aliveAt(a.l),r=0.004+0.016*av;
-    const geo=new THREE.CylinderGeometry(r,r,len,7,1,true);
-    const R=0.10+0.55*av,G=0.20+0.80*av,B=0.15+0.55*av;
-    const m=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({color:new THREE.Color(R,G,B),transparent:true,opacity:0.92,blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false}));
-    m.position.copy(pa).addScaledVector(dir,0.5);m.quaternion.setFromUnitVectors(up,dir.normalize());
+  for(let i=0;i<layers.length-1;i++){
+    const za=_riverZAt(layers[i]),zb=_riverZAt(layers[i+1]);
+    const len=Math.abs(zb-za);if(len<1e-6)continue;
+    const av=aliveAt(layers[i]),r=0.009+0.026*av;
+    const geo=new THREE.CylinderGeometry(r,r,len,10,1,true);
+    const R=0.14+0.60*av,G=0.30+0.85*av,B=0.22+0.60*av;
+    const m=new THREE.Mesh(geo,new THREE.MeshBasicMaterial({color:new THREE.Color(R,G,B),transparent:true,opacity:1.0,blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false}));
+    m.position.set(0,0,(za+zb)/2);m.quaternion.setFromUnitVectors(up,new THREE.Vector3(0,0,zb>=za?1:-1));
     m.renderOrder=8;m.frustumCulled=false;_riverStemGroup.add(m);_riverStemSegs.push(m);built++;}
-  if(!built)_riverBuildGhostStem();// all clamped → fall back to skeleton
+  if(!built)_riverBuildGhostStem();
   _riverStemGroup.visible=true;_markDirty();
 }
 // Empty-state / all-clamped skeleton: a thin dim wire along the depth axis.
@@ -3423,61 +3479,54 @@ function _riverBuildGhostStem(){
   m.renderOrder=8;m.frustumCulled=false;_riverStemGroup.add(m);_riverStemSegs.push(m);
 }
 function _riverDisposeCommitLabel(){if(_riverCommitLabel){const s=_riverCommitLabel.sprite;if(s.parent)s.parent.remove(s);if(_riverCommitLabel.tex)_riverCommitLabel.tex.dispose();if(s.material)s.material.dispose();_riverCommitLabel=null;}}
-// BANKS — the funnel. At every layer, the probability-weighted RMS distance of that
-// layer's candidate anchors from the stem node is a dispersion radius. Nested rings form
-// a funnel that narrows toward the commit layer. Commit ring brighter + a small label.
+// BANKS — the funnel. Each layer's dispersion (computed in _riverRebuild) becomes a ring
+// centered on the straight spine at (0,0,z). A SOFT radius map r = 0.12·√(disp/d_ref)
+// (d_ref = median dispersion, capped 1.0) makes the horn narrow visibly with no saturation
+// plateau. Commit ring is brighter and carries the one commit label at the waist.
 function _riverBuildBanks(){
   if(!_riverRings)return;
-  _riverDispersion=[];_riverBankByLayer.clear();_riverDisposeCommitLabel();
-  const clean=_riverData&&_riverData.clean;
-  if(!clean||!clean.length){_riverRings.visible=false;if(_riverBand)_riverBand.visible=false;_markDirty();return;}
-  const SEG=32,pos=[],col=[];
-  for(const e of clean){const l=e.l;const node=_riverLiveNode(l);
-    let sw=0,sd2=0;
-    if(node&&!node.clamped){for(const c of (e.top||[])){if(c.row==null||c.row<0)continue;
-      const vec=_riverVecCache.get(c.row);if(!vec)continue;const a=_riverAnchor(l,vec);if(!a||a.clamped)continue;
-      const w=Math.max(0,c.p||0);const dx=a[0]-node[0],dy=a[1]-node[1];sw+=w;sd2+=w*(dx*dx+dy*dy);}}
-    const disp=sw>0?Math.sqrt(sd2/sw):0;
-    _riverDispersion.push({l,disp});
-    if(!node||node.clamped||sw<=0)continue;
-    const rr=Math.max(0.02,Math.min(1.2,disp));
-    const isC=_riverCommit&&_riverCommit.l===l;const b=isC?0.26:0.12;
+  _riverBankByLayer.clear();_riverDisposeCommitLabel();
+  if(!_riverDispersion.length){_riverRings.visible=false;if(_riverBand)_riverBand.visible=false;_markDirty();return;}
+  const disps=_riverDispersion.map(d=>d.disp).filter(d=>d>0).sort((a,b)=>a-b);
+  const dref=disps.length?disps[Math.floor((disps.length-1)/2)]:1;
+  const RMIN=0.016;// collapse floor so the waist renders as a tiny point, not a hole
+  const SEG=40,pos=[],col=[];
+  for(const d of _riverDispersion){
+    const z=_riverZAt(d.l);// every entry here already had a valid unclamped live node
+    const r=Math.max(RMIN,Math.min(1.0,0.12*Math.sqrt(d.disp/(dref||1))));
+    const isC=_riverCommit&&_riverCommit.l===d.l;const b=isC?0.34:0.13;
     const R=1.0*b,G=0.84*b,B=0.40*b;
     for(let i=0;i<SEG;i++){const a0=i/SEG*Math.PI*2,a1=(i+1)/SEG*Math.PI*2;
-      pos.push(node[0]+rr*Math.cos(a0),node[1]+rr*Math.sin(a0),node[2], node[0]+rr*Math.cos(a1),node[1]+rr*Math.sin(a1),node[2]);
+      pos.push(r*Math.cos(a0),r*Math.sin(a0),z, r*Math.cos(a1),r*Math.sin(a1),z);
       col.push(R,G,B,R,G,B);}
-    _riverBankByLayer.set(l,{disp,rr,node:[node[0],node[1],node[2]]});
+    _riverBankByLayer.set(d.l,{disp:d.disp,r,z});
   }
   if(pos.length){_riverRings.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
     _riverRings.geometry.setAttribute('color',new THREE.BufferAttribute(new Float32Array(col),3));
     _riverRings.geometry.computeBoundingSphere&&_riverRings.geometry.computeBoundingSphere();_riverRings.visible=true;}
   else _riverRings.visible=false;
-  // Commit label sprite attached AT the commit ring (small, unobtrusive).
+  // The single commit label, on the spine at the waist — anchored even if that layer's
+  // dispersion has collapsed (no ring) so the commit is always named at its depth.
   if(_riverCommit){const bank=_riverBankByLayer.get(_riverCommit.l);const rv=rightViews[0];
-    if(bank&&rv){const {sprite,tex}=_riverMakeSprite(`commit L${_riverCommit.l} → "${_riverCommit.text}"`,'#fff2b0');
-      sprite.scale.multiplyScalar(0.8);sprite.position.set(bank.node[0],bank.node[1]+bank.rr+0.07,bank.node[2]);
+    if(rv){const z=bank?bank.z:_riverZAt(_riverCommit.l);const rr=bank?bank.r:RMIN;
+      const {sprite,tex}=_riverMakeSprite(`commit L${_riverCommit.l} → "${_riverCommit.text}"`,'#fff2b0');
+      sprite.scale.multiplyScalar(0.85);sprite.position.set(0,rr+0.08,z);
       sprite.renderOrder=22;rv.sc.add(sprite);_riverCommitLabel={sprite,tex};}}
   _markDirty();
 }
-// Reposition sprites to their frozen anchor at the CURRENT layer + slide the bright band.
+// Slide the bright band ring onto the current layer of the funnel. Strand labels are
+// static (placed once at each strand's peak-p layer) so scrubbing only moves the band.
 function _riverSetLayer(){
-  // Current band: the bright ring snaps onto the funnel at cL and scales to its dispersion.
   if(_riverBand){const bank=_riverBankByLayer.get(cL);
-    if(bank){_riverBand.position.set(bank.node[0],bank.node[1],bank.node[2]);_riverBand.scale.set(bank.rr,bank.rr,1);_riverBand.visible=true;}
+    if(bank){_riverBand.position.set(0,0,bank.z);_riverBand.scale.set(bank.r,bank.r,1);_riverBand.visible=true;}
     else _riverBand.visible=false;}
-  const node=_riverLiveNode(cL);
-  for(const s of _riverSprites){let pos=null;
-    if(!s.floater){const vec=_riverVecCache.get(s.row);if(vec){const a=_riverAnchor(cL,vec);if(a&&!a.clamped)pos=a;}}
-    else if(node&&!node.clamped&&s.off){pos=[node[0]+s.off[0],node[1]+s.off[1],node[2]];}
-    if(pos){s.sprite.position.set(pos[0],pos[1],pos[2]);s.sprite.visible=true;}
-    else s.sprite.visible=false;}
   _riverTagUpdate();_markDirty();
 }
 function _riverTagUpdate(){
   if(!_riverTagEl)return;
   if(!_riverData){_riverTagEl.textContent='no live forward yet';return;}
   const k=_riverData.k||8;
-  const commit=_riverCommit?`commit L${_riverCommit.l} → "${_riverCommit.text}"`:'no commit';
+  const commit=_riverCommit?`commit L${_riverCommit.l}→"${_riverCommit.text}"`:'no commit';
   let steer='';if(_riverData.steered&&_riverData.steered.length)steer=_riverCommitS?` · steer L${_riverCommitS.l}→"${_riverCommitS.text}"`:' · steer✦';
   let atL='';const e=(_riverData.clean||[]).find(x=>x.l===cL);
   if(e&&e.top&&e.top[0])atL=` · @L${cL}:"${e.top[0].text}" ${(e.top[0].p||0).toFixed(2)}`;
@@ -3485,16 +3534,19 @@ function _riverTagUpdate(){
   if(_riverDispersion.length){let mouth=0;for(const d of _riverDispersion)mouth=Math.max(mouth,d.disp);
     let waist=null;if(_riverCommit){const wd=_riverDispersion.find(d=>d.l===_riverCommit.l);if(wd)waist=wd.disp;}
     funnel=` · mouth ${mouth.toFixed(2)}→waist ${(waist!=null?waist:0).toFixed(2)}`;}
-  _riverTagEl.textContent=`readout k=${k} · ${commit}${steer}${atL}${funnel}`;
+  const ns=_riverStrands.filter(s=>!s.steered).length;
+  _riverTagEl.textContent=`readout k=${k} · ${ns} strand${ns===1?'':'s'} · ${commit}${steer}${atL}${funnel} · frame: rel to live · s=${_riverScale.toFixed(2)}`;
 }
+// Screen-space nearest pick over strand vertices + stub tips (labels ride the same points).
 function _riverPick(e){
-  if(!_riverSprites.length)return null;const rv=rightViews[0];if(!rv)return null;
+  if(!_riverPickPts.length)return null;const rv=rightViews[0];if(!rv)return null;
   const r=rv.el.getBoundingClientRect();if(!r.width||!r.height)return null;
-  const x=((e.clientX-r.left)/r.width)*2-1,y=-((e.clientY-r.top)/r.height)*2+1;
-  _riverRay.setFromCamera({x,y},rv.cam);
-  const objs=_riverSprites.filter(s=>s.sprite.visible).map(s=>s.sprite);
-  const hits=_riverRay.intersectObjects(objs,false);if(!hits.length)return null;
-  const s=_riverSprites.find(s=>s.sprite===hits[0].object);return s?{row:s.row,text:s.text}:null;
+  const mx=e.clientX-r.left,my=e.clientY-r.top;
+  let best=null,bd=15*15;const v=new THREE.Vector3();
+  for(const pp of _riverPickPts){v.set(pp.pos[0],pp.pos[1],pp.pos[2]);v.project(rv.cam);
+    if(v.z>1)continue;const sx=(v.x*0.5+0.5)*r.width,sy=(-v.y*0.5+0.5)*r.height;
+    const dx=sx-mx,dy=sy-my,d=dx*dx+dy*dy;if(d<bd){bd=d;best=pp;}}
+  return best?{row:best.row,text:best.text}:null;
 }
 function _riverHover(e){
   const h=_riverPick(e);
@@ -3512,7 +3564,8 @@ async function _riverBuild(){
   scan(_riverData.clean);scan(_riverData.steered);
   await _riverFetchVecs([...rows]);
   if(gen!==_riverFetchGen)return;// superseded by a newer run
-  _riverBuildSprites();_riverRebuild();_riverUpdateStem();_riverBuildBanks();_riverSetLayer();_riverTagUpdate();_markDirty();
+  // Frame first (scale + strands + dispersion), then rings, then labels off the strands.
+  _riverRebuild();_riverBuildBanks();_riverBuildSprites();_riverUpdateStem();_riverSetLayer();_riverTagUpdate();_markDirty();
 }
 async function _riverFetch(promptOpt){
   _riverInit();
@@ -3544,6 +3597,7 @@ function _clearRiver(){
   if(_riverBand)_riverBand.visible=false;
   _riverDisposeCommitLabel();
   _riverDispersion=[];_riverStemAlive=[];_riverBankByLayer.clear();
+  _riverStrands=[];_riverPickPts=[];_riverScale=1;
   _riverDisposeSprites();
   _riverUpdateStem();// revert to the ghost skeleton (no live scores after clear)
   if(_riverTipEl)_riverTipEl.style.display='none';
@@ -4172,7 +4226,7 @@ function _buildRV0Variance(){
   // pin-dependent neuron spine. Machinery lives in the Readout River module above.
   {const _rv=rightViews[0];if(_rv){_rv._rvSlices=[];_rv.built=true;_rv._dirCursor=null;_rv._dirSeq=null;_rv._dirNSteps=0;
     const _l=_rv.el?.querySelector('.rlbl');if(_l&&_l.textContent!=='Readout River'){_l.textContent='Readout River';_l._asinhBadge=null;}
-    _riverInit();_riverBuildSprites();_riverRebuild();_riverUpdateStem();_riverBuildBanks();_riverSetLayer();}
+    _riverInit();_riverRebuild();_riverBuildBanks();_riverBuildSprites();_riverUpdateStem();_riverSetLayer();}
    return;}
   const rv=rightViews[0];if(!rv||!_layerVar.length)return;
   _clearRV(rv);rv._rvSlices=[];rv.built=true;
@@ -7349,13 +7403,21 @@ window.__heinrich = {
   steer:(layerOrNull,alpha)=>_doSteer(layerOrNull!=null?layerOrNull:null,alpha!=null?alpha:null),
   get steered(){return _steerInfo?{alpha:_steerInfo.alpha,layer:_steerInfo.layer,cleanPrediction:_steerInfo.cleanPrediction,steeredPrediction:_steerInfo.steeredPrediction,differs:_steerInfo.differs}:null;},
   get steerVisible(){return steerCloudMarkers.some(m=>m.visible)||steerTrajLines.some(l=>l.visible);},
-  // --- Readout River (rv0): live logit-lens fan ---
+  // --- Readout River (rv0): rectified relative-frame horn (straight rod + strands) ---
   get river(){if(!_riverData)return null;const cands=[],seen=new Set();
     (_riverData.clean||[]).forEach(e=>(e.top||[]).forEach(c=>{if(!seen.has(c.text)){seen.add(c.text);cands.push(c.text);}}));
-    return {n_layers:_riverData.n_layers,k:_riverData.k,commit:_riverCommit?{l:_riverCommit.l,text:_riverCommit.text}:null,candidates:cands,steered:!!(_riverData.steered&&_riverData.steered.length),tetherVerts:(_riverTethers&&_riverTethers.geometry.attributes.position)?_riverTethers.geometry.attributes.position.count:0,
-      dispersion:_riverDispersion.map(d=>d.disp),stem:_riverStemAlive.slice(),stemSegs:_riverStemSegs.length,ringCount:_riverBankByLayer.size,bandLayer:(_riverBand&&_riverBand.visible)?cL:-1};},
+    const strands=_riverStrands.filter(s=>!s.steered).map(s=>({text:s.text,layers:s.layers.slice(),maxP:s.maxP,committed:!!s.committed}));
+    const rings=_riverDispersion.map(d=>{const b=_riverBankByLayer.get(d.l);return {l:d.l,disp:d.disp,r:b?b.r:0};});
+    return {n_layers:_riverData.n_layers,k:_riverData.k,scale:_riverScale,
+      commit:_riverCommit?{l:_riverCommit.l,text:_riverCommit.text}:null,candidates:cands,
+      steered:!!(_riverData.steered&&_riverData.steered.length),
+      strands,rings,dispersion:_riverDispersion.map(d=>d.disp),
+      stem:_riverStemAlive.slice(),stemSegs:_riverStemSegs.length,
+      ringCount:_riverBankByLayer.size,bandLayer:(_riverBand&&_riverBand.visible)?cL:-1,
+      strandLabels:_riverSprites.length,pickPts:_riverPickPts.length,
+      tetherVerts:(_riverTethers&&_riverTethers.geometry.attributes.position)?_riverTethers.geometry.attributes.position.count:0};},
   riverFetch:(prompt)=>_riverFetch(prompt||null),
-  get riverSprites(){return _riverSprites.map(s=>({text:s.text,row:s.row,floater:s.floater,visible:s.sprite.visible,x:s.sprite.position.x,y:s.sprite.position.y,z:s.sprite.position.z}));},
+  get riverSprites(){return _riverSprites.map(s=>({text:s.text,row:s.row,visible:s.sprite.visible,x:s.sprite.position.x,y:s.sprite.position.y,z:s.sprite.position.z}));},
   get pollActive(){return _pollActive;}, handleNav:(m)=>_handleNavigate(m), get homing(){return _homingCache;},
   setTarget:(row,text)=>_setVocabTarget(row,text), clearTarget:()=>_clearVocabTarget(),
   setCam:(spec)=>_setCamera(spec), getCam:(vi)=>_getCamera(vi||0),
