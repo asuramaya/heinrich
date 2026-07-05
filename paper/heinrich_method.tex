@@ -1,0 +1,265 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{fontspec}
+% xeCJK intentionally omitted for now: this paper carries no CJK glyphs yet.
+% Re-add \usepackage{xeCJK}\setCJKmainfont{...} (with a font tectonic can find)
+% when a token example such as the raw-mode crystal is shown inline.
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{multirow}
+\usepackage{float}
+\usepackage{longtable}
+\geometry{margin=1in}
+
+% --- The provenance apparatus: this paper's signature. Every figure states the
+% .mri it was measured from and the script that captured it, so figure and datum
+% are one object, regenerable on demand. This is the whole point of an agent
+% that can drive the instrument AND photograph it in the same session. ---
+\definecolor{prov}{RGB}{95,95,95}
+\newcommand{\provenance}[1]{\par\vspace{2pt}{\footnotesize\ttfamily\textcolor{prov}{#1}}}
+\newcommand{\heinrich}{\textsc{Heinrich}}
+\newcommand{\mri}{\texttt{.mri}}
+
+\title{The Frozen Frame\\[0.5em]\large An Instrument That Measures a Language Model\\Against a Ruler Made From Itself}
+
+\author{Built by Claude instances, steered by a human, measured by machines\\
+Toolkit: \heinrich{}\\[0.5em]
+\small The first Heinrich paper whose figures were captured, not drawn---\\
+each rendered from the same run, in the same frame, that produced its numbers.}
+
+\date{July 2026 --- draft}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+The previous Heinrich papers were about what models do. This one is about how to
+know. They shared a hidden dependency: every geometric claim was measured against
+a coordinate system that the measurement could itself move. A safety direction, a
+displacement, a trajectory---each was read off a frame re-derived from the data at
+hand, so the ruler flexed with the thing it measured. This paper describes the
+instrument built to stop that. A per-layer PCA frame is computed once over the
+model's own vocabulary and never re-derived; the number of retained components
+equals the hidden width and the components are orthonormal, so distance in the
+score coordinates \emph{is} distance in the hidden state, exactly. Every token---any
+of the tens of thousands---then holds a fixed address, and any live forward pass can
+be measured against all of them at once with no truncation anywhere in the metric.
+The instrument declares where it cannot be trusted: a per-layer noise floor from
+\texttt{float16} forward reproducibility, and a frame-validity test by principal
+angles against a held-out projection. And it renders every measurement as a
+navigable surface an agent can drive and photograph, so a figure in this paper and
+the number beside it come from one session and one frame. We demonstrate the
+instrument on a single question---during a forward pass, does the residual migrate
+toward the token it will emit?---and answer it: no. The state does not travel to the
+answer; it rotates to aim at it. We close with what the instrument cannot do, and
+why that ceiling is a property of the method, not of the hardware.
+\end{abstract}
+
+\tableofcontents
+\newpage
+
+%==============================================================
+\section{What This Document Is}
+%==============================================================
+
+The prior papers in this series measured behaviour: which models refuse, which
+break, how safety is arranged in the residual stream. \heinrich{} v3 ended on a
+confession---every measurement error it had made pushed in the same direction,
+making models look safer than they were, because the investigator shared training
+lineage with the investigated. The lesson was not ``we found the right number this
+time.'' The lesson was that a measurement instrument must be able to state its own
+bias, or it will quietly encode the measurer's.
+
+This document is the instrument built from that lesson. It is not about safety, or
+any one model, or any one finding. It is about a ruler: how to hold a language
+model's internal geometry still enough to measure, how to prove the ruler has not
+moved, and how to publish a measurement so that its picture and its number cannot
+drift apart. The finding we use to exercise it---that a model \emph{aims} at its
+next token rather than \emph{travelling} to it---is a worked example, chosen because
+it is the cleanest thing the ruler has shown us, not because the paper is about it.
+
+A note on the figures. This is the first Heinrich paper with any. Every earlier one
+was prose and tables because a hand-made figure is a claim you cannot check: the
+picture is drawn to illustrate a number computed elsewhere, and nothing binds them.
+Here an agent runs the measurement and then drives the live instrument to photograph
+the exact state that measurement produced. The picture and the number are the same
+event. Each figure carries, in monospace beneath its caption, the \mri{} it came
+from and the script that captured it. None of them are drawn.
+
+%==============================================================
+\section{The Problem: A Ruler That Moves}
+%==============================================================
+
+To compare two hidden states---this layer to that layer, this token to the answer
+token---you need a coordinate system they share. The usual move is to fit one from
+the data: PCA the activations you have, read the coordinates off the top components.
+The trouble is that the frame then depends on \emph{which} activations you fed it. Add
+prompts, change the sample, re-run the probe, and the axes rotate; a ``direction''
+that was there at $n{=}8$ is gone at $n{=}15$ (v3 lost its safety layers exactly this
+way). The ruler is a function of the thing being measured, so every distance is
+contaminated by the choice of measuring set. Worse for trajectories: to ask whether a
+live state is \emph{near} a particular token, that token must have coordinates in the
+same frame---but a token you did not sample has no address at all.
+
+What is required is a frame that (i) is fixed independently of any particular query,
+(ii) gives every token an address, and (iii) preserves true distances, so that
+``close in the picture'' means ``close in the model.'' The next section is that frame.
+
+%==============================================================
+\section{The Frozen Frame}
+%==============================================================
+
+Capture the model's residual state once, at every layer, over a broad token sample,
+and decompose each layer with PCA---but retain \emph{all} $D$ components, where $D$ is
+the hidden width, and store the components $C_\ell$, the mean $\mu_\ell$, and the
+silence baseline $b_\ell$. This frame is written to disk and never recomputed. A live
+hidden state $h_\ell$ receives coordinates by the same fixed transform,
+%
+\[
+s \;=\; (h_\ell - b_\ell - \mu_\ell)\,C_\ell^{\!\top},
+\qquad C_\ell C_\ell^{\!\top} = I,
+\qquad \lVert s - s' \rVert_2 \;=\; \lVert h_\ell - h'_\ell \rVert_2 .
+\]
+%
+Because $C_\ell$ is a full-rank orthonormal basis, the projection is a lossless
+rotation: the score-space $L_2$ distance is the hidden-space $L_2$ distance, with no
+truncation approximation anywhere. The frame is not a summary of the state; it is a
+change of basis for it.
+
+The vocabulary is projected through this same frozen frame---every token, not a
+sample---so each token id acquires a fixed per-layer address (\texttt{vocab\_scores}).
+A live trajectory can therefore be compared, exactly, against the entire vocabulary at
+every depth in one pass. The frame is the coordinate contract; the \mri{} file is the
+artifact that carries it between the producer that captured it and any consumer that
+reads it.
+
+Two subtractions are load-bearing and easy to forget. The stored mean $\mu_\ell$
+recentres the frame; the silence baseline $b_\ell$ removes the model's resting state.
+Omitting either leaves a constant offset that, at some layers, dwarfs the signal by
+more than an order of magnitude. Both are applied on every projection.
+
+%==============================================================
+\section{The Instrument Declares Its Limits}
+%==============================================================
+
+A distance is only meaningful above the noise of the machine that produced it.
+\heinrich{} measures that noise directly: it re-captures the sample forward pass in
+\texttt{float16} and compares to the stored scores, giving a per-layer reproducibility
+floor. Distances at or below the floor are the arithmetic of the hardware, not the
+model, and are drawn as such.
+
+The frame's own validity is testable, not assumed. A second projection is derived from
+a held-out, crystal-suppressed vocabulary sample, and its principal angles against the
+frame are measured layer by layer; the variance-weighted overlap is reported as a
+falsification statistic. On SmolLM2-135M (raw) the frame holds at $0.90$--$0.999$ at
+every layer---stated as a licence to trust the ruler, revocable the moment a model
+fails it.
+
+% FIGURE (planned): frame-validity overlap curve + f16 noise-floor band, per layer.
+% Data: web/.data/*/decomp/vocab_meta.json (frame_falsification, sample_agreement).
+% Ready to capture now.
+
+%==============================================================
+\section{The Shared Surface}
+%==============================================================
+
+The frame is not only a metric; it is a place. \heinrich{}'s companion renders the
+frozen frame and any live trajectory as a navigable three-dimensional surface, and it
+obeys one rule that makes its pictures admissible as evidence: \emph{omit, never fake}.
+A segment renders only when both endpoints are genuinely in range; a candidate absent
+from a layer's readout is not interpolated across the gap; every view states its own
+sampling (``2{,}000 of 48{,}660'') and its own frame (``rel to live, $s{=}0.52$''). The
+honesty is in the pixels, so a photograph of the surface carries its caveats into the
+PDF.
+
+This is what lets an agent produce figures that are measurements. The agent drives the
+same instrument that computed the numbers, frames a view, and captures it in the same
+session and the same frame. Figure~\ref{fig:horn} was made exactly this way.
+
+%==============================================================
+\section{Worked Example: Aiming, Not Traveling}
+%==============================================================
+
+We ask the instrument one question. During a forward pass, does the final-token
+residual move toward the location of the token it is about to emit? The frozen frame
+makes this answerable exactly: the answer token has a fixed address at every layer,
+and so does the live state.
+
+The proximity form of the hypothesis is false. Conditioned on the model actually
+producing the answer, the answer token's own frozen state sits at roughly chance rank
+among a background panel \emph{even at the final layer}: the trajectory does not go
+there. The readout form is true. Reading each layer's state through the model's output
+matrix, the answer out-competes the whole panel from a late band onward and at the
+final layer without exception. The state does not approach the answer's location; it
+rotates until it projects onto the answer's output direction. Distance-to-state and
+preference-to-emit are different geometries---and the frozen frame is what let us hold
+them apart. Figure~\ref{fig:horn} is that distinction made visible: a straight spine
+that never bends toward a token, and a fan of readout candidates collapsing to the
+commit.
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.94\textwidth]{figures/horn_smollm2-135m.png}
+\caption{\textbf{The readout fan (``the horn'').} SmolLM2-135M (base), prompt
+\textit{``The capital of France is,''} rendered in the frozen frame. The straight
+teal spine is the live trajectory through depth; it runs down the axis and does not
+bend toward any token's location. The gold fibers are the per-layer top-$k$ readout
+candidates, each drawn at its true offset from the live state; they fan wide at the
+mouth (early layers) and collapse to the commit at the waist (\texttt{L26}
+$\rightarrow$ ``\,the''). A candidate absent from the top-$k$ between two layers is
+not bridged---the fiber breaks rather than fake continuity. Labels resolve through the
+full tokenizer (whitespace shown as a visible glyph, never a raw id).}
+\label{fig:horn}
+\provenance{mri: web/.data/smollm2-135m/raw.mri \quad{} capture: paper/figures/capture\_horn.mjs \quad{} readout: lmhead @ h/\textbar h\textbar}
+\end{figure}
+
+% FIGURE (pending run): cross-model commit band. Extend to smollm2-135m-instruct
+% and smollm2-360m (base-vs-instruct, size point), Qwen after a vocab pass
+% (cross-family). Tests whether the late-band commit is absolute-layer or
+% relative-depth, and whether RLHF moves it. Data: /api/homing-run readout:true.
+
+%==============================================================
+\section{What the Instrument Cannot Do}
+%==============================================================
+
+The ceiling is not a matter of buying a bigger card. Faithful capture requires the
+residual stream at full precision at every layer; the whole methodological claim is
+that score distance is hidden distance \emph{exactly}. Quantising the weights or
+offloading layers to fit a larger model trades that exactness away---the metric stops
+being lossless the moment the numbers it reads are approximate. So the honest working
+band is the range where full-precision internals are affordable (models up to a few
+billion parameters on a single 12\,GB card), and the claims above are verified there
+and stated as unverified above it. This is a scope, not a defeat: the structural
+claims should hold at any scale for the same architectural reason, and the frozen
+frame invites replication wherever the memory exists to hold the state honestly.
+
+A second limit is disk, not compute: the full-vocabulary projection is multiple
+gigabytes per model, so the machine can capture more models than it can keep captured
+at once. And several limits are statistical rather than physical---sample size for the
+scalar statistics, the construction of the background panel, the width of the noise
+floor---and belong in any result the instrument reports.
+
+%==============================================================
+\section{The Contract}
+%==============================================================
+
+% STUB (needs your steer on emphasis): the .mri as the producer/consumer
+% interchange; publish -> R2 -> the Observatory; the lean consumer subset that
+% never ships raw weights; reproducibility by construction (any figure here is
+% regenerable from its stated .mri + capture script).
+
+%==============================================================
+\section{Coda}
+%==============================================================
+
+% STUB: v3 discovered that measurement is biased toward the measurer. This
+% instrument is the reply: a ruler made from the model, frozen so it cannot flex
+% to flatter anyone, that declares where it goes blind, and whose pictures are
+% the measurements themselves. What it found first was that a model aims rather
+% than travels --- but the paper is about the aiming instrument, not the aim.
+
+\end{document}
