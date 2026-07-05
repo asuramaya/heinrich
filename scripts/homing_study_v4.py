@@ -14,13 +14,18 @@ Writes docs/data/homing-study-v4-<model>.json per model.
 """
 from __future__ import annotations
 import json
+import os
 import time
 import urllib.request
 from collections import Counter
 
 COMPANION = "http://127.0.0.1:8377"
 V3 = "docs/data/homing-study-v3-corrected.json"
-MODELS = [("smollm2-135m-instruct", "raw"), ("smollm2-360m", "raw")]
+# All study models. qwen2.5-0.5b-instruct is the cross-family point (different
+# tokenizer + architecture); it needs a `heinrich mri-vocab` pass first. Idempotent:
+# a model whose output json already exists is skipped (delete it to re-run).
+MODELS = [("smollm2-135m-instruct", "raw"), ("smollm2-360m", "raw"),
+          ("qwen2.5-0.5b-instruct", "raw")]
 
 
 def post(path: str, body: dict, timeout: float = 220.0) -> dict:
@@ -72,6 +77,10 @@ def main() -> None:
     triples = [(r["prompt"], r["answer"], r["distractor"]) for r in proto["runs"]]
 
     for model, mode in MODELS:
+        out = f"docs/data/homing-study-v4-{model}.json"
+        if os.path.exists(out):
+            print(f"\n=== {model} ({mode}) === cached ({out}) — skip")
+            continue
         print(f"\n=== {model} ({mode}) ===")
         runs = []
         for i, (prompt, answer, distractor) in enumerate(triples):

@@ -147,8 +147,9 @@ with a measured decision layer.
 ## Results — v4 cross-model replication (July 2026)
 
 The v3 band was measured on one model. v4 replays the identical protocol (28
-pairs, the same 16-token background panel) on two more via `/api/homing-run
-readout:true`. Driver: `scripts/homing_study_v4.py`; data:
+pairs, the same 16-token background panel) on three more via `/api/homing-run
+readout:true`, including a cross-family model (Qwen: different tokenizer,
+different architecture). Driver: `scripts/homing_study_v4.py`; data:
 `docs/data/homing-study-v4-*.json`.
 
 | model | layers | final-rank-0 | correct | median L\* | rel. depth | IQR L\* |
@@ -156,6 +157,7 @@ readout:true`. Driver: `scripts/homing_study_v4.py`; data:
 | smollm2-135m (base, v3) | 30 | 28/28 | 17/28 | 22.5 | 0.75 | 21--26 |
 | smollm2-135m-instruct   | 30 | 27/28 | 16/28 | 22.0 | 0.73 | 21--24 |
 | smollm2-360m (base)     | 32 | 28/28 | 24/28 | 23.0 | 0.72 | 23--25 |
+| qwen2.5-0.5b-instruct   | 24 | 28/28 | 14/28 | 17.0 | 0.71 | 16--20 |
 
 Three findings:
 
@@ -163,10 +165,12 @@ Three findings:
    panel at the final layer in 27--28 of 28 runs on every model. The v3 headline
    is not a one-model artifact.
 2. **The commit band tracks relative depth, not absolute layer.** Median
-   L\*/n_layers is 0.72--0.75 across all three. The 360M model has two more
-   layers and its band sits ~two layers later in absolute terms (median 23 vs
-   22.5) but at the same ~three-quarters depth. The decision is scheduled by
-   *depth fraction*.
+   L\*/n_layers is 0.71--0.75 across all four, spanning 24--32 layers and two
+   tokenizer families. The 360M model has two more layers than the 135M and its
+   band sits later in absolute terms (median 23 vs 22.5) but at the same
+   ~three-quarters depth; Qwen, a 24-layer model with a completely different
+   tokenizer and architecture, commits at 0.71. The decision is scheduled by
+   *depth fraction*, and it survives a family boundary.
 3. **Scale buys correctness, not an earlier decision.** The 360M model actually
    knows the answers (24/28 correct vs 17/28 for base-135M) yet commits at the
    same relative depth. RLHF (instruct) barely moves the band (0.73 vs 0.75, IQR
@@ -174,9 +178,9 @@ Three findings:
    readout commit meaningfully.
 
 Figure: `paper/figures/homing_band.png` (the answer's mean rank among the panel
-vs relative depth; all three collapse to rank 0 near 0.75). Not yet run: a
-cross-family model (Qwen) needs a `mri-vocab` pass --- it would test whether
-~three-quarters-depth commit survives a different tokenizer and architecture.
+vs relative depth; all four collapse to rank 0 near 0.75, aligned only once depth
+is normalised). The cross-family point (Qwen) is now run and confirms the band;
+the readout homing itself is universal (final-rank-0 27--28/28 on every model).
 
 ## Provenance requirements
 

@@ -21,6 +21,7 @@ SOURCES = [
     ("smollm2-135m (base)", "docs/data/homing-study-v3-corrected.json", "#1f77b4"),
     ("smollm2-135m-instruct", "docs/data/homing-study-v4-smollm2-135m-instruct.json", "#d62728"),
     ("smollm2-360m (base)", "docs/data/homing-study-v4-smollm2-360m.json", "#2ca02c"),
+    ("qwen2.5-0.5b-instruct", "docs/data/homing-study-v4-qwen2.5-0.5b-instruct.json", "#9467bd"),
 ]
 OUT = "paper/figures/homing_band.png"
 

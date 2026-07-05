@@ -109,6 +109,15 @@ What is required is a frame that (i) is fixed independently of any particular qu
 (ii) gives every token an address, and (iii) preserves true distances, so that
 ``close in the picture'' means ``close in the model.'' The next section is that frame.
 
+The field's standard readout confronts a cousin of this problem from the other
+side. The logit lens reads a hidden state through the final unembedding and
+returns gibberish at intermediate layers, because each layer ``speaks its own
+language''; the tuned lens (Belrose et al., 2023) repairs this with a
+\emph{learned} affine translator fit per layer. That is a second moving part---a
+trained transform between the state and its reading. The frozen frame takes the
+opposite route: an exact, trainless change of basis (below) that leaves every
+distance untouched, so there is nothing to fit and nothing to fit \emph{to}.
+
 %==============================================================
 \section{The Frozen Frame}
 %==============================================================
@@ -218,17 +227,19 @@ full tokenizer (whitespace shown as a visible glyph, never a raw id).}
 \end{figure}
 
 One horn is an anecdote. Replaying the identical protocol---twenty-eight
-completion prompts, a sixteen-token background panel---on two further models
-turns it into a measurement. The answer out-reads the whole panel at the final
-layer in twenty-seven to twenty-eight of twenty-eight runs on every model, so the
-readout commit is not a one-model artifact. And the commit is scheduled by
-\emph{relative depth}: the answer's rank collapses to zero near three-quarters of
-the way through the network regardless of layer count---the 360M model has two
-more layers and commits two layers later in absolute terms, at the same depth
-fraction---and regardless of training. Scale buys correctness (the 360M model
-answers 24 of 28 versus 17 for the base 135M) but not an earlier decision, and
-instruction tuning barely moves the band. The instrument turned a single picture
-into a depth-invariant regularity (Figure~\ref{fig:band}).
+completion prompts, a sixteen-token background panel---on three further models,
+one of them from a different tokenizer and architecture family, turns it into a
+measurement. The answer out-reads the whole panel at the final layer in
+twenty-seven to twenty-eight of twenty-eight runs on every model, so the readout
+commit is not a one-model artifact. And the commit is scheduled by \emph{relative
+depth}: the answer's rank collapses to zero near three-quarters of the way through
+the network regardless of layer count---the median commit sits at 0.71--0.75 of
+depth across models of 24, 30, and 32 layers---and regardless of family; Qwen, a
+different tokenizer and architecture entirely, commits at the same fraction. Scale
+buys correctness (the 360M model answers 24 of 28 versus 17 for the base 135M) but
+not an earlier decision, and instruction tuning barely moves the band. The
+instrument turned a single picture into a depth-invariant regularity that survives
+a family boundary (Figure~\ref{fig:band}).
 
 \begin{figure}[H]
 \centering
@@ -237,12 +248,26 @@ into a depth-invariant regularity (Figure~\ref{fig:band}).
 answer token's mean rank among the sixteen-token background panel ($0$ = it
 out-reads all of them) against relative depth (layer $/$ n\_layers). All three sit
 near chance (8 of 16) through the first two-thirds of the network, then collapse
-to rank $0$ in a narrow band at about three-quarters depth---base and instruct at
-30 layers, and the larger 360M at 32 layers, aligned only once depth is
+to rank $0$ in a narrow band at about three-quarters depth---across 24, 30, and 32
+layers and two tokenizer families (SmolLM2 and Qwen), aligned only once depth is
 normalised. The decision is scheduled by depth fraction, not absolute layer.}
 \label{fig:band}
 \provenance{data: docs/data/homing-study-v\{3,4\}*.json \quad{} run: scripts/homing\_study\_v4.py \quad{} plot: scripts/figure2\_homing\_band.py}
 \end{figure}
+
+This sits inside known structure, and the instrument's role is to sharpen a
+distinction the standard tools blur. That prediction quality accrues smoothly, at
+a fixed multiplicative rate per layer, regardless of architecture or scale, is an
+established law of next-token prediction (arXiv:2408.13442, 2024). Our observation
+is not that schedule but its complement: a specific answer's \emph{win} over its
+competitors is not smooth at all but a late phase transition near three-quarters
+depth, invisible to the aggregate residual that law measures. That the decision is
+fixed internally well before the output echoes ``decide early, explain later''
+(arXiv:2604.22266, 2026); that the state \emph{selects} rather than approaches its
+token is the same position-versus-readout question a concurrent geometric account
+is now asking (Lombardo et al., 2026), answered here with an exact hidden-space
+distance rather than a lens. The instrument's claim is not a new law; it is that
+these distinctions become measurable, and falsifiable, once the ruler holds still.
 
 %==============================================================
 \section{What the Instrument Cannot Do}
@@ -283,5 +308,17 @@ floor---and belong in any result the instrument reports.
 % to flatter anyone, that declares where it goes blind, and whose pictures are
 % the measurements themselves. What it found first was that a model aims rather
 % than travels --- but the paper is about the aiming instrument, not the aim.
+
+%==============================================================
+\section*{References}
+%==============================================================
+\begin{enumerate}[nosep,leftmargin=1.6em]
+\item nostalgebraist. \textit{Interpreting GPT: the Logit Lens.} 2020.
+\item N. Belrose et al. \textit{Eliciting Latent Predictions from Transformers with the Tuned Lens.} arXiv:2303.08112, 2023. \url{https://arxiv.org/abs/2303.08112}
+\item \textit{A Law of Next-Token Prediction in Large Language Models.} arXiv:2408.13442, 2024. \url{https://arxiv.org/abs/2408.13442}
+\item F. Lombardo, A. Trimigno, S. Cagnoni. \textit{A Geometric Perspective on Next-Token Prediction in Large Language Models: Three Emerging Phases.} arXiv:2605.09011, 2026. \url{https://arxiv.org/abs/2605.09011}
+\item \textit{Large Language Models Decide Early and Explain Later.} arXiv:2604.22266, 2026. \url{https://arxiv.org/abs/2604.22266}
+\item T. Schuster et al. \textit{Confident Adaptive Language Modeling.} arXiv:2207.07061, 2022. \url{https://arxiv.org/abs/2207.07061}
+\end{enumerate}
 
 \end{document}
