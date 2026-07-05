@@ -51,14 +51,38 @@ the "correct" magnitude for a norm-flip — there is no ground-truth CKA for tha
 The claim is faithfulness (no fabrication, correct attribution, zero noise), not
 calibration of magnitude.
 
-## Cliff falsification: passed
+## Cliff falsification: the honest version
 
-`heinrich profile-pca-depth` on `m5-norm-s42.mri` returns `n_layers: 1,
-layers: []`. The depth-seam analysis, pointed at a model with no depth, reports
-no depth structure — it does not hallucinate the ~three-quarters commit it finds
-in transformers. A frame that fabricated structure would have produced a curve;
-this one produces an empty list. The ¾ cliff in the homing study is therefore not
-an artifact of the method: the method declines to find it where it cannot exist.
+**First attempt was invalid — recorded here as the correction.** Running
+`heinrich profile-pca-depth` on the causal bank returns `n_layers: 1, layers: []`,
+and it is tempting to read that as "the instrument declined to find a cliff where
+none exists." It is not. `pca_depth` enumerates transformer layer files
+(`L{NN}_exit.npy`); a causal bank stores `substrate.npy` and has none, so every
+layer is `continue`d and the result is empty **without the substrate ever being
+examined**. It would return `[]` for any wrong-shaped input regardless of
+structure. An empty list from "I could not read this" is not evidence about
+fabrication, and the first draft of this document over-claimed it.
+
+**The real control — passed.** The question is whether the readout-cliff method
+paints a ¾ commit onto tokens that have no reason to commit. Run the homing readout
+on a transformer (`smollm2-135m`, prompt "The capital of France is") with the true
+answer plus nine implausible words as probes, each ranked against the same
+16-word background panel:
+
+| probe | kind | L\* (rel. depth) | final rank |
+|-------|------|-----------------:|-----------:|
+| ` Paris` | true answer | **0.77** | 0 |
+| ` London`, ` Tokyo` | wrong capital (type-fit) | 0.97 (final layer only) | 0 |
+| ` bicycle`, ` velvet`, ` sneeze`, ` asphalt`, ` walnut`, ` thermostat`, ` umbrella` | implausible null | **never commits** | 10–15 |
+
+Of the seven implausible nulls that resolved to single tokens, **0 commit at any
+layer** — they sit near the bottom of the panel (rank 10–15) from first layer to
+last. Only the fitting answer cliffs in the band. Type-appropriate but wrong
+tokens (other capitals) do eventually out-read the random panel, but at the final
+layer, not in the band. The ¾ commit is specific to the answer that fits; the
+method does not impose it on arbitrary tokens. This is the property an empty list
+could never demonstrate, and it is what makes the homing cliff a finding rather
+than an artifact.
 
 ## Reproduce
 
@@ -68,7 +92,12 @@ for m in m5-norm-s42 m5-nonorm-s42 m5-norm-s1042 m5-nonorm-s1042; do
 done
 heinrich cb-compare --a web/.data/m5-norm-s42.mri --b web/.data/m5-nonorm-s42.mri   # flag
 heinrich cb-compare --a web/.data/m5-norm-s42.mri --b web/.data/m5-norm-s1042.mri   # seed
-heinrich profile-pca-depth --mri web/.data/m5-norm-s42.mri                          # cliff test
+# cliff control (companion running): probe the answer + implausible nulls, check
+# only the answer commits in the band. profile-pca-depth does NOT test this.
+curl -s -XPOST localhost:8377/api/homing-run -H 'Content-Type: application/json' \
+  -d '{"mri_model":"smollm2-135m","mode":"raw","readout":true,
+       "prompt":"The capital of France is",
+       "targets":[" Paris"," bicycle"," velvet"," thermostat", ...16 background words]}'
 ```
 
 Specimens are gitignored (they live on the shared disk); this record + the numbers

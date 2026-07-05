@@ -208,12 +208,19 @@ appears that is not traceable to a known cause.}
 \label{tab:validation}
 \end{table}
 
-\emph{Cliff falsification.} The three-quarters-depth commit of
-Section~\ref{sec:worked} cannot occur in these models: a causal bank has no depth
-for a seam to live in. Running the depth-structure analysis on one anyway returns
-one layer and an empty list of per-layer structure---the frame declines to find a
-cliff where none can exist. The commit band is therefore a property of the models,
-not a shape the method paints onto everything it touches.
+\emph{Does the method paint the cliff onto everything?} One tempting check is
+worthless and we flag it as such: running the depth analysis on a depthless causal
+bank returns an empty list, but only because the tool finds no per-layer files and
+stops, having examined no data---it would return empty for any input of the wrong
+shape. The real control runs the readout-cliff of Section~\ref{sec:worked} on a
+transformer, against targets with no reason to commit. For ``The capital of France
+is,'' the true answer commits at $0.77$ depth; of nine implausible words
+(`` bicycle,'' `` velvet,'' `` thermostat,'' \ldots) not one commits at any layer
+---each sits near the bottom of the sixteen-word panel from first layer to last.
+Type-appropriate but wrong tokens (other capital cities) do eventually out-read the
+random panel, but only at the final layer, never in the band. The three-quarters
+commit is specific to the answer that fits; the method does not impose it on
+arbitrary tokens---which is the property an empty list could never have shown.
 
 %==============================================================
 \section{The Shared Surface}
