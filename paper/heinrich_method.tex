@@ -172,6 +172,49 @@ fails it.
 % Data: web/.data/*/decomp/vocab_meta.json (frame_falsification, sample_agreement).
 % Ready to capture now.
 
+\subsection{Falsified against ground truth}
+
+Self-declared trust is cheap unless the instrument can be caught fabricating. On
+real language models there is no answer key. On a model we \emph{built} there is.
+We tested the frame against matched causal-bank specimens---11.4M-parameter
+models, deterministic substrate, pairs differing by exactly one flag
+(normalisation on/off) at two seeds---built as a null case by the training-side
+agent. Two tests, both adversarial by construction.
+
+\emph{Artifact rate.} A re-capture of the same checkpoint is bit-identical (CKA
+$1.000$): the instrument adds no noise of its own. So on a pair that differs by
+exactly one flag, the entire reported gap is attributable to that flag---nothing
+beyond the controlled variable is reported. It also orders causes correctly, which
+a smearing frame would not: the flag effect (CKA $\approx0.59$) exceeds the
+seed-only effect (CKA $\approx0.76$), which exceeds noise ($0$); by displacement
+correlation the separation is starker still (seed $0.98$--$0.996$, flag
+$0.69$--$0.71$).
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{llcc}
+\toprule
+comparison & varies & CKA & disp.\ corr \\
+\midrule
+re-capture of same checkpoint & nothing (noise floor) & \textbf{1.000} & \textbf{1.000} \\
+same config, different seed    & seed only  & 0.73--0.79 & 0.98--0.996 \\
+same seed, opposite flag       & flag only  & 0.58--0.60 & 0.69--0.71 \\
+\bottomrule
+\end{tabular}
+\caption{The instrument against a ground-truth null. Zero noise floor, and the one
+controlled variable (the flag) is the dominant reported difference---no structure
+appears that is not traceable to a known cause.}
+\label{tab:validation}
+\end{table}
+
+\emph{Cliff falsification.} The three-quarters-depth commit of
+Section~\ref{sec:worked} cannot occur in these models: a causal bank has no depth
+for a seam to live in. Running the depth-structure analysis on one anyway returns
+one layer and an empty list of per-layer structure---the frame declines to find a
+cliff where none can exist. The commit band is therefore a property of the models,
+not a shape the method paints onto everything it touches.
+
 %==============================================================
 \section{The Shared Surface}
 %==============================================================
@@ -191,6 +234,7 @@ session and the same frame. Figure~\ref{fig:horn} was made exactly this way.
 
 %==============================================================
 \section{Worked Example: Aiming, Not Traveling}
+\label{sec:worked}
 %==============================================================
 
 We ask the instrument one question. During a forward pass, does the final-token
