@@ -3320,19 +3320,26 @@ function _riverMakeSprite(text,color){
 function _riverDisposeSprites(){for(const s of _riverSprites){if(s.sprite.parent)s.sprite.parent.remove(s.sprite);if(s.tex)s.tex.dispose();if(s.sprite.material)s.sprite.material.dispose();}_riverSprites=[];}
 // ONE label per clean strand, static, placed at the strand's peak-p layer and nudged
 // slightly outward from the spine. No other permanent labels — the rest is hover-only.
+const _RIVER_LABEL_BUDGET=5;// sacred cap: commit banner + this many strands; rest hover-only
 function _riverBuildSprites(){
   _riverDisposeSprites();
   if(!_riverStrands.length||!rightViews[0])return;const rv=rightViews[0];
-  for(const st of _riverStrands){
-    if(st.steered)continue;// steered braid stays hover-only → clean label budget = strands + commit
+  // The commit token is already named by its own banner (_riverBuildBanks); here we
+  // name only the strongest non-committed strands, ranked by peak probability. Peaks
+  // cluster near the waist, so stagger the outward nudge by rank to stop them stacking.
+  const cand=_riverStrands.filter(st=>!st.steered&&!st.committed)
+    .sort((a,b)=>b.maxP-a.maxP).slice(0,_RIVER_LABEL_BUDGET);
+  let rank=0;
+  for(const st of cand){
     const at=st.positions.find(p=>p.l===st.maxL)||st.positions[st.positions.length-1];
-    if(!at)continue;
-    const rad=Math.hypot(at.x,at.y);const ux=rad>1e-4?at.x/rad:1,uy=rad>1e-4?at.y/rad:0;const off=0.09;
-    const {sprite,tex}=_riverMakeSprite(st.text,st.committed?'#fff2c0':'#e8d9a8');
+    if(!at){rank++;continue;}
+    const rad=Math.hypot(at.x,at.y);const ux=rad>1e-4?at.x/rad:1,uy=rad>1e-4?at.y/rad:0;
+    const off=0.09+0.05*rank;
+    const {sprite,tex}=_riverMakeSprite(st.text,'#e8d9a8');
     sprite.position.set(at.x+ux*off,at.y+uy*off,at.z);sprite.renderOrder=21;
-    if(st.committed)sprite.scale.multiplyScalar(1.12);
     sprite.visible=true;rv.sc.add(sprite);
     _riverSprites.push({row:st.row,text:st.text,sprite,tex});
+    rank++;
   }
   _markDirty();
 }
@@ -3369,23 +3376,36 @@ function _riverStrandGeo(gather,s,base,cbase,committedText,steered){
     const committed=(committedText!=null&&rec.text===committedText);
     const positions=pts.map(pt=>({l:pt.l,x:s*pt.dx,y:s*pt.dy,z:pt.z,p:pt.p}));
     let maxP=0,maxL=pts[0].l;for(const pt of pts)if(pt.p>maxP){maxP=pt.p;maxL=pt.l;}
-    if(positions.length>=3){
+    // Split into runs of layer-adjacent positions. A candidate that drops out of
+    // top-k between two layers was NOT being selected there — bridging that gap with
+    // a straight segment fakes continuity (the same omit-never-fake discipline we
+    // apply to clamped anchors). Draw fiber only within contiguous runs; isolated
+    // layers render as dim spine stubs, never bridged.
+    const drawStub=(P)=>{const a=Math.max(0.04,P.p)*0.38;
+      pos.push(0,0,P.z, P.x,P.y,P.z);
+      col.push(base[0]*a*0.12,base[1]*a*0.12,base[2]*a*0.12, base[0]*a,base[1]*a,base[2]*a);};
+    const runs=[];let cur=[positions[0]];
+    for(let i=1;i<positions.length;i++){
+      if(positions[i].l-positions[i-1].l<=1)cur.push(positions[i]);
+      else{runs.push(cur);cur=[positions[i]];}
+    }
+    runs.push(cur);
+    const hasFiber=runs.some(r=>r.length>=2);
+    if(positions.length>=3&&hasFiber){
       const B=committed?cbase:base;
-      for(let i=0;i<positions.length-1;i++){
-        const A=positions[i],C=positions[i+1];
-        const aA=Math.min(1.3,Math.max(0.04,A.p)*(committed?1.4:1.0)),aC=Math.min(1.3,Math.max(0.04,C.p)*(committed?1.4:1.0));
-        pos.push(A.x,A.y,A.z, C.x,C.y,C.z);
-        col.push(B[0]*aA,B[1]*aA,B[2]*aA, B[0]*aC,B[1]*aC,B[2]*aC);
+      for(const run of runs){
+        if(run.length<2){drawStub(run[0]);continue;}
+        for(let i=0;i<run.length-1;i++){
+          const A=run[i],C=run[i+1];
+          const aA=Math.min(1.3,Math.max(0.04,A.p)*(committed?1.4:1.0)),aC=Math.min(1.3,Math.max(0.04,C.p)*(committed?1.4:1.0));
+          pos.push(A.x,A.y,A.z, C.x,C.y,C.z);
+          col.push(B[0]*aA,B[1]*aA,B[2]*aA, B[0]*aC,B[1]*aC,B[2]*aC);
+        }
       }
       for(const P of positions)pick.push({row:rec.row,text:rec.text,pos:[P.x,P.y,P.z]});
       strands.push({row:rec.row,text:rec.text,layers:pts.map(pt=>pt.l),maxP,maxL,committed,steered,positions});
     }else{
-      for(const P of positions){// stub: dim spoke from the spine to the candidate at its layer
-        const a=Math.max(0.04,P.p)*0.38;
-        pos.push(0,0,P.z, P.x,P.y,P.z);
-        col.push(base[0]*a*0.12,base[1]*a*0.12,base[2]*a*0.12, base[0]*a,base[1]*a,base[2]*a);
-        pick.push({row:rec.row,text:rec.text,pos:[P.x,P.y,P.z]});
-      }
+      for(const P of positions){drawStub(P);pick.push({row:rec.row,text:rec.text,pos:[P.x,P.y,P.z]});}
     }
   }
   return {pos,col,strands,pick};
@@ -6659,14 +6679,20 @@ async function _chatPollLoop(){
 // just show predictions, entropy, and a score-vector summary in the panel.
 // MRI metadata doesn't preserve the HF model id; user supplies it once,
 // we remember across sessions and auto-suggest from MRI directory name.
+// Keyed on the actual MRI directory name. A no-suffix SmolLM2 dir is the BASE
+// model (verified by self-consistency: prediction == frozen-lmhead lens top-1) —
+// suggesting the -Instruct id there loads instruct weights through a base frame
+// and fabricates a divergence. The server now also resolves from metadata's
+// huggingface_id, so this is only a pre-fill hint; leaving the box empty is safe.
 const _LIVE_HF_MAP = {
+  'smollm2-135m':          'HuggingFaceTB/SmolLM2-135M',
+  'smollm2-360m':          'HuggingFaceTB/SmolLM2-360M',
+  'smollm2-135m-instruct': 'HuggingFaceTB/SmolLM2-135M-Instruct',
+  'qwen2.5-0.5b-instruct': 'Qwen/Qwen2.5-0.5B-Instruct',
+  'tiny-llama':            'hf-internal-testing/tiny-random-LlamaForCausalLM',
+  // legacy generic keys (kept as fallback hints)
   'qwen-0.5b':       'Qwen/Qwen2-0.5B-Instruct',
   'qwen-0.5b-base':  'Qwen/Qwen2-0.5B',
-  'smollm2-135m':    'HuggingFaceTB/SmolLM2-135M-Instruct',
-  'smollm2-360m':    'HuggingFaceTB/SmolLM2-360M-Instruct',
-  'qwen-1.5b':       'Qwen/Qwen2-1.5B-Instruct',
-  'qwen-3b':         'Qwen/Qwen2-3B-Instruct',
-  'qwen-7b':         'Qwen/Qwen2-7B-Instruct',
   'phi-3.5':         'microsoft/Phi-3.5-mini-instruct',
   'mistral-7b':      'mistralai/Mistral-7B-Instruct-v0.3',
 };
@@ -6677,7 +6703,7 @@ function _liveSuggestModelId(){
   if(input.value.trim())return;
   // 1) per-MRI memory from localStorage
   try{
-    const saved=JSON.parse(localStorage.getItem('heinrich.liveModelId')||'{}');
+    const saved=JSON.parse(localStorage.getItem('heinrich.liveModelId.v2')||'{}');
     const k=`${model}/${mode}`;
     if(saved[k]){input.value=saved[k];return;}
   }catch(e){}
@@ -6688,9 +6714,9 @@ function _liveSaveModelId(){
   const input=document.getElementById('liveModelId');if(!input)return;
   const val=input.value.trim();if(!val)return;
   try{
-    const saved=JSON.parse(localStorage.getItem('heinrich.liveModelId')||'{}');
+    const saved=JSON.parse(localStorage.getItem('heinrich.liveModelId.v2')||'{}');
     saved[`${model}/${mode}`]=val;
-    localStorage.setItem('heinrich.liveModelId',JSON.stringify(saved));
+    localStorage.setItem('heinrich.liveModelId.v2',JSON.stringify(saved));
   }catch(e){}
 }
 function _liveCurrentModelId(){
@@ -7315,7 +7341,7 @@ _applyMobile();
 // lane keeps the rest of the canvas cleared to dark. Transient: persisted nowhere.
 function _resetTrajLOD(){for(let i=NC;i<views.length;i++){const v=views[i];if(v.trajGroup)v.trajGroup.visible=true;if(v.trajGroupCoarse)v.trajGroupCoarse.visible=false;}_trajMoving=false;}
 function _updateMaxBtns(){document.querySelectorAll('#main .cbtn[data-v] .maxbtn').forEach(b=>{const bar=b.closest('.cbtn');const on=!!(bar&&_maxKey===String(bar.dataset.v));b.classList.toggle('on',on);b.textContent=on?'✕':'⛶';b.title=on?'Restore (Esc)':'Maximize';});}
-function _forceUnmax(){if(_maxRestoreTimer){clearTimeout(_maxRestoreTimer);_maxRestoreTimer=0;}if(_maxEl){_maxEl.classList.remove('vp-max');_maxEl.style.left=_maxEl.style.top=_maxEl.style.width=_maxEl.style.height=_maxEl.style.transition='';}const mn=document.getElementById('main');if(mn)mn.classList.remove('maxmode');_maxEl=null;_maxKey=null;_maxRestoring=false;_resetTrajLOD();_updateMaxBtns();_markDirty();}
+function _forceUnmax(){if(_maxRestoreTimer){clearTimeout(_maxRestoreTimer);_maxRestoreTimer=0;}if(_maxEl){_maxEl.classList.remove('vp-max');_maxEl.style.left=_maxEl.style.top=_maxEl.style.width=_maxEl.style.height=_maxEl.style.transition='';}const mn=document.getElementById('main');if(mn)mn.classList.remove('maxmode');{const tp=document.getElementById('tokpanel');if(tp&&tp.dataset.rvPrevDisp!=null){tp.style.display=tp.dataset.rvPrevDisp;delete tp.dataset.rvPrevDisp;}}_maxEl=null;_maxKey=null;_maxRestoring=false;_resetTrajLOD();_updateMaxBtns();_markDirty();}
 function _setMaximized(vk){
   if(vk==null){// animated restore
     if(!_maxEl){_maxKey=null;return;}
@@ -7336,6 +7362,9 @@ function _setMaximized(vk){
   el.style.transition='';
   el.style.left='8px';el.style.top='8px';el.style.width=(innerWidth-16)+'px';el.style.height=(innerHeight-16)+'px';
   {const mn=document.getElementById('main');if(mn)mn.classList.add('maxmode');}
+  // Full-screen focus = hide the floating Live panel that otherwise occludes the
+  // maximized lane (e.g. the Readout River's business end). Esc/restore brings it back.
+  {const tp=document.getElementById('tokpanel');if(tp){if(tp.dataset.rvPrevDisp==null)tp.dataset.rvPrevDisp=tp.style.display||'';tp.style.display='none';}}
   _maxKey=String(vk);_maxEl=el;_maxRestoring=false;_maxAnimUntil=performance.now()+230;
   _updateMaxBtns();_markDirty();
 }

@@ -2722,6 +2722,50 @@ def _river_vocab_maps(mri_path: str) -> tuple:
     return id2row, texts
 
 
+_river_id2text_cache: dict[str, dict] = {}
+
+
+def _river_id2text(mri_path: str) -> dict:
+    """Full id->text map for readout candidates. The vocab projection covers
+    ~48.7K of 49.2K ids; the readout lens ranges over the FULL logit vector, so
+    it surfaces the ~492 excluded ids (specials, raw whitespace bytes Ġ/Ċ/\\xa0).
+    Fill those gaps from the tokenizer so a space strand reads as '␣', not '#216'."""
+    key = str(mri_path)
+    if key in _river_id2text_cache:
+        return _river_id2text_cache[key]
+    id2row, texts = _river_vocab_maps(mri_path)
+    m: dict[int, str] = {tid: texts[row] for tid, row in id2row.items()
+                         if 0 <= row < len(texts)}
+    try:
+        model_id = _resolve_live_model_id(mri_path)
+        if model_id and "/" in model_id:
+            from transformers import AutoTokenizer
+            tk = AutoTokenizer.from_pretrained(model_id)
+            vocab_n = int(getattr(tk, "vocab_size", 0) or len(tk))
+            missing = [t for t in range(vocab_n) if t not in m]
+            for tid in missing:
+                m[tid] = tk.decode([tid])
+    except Exception:
+        pass  # tokenizer unavailable → keep projected rows, #id for the rest
+    if len(_river_id2text_cache) > 2:
+        _river_id2text_cache.clear()
+    _river_id2text_cache[key] = m
+    return m
+
+
+def _river_display_text(s: str | None, tid: int) -> str:
+    """Legible label for a readout candidate: visualize pure-whitespace tokens
+    (a space strand is invisible otherwise) and never emit a bare '#id'."""
+    if s is None:
+        return f"#{tid}"
+    if s == "":
+        return "∅"
+    if s.strip() == "":
+        return (s.replace(" ", "␣").replace("\n", "⏎")
+                 .replace("\t", "⇥").replace("\xa0", "␣").replace("\r", "⏎"))
+    return s
+
+
 def _river_lmhead(mri_path: str) -> np.ndarray | None:
     key = str(mri_path)
     if key not in _river_lmh_cache:
@@ -2748,6 +2792,7 @@ def _river_from_scores(mri_path: str, live: dict, n_layers: int, k: int = 8) -> 
         return {"error": "lmhead.npy missing from this MRI"}
     frame = _load_frozen_frame(mri_path, n_layers)
     id2row, texts = _river_vocab_maps(mri_path)
+    id2text = _river_id2text(mri_path)
 
     out = []
     for L in sorted(live.keys()):
@@ -2779,7 +2824,7 @@ def _river_from_scores(mri_path: str, live: dict, n_layers: int, k: int = 8) -> 
             row = id2row.get(tid, -1)
             entry.append({
                 "id": tid, "row": row,
-                "text": texts[row] if 0 <= row < len(texts) else f"#{tid}",
+                "text": _river_display_text(id2text.get(tid), tid),
                 "p": round(float(np.exp(float(logits[tid]) - mx) / Z), 5),
                 "logit": round(float(logits[tid]), 2),
             })
@@ -2918,7 +2963,11 @@ def _resolve_live_model_id(mri_path: str, model_id: str = "") -> str:
         meta = json.loads(meta_path.read_text())
     except Exception:
         return ""
-    return str(meta.get("model", {}).get("name", "") or "").strip()
+    model = meta.get("model", {})
+    # Prefer an explicit HF id backfilled into metadata; the "name" field is an
+    # architecture family ("llama"), not a loadable hub id. Falling back to it
+    # silently loads the WRONG weights (e.g. instruct against a base frame).
+    return str(model.get("huggingface_id") or model.get("name", "") or "").strip()
 
 
 def _backend_supports_generate(backend: Any) -> bool:
