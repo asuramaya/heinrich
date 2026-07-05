@@ -217,10 +217,32 @@ full tokenizer (whitespace shown as a visible glyph, never a raw id).}
 \provenance{mri: web/.data/smollm2-135m/raw.mri \quad{} capture: paper/figures/capture\_horn.mjs \quad{} readout: lmhead @ h/\textbar h\textbar}
 \end{figure}
 
-% FIGURE (pending run): cross-model commit band. Extend to smollm2-135m-instruct
-% and smollm2-360m (base-vs-instruct, size point), Qwen after a vocab pass
-% (cross-family). Tests whether the late-band commit is absolute-layer or
-% relative-depth, and whether RLHF moves it. Data: /api/homing-run readout:true.
+One horn is an anecdote. Replaying the identical protocol---twenty-eight
+completion prompts, a sixteen-token background panel---on two further models
+turns it into a measurement. The answer out-reads the whole panel at the final
+layer in twenty-seven to twenty-eight of twenty-eight runs on every model, so the
+readout commit is not a one-model artifact. And the commit is scheduled by
+\emph{relative depth}: the answer's rank collapses to zero near three-quarters of
+the way through the network regardless of layer count---the 360M model has two
+more layers and commits two layers later in absolute terms, at the same depth
+fraction---and regardless of training. Scale buys correctness (the 360M model
+answers 24 of 28 versus 17 for the base 135M) but not an earlier decision, and
+instruction tuning barely moves the band. The instrument turned a single picture
+into a depth-invariant regularity (Figure~\ref{fig:band}).
+
+\begin{figure}[H]
+\centering
+\includegraphics[width=0.92\textwidth]{figures/homing_band.png}
+\caption{\textbf{The readout commit tracks relative depth.} For each model, the
+answer token's mean rank among the sixteen-token background panel ($0$ = it
+out-reads all of them) against relative depth (layer $/$ n\_layers). All three sit
+near chance (8 of 16) through the first two-thirds of the network, then collapse
+to rank $0$ in a narrow band at about three-quarters depth---base and instruct at
+30 layers, and the larger 360M at 32 layers, aligned only once depth is
+normalised. The decision is scheduled by depth fraction, not absolute layer.}
+\label{fig:band}
+\provenance{data: docs/data/homing-study-v\{3,4\}*.json \quad{} run: scripts/homing\_study\_v4.py \quad{} plot: scripts/figure2\_homing\_band.py}
+\end{figure}
 
 %==============================================================
 \section{What the Instrument Cannot Do}
