@@ -79,12 +79,16 @@ def run(prompt, answer):
     # neuron contributions to the answer at the commit layer
     u_ans = WU[ans_id] * NORM_W
     u_null = WU[one_id(NULL)] * NORM_W
+    u_bg = (WU[torch.tensor(bg_ids)] * NORM_W).mean(0)       # generic background direction
+    u_spec = u_ans - u_bg                                    # answer-specific (generic removed)
     Wd = LAYERS[lstar].mlp.down_proj.weight.detach()          # [hidden, inter]
     z = zcap[lstar]                                           # [inter]
     contrib = (z * (u_ans @ Wd)).cpu().numpy()               # per-neuron -> answer
     contrib_null = (z * (u_null @ Wd)).cpu().numpy()         # per-neuron -> null (same z)
+    contrib_spec = (z * (u_spec @ Wd)).cpu().numpy()         # per-neuron -> answer MINUS generic
     return dict(prompt=prompt, answer=answer, lstar=int(lstar),
-                contrib=contrib.tolist(), contrib_null=contrib_null.tolist())
+                contrib=contrib.tolist(), contrib_null=contrib_null.tolist(),
+                contrib_spec=contrib_spec.tolist())
 
 
 rows = [run(*p) for p in PROMPTS]
@@ -131,6 +135,22 @@ print(f"\n=> effective ~{pr_mean:.0f} of {INTER} neurons carry the write "
       f"({'LOCALIZED' if pr_mean < INTER*0.1 else 'DISTRIBUTED'}); "
       f"{len(shared)}/10 shared across all answers "
       f"({'generic slot' if len(shared)>=3 else 'largely per-answer'})")
+
+# --- THE DEBT: does an answer-SPECIFIC core survive subtracting the generic direction? ---
+print("\n=== answer-specific core (answer_dir - mean_background_dir) ===")
+pr_raw = np.mean([concentration(r["contrib"])[0] for r in comm])
+pr_spec = np.mean([concentration(r["contrib_spec"])[0] for r in comm])
+n80_spec = np.mean([concentration(r["contrib_spec"])[1] for r in comm])
+print(f"  effective # neurons:  raw {pr_raw:.0f}  ->  specific {pr_spec:.0f}   (#to80% specific {n80_spec:.0f})")
+sa, sn, ov = [], [], []
+for r in comm:
+    tsp = np.argsort(r["contrib_spec"])[::-1][:10]
+    traw = np.argsort(r["contrib"])[::-1][:10]
+    sa.append(float(np.array(r["contrib_spec"])[tsp].sum()))
+    sn.append(float(np.array(r["contrib_null"])[tsp].sum()))
+    ov.append(len(set(int(x) for x in tsp) & set(int(x) for x in traw)))
+print(f"  specific top-10:  to answer-specific dir {np.mean(sa):+.1f}   to NULL {np.mean(sn):+.1f}   (null ~0 => clean)")
+print(f"  specific/raw top-10 overlap: {np.mean(ov):.1f}/10   (low => the core is DIFFERENT neurons than the magnitude-driven top)")
 
 json.dump({"model": MODEL, "null": NULL, "intermediate": INTER,
            "rows": [{k: v for k, v in r.items() if k != 'contrib_null'} for r in rows]},

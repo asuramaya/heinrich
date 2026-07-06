@@ -53,3 +53,14 @@ neuron sets are stable across paraphrases.
 
 Run on smollm2-135m (capitals). Data: `docs/data/experiment-neurons-smollm2-135m.json`.
 The partial-specificity soft spot is documented, not fixed; not yet cross-model.
+
+## The debt, paid: no clean answer-specific core
+
+Re-attributed to `answer_dir − mean_background_dir` (strips the generic magnitude). No
+hidden lookup emerges: not more localized (effective neurons 69 → **79**, ~178 to reach
+80%); the specific top-10 **overlap the raw top-10 by 6.9/10** (one neuron set carries
+both the generic and the specific write — not a masked distinct core); but real
+specificity — the top neurons' null pull dropped +30.6 → **+14.7** (ratio 2.2× → 3.7×).
+Verdict: the ¾-commit MLP recall is **genuinely diffuse** — dozens-to-~150 overlapping,
+partly-generic, per-answer neurons, no clean core even under magnitude control. Closes
+the mechanism chain (homing → between → attribution → neurons → core). Osiris `4418fba0`.
