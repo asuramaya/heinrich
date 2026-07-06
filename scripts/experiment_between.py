@@ -17,6 +17,7 @@ import json
 import numpy as np
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
+from heinrich.profile.readout import lens_logits   # the one blessed, self-checking lens
 
 MODEL = "HuggingFaceTB/SmolLM2-135M"
 BG = [" table", " music", " river", " doctor", " happy", " window", " garden",
@@ -78,14 +79,9 @@ def run(prompt, answer, licenser):
 
     rank, lic, other, recency, sink, disp = [], [], [], [], [], []
     top1_final = None
+    lens = lens_logits(out, model)        # correct norm handling + built-in self-check
     for l in range(n):
-        # logit lens. Intermediate hidden_states are PRE final-norm -> apply norm once.
-        # hidden_states[-1] is already POST-norm, so the final layer uses the true
-        # logits directly (applying norm again double-norms -> garbage; the trap).
-        if l < n - 1:
-            logits = lm_head(norm(hs[l + 1][0, -1, :])).detach()
-        else:
-            logits = out.logits[0, -1, :].detach()
+        logits = lens[l]
         a = float(logits[ans_id])
         rank.append(int(sum(1 for b in bg_ids if float(logits[b]) > a)))
         if l == n - 1:
