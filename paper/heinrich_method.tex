@@ -320,6 +320,49 @@ is now asking (Lombardo et al., 2026), answered here with an exact hidden-space
 distance rather than a lens. The instrument's claim is not a new law; it is that
 these distinctions become measurable, and falsifiable, once the ruler holds still.
 
+\subsection{Where the commit comes from --- and the discipline of getting there}
+
+Homing says the commit is a readout rotation, not a move; where does the rotation come
+from? Eight further experiments traced it, and the answer matters less than how the
+tracing went. The rotation is written by the MLP, not by attention to content. Through
+the first three-quarters of the network the last token parks most of its attention on a
+dead position-0 sink --- a low-value slot that writes \emph{less} than the content it
+ignores --- and at the commit layer that sink's attention concentrates to $0.9$ and
+becomes the dominant channel that primes an MLP write. The write is diffuse: dozens to
+$\sim$150 neurons, no clean answer-specific core even after the generic direction is
+subtracted, and it does not survive rewording --- paraphrase the prompt and different
+neurons carry it, only a generic capital-slot substrate stable across forms. It
+generalises (three models commit at $0.74$--$0.84$ depth, all MLP-led), and the larger
+model writes more cleanly. So a small model does not \emph{retrieve} the fact; it
+\emph{reconstructs} the answer, per surface-form, from a smeared substrate, on a fixed
+depth clock, through a register otherwise switched off.
+
+But for a paper about an instrument the point of the chain is Table~\ref{tab:discipline}.
+At every step the first, clean-looking result was an artifact and a control dissolved it;
+the honest finding always lay one control deeper. The instrument's worth was not the
+mechanism it found. It was the six answers it refused.
+
+\begin{table}[H]
+\centering \small
+\begin{tabular}{lll}
+\toprule
+the seductive result & the control that killed it & what survived \\
+\midrule
+an $L^*$ and a clean rank curve & final-layer lens $\neq$ the model's word & a double-norm; use true logits \\
+$2.35\times$ attention to the licenser & the licenser \emph{is} the previous token & recency, not meaning \\
+$0.79$ / $53\times$ at the commit & the licenser \emph{is} the position-0 sink & the sink, not meaning \\
+the MLP writes $+77$ to the answer & it writes $+119$ to the null & scale, not specificity \\
+a concentrated top-neuron set & subtract the generic direction & no clean core; diffuse \\
+activity collapses to few neurons & the same neuron for both tokens & a shared crystal, not the token's \\
+\bottomrule
+\end{tabular}
+\caption{The instrument catching itself. Six times in one investigation the clean answer
+was an artifact a control dissolved; the honest finding always lay one control deeper.
+This is the discipline the frozen frame and the declared floors exist to enforce, made
+visible.}
+\label{tab:discipline}
+\end{table}
+
 %==============================================================
 \section{What the Instrument Cannot Do}
 %==============================================================
