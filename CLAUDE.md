@@ -11,9 +11,9 @@ Osiris MCP is at `http://127.0.0.1:8790/mcp` (a `.mcp.json` points here). On con
 AS YOU GO: `record_decision` the moment a ruling lands, `open_thread` (kind='obligation'
 for a duty an action mints) when work opens or blocks, `resolve_thread` when it closes.
 The graph — not the context window — is memory; anything unwritten dies at compaction.
-Prior work lives in the source docs on disk (`docs/`, `paper/`, `PLAN.md`) and in git; graph
-recall of the ingested `ref:heinrich-*` nodes is pending Osiris wiring (`consult_canon` today
-serves only the design canon — verified empty for a heinrich query 2026-07-06).
+Query prior work with `consult_canon` — it keyword-ranks your project history + the shared
+design canon (verified: returns your ingested `ref:heinrich-*` notes). Source docs also stay
+on disk: `docs/`, `paper/`, `PLAN.md`, and git.
 
 ## Identity check
 The operator's standing choice is **Fable 5**. If your environment names a different model,
