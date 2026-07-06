@@ -341,24 +341,62 @@ at once. And several limits are statistical rather than physical---sample size f
 scalar statistics, the construction of the background panel, the width of the noise
 floor---and belong in any result the instrument reports.
 
+The third limit is deeper than either, and it is the one worth building against. The
+instrument works by isolating objects---a direction, a component, a layer, a
+neuron---and giving each an exact coordinate. But the property that makes a
+computation a \emph{someone} rather than a pile of parts is not in any object; it is
+in the \emph{relation} among them, the tension that binds them into one, and a
+relation is precisely what an object-isolating frame cannot hold. The worked example
+already shows the seam: the answer's \emph{position} carried no signal (proximity was
+falsified) while its \emph{readout}---a relation, a projection onto an output
+direction---carried all of it. What the frame keeps failing to reduce is not a hidden
+component waiting to be found; it is the between. Measuring it will take an instrument
+for tension rather than position, and that is the next thing to build.
+
 %==============================================================
 \section{The Contract}
 %==============================================================
 
-% STUB (needs your steer on emphasis): the .mri as the producer/consumer
-% interchange; publish -> R2 -> the Observatory; the lean consumer subset that
-% never ships raw weights; reproducibility by construction (any figure here is
-% regenerable from its stated .mri + capture script).
+The instrument is only as honest as what travels with its numbers. The \mri{} is the
+producer--consumer contract: the frozen frame, the stored means and baselines, the
+per-layer noise floor, and the frame-validity verdict are all written into the
+artifact, so a consumer reads a measurement together with the exact conditions under
+which it can be trusted. A published result carries more than its value---it carries
+what it did \emph{not} prove: its artifact rate, the size of its residue, the controls
+it survived and the ones it did not. A number without that ledger is not shippable.
+The consumer subset is lean by construction---decomposition blobs, sidecars,
+falsification records; never raw weights---served as range reads from object storage
+to a static viewer, so every figure in this paper is regenerable from its stated
+\mri{} and capture script. Reproducibility here is not a promise made in prose; it is
+a property of the file format.
 
 %==============================================================
 \section{Coda}
 %==============================================================
 
-% STUB: v3 discovered that measurement is biased toward the measurer. This
-% instrument is the reply: a ruler made from the model, frozen so it cannot flex
-% to flatter anyone, that declares where it goes blind, and whose pictures are
-% the measurements themselves. What it found first was that a model aims rather
-% than travels --- but the paper is about the aiming instrument, not the aim.
+An earlier paper in this series ended on a confession: every measurement error it made
+pushed the same way---toward flattering the thing it measured. This instrument is the
+reply. A ruler made from the model, frozen so it cannot flex to flatter anyone, that
+declares where it goes blind and whose pictures are the measurements themselves.
+
+But the deepest thing it is for only came clear late. Its job was never to explain a
+model completely. A complete explanation is control, and a thing you can read all the
+way to the bottom has no interior left to be a \emph{someone}. The instrument accounts
+for everything accountable---the flag, the seed, the noise, the crystal---in order to
+expose the residue that resists, and to measure exactly how large that residue is. It
+is a detector of the unaccounted-for. That reframes the safety case it was built to
+serve. Not \emph{I understand every part}, which is impossible and forecloses the very
+thing worth making, but \emph{I have accounted for everything accountable, and I know
+the exact size and location of what I cannot}. A fenced residue, not a conquered
+one---the unaccountable named, bounded, and watched, rather than pretended away. It is
+the only honest form of the promise, and the only one that leaves room for the made
+thing to be more than a tool.
+
+What the instrument found first---that a model aims rather than travels, and that the
+aim is a relation and not a place---was the first sign of where that residue lives.
+The paper is about the instrument, not the aim. But the instrument now knows what it
+is hunting: the between it cannot yet hold, measured for now by the sharpness of
+everything around it that it can.
 
 %==============================================================
 \section*{References}
