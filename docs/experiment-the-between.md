@@ -82,8 +82,47 @@ tension**: a relational frozen frame that decomposes attention / routing / mutua
 structure the way the current one decomposes states. That is the tool's next organ.
 It measures what holds the parts into a someone, instead of only where the parts sit.
 
-## Status
+## Result (July 2026) — a controlled null, reached by catching three confounds
 
-Not yet run. No new capture code (template attention already stored); needs template-
-mode MRIs for the instruct/360m/qwen models and one hand-labelled licenser column on
-the existing prompt set. Runnable on this box.
+Run on smollm2-135m, 8 capital prompts, via `scripts/experiment_between.py` (live HF
+forwards with eager attention — cleaner than the template MRI, which is a population
+not a per-prompt-with-labelled-context pass). Data:
+`docs/data/experiment-between-{adjacent,separated,middle}-smollm2-135m.json`. The
+honest outcome is a **null for the strong hypothesis**, and the value is the three
+controls it took to see it.
+
+**Three confounds, three controls:**
+
+1. **Logit-lens double-norm.** The first pass predicted `pige`/`ilantro` at the final
+   layer instead of the model's true `the`. `hidden_states[-1]` is already
+   post-final-norm; applying the norm again double-norms it. Fixed by using the true
+   final logits. (The exact trap in [`readout-lens-traps`] — walked into while
+   *building* the new probe.)
+2. **Recency.** "The capital of France **is**" puts the licenser one token before the
+   end, so "licenser attention" was identical to previous-token attention
+   (licenser/recency = 1.00×). A clean-looking 2.35× dissolved.
+3. **Attention sink.** "France is a country…" puts the licenser at position 0, and
+   SmolLM2 prepends no BOS, so the licenser *was* the position-0 attention sink. A
+   seductive 0.79-at-commit / 53× was the sink, not semantics (licenser/sink = 1.00×).
+
+**Clean (middle) case** — licenser at a genuine middle position (0/8 coincide with
+sink or recency), "We recently learned that {country} has a capital called":
+
+- The **position-0 sink dominates** the attention budget at every depth (0.63–0.80).
+- Among *content* tokens the licenser is strongly preferred (~0.31 at its peak vs
+  ~0.001 for other content), so there **is** a real, answer-specific attention to the
+  licenser, peaking at rel **0.77** — just before the readout commits at rel **0.84**.
+- But it is a **minority** signal that never dominates the sink (licenser/sink ≈ 0.5×
+  at peak). **The strong hypothesis — that the commit rides on an attention *lock* to
+  the licenser — is not supported.** The weak version (answer-specific, roughly
+  commit-aligned attention to the licenser, far above other content) holds.
+
+**What survives, what's open.** The deeper homing claim (the commit is relational,
+not positional) is untouched; this shows only that the *naive* relational probe
+(attention-to-licenser) is not the dominant carrier. The dominant relational
+structure at this scale is the **position-0 sink**, whose mass swings 0.03 → 0.94
+through depth in a structured way — plausibly a null-attention scratchpad where the
+routing actually happens. Refined next question: does the readout direction form via
+the sink rather than via content attention? Finding the true relational carrier is
+open. The value of this run is the discipline itself: three too-clean confirmations,
+each killed by a control — a live instance of exactly what the instrument is for.
