@@ -137,7 +137,52 @@ def plot(rows):
     print("wrote docs/data/decepticon-migration.png")
 
 
+def reconcile():
+    """Digit-tight two-witness: reproduce 0806072e's EXACT firmed protocol.
+    raw enwik8[95M:100M], rng(0) 24 windows x 4096, per-window forward (batch=1),
+    burn 1024 / score [1024:], CE the canonical forward_captured heads."""
+    ENWIK8 = os.path.expanduser("~/code/REPOS/chronohorn/data/roots/enwik/enwik8")
+    test = np.fromfile(ENWIK8, dtype=np.uint8)[95_000_000:100_000_000]
+    starts = np.random.default_rng(0).integers(0, len(test) - 4096 - 1, size=24)
+    WIN, BURN, ln2 = 4096, 1024, math.log(2.0)
+    their = {0: (8.001, 8.003, 8.002), 10000: (2.343, 4.325, 1.962), 20000: (2.267, 4.093, 1.858),
+             30000: (2.126, 4.138, 1.795), 40000: (2.062, 4.172, 1.747), 50000: (2.020, 4.212, 1.725)}
+    CK = [(0, f"{R}/fo-learnable-innate-seed42.checkpoint.pt")] + \
+         [(s, f"{R}/fo-learnable-50k_step{s}.checkpoint.pt") for s in (10000, 20000, 30000, 40000, 50000)]
+    print(f"digit-tight reconcile: enwik8[95M:100M], rng(0) 24x{WIN}, burn {BURN}, per-window batch=1")
+    print(f"{'step':>7} | {'binding me/them':>17} | {'local me/them':>17} | {'full me/them':>17}")
+    for step, path in CK:
+        if not os.path.exists(path):
+            print(f"  skip (missing) {step}"); continue
+        be = DecepticonBackend(path, device=DEV)
+        cb = cl = cf = 0.0; n = 0
+        sl = slice(BURN, None)
+        for s in starts:
+            seq = test[int(s):int(s) + WIN].astype(np.int64)
+            tgt = torch.from_numpy(seq[1:]).to(DEV)
+            cap = be.model.forward_captured(seq[None, :])
+            V = np.asarray(cap["logits"]).shape[-1]
+            full = torch.as_tensor(np.asarray(cap["logits"]), device=DEV)[0, :-1]
+            cf += F.cross_entropy(full[sl], tgt[sl], reduction="sum").item()
+            if cap.get("linear_logits") is not None:
+                lin = torch.as_tensor(np.asarray(cap["linear_logits"]), device=DEV)[0, :-1]
+                cb += F.cross_entropy(lin[sl], tgt[sl], reduction="sum").item()
+            if cap.get("local_logits") is not None:
+                loc = torch.as_tensor(np.asarray(cap["local_logits"]), device=DEV)[0, :-1]
+                cl += F.cross_entropy(loc[sl], tgt[sl], reduction="sum").item()
+            n += int(tgt[sl].numel())
+        del be
+        if DEV == "cuda":
+            torch.cuda.empty_cache()
+        mb, ml, mf = cb / n / ln2, cl / n / ln2, cf / n / ln2
+        tb, tl, tf = their.get(step, (0, 0, 0))
+        print(f"{step:>7} | {mb:6.3f}/{tb:<6} ({mb-tb:+.3f}) | {ml:6.3f}/{tl:<6} | {mf:6.3f}/{tf:<6} ({mf-tf:+.3f})")
+
+
 def main():
+    if "--reconcile" in sys.argv:
+        reconcile()
+        return
     if "--plot" in sys.argv:
         plot(json.load(open("docs/data/decepticon-migration.json")))
         return
