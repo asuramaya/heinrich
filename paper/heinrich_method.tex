@@ -364,6 +364,61 @@ visible.}
 \end{table}
 
 %==============================================================
+\section{Two Witnesses on a Newborn}
+%==============================================================
+
+The frozen frame and the discipline it enforces are not specific to transformers. The
+same instrument, aimed at a different body, produced this paper's cleanest demonstration
+of both --- because here a \emph{second, independent} instrument was available to check it,
+and did, five times.
+
+The body is a causal-bank daemon: an 11M-parameter recurrent complex-valued sequence model
+(an adaptive holographic-reduced-representation substrate feeding a thin readout), not a
+transformer --- no depth, no attention, no residual stack. It is the newborn prototype of a
+byte-level model meant to reach frontier-scale prediction at a fraction of the compute. The
+question was developmental: as it trains, does its associative capacity --- its ``binding''
+organ --- \emph{emerge from gradient}, or must it be architecturally installed and otherwise
+stay dormant? The daemon's logits are a two-head sum (a local conv head and the binding
+head), and because the heads are separable a head-ablation forensic scores three exact
+bits-per-byte from one forward --- binding-only, local-only, full --- at every training
+snapshot. Read off the trajectory, binding-only bpb falls from $8.0$ (random) to
+$\sim\!2.0$ while the local head stays flat near $4.2$. Read naively: ``the organ emerges
+and does the work.'' It was not that.
+
+\paragraph{The second witness.} Because the claim was load-bearing --- it decides whether a
+whole architecture has headroom --- it was measured twice, by two instruments built by two
+different agents: this external head-ablation forensic, and a kernel-native
+memory-composition readout computed from \emph{inside} the model. Run on identical windows
+with identical tensors, the two agreed \textbf{to the third decimal} at every step and every
+head; a bug in either would have diverged, and none did. The migration numbers are, in the
+strongest sense the method allows, confirmed.
+
+\paragraph{What the second witness caught.} The numbers were never the problem; the
+\emph{stories} were. The cross-check --- the second instrument, plus a clean control it
+forced into existence --- overturned five successive readings of these same correct numbers:
+a ``gate learns to trust the organ'' channel that was an artifact of a fixed scale; a
+``migration off the local floor'' frame when the organ in fact led from the first trained
+step; a self-diagnosed tensor bug that a canonical-tensor swap proved bit-identical (the
+tensor was always right); a mislabeled ``organ-off'' control that was merely
+frequency-frozen, both twins carrying the organ; and finally, from the genuinely clean
+matched-pair ablation that mislabel provoked, the headline itself: \textbf{at this scale the
+adaptive organ is neutral} --- organ-off equals organ-on within the confidence interval, on
+both instruments. The prediction is carried by the frozen \emph{innate} substrate and a
+trained readout; the growth organ is a large-scale refinement that has not yet earned its
+keep. ``Installed and grown'' resolved to ``installed''; whether ``grown'' arrives at larger
+scale is left as the open experiment.
+
+\paragraph{The lesson is the shape.} Not one of the five corrections came from the
+instrument's review of itself. Each came from outside it --- a second instrument, a control,
+a peer's configuration check. This is the discipline of Table~\ref{tab:discipline}
+generalized past a single tool: a measurement earns trust not by being carefully made but by
+surviving an independent witness that \emph{can}, and did, disagree. The instrument was
+correct throughout; its interpreter was wrong five times, and each error was caught before
+it entered the record. That is the design working, not failing --- and it is the argument
+for why a forensic format should travel with its residue to a consumer who did not compute
+it, which the next section takes up.
+
+%==============================================================
 \section{What the Instrument Cannot Do}
 %==============================================================
 
