@@ -58,59 +58,38 @@ def make_sample():
     return load_val_sequences(DATA, seq_len=SEQ_LEN + 1, n_seqs=N_SEQS, seed=SEED, byte_level=True)
 
 
-def _find_module(wrapper):
-    """The torch nn.Module carrying linear_readout / local_readout."""
-    for cand in (getattr(wrapper, "_model", None), getattr(wrapper, "model", None), wrapper):
-        if cand is not None and (hasattr(cand, "linear_readout") or hasattr(cand, "local_readout")):
-            return cand
-    for _, m in wrapper._model.named_modules() if hasattr(wrapper, "_model") else []:
-        if hasattr(m, "linear_readout"):
-            return m
-    raise RuntimeError("could not locate the two-head module")
-
-
 def measure(path, sample):
+    """Score binding-only / local-only / full bpb using the CANONICAL head tensors
+    0806072e exposed via forward_captured (linear_logits/local_logits) — the identical
+    tensors the kernel-native witness reads, not a hook guess."""
     be = DecepticonBackend(path, device=DEV)
-    mod = _find_module(be.model)
-    cap = {}
-    hs = []
-    if getattr(mod, "linear_readout", None) is not None:
-        hs.append(mod.linear_readout.register_forward_hook(lambda m, i, o: cap.__setitem__("lin", o)))
-    if getattr(mod, "local_readout", None) is not None:
-        hs.append(mod.local_readout.register_forward_hook(lambda m, i, o: cap.__setitem__("loc", o)))
-
-    ce_full = ce_bind = ce_loc = gate_num = gate_den = 0.0
+    ce_full = ce_bind = ce_loc = 0.0
     ntok = 0
     have_lin = have_loc = False
+    ln2 = math.log(2.0)
     BATCH = 32
     for i in range(0, sample.shape[0], BATCH):
         chunk = sample[i:i + BATCH]
         inp = chunk[:, :SEQ_LEN].astype(np.int64)                       # [b, L]
         tgt = torch.from_numpy(chunk[:, 1:SEQ_LEN + 1].astype(np.int64)).to(DEV).reshape(-1)
-        cap.clear()
-        full_np = np.asarray(be.model.forward(inp))                     # [b, L, V]
-        V = full_np.shape[-1]
-        full = torch.as_tensor(full_np, device=DEV).reshape(-1, V)
+        cap = be.model.forward_captured(inp)
+        V = np.asarray(cap["logits"]).shape[-1]
+        full = torch.as_tensor(np.asarray(cap["logits"]), device=DEV).reshape(-1, V)
         ce_full += F.cross_entropy(full, tgt, reduction="sum").item()
-        if "lin" in cap:
+        if cap.get("linear_logits") is not None:
             have_lin = True
-            lin = cap["lin"].detach().float().to(DEV).reshape(-1, V)
+            lin = torch.as_tensor(np.asarray(cap["linear_logits"]), device=DEV).reshape(-1, V)
             ce_bind += F.cross_entropy(lin, tgt, reduction="sum").item()
-            gate_num += (full - lin).norm().item()
-            gate_den += lin.norm().item()
-        if "loc" in cap:
+        if cap.get("local_logits") is not None:
             have_loc = True
-            loc = cap["loc"].detach().float().to(DEV).reshape(-1, V)
+            loc = torch.as_tensor(np.asarray(cap["local_logits"]), device=DEV).reshape(-1, V)
             ce_loc += F.cross_entropy(loc, tgt, reduction="sum").item()
         ntok += int(tgt.numel())
-    for h in hs:
-        h.remove()
-    ln2 = math.log(2.0)
     out = {
         "full_bpb": ce_full / ntok / ln2,
         "binding_bpb": (ce_bind / ntok / ln2) if have_lin else None,
         "local_bpb": (ce_loc / ntok / ln2) if have_loc else None,
-        "gate_share": (gate_num / gate_den) if gate_den else None,
+        "gate_share": None,
         "ntok": ntok,
     }
     del be
