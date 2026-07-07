@@ -51,6 +51,19 @@ CKPTS = [
     ("learn-50k", 50000, f"{R}/fo-learnable-50k_step50000.checkpoint.pt", "learnable"),
 ]
 
+# 0806072e's matched organ ablation — same data(diet_text)/seed42/schedule, ONLY the
+# adaptive organ differs. Image ON-vs-OFF WITHIN this pair (do NOT compare to fo-learnable-50k).
+PAIR = [
+    ("adapt-s8",   2500,  f"{R}/fo-adapt-s8_step2500.checkpoint.pt",    "adapt"),
+    ("adapt-s8",   5000,  f"{R}/fo-adapt-s8_step5000.checkpoint.pt",    "adapt"),
+    ("adapt-s8",   7500,  f"{R}/fo-adapt-s8_step7500.checkpoint.pt",    "adapt"),
+    ("adapt-s8",   10000, f"{R}/fo-adapt-s8_step10000.checkpoint.pt",   "adapt"),
+    ("noadapt-s8", 2500,  f"{R}/fo-noadapt-s8_step2500.checkpoint.pt",  "noadapt"),
+    ("noadapt-s8", 5000,  f"{R}/fo-noadapt-s8_step5000.checkpoint.pt",  "noadapt"),
+    ("noadapt-s8", 7500,  f"{R}/fo-noadapt-s8_step7500.checkpoint.pt",  "noadapt"),
+    ("noadapt-s8", 10000, f"{R}/fo-noadapt-s8_step10000.checkpoint.pt", "noadapt"),
+]
+
 
 def make_sample():
     # Reference loader: chronohorn shards keep a 1024-byte header and store bytes
@@ -127,6 +140,28 @@ def plot(rows):
 def main():
     if "--plot" in sys.argv:
         plot(json.load(open("docs/data/decepticon-migration.json")))
+        return
+    if "--pair" in sys.argv:
+        sample = make_sample()
+        print(f"sample {sample.shape}; second-witnessing 0806072e's matched organ pair (ON vs OFF), dev={DEV}")
+        rows = []
+        for label, step, path, arm in PAIR:
+            if not os.path.exists(path):
+                print(f"  SKIP (missing): {os.path.basename(path)}")
+                continue
+            m = measure(path, sample)
+            m.update(label=label, step=step, arm=arm)
+            rows.append(m)
+            bb = f"{m['binding_bpb']:.3f}" if m["binding_bpb"] is not None else "  -  "
+            lb = f"{m['local_bpb']:.3f}" if m["local_bpb"] is not None else "  -  "
+            print(f"  {arm:8} step {step:6}  full={m['full_bpb']:.3f}  binding={bb}  local={lb}")
+        # ON-minus-OFF full-bpb delta per step (the clean organ contribution)
+        for st in sorted({r["step"] for r in rows}):
+            on = next((r for r in rows if r["arm"] == "adapt" and r["step"] == st), None)
+            off = next((r for r in rows if r["arm"] == "noadapt" and r["step"] == st), None)
+            if on and off:
+                print(f"  step {st:6}: organ delta (OFF - ON) full = {off['full_bpb'] - on['full_bpb']:+.3f} bpb")
+        json.dump(rows, open("docs/data/decepticon-organ-pair.json", "w"), indent=0)
         return
     smoke = "--smoke" in sys.argv
     sample = make_sample()

@@ -1,0 +1,82 @@
+[
+{
+"full_bpb": 2.4124914504922725,
+"binding_bpb": 5.324309332306358,
+"local_bpb": 5.228113674259985,
+"gate_share": null,
+"ntok": 131072,
+"label": "adapt-s8",
+"step": 2500,
+"arm": "adapt"
+},
+{
+"full_bpb": 2.231246974936886,
+"binding_bpb": 5.5423917607502915,
+"local_bpb": 5.294221827451164,
+"gate_share": null,
+"ntok": 131072,
+"label": "adapt-s8",
+"step": 5000,
+"arm": "adapt"
+},
+{
+"full_bpb": 2.149113865299275,
+"binding_bpb": 5.3611631505944475,
+"local_bpb": 5.178026048961979,
+"gate_share": null,
+"ntok": 131072,
+"label": "adapt-s8",
+"step": 7500,
+"arm": "adapt"
+},
+{
+"full_bpb": 2.1240647641837582,
+"binding_bpb": 5.305198706133808,
+"local_bpb": 5.224501522643914,
+"gate_share": null,
+"ntok": 131072,
+"label": "adapt-s8",
+"step": 10000,
+"arm": "adapt"
+},
+{
+"full_bpb": 2.379880358209643,
+"binding_bpb": null,
+"local_bpb": 5.26156791148847,
+"gate_share": null,
+"ntok": 131072,
+"label": "noadapt-s8",
+"step": 2500,
+"arm": "noadapt"
+},
+{
+"full_bpb": 2.20868164726513,
+"binding_bpb": null,
+"local_bpb": 5.22465914474343,
+"gate_share": null,
+"ntok": 131072,
+"label": "noadapt-s8",
+"step": 5000,
+"arm": "noadapt"
+},
+{
+"full_bpb": 2.1183820704382863,
+"binding_bpb": null,
+"local_bpb": 5.148032618616807,
+"gate_share": null,
+"ntok": 131072,
+"label": "noadapt-s8",
+"step": 7500,
+"arm": "noadapt"
+},
+{
+"full_bpb": 2.0967750300971377,
+"binding_bpb": null,
+"local_bpb": 5.208704314222887,
+"gate_share": null,
+"ntok": 131072,
+"label": "noadapt-s8",
+"step": 10000,
+"arm": "noadapt"
+}
+]
