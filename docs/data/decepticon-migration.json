@@ -1,0 +1,142 @@
+[
+{
+"full_bpb": 8.001882544079027,
+"binding_bpb": 8.00121525139368,
+"local_bpb": 8.003051682139592,
+"gate_share": 0.6719836821694383,
+"ntok": 131072,
+"label": "genome",
+"step": 0,
+"arm": "learnable"
+},
+{
+"full_bpb": 2.3402427857390253,
+"binding_bpb": 2.500901109968784,
+"local_bpb": 4.664858539890052,
+"gate_share": 0.16005414475781748,
+"ntok": 131072,
+"label": "learn-s8",
+"step": 2500,
+"arm": "learnable"
+},
+{
+"full_bpb": 2.071712686317504,
+"binding_bpb": 2.3957843678568556,
+"local_bpb": 4.163290572688219,
+"gate_share": 0.22033292428969803,
+"ntok": 131072,
+"label": "learn-s8",
+"step": 5000,
+"arm": "learnable"
+},
+{
+"full_bpb": 1.9431386715107817,
+"binding_bpb": 2.2294305801697987,
+"local_bpb": 4.07104449621891,
+"gate_share": 0.21127138694227324,
+"ntok": 131072,
+"label": "learn-s8",
+"step": 7500,
+"arm": "learnable"
+},
+{
+"full_bpb": 1.8738298351957208,
+"binding_bpb": 2.1266508673047824,
+"local_bpb": 4.029041947320615,
+"gate_share": 0.19122362270679732,
+"ntok": 131072,
+"label": "learn-s8",
+"step": 10000,
+"arm": "learnable"
+},
+{
+"full_bpb": 2.3943166679143926,
+"binding_bpb": 2.706279738937097,
+"local_bpb": 4.541923879200784,
+"gate_share": 0.3151913622643015,
+"ntok": 131072,
+"label": "frozen-s8",
+"step": 2500,
+"arm": "frozen"
+},
+{
+"full_bpb": 2.1388528214051847,
+"binding_bpb": 2.7919907326475952,
+"local_bpb": 4.194648771359312,
+"gate_share": 0.5394090882230421,
+"ntok": 131072,
+"label": "frozen-s8",
+"step": 5000,
+"arm": "frozen"
+},
+{
+"full_bpb": 2.017476065558758,
+"binding_bpb": 2.5992779379847244,
+"local_bpb": 4.1925168744192165,
+"gate_share": 0.4909548074680208,
+"ntok": 131072,
+"label": "frozen-s8",
+"step": 7500,
+"arm": "frozen"
+},
+{
+"full_bpb": 1.9548364154745175,
+"binding_bpb": 2.4933467290339726,
+"local_bpb": 4.130630121384791,
+"gate_share": 0.44984703039656304,
+"ntok": 131072,
+"label": "frozen-s8",
+"step": 10000,
+"arm": "frozen"
+},
+{
+"full_bpb": 1.9551573351010274,
+"binding_bpb": 2.39751790998189,
+"local_bpb": 4.274598948205184,
+"gate_share": 0.32318530588969324,
+"ntok": 131072,
+"label": "learn-50k",
+"step": 10000,
+"arm": "learnable"
+},
+{
+"full_bpb": 1.8500534056965883,
+"binding_bpb": 2.3193368326741184,
+"local_bpb": 4.081720061297243,
+"gate_share": 0.2639748979121096,
+"ntok": 131072,
+"label": "learn-50k",
+"step": 20000,
+"arm": "learnable"
+},
+{
+"full_bpb": 1.783537438644551,
+"binding_bpb": 2.174393810127913,
+"local_bpb": 4.115442247495771,
+"gate_share": 0.2154846258899454,
+"ntok": 131072,
+"label": "learn-50k",
+"step": 30000,
+"arm": "learnable"
+},
+{
+"full_bpb": 1.7269063894291674,
+"binding_bpb": 2.095265323392201,
+"local_bpb": 4.156997813484473,
+"gate_share": 0.2073132686751265,
+"ntok": 131072,
+"label": "learn-50k",
+"step": 40000,
+"arm": "learnable"
+},
+{
+"full_bpb": 1.702545906847705,
+"binding_bpb": 2.048276567488766,
+"local_bpb": 4.192817242118949,
+"gate_share": 0.20128951832549222,
+"ntok": 131072,
+"label": "learn-50k",
+"step": 50000,
+"arm": "learnable"
+}
+]
