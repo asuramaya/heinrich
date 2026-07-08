@@ -1,0 +1,21 @@
+
+=== Effective-context for /home/asuramaya/code/REPOS/chronohorn/out/results/fo-learnable-50k_step50000.checkpoint.pt ===
+
+  val_data: /home/asuramaya/code/REPOS/chronohorn/data/roots/diet_text/enwik_val_000000.bin
+  n_trials=48  seqlen=1024  threshold=0.01
+
+  bucket                n  bpb_mean   bpb_sem
+  [1,2)                 1    3.7113    0.0000
+  [2,4)                 2    2.9184    0.6936
+  [4,8)                 4    1.5760    0.1236
+  [8,16)                8    1.8441    0.1030
+  [16,32)              16    1.6449    0.0522
+  [32,64)              32    1.7116    0.0610
+  [64,128)             64    1.6991    0.0407
+  [128,256)           128    1.6601    0.0287
+  [256,512)           256    1.6829    0.0210
+  [512,1024)          511    1.5429    0.0129
+
+  knee: [4,8)
+  saturation_bpb: 1.5429
+

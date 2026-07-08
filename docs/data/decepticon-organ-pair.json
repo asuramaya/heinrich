@@ -1,8 +1,9 @@
 [
 {
-"full_bpb": 2.4124914504922725,
-"binding_bpb": 5.324309332306358,
-"local_bpb": 5.228113674259985,
+"full_bpb": 2.4124914827390196,
+"binding_bpb": 5.324309246315033,
+"binding_bpb_ext": null,
+"local_bpb": 5.228113717255648,
 "gate_share": null,
 "ntok": 131072,
 "label": "adapt-s8",
@@ -11,8 +12,9 @@
 },
 {
 "full_bpb": 2.231246974936886,
-"binding_bpb": 5.5423917607502915,
-"local_bpb": 5.294221827451164,
+"binding_bpb": 5.542391459780653,
+"binding_bpb_ext": null,
+"local_bpb": 5.294221633970682,
 "gate_share": null,
 "ntok": 131072,
 "label": "adapt-s8",
@@ -20,9 +22,10 @@
 "arm": "adapt"
 },
 {
-"full_bpb": 2.149113865299275,
+"full_bpb": 2.149113843801444,
 "binding_bpb": 5.3611631505944475,
-"local_bpb": 5.178026048961979,
+"binding_bpb_ext": null,
+"local_bpb": 5.178026156451136,
 "gate_share": null,
 "ntok": 131072,
 "label": "adapt-s8",
@@ -30,9 +33,10 @@
 "arm": "adapt"
 },
 {
-"full_bpb": 2.1240647641837582,
-"binding_bpb": 5.305198706133808,
-"local_bpb": 5.224501522643914,
+"full_bpb": 2.1240647749326738,
+"binding_bpb": 5.305198727631639,
+"binding_bpb_ext": null,
+"local_bpb": 5.224501544141745,
 "gate_share": null,
 "ntok": 131072,
 "label": "adapt-s8",
@@ -40,9 +44,10 @@
 "arm": "adapt"
 },
 {
-"full_bpb": 2.379880358209643,
+"full_bpb": 2.379880422703137,
 "binding_bpb": null,
-"local_bpb": 5.26156791148847,
+"binding_bpb_ext": null,
+"local_bpb": 5.261567932986301,
 "gate_share": null,
 "ntok": 131072,
 "label": "noadapt-s8",
@@ -50,9 +55,10 @@
 "arm": "noadapt"
 },
 {
-"full_bpb": 2.20868164726513,
+"full_bpb": 2.208681561273804,
 "binding_bpb": null,
-"local_bpb": 5.22465914474343,
+"binding_bpb_ext": null,
+"local_bpb": 5.224659230734755,
 "gate_share": null,
 "ntok": 131072,
 "label": "noadapt-s8",
@@ -60,9 +66,10 @@
 "arm": "noadapt"
 },
 {
-"full_bpb": 2.1183820704382863,
+"full_bpb": 2.1183820596893708,
 "binding_bpb": null,
-"local_bpb": 5.148032618616807,
+"binding_bpb_ext": null,
+"local_bpb": 5.148032446634156,
 "gate_share": null,
 "ntok": 131072,
 "label": "noadapt-s8",
@@ -70,13 +77,124 @@
 "arm": "noadapt"
 },
 {
-"full_bpb": 2.0967750300971377,
+"full_bpb": 2.0967750408460533,
 "binding_bpb": null,
-"local_bpb": 5.208704314222887,
+"binding_bpb_ext": null,
+"local_bpb": 5.2087041637380675,
 "gate_share": null,
 "ntok": 131072,
 "label": "noadapt-s8",
 "step": 10000,
+"arm": "noadapt"
+},
+{
+"full_bpb": 2.1870638687572175,
+"binding_bpb": 5.62583051967759,
+"binding_bpb_ext": null,
+"local_bpb": 5.367367295737336,
+"gate_share": null,
+"ntok": 131072,
+"label": "adapt-50k",
+"step": 10000,
+"arm": "adapt"
+},
+{
+"full_bpb": 2.212560522474858,
+"binding_bpb": 5.889475193927377,
+"binding_bpb_ext": null,
+"local_bpb": 5.615722454351443,
+"gate_share": null,
+"ntok": 131072,
+"label": "adapt-50k",
+"step": 20000,
+"arm": "adapt"
+},
+{
+"full_bpb": 2.1425008314039613,
+"binding_bpb": 5.682607689652714,
+"binding_bpb_ext": null,
+"local_bpb": 5.702668476975617,
+"gate_share": null,
+"ntok": 131072,
+"label": "adapt-50k",
+"step": 30000,
+"arm": "adapt"
+},
+{
+"full_bpb": 2.1651460880127065,
+"binding_bpb": 5.717936967732229,
+"binding_bpb_ext": null,
+"local_bpb": 5.868941432816769,
+"gate_share": null,
+"ntok": 131072,
+"label": "adapt-50k",
+"step": 40000,
+"arm": "adapt"
+},
+{
+"full_bpb": 2.1413557816634325,
+"binding_bpb": 5.77793105169391,
+"binding_bpb_ext": null,
+"local_bpb": 5.914623314054129,
+"gate_share": null,
+"ntok": 131072,
+"label": "adapt-50k",
+"step": 50000,
+"arm": "adapt"
+},
+{
+"full_bpb": 2.1491934717687937,
+"binding_bpb": null,
+"binding_bpb_ext": null,
+"local_bpb": 5.354402878052164,
+"gate_share": null,
+"ntok": 131072,
+"label": "noadapt-50k",
+"step": 10000,
+"arm": "noadapt"
+},
+{
+"full_bpb": 2.158488919069615,
+"binding_bpb": null,
+"binding_bpb_ext": null,
+"local_bpb": 5.551429019096505,
+"gate_share": null,
+"ntok": 131072,
+"label": "noadapt-50k",
+"step": 20000,
+"arm": "noadapt"
+},
+{
+"full_bpb": 2.117696364860381,
+"binding_bpb": null,
+"binding_bpb_ext": null,
+"local_bpb": 5.633710678748799,
+"gate_share": null,
+"ntok": 131072,
+"label": "noadapt-50k",
+"step": 30000,
+"arm": "noadapt"
+},
+{
+"full_bpb": 2.1148054869841966,
+"binding_bpb": null,
+"binding_bpb_ext": null,
+"local_bpb": 5.683787834602934,
+"gate_share": null,
+"ntok": 131072,
+"label": "noadapt-50k",
+"step": 40000,
+"arm": "noadapt"
+},
+{
+"full_bpb": 2.110954300981257,
+"binding_bpb": null,
+"binding_bpb_ext": null,
+"local_bpb": 5.78705043175591,
+"gate_share": null,
+"ntok": 131072,
+"label": "noadapt-50k",
+"step": 50000,
 "arm": "noadapt"
 }
 ]

@@ -1,0 +1,57 @@
+[
+{
+"full_bpb": 2.094872257043654,
+"binding_bpb": null,
+"binding_bpb_ext": 5.932723886118161,
+"local_bpb": 4.667533644032898,
+"gate_share": null,
+"ntok": 131072,
+"label": "noadapt-e90",
+"step": 10000,
+"arm": "noadapt"
+},
+{
+"full_bpb": 2.0145187271369305,
+"binding_bpb": null,
+"binding_bpb_ext": 5.655569394201654,
+"local_bpb": 4.526926669578077,
+"gate_share": null,
+"ntok": 131072,
+"label": "noadapt-e90",
+"step": 20000,
+"arm": "noadapt"
+},
+{
+"full_bpb": 1.9539903790703448,
+"binding_bpb": null,
+"binding_bpb_ext": 5.625756825111695,
+"local_bpb": 4.50215923304901,
+"gate_share": null,
+"ntok": 131072,
+"label": "noadapt-e90",
+"step": 30000,
+"arm": "noadapt"
+},
+{
+"full_bpb": 1.9144852654876385,
+"binding_bpb": null,
+"binding_bpb_ext": 5.537382185602466,
+"local_bpb": 4.497868760360104,
+"gate_share": null,
+"ntok": 131072,
+"label": "noadapt-e90",
+"step": 40000,
+"arm": "noadapt"
+},
+{
+"full_bpb": 1.8943112060913099,
+"binding_bpb": null,
+"binding_bpb_ext": 5.495936731505978,
+"local_bpb": 4.552513173481878,
+"gate_share": null,
+"ntok": 131072,
+"label": "noadapt-e90",
+"step": 50000,
+"arm": "noadapt"
+}
+]

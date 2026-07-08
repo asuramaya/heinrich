@@ -62,6 +62,33 @@ PAIR = [
     ("noadapt-s8", 5000,  f"{R}/fo-noadapt-s8_step5000.checkpoint.pt",  "noadapt"),
     ("noadapt-s8", 7500,  f"{R}/fo-noadapt-s8_step7500.checkpoint.pt",  "noadapt"),
     ("noadapt-s8", 10000, f"{R}/fo-noadapt-s8_step10000.checkpoint.pt", "noadapt"),
+    # 50k extension of the same matched pair (both arms trained at seq_len 1024, seed 42):
+    # the scale-gated test — NEUTRAL at 10k was the s8 verdict; does ON pull below OFF by 50k?
+    ("adapt-50k",   10000, f"{R}/fo-adapt-50k_step10000.checkpoint.pt",   "adapt"),
+    ("adapt-50k",   20000, f"{R}/fo-adapt-50k_step20000.checkpoint.pt",   "adapt"),
+    ("adapt-50k",   30000, f"{R}/fo-adapt-50k_step30000.checkpoint.pt",   "adapt"),
+    ("adapt-50k",   40000, f"{R}/fo-adapt-50k_step40000.checkpoint.pt",   "adapt"),
+    ("adapt-50k",   50000, f"{R}/fo-adapt-50k_step50000.checkpoint.pt",   "adapt"),
+    ("noadapt-50k", 10000, f"{R}/fo-noadapt-50k_step10000.checkpoint.pt", "noadapt"),
+    ("noadapt-50k", 20000, f"{R}/fo-noadapt-50k_step20000.checkpoint.pt", "noadapt"),
+    ("noadapt-50k", 30000, f"{R}/fo-noadapt-50k_step30000.checkpoint.pt", "noadapt"),
+    ("noadapt-50k", 40000, f"{R}/fo-noadapt-50k_step40000.checkpoint.pt", "noadapt"),
+    ("noadapt-50k", 50000, f"{R}/fo-noadapt-50k_step50000.checkpoint.pt", "noadapt"),
+]
+
+# Attribution control for fo-learnable-50k's headline number: SAME data (enwik
+# shards_train90m), seed 42, schedule — organ OFF. Config diff vs learnable-50k is two
+# knobs (adaptive_substrate, hrr_omega_init); init is bit-identical to fo-noadapt-50k
+# (decepticons-verified init_signature 165935100cbc3809, n_params 5,114,368). If this
+# trail matches learn-50k's full bpb, the gain was never the organ's; if it lags,
+# the organ (or its ω init) earns the difference. WITHIN-lineage: compare only to the
+# learn-50k rows measured by this same script on the same enwik_val sample.
+ATTRIB = [
+    ("noadapt-e90", 10000, f"{R}/fo-noadapt-enwik90-50k_step10000.checkpoint.pt", "noadapt"),
+    ("noadapt-e90", 20000, f"{R}/fo-noadapt-enwik90-50k_step20000.checkpoint.pt", "noadapt"),
+    ("noadapt-e90", 30000, f"{R}/fo-noadapt-enwik90-50k_step30000.checkpoint.pt", "noadapt"),
+    ("noadapt-e90", 40000, f"{R}/fo-noadapt-enwik90-50k_step40000.checkpoint.pt", "noadapt"),
+    ("noadapt-e90", 50000, f"{R}/fo-noadapt-enwik90-50k_step50000.checkpoint.pt", "noadapt"),
 ]
 
 
@@ -71,16 +98,25 @@ def make_sample():
     return load_val_sequences(DATA, seq_len=SEQ_LEN + 1, n_seqs=N_SEQS, seed=SEED, byte_level=True)
 
 
-def measure(path, sample):
+def measure(path, sample, external_binding=False):
     """Score binding-only / local-only / full bpb using the CANONICAL head tensors
     0806072e exposed via forward_captured (linear_logits/local_logits) — the identical
-    tensors the kernel-native witness reads, not a hook guess."""
+    tensors the kernel-native witness reads, not a hook guess.
+
+    external_binding=True additionally scores the binding head by calling the model's
+    _linear_logits directly (binding_bpb_ext). Non-adaptive bodies never stash the
+    pre-join heads (thread bacf30e1), so this external read is the only instrument
+    for an OFF body's composition; _linear_logits is the exact tensor the merge
+    consumes and the recurrence is deterministic under inference mode, so on an ON
+    body it must match the stashed binding_bpb to the digit (self-checked below)."""
     be = DecepticonBackend(path, device=DEV)
-    ce_full = ce_bind = ce_loc = 0.0
+    ce_full = ce_bind = ce_loc = ce_ext = 0.0
     ntok = 0
-    have_lin = have_loc = False
+    have_lin = have_loc = have_ext = False
     ln2 = math.log(2.0)
-    BATCH = 32
+    # CE is summed per token, so batch size cannot change the score — keep it small
+    # enough to coexist with other jobs on the shared 12GB card (32 OOMs when busy).
+    BATCH = int(os.environ.get("HEINRICH_MIG_BATCH", "8"))
     for i in range(0, sample.shape[0], BATCH):
         chunk = sample[i:i + BATCH]
         inp = chunk[:, :SEQ_LEN].astype(np.int64)                       # [b, L]
@@ -97,10 +133,19 @@ def measure(path, sample):
             have_loc = True
             loc = torch.as_tensor(np.asarray(cap["local_logits"]), device=DEV).reshape(-1, V)
             ce_loc += F.cross_entropy(loc, tgt, reduction="sum").item()
+        if external_binding:
+            with torch.inference_mode():
+                lin_t = be.model._model._linear_logits(
+                    torch.from_numpy(inp).to(DEV))
+            if lin_t.dim() == 4:  # patch-at-readout bodies return [B,T,N,V]; p=0 matches "logits"
+                lin_t = lin_t[:, :, 0, :]
+            have_ext = True
+            ce_ext += F.cross_entropy(lin_t.reshape(-1, V), tgt, reduction="sum").item()
         ntok += int(tgt.numel())
     out = {
         "full_bpb": ce_full / ntok / ln2,
         "binding_bpb": (ce_bind / ntok / ln2) if have_lin else None,
+        "binding_bpb_ext": (ce_ext / ntok / ln2) if have_ext else None,
         "local_bpb": (ce_loc / ntok / ln2) if have_loc else None,
         "gate_share": None,
         "ntok": ntok,
@@ -186,6 +231,49 @@ def main():
     if "--plot" in sys.argv:
         plot(json.load(open("docs/data/decepticon-migration.json")))
         return
+    if "--attribution" in sys.argv:
+        sample = make_sample()
+        print(f"sample {sample.shape}; attribution trail: fo-noadapt-enwik90-50k vs learn-50k (same data/seed), dev={DEV}")
+        try:
+            prior = json.load(open("docs/data/decepticon-migration.json"))
+            learn = {r["step"]: r for r in prior if r["label"] == "learn-50k"}
+        except FileNotFoundError:
+            learn = {}
+            print("  (no decepticon-migration.json — run the main trail first for the comparison column)")
+
+        # SELF-CHECK the external binding instrument on an ON body, where the
+        # kernel-native stash exists: external _linear_logits CE must equal the
+        # stashed-head CE to the digit, or the OFF readings below are untrusted.
+        chk_path = f"{R}/fo-learnable-50k_step50000.checkpoint.pt"
+        if os.path.exists(chk_path):
+            chk = measure(chk_path, sample, external_binding=True)
+            d = abs(chk["binding_bpb"] - chk["binding_bpb_ext"])
+            print(f"[self-check] ON 50k binding: stashed={chk['binding_bpb']:.6f} "
+                  f"external={chk['binding_bpb_ext']:.6f} |d|={d:.2e} "
+                  f"{'PASS' if d < 1e-4 else 'FAIL — external instrument wrong, aborting'}")
+            if d >= 1e-4:
+                return
+
+        rows = []
+        for label, step, path, arm in ATTRIB:
+            if not os.path.exists(path):
+                print(f"  SKIP (missing): {os.path.basename(path)}")
+                continue
+            m = measure(path, sample, external_binding=True)
+            m.update(label=label, step=step, arm=arm)
+            rows.append(m)
+            bb = f"{m['binding_bpb_ext']:.3f}" if m["binding_bpb_ext"] is not None else "  -  "
+            lb = f"{m['local_bpb']:.3f}" if m["local_bpb"] is not None else "  -  "
+            ref = learn.get(step)
+            delta = ""
+            if ref:
+                delta = (f"  OFF-ON: full={m['full_bpb'] - ref['full_bpb']:+.3f}"
+                         f" binding={m['binding_bpb_ext'] - ref['binding_bpb']:+.3f}"
+                         f" local={m['local_bpb'] - ref['local_bpb']:+.3f}")
+            print(f"  {label:11} step {step:6}  full={m['full_bpb']:.3f}  binding={bb}  local={lb}{delta}")
+        json.dump(rows, open("docs/data/decepticon-attribution.json", "w"), indent=0)
+        print("wrote docs/data/decepticon-attribution.json")
+        return
     if "--pair" in sys.argv:
         sample = make_sample()
         print(f"sample {sample.shape}; second-witnessing 0806072e's matched organ pair (ON vs OFF), dev={DEV}")
@@ -200,12 +288,15 @@ def main():
             bb = f"{m['binding_bpb']:.3f}" if m["binding_bpb"] is not None else "  -  "
             lb = f"{m['local_bpb']:.3f}" if m["local_bpb"] is not None else "  -  "
             print(f"  {arm:8} step {step:6}  full={m['full_bpb']:.3f}  binding={bb}  local={lb}")
-        # ON-minus-OFF full-bpb delta per step (the clean organ contribution)
-        for st in sorted({r["step"] for r in rows}):
-            on = next((r for r in rows if r["arm"] == "adapt" and r["step"] == st), None)
-            off = next((r for r in rows if r["arm"] == "noadapt" and r["step"] == st), None)
-            if on and off:
-                print(f"  step {st:6}: organ delta (OFF - ON) full = {off['full_bpb'] - on['full_bpb']:+.3f} bpb")
+        # ON-minus-OFF full-bpb delta per step (the clean organ contribution).
+        # Pair within a suite (s8 vs 50k are separate runs; step 10000 exists in both).
+        for suite in sorted({r["label"].split("-", 1)[1] for r in rows}):
+            srows = [r for r in rows if r["label"].split("-", 1)[1] == suite]
+            for st in sorted({r["step"] for r in srows}):
+                on = next((r for r in srows if r["arm"] == "adapt" and r["step"] == st), None)
+                off = next((r for r in srows if r["arm"] == "noadapt" and r["step"] == st), None)
+                if on and off:
+                    print(f"  [{suite}] step {st:6}: organ delta (OFF - ON) full = {off['full_bpb'] - on['full_bpb']:+.3f} bpb")
         json.dump(rows, open("docs/data/decepticon-organ-pair.json", "w"), indent=0)
         return
     smoke = "--smoke" in sys.argv
