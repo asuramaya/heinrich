@@ -1,0 +1,164 @@
+{
+ "model": "/home/asuramaya/code/REPOS/chronohorn/out/results/fo-adapt-enwik90-seq2048-50k_step50000.checkpoint.pt",
+ "val": "/home/asuramaya/code/REPOS/chronohorn/data/roots/diet_text/enwik_val_000000.bin",
+ "n_trials": 48,
+ "seqlen": 2048,
+ "seed": 44,
+ "gate": 0.25,
+ "buckets": [
+  {
+   "bucket": "[1,2)",
+   "n": 1,
+   "bpb_joined": 4.4282,
+   "sem_joined": 0.3866,
+   "bpb_binding": 9.0495,
+   "sem_binding": 0.4249,
+   "bpb_local": 15.1279,
+   "sem_local": 2.0755,
+   "local_buys": 4.6213
+  },
+  {
+   "bucket": "[2,4)",
+   "n": 2,
+   "bpb_joined": 3.5903,
+   "sem_joined": 0.3114,
+   "bpb_binding": 7.2583,
+   "sem_binding": 0.2218,
+   "bpb_local": 9.757,
+   "sem_local": 1.2401,
+   "local_buys": 3.668
+  },
+  {
+   "bucket": "[4,8)",
+   "n": 4,
+   "bpb_joined": 2.2862,
+   "sem_joined": 0.2523,
+   "bpb_binding": 6.3312,
+   "sem_binding": 0.0804,
+   "bpb_local": 5.4603,
+   "sem_local": 0.8724,
+   "local_buys": 4.045
+  },
+  {
+   "bucket": "[8,16)",
+   "n": 8,
+   "bpb_joined": 1.6915,
+   "sem_joined": 0.1284,
+   "bpb_binding": 5.9247,
+   "sem_binding": 0.0795,
+   "bpb_local": 3.0842,
+   "sem_local": 0.341,
+   "local_buys": 4.2332
+  },
+  {
+   "bucket": "[16,32)",
+   "n": 16,
+   "bpb_joined": 2.0109,
+   "sem_joined": 0.1115,
+   "bpb_binding": 5.6884,
+   "sem_binding": 0.0632,
+   "bpb_local": 4.386,
+   "sem_local": 0.3546,
+   "local_buys": 3.6775
+  },
+  {
+   "bucket": "[32,64)",
+   "n": 32,
+   "bpb_joined": 2.1389,
+   "sem_joined": 0.1003,
+   "bpb_binding": 5.7397,
+   "sem_binding": 0.0786,
+   "bpb_local": 4.767,
+   "sem_local": 0.3188,
+   "local_buys": 3.6008
+  },
+  {
+   "bucket": "[64,128)",
+   "n": 64,
+   "bpb_joined": 2.0648,
+   "sem_joined": 0.0953,
+   "bpb_binding": 5.6278,
+   "sem_binding": 0.0574,
+   "bpb_local": 4.7505,
+   "sem_local": 0.3193,
+   "local_buys": 3.563
+  },
+  {
+   "bucket": "[128,256)",
+   "n": 128,
+   "bpb_joined": 1.9298,
+   "sem_joined": 0.0711,
+   "bpb_binding": 5.5329,
+   "sem_binding": 0.0502,
+   "bpb_local": 4.3628,
+   "sem_local": 0.2129,
+   "local_buys": 3.6031
+  },
+  {
+   "bucket": "[256,512)",
+   "n": 256,
+   "bpb_joined": 1.8729,
+   "sem_joined": 0.059,
+   "bpb_binding": 5.5428,
+   "sem_binding": 0.0479,
+   "bpb_local": 4.1464,
+   "sem_local": 0.1441,
+   "local_buys": 3.6699
+  },
+  {
+   "bucket": "[512,1024)",
+   "n": 512,
+   "bpb_joined": 1.9406,
+   "sem_joined": 0.0662,
+   "bpb_binding": 5.539,
+   "sem_binding": 0.0447,
+   "bpb_local": 4.3936,
+   "sem_local": 0.1701,
+   "local_buys": 3.5984
+  },
+  {
+   "bucket": "[1024,1280)",
+   "n": 256,
+   "bpb_joined": 1.9046,
+   "sem_joined": 0.0653,
+   "bpb_binding": 5.5411,
+   "sem_binding": 0.0517,
+   "bpb_local": 4.3767,
+   "sem_local": 0.1766,
+   "local_buys": 3.6365
+  },
+  {
+   "bucket": "[1280,1536)",
+   "n": 256,
+   "bpb_joined": 1.9302,
+   "sem_joined": 0.0697,
+   "bpb_binding": 5.5785,
+   "sem_binding": 0.051,
+   "bpb_local": 4.4455,
+   "sem_local": 0.1861,
+   "local_buys": 3.6483
+  },
+  {
+   "bucket": "[1536,1792)",
+   "n": 256,
+   "bpb_joined": 1.9183,
+   "sem_joined": 0.0737,
+   "bpb_binding": 5.5893,
+   "sem_binding": 0.0509,
+   "bpb_local": 4.3664,
+   "sem_local": 0.2122,
+   "local_buys": 3.671
+  },
+  {
+   "bucket": "[1792,2048)",
+   "n": 256,
+   "bpb_joined": 1.9427,
+   "sem_joined": 0.0647,
+   "bpb_binding": 5.5036,
+   "sem_binding": 0.0483,
+   "bpb_local": 4.4493,
+   "sem_local": 0.1948,
+   "local_buys": 3.5609
+  }
+ ]
+}
