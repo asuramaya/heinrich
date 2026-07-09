@@ -35,6 +35,11 @@ from heinrich.profile.mri import load_mri
 BANDS = [(0, 8), (8, 20), (20, 50), (50, 100), (100, 256),
          (256, 512), (512, 1024), (1024, 2048)]
 LAGS = [0, 8, 64, 512]
+# The arrow of memory: negative lags score PROSPECTIVE information — the
+# byte |lag| positions AHEAD, which the state can only know through learned
+# structure. A recorder points backward (past >> future); a prediction
+# organ should point forward.
+LAGS_ARROW = [-64, -8, -1, 0, 1, 8, 64, 512]
 OUT_DIR = Path(__file__).resolve().parent.parent / "docs" / "data"
 
 
@@ -52,9 +57,15 @@ def class_mean_r2(X_tr: np.ndarray, c_tr: np.ndarray,
     return float(max(0.0, 1 - ss_r / max(ss_t, 1e-12)))
 
 
-def analyze(mri_path: str) -> dict:
+def analyze(mri_path: str, dims: int | None = None,
+            lags: list[int] = LAGS) -> dict:
     mri = load_mri(mri_path)
     sub = mri["substrate_states"].astype(np.float32)
+    if dims is not None:
+        # Adaptive captures concat [substrate modes, x_embed]; slicing to the
+        # first n_modes dims removes the trivial current-byte carrier so lag0
+        # information must come from the recurrence itself.
+        sub = sub[:, :, :dims]
     tok = np.load(Path(mri_path) / "tokens.npz")["token_ids"]
     n_seqs, seq_len, D = sub.shape
 
@@ -88,13 +99,17 @@ def analyze(mri_path: str) -> dict:
             "var_pct": round(float(var_frac[lo:hi].sum()) * 100, 4),
             "pos_r2": round(float(max(0.0, 1 - ss_r / ss_t)), 4),
         }
-        for lag in LAGS:
-            # byte at position p-lag, valid only where p >= lag
+        for lag in lags:
+            # byte at position p-lag: lag>0 = past, lag<0 = FUTURE (valid
+            # only where p+|lag| < seq_len)
             lagged = np.full((n_seqs, seq_len), -1, dtype=np.int64)
             if lag == 0:
                 lagged[:] = tok[:, :seq_len]
-            else:
+            elif lag > 0:
                 lagged[:, lag:] = tok[:, : seq_len - lag]
+            else:
+                k = -lag
+                lagged[:, : seq_len - k] = tok[:, k:seq_len]
             lf = lagged.reshape(-1)
             vtr = tr[lf[tr] >= 0]
             vte = te[lf[te] >= 0]
@@ -113,22 +128,33 @@ def analyze(mri_path: str) -> dict:
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--mris", nargs="+", required=True)
+    ap.add_argument("--dims", type=int, default=None,
+                    help="keep only the first N state dims (e.g. n_modes to "
+                         "drop the concatenated x_embed columns)")
+    ap.add_argument("--arrow", action="store_true",
+                    help="use the arrow-of-memory lag set (prospective "
+                         "negative lags alongside retrospective)")
     args = ap.parse_args()
+    lags = LAGS_ARROW if args.arrow else LAGS
 
     reports = []
     for m in args.mris:
-        r = analyze(m)
+        r = analyze(m, dims=args.dims, lags=lags)
         reports.append(r)
         name = Path(m).name.replace(".seq.mri", "")
         print(f"\n=== {name}  [{r['shape'][0]}x{r['shape'][1]}x{r['shape'][2]}] ===")
         print(f"  {'band':<11} {'var%':>8} {'pos_r2':>7} "
-              + " ".join(f"{'lag' + str(l):>7}" for l in LAGS))
+              + " ".join(f"{'lag' + str(l):>7}" for l in lags))
         for b in r["bands"]:
             print(f"  {b['band']:<11} {b['var_pct']:>8.4f} {b['pos_r2']:>7.4f} "
-                  + " ".join(f"{b['byte_r2_lag' + str(l)]:>7.4f}" for l in LAGS))
+                  + " ".join(f"{b['byte_r2_lag' + str(l)]:>7.4f}" for l in lags))
 
-    out = OUT_DIR / "anisotropy-c-pc-information.json"
-    out.write_text(json.dumps({"lags": LAGS, "reports": reports}, indent=1))
+    suffix = f"-dims{args.dims}" if args.dims else ""
+    if args.arrow:
+        suffix += "-arrow"
+    out = OUT_DIR / f"anisotropy-c-pc-information{suffix}.json"
+    out.write_text(json.dumps({"lags": lags, "dims": args.dims,
+                               "reports": reports}, indent=1))
     print(f"\n  saved -> {out}")
 
 

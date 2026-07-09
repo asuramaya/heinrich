@@ -1,0 +1,45 @@
+{
+ "claim": "-0.0144 +/- 0.0122, 18/32 improved",
+ "cal_params": {
+  "k": 32,
+  "tau": 40.0,
+  "eps": 0.05,
+  "lam": 0.1
+ },
+ "pinned": {
+  "k": 64,
+  "tau": 20.0,
+  "eps": 0.1,
+  "lam": 0.05
+ },
+ "rows": {
+  "direct_pinned": {
+   "delta": -0.0144,
+   "ci95": 0.0124,
+   "improved": "18/32",
+   "base_bpb": 2.0367,
+   "mix_bpb": 2.0223
+  },
+  "direct_calgrid": {
+   "delta": -0.0192,
+   "ci95": 0.0189,
+   "improved": "17/32",
+   "base_bpb": 2.0367,
+   "mix_bpb": 2.0175
+  },
+  "pooled64_pinned": {
+   "delta": -0.009,
+   "ci95": 0.0069,
+   "improved": "34/64",
+   "base_bpb": 2.0166,
+   "mix_bpb": 2.0076
+  },
+  "pooled64_calgrid": {
+   "delta": -0.0102,
+   "ci95": 0.0104,
+   "improved": "34/64",
+   "base_bpb": 2.0166,
+   "mix_bpb": 2.0065
+  }
+ }
+}
