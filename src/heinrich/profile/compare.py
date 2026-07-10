@@ -5377,7 +5377,8 @@ def _cb_knn_lift(model_path: str,
                  chunk: int = 32768,
                  ktile: int = 1_000_000,
                  pinned: dict | None = None,
-                 device: str | None = None) -> dict:
+                 device: str | None = None,
+                 store_device: str | None = None) -> dict:
     """State-kNN lift over a causal-bank base — heinrich's independent
     witness to the kNN-LM memory organ (verified two-witness, ruling
     ccd02828: pooled 64 windows -0.0090 +/- 0.0069, CI excludes zero).
@@ -5406,6 +5407,10 @@ def _cb_knn_lift(model_path: str,
     from decepticons.loader import load_checkpoint
 
     dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    # store_device='cpu' holds the key store in host RAM and streams tiles
+    # to the compute device per search — unlocks stores past the VRAM
+    # ceiling (16M keys on a 12GB card); exact search, just slower.
+    sdev = store_device or dev
     pinned = pinned or {"k": 64, "tau": 20.0, "eps": 0.1, "lam": 0.05}
 
     corpus_bytes = np.fromfile(corpus, dtype=np.uint8)
@@ -5454,10 +5459,11 @@ def _cb_knn_lift(model_path: str,
             / torch.sqrt(ev[:key_dim].clamp_min(1e-10))).float()
     top_share = float(ev[:key_dim].sum() / ev.sum())
 
-    keys = torch.empty(store_n - 1, key_dim, device=dev, dtype=torch.float16)
+    keys = torch.empty(store_n - 1, key_dim, device=sdev,
+                       dtype=torch.float16)
     for st, s in stream_states(train):
         hi = min(s + len(st), store_n - 1)
-        keys[s:hi] = F.normalize(st[:hi - s] @ proj, dim=1).half()
+        keys[s:hi] = F.normalize(st[:hi - s] @ proj, dim=1).half().to(sdev)
     vals = torch.as_tensor(train[1:], device=dev)
     if dev == "cuda":
         torch.cuda.empty_cache()
@@ -5505,7 +5511,10 @@ def _cb_knn_lift(model_path: str,
                             dtype=torch.float16)
             bi = torch.zeros((len(q), k), device=dev, dtype=torch.long)
             for ks in range(0, len(keys), ktile):
-                sc = q @ keys[ks:ks + ktile].T
+                tile = keys[ks:ks + ktile]
+                if tile.device.type != q.device.type:
+                    tile = tile.to(q.device, non_blocking=True)
+                sc = q @ tile.T
                 v, i = sc.topk(k, dim=1)
                 bv, sel = torch.cat([bv, v], 1).topk(k, dim=1)
                 bi = torch.cat([bi, i + ks], 1).gather(1, sel)

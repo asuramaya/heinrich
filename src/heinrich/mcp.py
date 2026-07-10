@@ -564,9 +564,10 @@ TOOLS = {
         },
     },
     "heinrich_cb_channel_context": {
-        "description": "Per-depth-bucket bpb per logit channel (joined/binding/local) from one forward per sequence. The depth-blind local head is the built-in content-difficulty control: a depth feature it mirrors is data, not model. Needs model.",
+        "description": "Per-depth-bucket bpb per logit channel (joined/binding/local) from one forward per sequence. The depth-blind local head is the built-in content-difficulty control: a depth feature it mirrors is data, not model. Several models (ordered by step) give the channel migration trajectory. Needs model.",
         "parameters": {
             "model": {"type": "string", "description": "Checkpoint path (.checkpoint.pt)", "required": True},
+            "models": {"type": "array", "description": "Multiple checkpoints ordered by step (migration trajectory; overrides model)"},
             "val": {"type": "string", "description": "Val bytes file (optional)"},
             "seqlen": {"type": "integer", "description": "Sequence length (default: 2048)"},
             "n_trials": {"type": "integer", "description": "Sequences per seed (default: 48)"},
@@ -1350,6 +1351,15 @@ TOOLS = {
             "device": {"type": "string", "description": "cuda | cpu (default: auto)"},
         },
     },
+    "heinrich_profile_pc_information": {
+        "description": "Transformer information ledger (arm C's transformer half): per layer and PC band, variance % vs position R² vs lagged-token embedding-recovery R² (negative lags = prospective; -1 = next-token recovery). Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "HF model name or path", "required": True},
+            "lags": {"type": "string", "description": "Comma-separated token lags, negative = future (default: -8,-1,0,1,8,64)"},
+            "layers": {"type": "string", "description": "Comma-separated layer indices (default: all; 0 = embedding output)"},
+            "batches": {"type": "integer", "description": "Prompts used (default: 64)"},
+        },
+    },
     "heinrich_profile_commit_anatomy": {
         "description": "Locate the readout commit L* and attribute it: attn-vs-MLP direct logit attribution, MLP-write participation ratio, optional attention decomposition (licenser/recency/sink). Standing finding: MLP-led at ~3/4 depth, diffuse write. Needs model(s).",
         "parameters": {
@@ -1402,6 +1412,7 @@ TOOLS = {
             "n_extra": {"type": "integer", "description": "Extra pooled windows (default: 32)"},
             "key_dim": {"type": "integer", "description": "Whitened key dim (default: 128)"},
             "pinned": {"type": "string", "description": "Pinned params row, e.g. k=64,tau=20,eps=0.1,lam=0.05"},
+            "store_device": {"type": "string", "description": "'cpu' holds keys in host RAM (unlocks 32M+ stores past VRAM)"},
         },
     },
     "heinrich_cb_trajectory": {
@@ -1844,8 +1855,10 @@ class ToolServer:
                           "seeds": "--seeds"},
                 timeout=1800)
         if name == "heinrich_cb_channel_context":
+            model_args = (arguments.get("models")
+                          or [arguments["model"]])
             return self._do_subprocess(arguments, "profile-cb-channel-context",
-                ["--model", arguments["model"]],
+                ["--model", *model_args],
                 optional={"val": "--val", "seqlen": "--seqlen",
                           "n_trials": "--n-trials", "buckets": "--buckets",
                           "seeds": "--seeds", "result_json": "--result-json"},
@@ -2160,6 +2173,12 @@ class ToolServer:
         if name == "heinrich_cb_pc_bands":
             return self._do_subprocess(arguments, "profile-cb-pc-bands",
                 ["--mris", *arguments["mris"]], optional={"n_bootstrap": "--n-bootstrap"}, timeout=600)
+        if name == "heinrich_profile_pc_information":
+            return self._do_subprocess(arguments, "profile-pc-information",
+                ["--model", arguments["model"]],
+                optional={"lags": "--lags", "layers": "--layers",
+                          "batches": "--batches"},
+                timeout=3600)
         if name == "heinrich_profile_commit_anatomy":
             base = ["--models", *arguments["models"]]
             if arguments.get("attention"):
@@ -2195,7 +2214,8 @@ class ToolServer:
                           "query_range": "--query-range",
                           "extra_range": "--extra-range",
                           "n_test": "--n-test", "n_extra": "--n-extra",
-                          "key_dim": "--key-dim", "pinned": "--pinned"},
+                          "key_dim": "--key-dim", "pinned": "--pinned",
+                          "store_device": "--store-device"},
                 timeout=7200)
         if name == "heinrich_cb_stream_spectrum":
             return self._do_subprocess(arguments, "profile-cb-stream-spectrum",

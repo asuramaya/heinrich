@@ -334,6 +334,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_decompose.add_argument("--backfill-means", action="store_true",
                              help="Only backfill missing L{NN}_mean.npy (+ emb/lmh means and components) into an existing decomp — no re-decomposition")
 
+    p_pfig = sub.add_parser("paper-figures",
+                             help="Regenerate the paper's data-derived figures from committed docs/data goldens; verify + report provenance of live-capture figures (never redrawn — omit, never fake).")
+    p_pfig.add_argument("--only", nargs="+", default=None, help="Figure filename(s) to rebuild (default: all)")
+
     p_prepweb = sub.add_parser("mri-prep-web",
                                 help="Prep decomposed .mri dirs for the Cloudflare companion worker: tokens.json + norm/baseline JSON sidecars + models.json manifest. Run after mri-decompose, before wrangler deploy.")
     p_prepweb.add_argument("--out", default="web/.data", help="Web data root (default: web/.data)")
@@ -485,6 +489,8 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Pinned hyperparameter row, k=..,tau=..,eps=..,lam=..")
     p_cb_knn.add_argument("--ktile", type=int, default=1_000_000,
                            help="Store rows scored per search tile; shrink for big stores on small cards (default: 1000000)")
+    p_cb_knn.add_argument("--store-device", default=None,
+                           help="Where keys live (default: compute device). 'cpu' holds the store in host RAM with per-tile transfer — unlocks 32M+ stores past the VRAM ceiling")
     p_cb_knn.add_argument("--device", default=None, help="cuda|cpu (default: auto)")
 
     p_aniso = sub.add_parser("profile-anisotropy",
@@ -495,6 +501,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_aniso.add_argument("--batches", type=int, default=64, help="Prompts used (default: 64)")
     p_aniso.add_argument("--n-prompts", type=int, default=256, help="Prompts drawn from the DB (default: 256)")
     p_aniso.add_argument("--skip-untrained", action="store_true", help="Skip the random-init twin (trained spectra only)")
+
+    p_pci = sub.add_parser("profile-pc-information",
+                            help="Transformer information ledger (arm C's transformer half): per layer and PC band, variance %% vs position R² vs lagged-token embedding-recovery R² (negative lags = prospective; -1 = next-token recovery). Divergence of ledgers = superposition proper; lag tilt = arrow of memory.")
+    p_pci.add_argument("--model", required=True, help="HF model name or path")
+    p_pci.add_argument("--lags", type=str, default="-8,-1,0,1,8,64",
+                        help="Comma-separated token lags; negative = future (default: -8,-1,0,1,8,64)")
+    p_pci.add_argument("--layers", type=str, default=None,
+                        help="Comma-separated layer indices to report (default: all; 0 = embedding output)")
+    p_pci.add_argument("--n-prompts", type=int, default=256, help="Prompts drawn from the DB (default: 256)")
+    p_pci.add_argument("--max-len", type=int, default=256, help="Prompt truncation (default: 256)")
+    p_pci.add_argument("--batches", type=int, default=64, help="Prompts used (default: 64)")
 
     p_canat = sub.add_parser("profile-commit-anatomy",
                               help="Locate the readout commit L* (self-checking lens) and attribute it: attention-vs-MLP direct logit attribution, MLP-write participation ratio, optional attention decomposition (licenser/recency/sink). Standing finding: MLP-led at ~3/4 depth, diffuse write.")
@@ -582,7 +599,8 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_cb_chctx = sub.add_parser("profile-cb-channel-context",
                                  help="Per-depth-bucket bpb for each logit channel (joined/binding/local) from one forward per sequence. The depth-blind local head is the built-in content-difficulty control: a depth feature it mirrors is data, not model (retired the 'kernel trough', ruling 0762dfb6).")
-    p_cb_chctx.add_argument("--model", required=True, help="Checkpoint path (.checkpoint.pt)")
+    p_cb_chctx.add_argument("--model", nargs="+", required=True,
+                             help="Checkpoint path(s); several (ordered by step) give the channel MIGRATION trajectory — the local->binding bit-share story across training")
     p_cb_chctx.add_argument("--val", default=None, help="Val bytes file (optional; random tokens if omitted)")
     p_cb_chctx.add_argument("--seqlen", type=int, default=2048, help="Sequence length (default: 2048)")
     p_cb_chctx.add_argument("--n-trials", type=int, default=48, help="Sequences per seed (default: 48)")
@@ -1430,6 +1448,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_mri_decompose(args)
     elif args.command == "mri-prep-web":
         _cmd_mri_prep_web(args)
+    elif args.command == "paper-figures":
+        _cmd_paper_figures(args)
     elif args.command == "mri-vocab":
         _cmd_mri_vocab(args)
     elif args.command == "mri-serve":
@@ -1476,6 +1496,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_cb_knn_lift(args)
     elif args.command == "profile-anisotropy":
         _cmd_anisotropy(args)
+    elif args.command == "profile-pc-information":
+        _cmd_pc_information(args)
     elif args.command == "profile-commit-anatomy":
         _cmd_commit_anatomy(args)
     elif args.command == "profile-commit-neurons":
@@ -4469,6 +4491,7 @@ def _cmd_cb_knn_lift(args: argparse.Namespace) -> None:
         query_seed=args.query_seed, extra_seed=args.extra_seed,
         key_dim=args.key_dim, window=args.window, burn=args.burn,
         ktile=args.ktile, pinned=pinned, device=args.device,
+        store_device=args.store_device,
     )
 
     def _fmt(r: dict) -> None:
@@ -4536,6 +4559,27 @@ def _cmd_anisotropy(args: argparse.Namespace) -> None:
     _json_or(args, result, _fmt)
 
 
+def _cmd_paper_figures(args: argparse.Namespace) -> None:
+    """Rebuild data-derived paper figures; verify capture provenance."""
+    from .paperfig import paper_figures
+
+    result = paper_figures(only=args.only)
+
+    def _fmt(r: dict) -> None:
+        print(f"\n=== Paper figures: {r['figures_dir']} ===\n")
+        for e in r["report"]:
+            print(f"  {e['figure']:<28} [{e['kind']}] {e['status']}   "
+                  f"({e['paper']})")
+            if e["kind"] == "data":
+                for s in e["sources"]:
+                    print(f"      <- {s}")
+            else:
+                print(f"      provenance: {e['provenance']}")
+        print()
+
+    _json_or(args, result, _fmt)
+
+
 def _cmd_mri_prep_web(args: argparse.Namespace) -> None:
     """Sidecar decomposed MRIs + rebuild the web manifest."""
     from .webprep import prep_web_data
@@ -4558,6 +4602,35 @@ def _load_pairs_file(path: str | None):
     if path is None:
         return None
     return json.loads(Path(path).read_text())
+
+
+def _cmd_pc_information(args: argparse.Namespace) -> None:
+    """Transformer per-layer information ledger."""
+    from .profile.information import transformer_pc_information
+
+    lags = tuple(int(x) for x in args.lags.split(",") if x.strip())
+    layers = ([int(x) for x in args.layers.split(",") if x.strip()]
+              if args.layers else None)
+    result = transformer_pc_information(
+        args.model, lags=lags, layers=layers, n_prompts=args.n_prompts,
+        max_len=args.max_len, batches=args.batches)
+
+    def _fmt(r: dict) -> None:
+        print(f"\n=== PC information ledger: {r['model']} "
+              f"({r['n_samples']} samples, {r['n_prompts_used']} prompts) ===")
+        print(f"  {r['note']}\n")
+        for lr in r["layers"]:
+            tag = "emb" if lr["layer"] == 0 else f"L{lr['layer'] - 1:02d}"
+            print(f"  --- {tag} (d={lr['dim']}) ---")
+            print(f"  {'band':<10} {'var%':>8} {'pos_r2':>7} "
+                  + " ".join(f"{'lag' + str(l):>8}" for l in r["lags"]))
+            for b in lr["bands"]:
+                print(f"  {b['band']:<10} {b['var_pct']:>8.4f} "
+                      f"{b['pos_r2']:>7.4f} "
+                      + " ".join(f"{b['emb_r2_lag' + str(l)]:>8.4f}"
+                                 for l in r["lags"]))
+
+    _json_or(args, result, _fmt)
 
 
 def _cmd_commit_anatomy(args: argparse.Namespace) -> None:
@@ -5005,19 +5078,21 @@ def _cmd_cb_channel_context(args: argparse.Namespace) -> None:
     from .profile.compare import _cb_channel_context
 
     buckets = [int(x) for x in args.buckets.split(",") if x.strip()]
-    result = _cb_channel_context(
-        model_path=args.model,
+    seeds = [int(s) for s in getattr(args, "seeds", "42").split(",")
+             if s.strip()]
+    reports = [_cb_channel_context(
+        model_path=m,
         val=args.val,
         seqlen=args.seqlen,
         n_trials=args.n_trials,
         buckets=buckets,
         result_json=getattr(args, "result_json", None),
         tokenizer_path=getattr(args, "tokenizer_path", None),
-        seeds=[int(s) for s in getattr(args, "seeds", "42").split(",")
-               if s.strip()],
-    )
+        seeds=seeds,
+    ) for m in args.model]
+    result = reports[0] if len(reports) == 1 else {"trajectory": reports}
 
-    def _fmt(r: dict) -> None:
+    def _one(r: dict) -> None:
         print(f"\n=== Channel-context decompose: {r['model']} ===\n")
         print(f"  gate (local_scale): {r['gate']}   "
               f"n_trials={r['n_trials']}/seed  seeds={r['seeds']}  "
@@ -5032,6 +5107,29 @@ def _cmd_cb_channel_context(args: argparse.Namespace) -> None:
                   f"{b['bpb_binding']:>8.4f} {b['bpb_local']:>8.4f}  "
                   f"{b['local_buys']:>10.4f}")
         print()
+
+    def _fmt(res: dict) -> None:
+        if "trajectory" not in res:
+            _one(res)
+            return
+        for r in res["trajectory"]:
+            _one(r)
+        # migration summary: sequence-weighted overall bpb per channel
+        print("=== Channel migration (overall bpb per checkpoint) ===\n")
+        print(f"  {'checkpoint':<48} {'joined':>8} {'binding':>8} "
+              f"{'local':>8}  {'local_buys':>10}")
+        for r in res["trajectory"]:
+            name = r["model"].rstrip("/").split("/")[-1] \
+                .replace(".checkpoint.pt", "")[-48:]
+            tot_n = sum(b["n"] for b in r["buckets"])
+            means = {c: sum(b[f"bpb_{c}"] * b["n"] for b in r["buckets"])
+                     / tot_n for c in ("joined", "binding", "local")}
+            print(f"  {name:<48} {means['joined']:>8.4f} "
+                  f"{means['binding']:>8.4f} {means['local']:>8.4f}  "
+                  f"{means['binding'] - means['joined']:>10.4f}")
+        print("\n  (binding falling toward joined across checkpoints = the "
+              "local->binding migration; local_buys shrinking = the organ "
+              "absorbing the n-gram floor)")
 
     _json_or(args, result, _fmt)
 
