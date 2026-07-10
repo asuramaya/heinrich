@@ -1229,6 +1229,12 @@ TOOLS = {
             "extra_args": {"type": "array", "description": "Additional raw CLI args"},
         },
     },
+    "heinrich_mri_prep_web": {
+        "description": "Prep decomposed .mri dirs for the Cloudflare companion worker: tokens.json + norm/baseline JSON sidecars + models.json manifest. Run after mri-decompose, before wrangler deploy.",
+        "parameters": {
+            "out": {"type": "string", "description": "Web data root (default: web/.data)"},
+        },
+    },
     "heinrich_mri_vocab": {
         "description": "Project the FULL vocabulary through an existing frozen decomposition. Writes decomp/vocab_scores.bin. Needs model (unless --falsify-only/--pc16-only).",
         "parameters": {
@@ -1342,6 +1348,36 @@ TOOLS = {
             "embedding": {"type": "string", "description": "random | trained | both (default: random)"},
             "seed": {"type": "integer", "description": "Random-embedding seed (default: 42)"},
             "device": {"type": "string", "description": "cuda | cpu (default: auto)"},
+        },
+    },
+    "heinrich_profile_commit_anatomy": {
+        "description": "Locate the readout commit L* and attribute it: attn-vs-MLP direct logit attribution, MLP-write participation ratio, optional attention decomposition (licenser/recency/sink). Standing finding: MLP-led at ~3/4 depth, diffuse write. Needs model(s).",
+        "parameters": {
+            "models": {"type": "array", "description": "HF model name(s)", "required": True},
+            "template": {"type": "string", "description": "adjacent | separated | middle (default: middle — confound-free)"},
+            "attention": {"type": "boolean", "description": "Also decompose last-token attention (eager)"},
+        },
+    },
+    "heinrich_profile_commit_neurons": {
+        "description": "Localized or distributed? Per-neuron contributions to the answer readout at the commit layer: concentration, cross-prompt overlap, answer-specific core. Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "HF model name", "required": True},
+            "template": {"type": "string", "description": "adjacent | separated | middle (default: middle)"},
+            "top_k": {"type": "integer", "description": "Top neurons per prompt (default: 10)"},
+        },
+    },
+    "heinrich_profile_commit_paraphrase": {
+        "description": "Per-FACT or per-SURFACE-FORM? Top answer-neuron overlap within a fact across phrasings vs between facts, at a fixed commit-band layer. Needs model + layer.",
+        "parameters": {
+            "model": {"type": "string", "description": "HF model name", "required": True},
+            "layer": {"type": "integer", "description": "Fixed commit-band layer (e.g. 24 for smollm2-135m)", "required": True},
+            "top_k": {"type": "integer", "description": "Top neurons per phrasing (default: 10)"},
+        },
+    },
+    "heinrich_profile_attention_sink": {
+        "description": "Canonical attention-sink test: is position 0 a null park (huge attention, low-norm value, tiny write) or the routing locus? Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "HF model name", "required": True},
         },
     },
     "heinrich_profile_anisotropy": {
@@ -2080,6 +2116,9 @@ class ToolServer:
                 ["--mri", arguments["mri"]],
                 optional={"n_sample": "--n-sample", "n_components": "--n-components"},
                 flags={"backfill_means": "--backfill-means"}, timeout=3600)
+        if name == "heinrich_mri_prep_web":
+            return self._do_subprocess(arguments, "mri-prep-web", [],
+                optional={"out": "--out"}, timeout=600)
         if name == "heinrich_mri_vocab":
             return self._do_subprocess(arguments, "mri-vocab",
                 ["--model", arguments["model"], "--mri", arguments["mri"]],
@@ -2121,6 +2160,25 @@ class ToolServer:
         if name == "heinrich_cb_pc_bands":
             return self._do_subprocess(arguments, "profile-cb-pc-bands",
                 ["--mris", *arguments["mris"]], optional={"n_bootstrap": "--n-bootstrap"}, timeout=600)
+        if name == "heinrich_profile_commit_anatomy":
+            base = ["--models", *arguments["models"]]
+            if arguments.get("attention"):
+                base.append("--attention")
+            return self._do_subprocess(arguments, "profile-commit-anatomy",
+                base, optional={"template": "--template"}, timeout=3600)
+        if name == "heinrich_profile_commit_neurons":
+            return self._do_subprocess(arguments, "profile-commit-neurons",
+                ["--model", arguments["model"]],
+                optional={"template": "--template", "top_k": "--top-k"},
+                timeout=1800)
+        if name == "heinrich_profile_commit_paraphrase":
+            return self._do_subprocess(arguments, "profile-commit-paraphrase",
+                ["--model", arguments["model"],
+                 "--layer", str(arguments["layer"])],
+                optional={"top_k": "--top-k"}, timeout=1800)
+        if name == "heinrich_profile_attention_sink":
+            return self._do_subprocess(arguments, "profile-attention-sink",
+                ["--model", arguments["model"]], timeout=1800)
         if name == "heinrich_profile_anisotropy":
             base = ["--model", arguments["model"]]
             if arguments.get("skip_untrained"):

@@ -334,6 +334,10 @@ def build_parser() -> argparse.ArgumentParser:
     p_decompose.add_argument("--backfill-means", action="store_true",
                              help="Only backfill missing L{NN}_mean.npy (+ emb/lmh means and components) into an existing decomp — no re-decomposition")
 
+    p_prepweb = sub.add_parser("mri-prep-web",
+                                help="Prep decomposed .mri dirs for the Cloudflare companion worker: tokens.json + norm/baseline JSON sidecars + models.json manifest. Run after mri-decompose, before wrangler deploy.")
+    p_prepweb.add_argument("--out", default="web/.data", help="Web data root (default: web/.data)")
+
     p_vocab = sub.add_parser("mri-vocab", help="Project the FULL vocabulary through an existing frozen decomposition. Writes decomp/vocab_scores.bin (+ ids/texts/meta) so every token is addressable in the sample frame")
     p_vocab.add_argument("--model", required=True, help="Model id or path (must match the MRI's model)")
     p_vocab.add_argument("--mri", required=True, help=".mri directory with an existing decomp/")
@@ -491,6 +495,34 @@ def build_parser() -> argparse.ArgumentParser:
     p_aniso.add_argument("--batches", type=int, default=64, help="Prompts used (default: 64)")
     p_aniso.add_argument("--n-prompts", type=int, default=256, help="Prompts drawn from the DB (default: 256)")
     p_aniso.add_argument("--skip-untrained", action="store_true", help="Skip the random-init twin (trained spectra only)")
+
+    p_canat = sub.add_parser("profile-commit-anatomy",
+                              help="Locate the readout commit L* (self-checking lens) and attribute it: attention-vs-MLP direct logit attribution, MLP-write participation ratio, optional attention decomposition (licenser/recency/sink). Standing finding: MLP-led at ~3/4 depth, diffuse write.")
+    p_canat.add_argument("--models", nargs="+", required=True, help="HF model name(s)")
+    p_canat.add_argument("--template", choices=["adjacent", "separated", "middle"], default="middle",
+                          help="Prompt template set (default: middle — the only one free of recency/sink confounds)")
+    p_canat.add_argument("--pairs", default=None, help="JSON file of [licenser, answer] pairs or {prompt, answer, licenser} dicts (default: the pre-registered 8 capitals)")
+    p_canat.add_argument("--attention", action="store_true",
+                          help="Also decompose last-token attention (licenser/recency/sink/other; forces eager attention)")
+    p_canat.add_argument("--null-word", default=" bicycle", help="Null control token (default: ' bicycle')")
+
+    p_cneur = sub.add_parser("profile-commit-neurons",
+                              help="Is the commit's MLP write localized or distributed? Per-neuron contributions at L*: concentration, cross-prompt overlap, answer-specific core. Standing finding: diffuse, per-answer.")
+    p_cneur.add_argument("--model", required=True, help="HF model name")
+    p_cneur.add_argument("--template", choices=["adjacent", "separated", "middle"], default="middle")
+    p_cneur.add_argument("--pairs", default=None, help="JSON file of pairs (default: the 8 capitals)")
+    p_cneur.add_argument("--top-k", type=int, default=10, help="Top neurons per prompt (default: 10)")
+
+    p_cpara = sub.add_parser("profile-commit-paraphrase",
+                              help="Per-FACT or per-SURFACE-FORM? Top answer-neuron overlap within a fact across phrasings vs between facts, at a fixed commit-band layer.")
+    p_cpara.add_argument("--model", required=True, help="HF model name")
+    p_cpara.add_argument("--layer", type=int, required=True, help="Fixed commit-band layer (e.g. 24 for smollm2-135m, rel 0.80)")
+    p_cpara.add_argument("--top-k", type=int, default=10, help="Top neurons per phrasing (default: 10)")
+
+    p_sink = sub.add_parser("profile-attention-sink",
+                             help="Canonical attention-sink test: is position 0 a null park (huge attention, low-norm value, tiny write) or the routing locus?")
+    p_sink.add_argument("--model", required=True, help="HF model name")
+    p_sink.add_argument("--prompts", nargs="+", default=None, help="Prompts (default: the pre-registered 4)")
 
     p_cb_traj = sub.add_parser("profile-cb-trajectory", help="Trajectory analysis across multiple checkpoints: EffDim, R², mode utilization derivatives")
     p_cb_traj.add_argument("--mris", nargs="+", required=True, help="Ordered MRI paths (by training step)")
@@ -1396,6 +1428,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_mri_health(args)
     elif args.command == "mri-decompose":
         _cmd_mri_decompose(args)
+    elif args.command == "mri-prep-web":
+        _cmd_mri_prep_web(args)
     elif args.command == "mri-vocab":
         _cmd_mri_vocab(args)
     elif args.command == "mri-serve":
@@ -1442,6 +1476,14 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_cb_knn_lift(args)
     elif args.command == "profile-anisotropy":
         _cmd_anisotropy(args)
+    elif args.command == "profile-commit-anatomy":
+        _cmd_commit_anatomy(args)
+    elif args.command == "profile-commit-neurons":
+        _cmd_commit_neurons(args)
+    elif args.command == "profile-commit-paraphrase":
+        _cmd_commit_paraphrase(args)
+    elif args.command == "profile-attention-sink":
+        _cmd_attention_sink(args)
     elif args.command == "profile-cb-trajectory":
         _cmd_cb_trajectory(args)
     elif args.command == "profile-cb-invertibility":
@@ -4490,6 +4532,157 @@ def _cmd_anisotropy(args: argparse.Namespace) -> None:
                   f"ratio {r['alpha_ratio']}")
             print("  (regulation, not steepening: trained alpha should sit "
                   "in the homeostatic band while the twin drifts)")
+
+    _json_or(args, result, _fmt)
+
+
+def _cmd_mri_prep_web(args: argparse.Namespace) -> None:
+    """Sidecar decomposed MRIs + rebuild the web manifest."""
+    from .webprep import prep_web_data
+
+    result = prep_web_data(args.out)
+
+    def _fmt(r: dict) -> None:
+        for p in r["prepped"]:
+            tag = "sidecar" if p["tokens_sidecar"] else "no-tokens"
+            print(f"  {tag}: {p['mri']}")
+        print(f"  manifest: {r['out']}/models.json ({len(r['models'])} mri)")
+        for m in r["models"]:
+            print(f"    {m['model']}/{m['mode']}  L={m['n_layers']} "
+                  f"tok={m['n_tokens']}")
+
+    _json_or(args, result, _fmt)
+
+
+def _load_pairs_file(path: str | None):
+    if path is None:
+        return None
+    return json.loads(Path(path).read_text())
+
+
+def _cmd_commit_anatomy(args: argparse.Namespace) -> None:
+    """Commit location + sublayer attribution, per model."""
+    from .profile.commit import commit_anatomy
+
+    result = commit_anatomy(
+        args.models,
+        template=args.template,
+        pairs=_load_pairs_file(args.pairs),
+        null_word=args.null_word,
+        attention=args.attention,
+    )
+
+    def _fmt(r: dict) -> None:
+        print(f"\n=== Commit anatomy (template: {r['template']}) ===\n")
+        print(f"  {'model':<20} {'nL':>4} {'commit':>8} {'relL*':>6} "
+              f"{'attn>ans':>9} {'mlp>ans':>8} {'mlp>null':>9} {'effN':>7} "
+              f"{'driver':>7}")
+        for m in r["models"]:
+            s = m["summary"]
+            if s["rel_lstar"] is None:
+                print(f"  {s['model'][-20:]:<20} {s['n_layers']:>4} "
+                      f"{s['committed']:>8}  (no commits)")
+                continue
+            print(f"  {s['model'][-20:]:<20} {s['n_layers']:>4} "
+                  f"{s['committed']:>8} {s['rel_lstar']:>6.2f} "
+                  f"{s['attn_ans_at_lstar']:>9.1f} "
+                  f"{s['mlp_ans_at_lstar']:>8.1f} "
+                  f"{s['mlp_null_at_lstar']:>9.1f} "
+                  f"{s['eff_neurons']:>7.0f} {s['driver']:>7}")
+        if r["attention"]:
+            print(f"\n  attention at L* (licenser / recency / sink / other):")
+            for m in r["models"]:
+                s = m["summary"]
+                if "lic_at_lstar" in s:
+                    print(f"  {s['model'][-20:]:<20} {s['lic_at_lstar']:.3f} "
+                          f"/ {s['recency_at_lstar']:.3f} "
+                          f"/ {s['sink_at_lstar']:.3f} "
+                          f"/ {s['other_at_lstar']:.3f}")
+        print("\n  (null attribution ~0 is the control; mlp>ans >> attn>ans "
+              "at L* = MLP-led commit)")
+
+    _json_or(args, result, _fmt)
+
+
+def _cmd_commit_neurons(args: argparse.Namespace) -> None:
+    """Neuron concentration of the commit's MLP write."""
+    from .profile.commit import commit_neurons
+
+    result = commit_neurons(
+        args.model,
+        template=args.template,
+        pairs=_load_pairs_file(args.pairs),
+        top_k=args.top_k,
+    )
+
+    def _fmt(r: dict) -> None:
+        s = r["summary"]
+        print(f"\n=== Commit neurons: {s['model']} ===\n")
+        print(f"  committed {s['committed']}   intermediate {s['intermediate']}")
+        if "verdict" not in s:
+            print("  (no committed prompts)")
+            return
+        print(f"  {'answer':>10} {'L*':>4} {'eff#':>6} {'#to80%':>7} "
+              f"{'top10frac':>10}  top neurons")
+        for row in r["rows"]:
+            if row["lstar"] is None:
+                continue
+            print(f"  {row['answer']:>10} {row['lstar']:>4} "
+                  f"{row['raw']['eff_neurons']:>6.1f} "
+                  f"{row['raw']['n_to_80pct']:>7} "
+                  f"{row['raw']['top10_frac']:>10.2f}  "
+                  f"{row['top_neurons'][:5]}")
+        print(f"\n  eff neurons: raw {s['eff_neurons_raw']} -> "
+              f"specific {s['eff_neurons_specific']}")
+        print(f"  top-{s['top_k']}: {s['distinct_top_neurons']} distinct, "
+              f"{s['shared_by_all']} shared by all; "
+              f"to answer {s['mean_top_to_answer']:+.1f} vs null "
+              f"{s['mean_top_to_null']:+.1f}")
+        print(f"\n  => {s['verdict']}")
+
+    _json_or(args, result, _fmt)
+
+
+def _cmd_commit_paraphrase(args: argparse.Namespace) -> None:
+    """Per-fact vs per-surface-form neuron overlap."""
+    from .profile.commit import commit_paraphrase
+
+    result = commit_paraphrase(args.model, layer=args.layer,
+                               top_k=args.top_k)
+
+    def _fmt(r: dict) -> None:
+        print(f"\n=== Commit paraphrase: {r['model']} L{r['layer']} "
+              f"top-{r['top_k']} ===\n")
+        print(f"  WITHIN-fact overlap:  {r['within_fact_overlap']:.2f}"
+              f"/{r['top_k']}")
+        print(f"  BETWEEN-fact overlap: {r['between_fact_overlap']:.2f}"
+              f"/{r['top_k']}  (control)")
+        for fact, core in r["per_fact_cores"].items():
+            print(f"  {fact:>20}: {len(core)}/{r['top_k']} in all "
+                  f"phrasings  {core}")
+        print(f"\n  => {r['verdict']}")
+
+    _json_or(args, result, _fmt)
+
+
+def _cmd_attention_sink(args: argparse.Namespace) -> None:
+    """Canonical sink test: null park vs routing locus."""
+    from .profile.commit import attention_sink
+
+    result = attention_sink(args.model, prompts=args.prompts)
+
+    def _fmt(r: dict) -> None:
+        print(f"\n=== Attention sink: {r['model']} "
+              f"({r['n_prompts']} prompts) ===\n")
+        print(f"  {'L':>3} {'sink_attn':>10} {'val sink/cont':>14} "
+              f"{'write sink/cont':>16}")
+        for row in r["per_layer"][::3]:
+            print(f"  {row['layer']:>3} {row['sink_attn']:>10.2f} "
+                  f"{row['value_ratio']:>14.2f} {row['write_ratio']:>16.2f}")
+        print(f"\n  means: attn {r['mean_sink_attn']:.2f}  value ratio "
+              f"{r['mean_value_ratio']:.2f}  write ratio "
+              f"{r['mean_write_ratio']:.2f}")
+        print(f"  => {r['verdict']}")
 
     _json_or(args, result, _fmt)
 

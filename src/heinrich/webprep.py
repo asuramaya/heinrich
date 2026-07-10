@@ -1,0 +1,88 @@
+"""Prep decomposed .mri directories for the Cloudflare companion worker.
+
+The worker never parses numpy: tokens.npz becomes a plain tokens.json inside
+decomp/, norms/baselines become per-key JSON stat sidecars, and the root
+models.json manifest is rebuilt from every */*.mri/metadata.json under the
+data root. Run after `heinrich mri-decompose`, before `wrangler deploy`.
+"""
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+import numpy as np
+
+
+def write_tokens_sidecar(mri_dir: Path) -> bool:
+    npz = mri_dir / "tokens.npz"
+    decomp = mri_dir / "decomp"
+    if not npz.exists() or not decomp.exists():
+        return False
+    tok = dict(np.load(str(npz), allow_pickle=True))
+    out = {
+        "token_ids": [int(x) for x in tok["token_ids"]]
+        if "token_ids" in tok else [],
+        "scripts": [str(s) for s in tok["scripts"]]
+        if "scripts" in tok else [],
+        "token_texts": [str(t) for t in tok["token_texts"]]
+        if "token_texts" in tok else [],
+    }
+    (decomp / "tokens.json").write_text(json.dumps(out))
+    return True
+
+
+def write_norm_sidecars(mri_dir: Path) -> None:
+    """norms.npz/baselines.npz → worker-native JSON sidecars (stats per key)."""
+    for fname, jname, want_norm in [("norms.npz", "norms.json", False),
+                                    ("baselines.npz", "baselines.json", True)]:
+        p = mri_dir / fname
+        if not p.exists():
+            continue
+        z = np.load(str(p))
+        out = {}
+        for k in z.files:
+            a = np.asarray(z[k], dtype=np.float32).ravel()
+            rec = {"shape": list(z[k].shape),
+                   "mean": float(a.mean()) if a.size else 0.0,
+                   "std": float(a.std()) if a.size else 0.0}
+            if want_norm:
+                rec["norm"] = float(np.linalg.norm(a))
+            else:
+                rec["min"] = float(a.min()) if a.size else 0.0
+                rec["max"] = float(a.max()) if a.size else 0.0
+            out[k] = rec
+        (mri_dir / jname).write_text(json.dumps(out))
+
+
+def rebuild_manifest(out: Path) -> list[dict]:
+    models = []
+    for meta_path in sorted(out.glob("*/*.mri/metadata.json")):
+        meta = json.loads(meta_path.read_text())
+        mri_dir = meta_path.parent
+        cap = meta.get("capture", {})
+        mdl = meta.get("model", {})
+        models.append({
+            "model": mri_dir.parent.name,
+            "mode": cap.get("mode", "?"),
+            "n_layers": mdl.get("n_layers", 0),
+            "n_tokens": cap.get("n_tokens", cap.get("n_index", 0)),
+            "version": meta.get("version", "?"),
+            "architecture": meta.get("architecture", "transformer"),
+        })
+    models.sort(key=lambda m: (0 if m["architecture"] == "transformer" else 1,
+                               m["model"]))
+    (out / "models.json").write_text(json.dumps(models, indent=2))
+    return models
+
+
+def prep_web_data(out_dir: str) -> dict:
+    """Sidecar every .mri under out_dir and rebuild models.json."""
+    out = Path(out_dir)
+    prepped = []
+    for meta_path in sorted(out.glob("*/*.mri/metadata.json")):
+        mri = meta_path.parent
+        ok = write_tokens_sidecar(mri)
+        write_norm_sidecars(mri)
+        prepped.append({"mri": str(mri), "tokens_sidecar": ok})
+    models = rebuild_manifest(out)
+    return {"out": str(out), "prepped": prepped, "models": models}
