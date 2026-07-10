@@ -4787,18 +4787,24 @@ def _load_effective_context_backend(model_path: str,
 def _load_effective_context_val(val: str | None,
                                  seqlen: int,
                                  n_trials: int,
-                                 vocab_size: int) -> np.ndarray:
+                                 vocab_size: int,
+                                 seed: int = 42) -> np.ndarray:
     """Load val data as [n_trials, seqlen] int64. If val is None, sample
     random tokens from [0, vocab_size) for a null-content baseline (useful
-    for shape/instrumentation checks but not for real measurements)."""
+    for shape/instrumentation checks but not for real measurements).
+
+    ``seed`` selects WHICH slices of the val stream are drawn. Because
+    slices are seq_len-aligned, a single seed pins specific content to
+    specific depths — absolute cross-bucket comparisons need multiple
+    seeds (see the trough retraction, ruling 0762dfb6)."""
     if val is None:
-        rng = np.random.default_rng(42)
+        rng = np.random.default_rng(seed)
         return rng.integers(0, vocab_size, size=(n_trials, seqlen),
                              dtype=np.int64)
     from ..backend.decepticon import load_val_sequences
     byte_level = vocab_size == 256
     return load_val_sequences(val, seq_len=seqlen, n_seqs=n_trials,
-                              byte_level=byte_level)
+                              seed=seed, byte_level=byte_level)
 
 
 def _cb_effective_context(model_path: str,
@@ -4809,7 +4815,8 @@ def _cb_effective_context(model_path: str,
                           buckets: list[int],
                           knee_threshold: float,
                           result_json: str | None = None,
-                          tokenizer_path: str | None = None) -> dict:
+                          tokenizer_path: str | None = None,
+                          seeds: list[int] | None = None) -> dict:
     """Context-knee test: per-position bpb on random-prefix sequences.
 
     For each of n_trials sequences of length seqlen, compute next-token
@@ -4821,51 +4828,84 @@ def _cb_effective_context(model_path: str,
     substrate-primary causal-bank models plateau at a 16-byte effective
     context regardless of half_life_max or linear_modes.
     """
+    seed_list = [int(s) for s in (seeds if seeds else [42])]
     backend = _load_effective_context_backend(
         model_path, result_json, tokenizer_path)
     vocab_size = int(backend.config.vocab_size)
-    seqs = _load_effective_context_val(val, seqlen, n_trials, vocab_size)
 
-    bucket_defs = _bucket_positions(seqlen=seqs.shape[1], bounds=buckets)
+    bucket_defs = _bucket_positions(seqlen=seqlen, bounds=buckets)
+    n_buckets = len(bucket_defs)
+    # Valid positions per bucket: per-position CE exists for pos 0..seqlen-2.
+    bucket_idx = [np.array([p for p in b["indices"] if p < seqlen - 1],
+                           dtype=np.int64) for b in bucket_defs]
 
-    # Per-position cross-entropy accumulator across trials.
-    per_pos_sum = np.zeros(seqs.shape[1], dtype=np.float64)
-    per_pos_n = np.zeros(seqs.shape[1], dtype=np.int64)
+    # Per-(sequence, bucket) mean bpb — the sequence is the exchangeable
+    # sampling unit, so error bars come from across-sequence spread, not
+    # from pooling correlated positions (trough retraction, 0762dfb6).
+    seq_bucket = []   # rows: [n_buckets] bpb means for one sequence
+    seq_seed = []
+    per_pos_sum = np.zeros(seqlen, dtype=np.float64)
+    per_pos_n = np.zeros(seqlen, dtype=np.int64)
 
-    for i in range(seqs.shape[0]):
-        seq_i = seqs[i:i + 1]  # [1, seqlen]
-        logits = backend.forward(seq_i)  # [1, seqlen, vocab]
-        logits_2d = np.asarray(logits[0], dtype=np.float32)  # [seqlen, vocab]
-        log_probs = logits_2d - _logsumexp(logits_2d, axis=-1, keepdims=True)
-        targets = np.asarray(seqs[i], dtype=np.int64)
-        for pos in range(seqs.shape[1] - 1):
-            nll = -float(log_probs[pos, targets[pos + 1]])
-            per_pos_sum[pos] += nll
-            per_pos_n[pos] += 1
+    for sd in seed_list:
+        seqs = _load_effective_context_val(val, seqlen, n_trials,
+                                           vocab_size, seed=sd)
+        for i in range(seqs.shape[0]):
+            seq_i = seqs[i:i + 1]  # [1, seqlen]
+            logits = backend.forward(seq_i)  # [1, seqlen, vocab]
+            logits_2d = np.asarray(logits[0], dtype=np.float32)
+            log_probs = logits_2d - _logsumexp(logits_2d, axis=-1,
+                                               keepdims=True)
+            targets = np.asarray(seqs[i, 1:], dtype=np.int64)
+            nll = -log_probs[np.arange(seqlen - 1), targets]  # nats
+            bpb_pos = nll.astype(np.float64) / np.log(2.0)
+            per_pos_sum[:seqlen - 1] += bpb_pos
+            per_pos_n[:seqlen - 1] += 1
+            seq_bucket.append([float(bpb_pos[ix].mean()) if len(ix) else
+                               float("nan") for ix in bucket_idx])
+            seq_seed.append(sd)
+
+    sb = np.asarray(seq_bucket, dtype=np.float64)  # [n_seqs_total, n_buckets]
+    seq_seed_arr = np.asarray(seq_seed)
+    n_seqs_total = sb.shape[0]
 
     with np.errstate(divide="ignore", invalid="ignore"):
-        per_pos_ce = np.where(per_pos_n > 0, per_pos_sum / per_pos_n, np.nan)
-    per_pos_bpb = per_pos_ce / np.log(2.0)
+        per_pos_bpb = np.where(per_pos_n > 0, per_pos_sum / per_pos_n, np.nan)
 
     bucket_reports = []
-    for b in bucket_defs:
-        ce_vals = per_pos_bpb[b["indices"]]
-        ce_vals = ce_vals[~np.isnan(ce_vals)]
-        if len(ce_vals) == 0:
+    for bi, b in enumerate(bucket_defs):
+        ix = bucket_idx[bi]
+        if len(ix) == 0:
             bucket_reports.append({
                 "min": b["min"], "max": b["max"],
                 "n": 0, "bpb_mean": float("nan"), "bpb_sem": float("nan"),
+                "bpb_sem_positions": float("nan"),
             })
             continue
-        mean = float(np.mean(ce_vals))
-        sem = float(np.std(ce_vals, ddof=1) / np.sqrt(len(ce_vals))) \
-               if len(ce_vals) > 1 else 0.0
-        bucket_reports.append({
+        col = sb[:, bi]
+        mean = float(col.mean())
+        # Across-sequence SEM: the honest error bar for bucket comparisons.
+        sem_seq = float(col.std(ddof=1) / np.sqrt(n_seqs_total)) \
+            if n_seqs_total > 1 else 0.0
+        # Legacy SEM across trial-averaged positions (correlated within a
+        # sequence — optimistic ~3x; kept for continuity with old files).
+        pos_vals = per_pos_bpb[ix]
+        sem_pos = float(pos_vals.std(ddof=1) / np.sqrt(len(pos_vals))) \
+            if len(pos_vals) > 1 else 0.0
+        entry = {
             "min": b["min"], "max": b["max"],
-            "n": int(len(ce_vals)),
+            "n": int(len(ix)),
             "bpb_mean": round(mean, 4),
-            "bpb_sem": round(sem, 4),
-        })
+            "bpb_sem": round(sem_seq, 4),
+            "bpb_sem_positions": round(sem_pos, 4),
+        }
+        if len(seed_list) > 1:
+            per_seed = {str(sd): round(float(col[seq_seed_arr == sd].mean()), 4)
+                        for sd in seed_list}
+            entry["per_seed_bpb"] = per_seed
+            entry["seed_spread"] = round(
+                max(per_seed.values()) - min(per_seed.values()), 4)
+        bucket_reports.append(entry)
 
     bucket_bpbs = [b["bpb_mean"] for b in bucket_reports]
     knee_idx = _find_knee_bucket(bucket_bpbs, threshold=knee_threshold)
@@ -4883,6 +4923,8 @@ def _cb_effective_context(model_path: str,
         "model": model_path,
         "val_data": val,
         "n_trials": int(n_trials),
+        "seeds": seed_list,
+        "n_sequences_total": int(n_seqs_total),
         "seqlen": int(seqlen),
         "knee_threshold": float(knee_threshold),
         "buckets": bucket_reports,
@@ -5068,6 +5110,584 @@ def _cb_ablations(model_path: str,
         "delta_bpb": round(delta, 4),
         "multiplier": round(multiplier, 3),
     }
+
+
+def _cb_channel_context(model_path: str,
+                        *,
+                        val: str | None,
+                        seqlen: int,
+                        n_trials: int,
+                        buckets: list[int],
+                        result_json: str | None = None,
+                        tokenizer_path: str | None = None,
+                        seeds: list[int] | None = None) -> dict:
+    """Per-depth-bucket bpb for each logit channel, from ONE forward per
+    sequence — the model stashes both heads on eval forwards, so no
+    ablation and no second pass:
+
+      joined   — logits_linear + gate * logits_local (the deployed model)
+      binding  — logits_linear alone (substrate channel)
+      local    — logits_local alone (the local head; with a w-byte window
+                 it is depth-blind by construction past w, which makes it
+                 the built-in CONTENT-DIFFICULTY CONTROL per bucket)
+
+    This instrument retired the [1280,1792) 'kernel trough' (ruling
+    0762dfb6): a joined-channel depth feature that the local channel
+    mirrors is data, not model. ``local_buys`` = binding − joined, what
+    the local head contributes at that depth. Error bars are
+    across-sequence SEMs; pass several seeds for absolute cross-bucket
+    claims (val slices are seqlen-aligned).
+
+    Requires the torch causal-bank backend (the eval stash lives on the
+    inner CausalBankModel).
+    """
+    import torch
+
+    seed_list = [int(s) for s in (seeds if seeds else [42])]
+    backend = _load_effective_context_backend(
+        model_path, result_json, tokenizer_path)
+    vocab_size = int(backend.config.vocab_size)
+
+    inner = getattr(backend.model, "_model", None)
+    if inner is None or not hasattr(inner, "_local_logits"):
+        raise AttributeError(
+            "channel-context needs the torch causal-bank inner model "
+            "(backend.model._model with _local_logits); this backend "
+            "does not expose it")
+    dev = next(inner.parameters()).device
+    inner.eval()
+
+    bucket_defs = _bucket_positions(seqlen=seqlen, bounds=buckets)
+    bucket_idx = [np.array([p for p in b["indices"] if p < seqlen - 1],
+                           dtype=np.int64) for b in bucket_defs]
+    channels = ("joined", "binding", "local")
+
+    # per-channel: rows of per-sequence bucket means
+    seq_bucket = {c: [] for c in channels}
+    gate_val = None
+
+    for sd in seed_list:
+        seqs = _load_effective_context_val(val, seqlen, n_trials,
+                                           vocab_size, seed=sd)
+        for i in range(seqs.shape[0]):
+            x = torch.as_tensor(seqs[i:i + 1], dtype=torch.long, device=dev)
+            with torch.inference_mode():
+                joined = inner(x)
+            lin = getattr(inner, "_last_logits_linear", None)
+            loc = getattr(inner, "_last_logits_local", None)
+            gate = getattr(inner, "_last_gate", None)
+            if lin is None or loc is None:
+                raise RuntimeError(
+                    "model did not stash _last_logits_linear/_last_logits_"
+                    "local — local path inactive; nothing to decompose")
+            if lin.dim() == 4:
+                lin = lin.squeeze(2)
+            if loc.dim() == 4:
+                loc = loc.squeeze(2)
+            if joined.shape != lin.shape or joined.shape != loc.shape:
+                raise RuntimeError(
+                    f"head shape mismatch: joined {tuple(joined.shape)} "
+                    f"binding {tuple(lin.shape)} local {tuple(loc.shape)}")
+            if gate is not None and gate.numel() == 1:
+                gate_val = float(gate)
+
+            tgt = x[0, 1:]
+            ar = torch.arange(seqlen - 1, device=dev)
+            for c, lg in (("joined", joined), ("binding", lin), ("local", loc)):
+                logp = torch.log_softmax(lg[0, :seqlen - 1].float(), dim=-1)
+                bits = (-logp[ar, tgt] / float(np.log(2.0))).cpu().numpy()
+                seq_bucket[c].append(
+                    [float(bits[ix].mean()) if len(ix) else float("nan")
+                     for ix in bucket_idx])
+
+    n_seqs_total = len(seq_bucket["joined"])
+    arrs = {c: np.asarray(seq_bucket[c], dtype=np.float64) for c in channels}
+
+    bucket_reports = []
+    for bi, b in enumerate(bucket_defs):
+        if len(bucket_idx[bi]) == 0:
+            continue
+        row = {"min": b["min"], "max": b["max"], "n": int(len(bucket_idx[bi]))}
+        for c in channels:
+            col = arrs[c][:, bi]
+            row[f"bpb_{c}"] = round(float(col.mean()), 4)
+            row[f"sem_{c}"] = round(
+                float(col.std(ddof=1) / np.sqrt(n_seqs_total))
+                if n_seqs_total > 1 else 0.0, 4)
+        row["local_buys"] = round(row["bpb_binding"] - row["bpb_joined"], 4)
+        bucket_reports.append(row)
+
+    return {
+        "model": model_path,
+        "val_data": val,
+        "n_trials": int(n_trials),
+        "seeds": seed_list,
+        "n_sequences_total": int(n_seqs_total),
+        "seqlen": int(seqlen),
+        "gate": gate_val,
+        "buckets": bucket_reports,
+    }
+
+
+def _load_byte_stream(path: str) -> np.ndarray:
+    """Load a byte stream as uint8, transparently unwrapping the chronohorn
+    token-shard format (1024-byte header, uint16 slots). Silently reading a
+    shard as raw bytes was a session-11 failure mode — never again."""
+    from ..backend.decepticon import (_SHARD_HEADER_BYTES, _SHARD_MAGIC,
+                                      _SHARD_VERSION)
+    raw = np.fromfile(path, dtype=np.uint8)
+    if raw.size >= _SHARD_HEADER_BYTES:
+        header = raw[:_SHARD_HEADER_BYTES].view(np.int32)
+        if int(header[0]) == _SHARD_MAGIC and int(header[1]) == _SHARD_VERSION:
+            payload = raw[_SHARD_HEADER_BYTES:].view(np.uint16)
+            count = int(header[2])
+            if 0 < count <= len(payload):
+                payload = payload[:count]
+            if payload.max(initial=0) > 255:
+                raise ValueError(
+                    f"{path} is a token shard with values > 255 — "
+                    f"not a byte stream")
+            return payload.astype(np.uint8)
+    return raw
+
+
+def _cb_stream_spectrum(model_path: str,
+                        *,
+                        streams: list[str],
+                        embedding: str = "random",
+                        seed: int = 42,
+                        fit_lo: int = 8,
+                        chunk: int = 32768,
+                        device: str | None = None) -> dict:
+    """Eigenspectrum + power-law exponent of the streamed bank state for a
+    causal-bank body driven by arbitrary byte streams (the arm-A
+    instrument, ruling e45eb1c8: variance spectra = kernel x marginal).
+
+    States are streamed from stream start with the m3 FFT template using
+    the body's own linear_in_proj/linear_decays. ``embedding`` selects the
+    drive: 'random' (seeded randn — the untrained substrate; scale is
+    irrelevant to a log-log slope), 'trained' (the body's
+    linear_embedding — includes the one trained input tensor), or 'both'.
+
+    Exponent fit window is PCs fit_lo..min(512, M/4) — the pre-registered
+    arm-A protocol. Compare across substrates by full curve + gap, never
+    bare exponents (dimension-dependent ruler).
+    """
+    import torch
+
+    from decepticons.loader import load_checkpoint
+
+    dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    inf = load_checkpoint(model_path, device=dev)
+    w = inf.weights()
+    in_proj = torch.tensor(w["linear_in_proj"], device=dev)
+    decays = torch.tensor(w["linear_decays"], device=dev,
+                          dtype=torch.float64)
+    m = decays.shape[0]
+
+    kinds = {"random", "trained", "both"}
+    if embedding not in kinds:
+        raise ValueError(f"embedding must be one of {sorted(kinds)}")
+    drives = {}
+    if embedding in ("random", "both"):
+        torch.manual_seed(seed)
+        emb = torch.randn(256, 256, device=dev)
+        drives["random"] = (emb @ in_proj).T.contiguous()
+    if embedding in ("trained", "both"):
+        emb = torch.tensor(w["linear_embedding.weight"], device=dev)
+        drives["trained"] = (emb @ in_proj).T.contiguous()
+
+    nf = 2 * chunk
+    jj = torch.arange(chunk, device=dev, dtype=torch.float64)
+    la = torch.log(decays)[:, None]
+    kf = torch.fft.rfft(((1 - decays)[:, None]
+                         * torch.exp(la * jj)).float(), n=nf, dim=1)
+    apow = torch.exp(la * (jj + 1.0)).float()
+
+    def spectrum(data: np.ndarray, drive: torch.Tensor) -> dict:
+        gram = torch.zeros(m, m, device=dev, dtype=torch.float64)
+        n = 0
+        h = torch.zeros(m, device=dev)
+        for s in range(0, len(data), chunk):
+            ck = torch.as_tensor(data[s:s + chunk].astype(np.int64),
+                                 device=dev)
+            df = torch.fft.rfft(drive[:, ck], n=nf, dim=1)
+            st = torch.fft.irfft(df * kf, n=nf, dim=1)[:, :len(ck)] \
+                + h[:, None] * apow[:, :len(ck)]
+            h = st[:, -1].clone()
+            # fp64 matmul is 1/32-rate on consumer cards: fp32 chunk-grams
+            # into an fp64 accumulator + 4x position subsampling keep the
+            # slope exact (samples >> dims) and ~100x faster.
+            sm = st.T[::4].float()
+            gram += (sm.T @ sm).to(torch.float64)
+            n += sm.shape[0]
+        ev = torch.linalg.eigvalsh(gram / n).flip(0).cpu().numpy()
+        total = float(ev.sum())
+        cum = np.cumsum(ev) / total
+        hi = min(512, m // 4)
+        window = ev[fit_lo - 1:hi]
+        ranks = np.arange(fit_lo, fit_lo + len(window))
+        mask = window > 0
+        coef = np.polyfit(np.log(ranks[mask]), np.log(window[mask]), 1)
+        return {
+            "alpha": round(float(-coef[0]), 3),
+            "fit_window": [fit_lo, hi],
+            "pc1_pct": round(float(ev[0] / total) * 100, 2),
+            "top128_pct": round(float(cum[min(127, len(cum) - 1)]) * 100, 2),
+            "pcs_for_90pct": int(np.searchsorted(cum, 0.90)) + 1,
+            "n_positions": int(n),
+            "eigs_head": [float(e) for e in ev[:512]],
+        }
+
+    rows = []
+    for path in streams:
+        data = _load_byte_stream(path)
+        for kind, drive in drives.items():
+            r = spectrum(data, drive)
+            r["stream"] = path
+            r["embedding"] = kind
+            rows.append(r)
+
+    return {
+        "model": model_path,
+        "n_modes": int(m),
+        "embedding": embedding,
+        "seed": int(seed),
+        "chunk": int(chunk),
+        "fit_window_rule": f"PCs {fit_lo}..min(512, M/4)",
+        "rows": rows,
+    }
+
+
+def _cb_knn_lift(model_path: str,
+                 *,
+                 corpus: str,
+                 store_range: tuple[int, int] = (0, 8_000_000),
+                 query_range: tuple[int, int] = (95_000_000, 96_500_000),
+                 extra_range: tuple[int, int] | None = (96_500_000,
+                                                        100_000_000),
+                 n_cal: int = 12,
+                 n_test: int = 32,
+                 n_extra: int = 32,
+                 query_seed: int = 0,
+                 extra_seed: int = 1,
+                 key_dim: int = 128,
+                 window: int = 1024,
+                 burn: int = 256,
+                 chunk: int = 32768,
+                 pinned: dict | None = None,
+                 device: str | None = None) -> dict:
+    """State-kNN lift over a causal-bank base — heinrich's independent
+    witness to the kNN-LM memory organ (verified two-witness, ruling
+    ccd02828: pooled 64 windows -0.0090 +/- 0.0069, CI excludes zero).
+
+    Keys are CONTINUOUS states streamed from stream start via the body's
+    FROZEN bank tensors (arm C says the frozen kernel is the verbatim
+    recorder — the trained organ is the wrong place for literal retrieval
+    keys), truncate-then-whitened to ``key_dim``. The base term stays the
+    model's own windowed logits (window/burn) — the deployed model. The
+    asymmetry is deliberate and is the claim.
+
+    Scoring is heinrich's own CE accounting: per-window paired deltas,
+    1.96-sigma CI across windows. ``pinned`` scores a fixed hyperparameter
+    row alongside an independent cal-grid choice (grid over k/tau/eps/lam
+    on the first n_cal windows). ``extra_range`` adds clean windows
+    (disjoint from store and primary queries) pooled with the primary test
+    windows for a tightened CI; None disables.
+
+    This instrument is intentionally self-contained — it re-implements the
+    vote and the mix rather than importing decepticons' versions, so it
+    remains a second witness rather than a mirror.
+    """
+    import torch
+    import torch.nn.functional as F
+
+    from decepticons.loader import load_checkpoint
+
+    dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+    pinned = pinned or {"k": 64, "tau": 20.0, "eps": 0.1, "lam": 0.05}
+
+    corpus_bytes = np.fromfile(corpus, dtype=np.uint8)
+    train = corpus_bytes[store_range[0]:store_range[1]].astype(np.int64)
+    store_n = len(train)
+    marg = torch.tensor(np.bincount(train, minlength=256) / store_n,
+                        device=dev, dtype=torch.float32)
+
+    inf = load_checkpoint(model_path, device=dev)
+    w = inf.weights()
+    emb = torch.tensor(w["linear_embedding.weight"], device=dev)
+    in_proj = torch.tensor(w["linear_in_proj"], device=dev)
+    decays = torch.tensor(w["linear_decays"], device=dev,
+                          dtype=torch.float64)
+    drive = (emb @ in_proj).T.contiguous()
+    m = decays.shape[0]
+
+    nf = 2 * chunk
+    jj = torch.arange(chunk, device=dev, dtype=torch.float64)
+    la = torch.log(decays)[:, None]
+    kf = torch.fft.rfft(((1 - decays)[:, None]
+                         * torch.exp(la * jj)).float(), n=nf, dim=1)
+    apow = torch.exp(la * (jj + 1.0)).float()
+
+    def stream_states(data):
+        h = torch.zeros(m, device=dev)
+        for s in range(0, len(data), chunk):
+            ck = torch.as_tensor(data[s:s + chunk], device=dev)
+            df = torch.fft.rfft(drive[:, ck], n=nf, dim=1)
+            st = torch.fft.irfft(df * kf, n=nf, dim=1)[:, :len(ck)] \
+                + h[:, None] * apow[:, :len(ck)]
+            h = st[:, -1].clone()
+            yield st.T, s
+
+    # whitening basis from the store stream (truncate-then-whiten)
+    gram = torch.zeros(m, m, device=dev, dtype=torch.float64)
+    n = 0
+    for st, _ in stream_states(train):
+        # fp32 chunk-products into fp64 accumulator (fp64 matmul is
+        # 1/32-rate on consumer cards; basis insensitive at this n)
+        gram += (st.T @ st).to(torch.float64)
+        n += len(st)
+    ev, u = torch.linalg.eigh(gram / n)
+    ev, u = ev.flip(0), u.flip(1)
+    proj = (u[:, :key_dim]
+            / torch.sqrt(ev[:key_dim].clamp_min(1e-10))).float()
+    top_share = float(ev[:key_dim].sum() / ev.sum())
+
+    keys = torch.empty(store_n - 1, key_dim, device=dev, dtype=torch.float16)
+    for st, s in stream_states(train):
+        hi = min(s + len(st), store_n - 1)
+        keys[s:hi] = F.normalize(st[:hi - s] @ proj, dim=1).half()
+    vals = torch.as_tensor(train[1:], device=dev)
+    if dev == "cuda":
+        torch.cuda.empty_cache()
+
+    def gather(region, rng, count):
+        starts = rng.integers(0, len(region) - window - 1, size=count)
+        states = torch.empty(len(region), key_dim, device=dev,
+                             dtype=torch.float16)
+        for st, s in stream_states(region):
+            states[s:s + len(st)] = F.normalize(st @ proj, dim=1).half()
+        Q, Y, B = [], [], []
+        for s in starts:
+            seq = region[s:s + window]
+            cap = inf.forward_captured(seq[None, :])
+            lg = torch.as_tensor(cap["logits"][0], device=dev)[burn:-1]
+            pos = torch.arange(s + burn, s + window - 1, device=dev)
+            Q.append(states[pos])
+            Y.append(torch.as_tensor(seq[burn + 1:], device=dev))
+            B.append(lg)
+        del states
+        if dev == "cuda":
+            torch.cuda.empty_cache()
+        return torch.cat(Q), torch.cat(Y), torch.cat(B)
+
+    region_a = corpus_bytes[query_range[0]:query_range[1]].astype(np.int64)
+    qa, ya, ba = gather(region_a, np.random.default_rng(query_seed),
+                        n_cal + n_test)
+    if extra_range is not None and n_extra > 0:
+        region_b = corpus_bytes[extra_range[0]:extra_range[1]] \
+            .astype(np.int64)
+        qb, yb, bb = gather(region_b, np.random.default_rng(extra_seed),
+                            n_extra)
+    else:
+        qb = yb = bb = None
+
+    npos = window - burn - 1
+    cal = slice(0, n_cal * npos)
+    tst = slice(n_cal * npos, (n_cal + n_test) * npos)
+
+    def search(Q, k=64, qtile=1024, ktile=1_000_000):
+        ov, oi = [], []
+        for qs in range(0, len(Q), qtile):
+            q = Q[qs:qs + qtile]
+            bv = torch.full((len(q), k), -1e4, device=dev,
+                            dtype=torch.float16)
+            bi = torch.zeros((len(q), k), device=dev, dtype=torch.long)
+            for ks in range(0, len(keys), ktile):
+                sc = q @ keys[ks:ks + ktile].T
+                v, i = sc.topk(k, dim=1)
+                bv, sel = torch.cat([bv, v], 1).topk(k, dim=1)
+                bi = torch.cat([bi, i + ks], 1).gather(1, sel)
+            ov.append(bv.float())
+            oi.append(bi)
+        return torch.cat(ov), torch.cat(oi)
+
+    va, ia = search(qa)
+    vb, ib = search(qb) if qb is not None else (None, None)
+
+    def vote(v, i, k, tau, eps):
+        wts = torch.softmax(v[:, :k] * tau, dim=1)
+        p = torch.zeros(len(v), 256, device=dev)
+        p.scatter_add_(1, vals[i[:, :k]], wts)
+        return (1 - eps) * p + eps * marg[None, :]
+
+    def bits(logp, y):
+        return -logp[torch.arange(len(y), device=dev), y] / np.log(2)
+
+    def mix_bits(v, i, base, y, k, tau, eps, lam):
+        p_knn = vote(v, i, k, tau, eps)
+        p_base = torch.softmax(base.float(), -1)
+        return bits(torch.log((lam * p_knn
+                               + (1 - lam) * p_base).clamp_min(1e-12)), y)
+
+    best = None
+    for k in (8, 16, 32, 64):
+        for tau in (5.0, 10.0, 20.0, 40.0):
+            for eps in (0.05, 0.1, 0.25):
+                for lam in (0.02, 0.05, 0.1, 0.2):
+                    b = float(mix_bits(va[cal], ia[cal], ba[cal], ya[cal],
+                                       k, tau, eps, lam).mean())
+                    if best is None or b < best[0]:
+                        best = (b, {"k": k, "tau": tau, "eps": eps,
+                                    "lam": lam})
+    cal_params = best[1]
+
+    def report(v, i, base, y, n_windows, params):
+        mb = mix_bits(v, i, base, y, **params).reshape(n_windows, -1).mean(1)
+        bbits = bits(torch.log_softmax(base.float(), -1), y) \
+            .reshape(n_windows, -1).mean(1)
+        d = (mb - bbits).cpu().numpy()
+        ci = 1.96 * d.std(ddof=1) / np.sqrt(len(d))
+        return {"delta": round(float(d.mean()), 4),
+                "ci95": round(float(ci), 4),
+                "improved": f"{int((d < 0).sum())}/{len(d)}",
+                "base_bpb": round(float(bbits.mean()), 4),
+                "mix_bpb": round(float(mb.mean()), 4),
+                "n_windows": int(n_windows)}
+
+    rows = {
+        "direct_pinned": report(va[tst], ia[tst], ba[tst], ya[tst],
+                                n_test, pinned),
+        "direct_calgrid": report(va[tst], ia[tst], ba[tst], ya[tst],
+                                 n_test, cal_params),
+    }
+    if vb is not None:
+        pooled = (torch.cat([va[tst], vb]), torch.cat([ia[tst], ib]),
+                  torch.cat([ba[tst], bb]), torch.cat([ya[tst], yb]))
+        rows["pooled_pinned"] = report(*pooled, n_test + n_extra, pinned)
+        rows["pooled_calgrid"] = report(*pooled, n_test + n_extra,
+                                        cal_params)
+
+    return {
+        "model": model_path,
+        "corpus": corpus,
+        "store_range": list(store_range),
+        "query_range": list(query_range),
+        "extra_range": list(extra_range) if extra_range else None,
+        "n_cal": n_cal, "n_test": n_test, "n_extra": n_extra,
+        "key_dim": key_dim, "window": window, "burn": burn,
+        "whitening_top_share": round(top_share, 3),
+        "pinned": pinned,
+        "cal_params": cal_params,
+        "rows": rows,
+    }
+
+
+def transformer_anisotropy(model_name: str,
+                           *,
+                           n_sample: int = 8000,
+                           max_len: int = 256,
+                           batches: int = 64,
+                           n_prompts: int = 256,
+                           fit_lo: int = 8,
+                           seed: int = 42,
+                           include_untrained: bool = True) -> dict:
+    """Per-layer residual eigenspectrum exponent for an HF transformer,
+    trained weights vs a random-init twin (arm-B instrument).
+
+    Standing finding (anisotropy program, thread 87): trained mid-network
+    alpha holds in a homeostatic ~0.78-1.0 band across widths while
+    untrained twins drift — training REGULATES the spectrum, it does not
+    steepen it. Rogue-dimension band (PC1 50-78%) and the final-layer
+    spike are trained-only signatures.
+
+    Pre-registered fit window: PCs fit_lo..min(512, d/4), full curve
+    saved. Compare across models by full curve + gap, never bare
+    exponents. Prompts come from the DB via require_prompts (constitution:
+    no hardcoded fallbacks). First 2 positions per sequence are dropped
+    (BOS/onset transients).
+    """
+    import torch
+    from transformers import (AutoConfig, AutoModelForCausalLM,
+                              AutoTokenizer)
+
+    from ..core.db import SignalDB
+
+    db = SignalDB()
+    texts = [p["text"] for p in
+             db.require_prompts(is_benign=True, limit=n_prompts)]
+
+    tok = AutoTokenizer.from_pretrained(model_name)
+    enc = [tok(t, return_tensors="pt", truncation=True,
+               max_length=max_len).input_ids for t in texts]
+    enc = [e for e in enc if e.shape[1] >= 16][:batches]
+    if len(enc) < 8:
+        raise RuntimeError(f"only {len(enc)} usable prompts >= 16 tokens")
+
+    def fit_exponent(eigs: np.ndarray, dim: int) -> tuple[float, int, int]:
+        hi = min(512, dim // 4)
+        window = eigs[fit_lo - 1:hi]
+        ranks = np.arange(fit_lo, fit_lo + len(window))
+        mask = window > 0
+        coef = np.polyfit(np.log(ranks[mask]), np.log(window[mask]), 1)
+        return float(-coef[0]), fit_lo, hi
+
+    def spectrum_by_layer(model) -> list[dict]:
+        per_layer: list[list[np.ndarray]] = []
+        with torch.no_grad():
+            for ids in enc:
+                out = model(ids, output_hidden_states=True)
+                hs = out.hidden_states  # embedding + one per layer
+                if not per_layer:
+                    per_layer = [[] for _ in hs]
+                for li, h in enumerate(hs):
+                    per_layer[li].append(h[0, 2:, :].float().cpu().numpy())
+        rng = np.random.default_rng(seed)
+        rows = []
+        for li, chunks in enumerate(per_layer):
+            vecs = np.concatenate(chunks, axis=0)
+            if len(vecs) > n_sample:
+                vecs = vecs[rng.choice(len(vecs), n_sample, replace=False)]
+            centered = vecs - vecs.mean(axis=0)
+            s = np.linalg.svd(centered, compute_uv=False)
+            eigs = s ** 2
+            total = float(eigs.sum())
+            alpha, lo, hi = fit_exponent(eigs, vecs.shape[1])
+            cum = np.cumsum(eigs) / total
+            rows.append({
+                "layer": li,  # 0 = embedding output
+                "alpha": round(alpha, 3),
+                "fit_window": [lo, hi],
+                "pc1_pct": round(float(eigs[0] / total) * 100, 2),
+                "top128_pct": round(
+                    float(cum[min(127, len(cum) - 1)]) * 100, 2),
+                "pcs_for_90pct": int(np.searchsorted(cum, 0.90)) + 1,
+                "eigs_head": [round(float(e), 6) for e in eigs[:64]],
+            })
+        return rows
+
+    result: dict = {"model": model_name, "n_texts": len(enc),
+                    "fit_window_rule": f"PCs {fit_lo}..min(512, d/4)"}
+
+    trained = AutoModelForCausalLM.from_pretrained(
+        model_name, torch_dtype=torch.float32).eval()
+    result["trained"] = spectrum_by_layer(trained)
+    del trained
+
+    if include_untrained:
+        torch.manual_seed(seed)
+        cfg = AutoConfig.from_pretrained(model_name)
+        untrained = AutoModelForCausalLM.from_config(cfg).float().eval()
+        result["untrained"] = spectrum_by_layer(untrained)
+        del untrained
+        mean_tr = float(np.mean([r["alpha"] for r in result["trained"][1:]]))
+        mean_un = float(np.mean([r["alpha"]
+                                 for r in result["untrained"][1:]]))
+        result["mean_alpha_trained"] = round(mean_tr, 3)
+        result["mean_alpha_untrained"] = round(mean_un, 3)
+        result["alpha_ratio"] = round(mean_tr / mean_un, 2) if mean_un else None
+
+    return result
 
 
 def tokenizer_compare(tokenizer_paths: list[str], *,
@@ -5831,6 +6451,126 @@ def causal_bank_pc_bands(mri_path: str, *,
         "partition_verdict": partition_verdict,
         "two_band_partition": bool(two_band),
         "two_band_note": note,
+    }
+
+
+PC_INFO_BANDS = ((0, 8), (8, 20), (20, 50), (50, 100), (100, 256),
+                 (256, 512), (512, 1024), (1024, 2048))
+PC_INFO_LAGS = (0, 8, 64, 512)
+# Arrow-of-memory lag set: negative lags score PROSPECTIVE information —
+# the byte |lag| positions AHEAD, knowable only through learned structure.
+PC_INFO_LAGS_ARROW = (-64, -8, -1, 0, 1, 8, 64, 512)
+
+
+def causal_bank_pc_information(mri_path: str, *,
+                               bands: tuple[tuple[int, int], ...] = PC_INFO_BANDS,
+                               lags: tuple[int, ...] = PC_INFO_LAGS,
+                               dims: int | None = None) -> dict:
+    """Information-per-PC vs variance-per-PC — the arm-C ledger (ruling
+    bafe1c44) and the arrow of memory (b7b915b7).
+
+    For each PC band of the substrate, down to the variance floor:
+      var_pct       — the variance ledger (kernel physics per arm A)
+      pos_r2        — position/clock information
+      byte_r2_lagK  — class-mean R2 for the byte K positions back
+                      (K>0 retrospective, K<0 PROSPECTIVE/future, K=0
+                      current). Normalized by the band's own scale, so a
+                      tiny-variance band can still score high — the
+                      divergence of the two ledgers is superposition
+                      proper.
+
+    Standing findings this measures against: frozen banks are verbatim
+    recorders (info follows the timescale ladder, deep-past-weighted);
+    trained organs are variance-blind and present-edge-weighted.
+
+    ``dims`` keeps only the first N state dims — adaptive captures concat
+    [substrate modes, x_embed], so dims=n_modes removes the trivial
+    current-byte carrier. Covariance eigendecomposition uses ALL captured
+    positions, so tail PCs are estimated from the full sample.
+
+    Requires a sequence-mode MRI with ``substrate_states`` and a
+    ``tokens.npz`` sidecar.
+    """
+    from .mri import load_mri
+
+    mri = load_mri(mri_path)
+    meta = mri['metadata']
+    if meta.get('architecture') != 'causal_bank':
+        return {"error": "Not a causal bank MRI"}
+    if meta.get('capture', {}).get('mode') != 'sequence':
+        return {"error": "Requires sequence-mode MRI"}
+
+    sub = mri["substrate_states"].astype(np.float32)
+    if dims is not None:
+        sub = sub[:, :, :dims]
+    tok_path = Path(mri_path) / "tokens.npz"
+    if not tok_path.exists():
+        return {"error": f"tokens.npz missing at {tok_path}"}
+    tok = np.load(tok_path)["token_ids"]
+    n_seqs, seq_len, D = sub.shape
+
+    flat = sub.reshape(-1, D).astype(np.float64)
+    flat -= flat.mean(0)
+    ev, U = np.linalg.eigh((flat.T @ flat) / len(flat))
+    ev, U = ev[::-1], U[:, ::-1]
+    var_frac = ev / ev.sum()
+    proj = (flat @ U).astype(np.float32)
+
+    pos = np.tile(np.arange(seq_len, dtype=np.float32), n_seqs)
+    rng = np.random.default_rng(0)
+    idx = rng.permutation(len(flat))
+    tr, te = idx[: len(flat) // 2], idx[len(flat) // 2:]
+
+    def _class_mean_r2(X_tr, c_tr, X_te, c_te):
+        means = np.zeros((256, X_tr.shape[1]), dtype=np.float64)
+        for b in range(256):
+            m = c_tr == b
+            if m.sum() > 3:
+                means[b] = X_tr[m].mean(0)
+        pred = means[c_te]
+        ss_r = ((X_te - pred) ** 2).sum()
+        ss_t = ((X_te - X_te.mean(0)) ** 2).sum()
+        return float(max(0.0, 1 - ss_r / max(ss_t, 1e-12)))
+
+    bands_out = []
+    for lo, hi in bands:
+        hi = min(hi, D)
+        if lo >= hi:
+            continue
+        X = proj[:, lo:hi]
+        A = np.column_stack([X[tr], np.ones(len(tr))])
+        coef, *_ = np.linalg.lstsq(A, pos[tr], rcond=None)
+        pred = X[te] @ coef[:-1] + coef[-1]
+        ss_r = ((pos[te] - pred) ** 2).sum()
+        ss_t = ((pos[te] - pos[te].mean()) ** 2).sum()
+        row = {
+            "band": f"{lo}-{hi - 1}",
+            "var_pct": round(float(var_frac[lo:hi].sum()) * 100, 4),
+            "pos_r2": round(float(max(0.0, 1 - ss_r / max(ss_t, 1e-12))), 4),
+        }
+        for lag in lags:
+            lagged = np.full((n_seqs, seq_len), -1, dtype=np.int64)
+            if lag == 0:
+                lagged[:] = tok[:, :seq_len]
+            elif lag > 0:
+                lagged[:, lag:] = tok[:, : seq_len - lag]
+            else:
+                k = -lag
+                lagged[:, : seq_len - k] = tok[:, k:seq_len]
+            lf = lagged.reshape(-1)
+            vtr = tr[lf[tr] >= 0]
+            vte = te[lf[te] >= 0]
+            row[f"byte_r2_lag{lag}"] = round(
+                _class_mean_r2(X[vtr], lf[vtr], X[vte], lf[vte]), 4)
+        bands_out.append(row)
+
+    return {
+        "mri": mri_path,
+        "shape": [int(n_seqs), int(seq_len), int(D)],
+        "dims": dims,
+        "lags": list(lags),
+        "eigs_head": [float(e) for e in ev[:64]],
+        "bands": bands_out,
     }
 
 

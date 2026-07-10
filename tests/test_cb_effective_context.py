@@ -57,9 +57,12 @@ def test_substrate_primary_knee_at_or_below_32_bytes(substrate_primary_ckpt):
 
 def test_effective_context_produces_monotone_nonincreasing_bpb(
         substrate_primary_ckpt):
-    """The bpb curve must be nonincreasing (longer context ≤ shorter context).
-    If a newer architecture produces a rising curve, something is wrong with
-    the measurement or the model.
+    """Adjacent-bucket rises must be explainable: either within noise
+    (2x the combined across-sequence SEM) or part of the documented
+    U-shape (session 13: universal in the causal-bank family — bpb falls
+    to an optimum then degrades at longer context). A rise that is both
+    early (before the optimum) and beyond noise indicates a measurement
+    or model problem.
     """
     from heinrich.profile.compare import _cb_effective_context
 
@@ -68,14 +71,23 @@ def test_effective_context_produces_monotone_nonincreasing_bpb(
         model_path=ckpt,
         val=val,
         seqlen=128,
-        n_trials=5,
+        n_trials=16,
         buckets=[1, 2, 4, 8, 16, 32, 64, 128],
         knee_threshold=0.01,
     )
-    bpbs = [b["bpb_mean"] for b in result["buckets"]]
-    # Allow a small rise of up to 0.01 bpb between adjacent buckets —
-    # measurement noise at n_trials=5. Larger rises indicate a problem.
+    buckets = result["buckets"]
+    bpbs = [b["bpb_mean"] for b in buckets]
+    optimum_idx = min(range(len(bpbs)), key=lambda i: bpbs[i])
     for i in range(len(bpbs) - 1):
-        assert bpbs[i + 1] - bpbs[i] <= 0.01, (
-            f"bpb rose from {bpbs[i]:.4f} to {bpbs[i+1]:.4f} between "
-            f"buckets {i} and {i+1}; expected nonincreasing curve")
+        rise = bpbs[i + 1] - bpbs[i]
+        if rise <= 0.01:
+            continue
+        if i >= optimum_idx:
+            continue  # U-shape territory: degradation past the optimum
+        noise = 2.0 * (buckets[i]["bpb_sem"] ** 2
+                       + buckets[i + 1]["bpb_sem"] ** 2) ** 0.5
+        assert rise <= noise, (
+            f"bpb rose {rise:.4f} from bucket {i} to {i+1} "
+            f"({bpbs[i]:.4f} -> {bpbs[i+1]:.4f}), before the optimum "
+            f"(bucket {optimum_idx}) and beyond 2x combined SEM "
+            f"({noise:.4f}) — measurement or model problem")

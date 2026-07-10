@@ -436,6 +436,60 @@ def build_parser() -> argparse.ArgumentParser:
     p_cb_pcb.add_argument("--n-bootstrap", type=int, default=0,
                            help="Bootstrap K train/test splits for per-band pos_r2 ± SEM (default: 0 = off)")
 
+    p_cb_pci = sub.add_parser("profile-cb-pc-information",
+                               help="Information-per-PC vs variance-per-PC (arm-C ledger): per deep PC band, variance %% vs position R² vs lagged-byte class-mean R² (retrospective AND prospective lags — the arrow of memory). Divergence of the two ledgers = superposition proper.")
+    p_cb_pci.add_argument("--mris", nargs="+", required=True, help="One or more sequence-mode .seq.mri directories")
+    p_cb_pci.add_argument("--lags", type=str, default="0,8,64,512",
+                           help="Comma-separated byte lags; negative = future/prospective (default: 0,8,64,512)")
+    p_cb_pci.add_argument("--arrow", action="store_true",
+                           help="Use the arrow-of-memory lag set (-64,-8,-1,0,1,8,64,512)")
+    p_cb_pci.add_argument("--dims", type=int, default=None,
+                           help="Keep only the first N state dims (e.g. n_modes to drop the concatenated x_embed columns)")
+
+    p_cb_spec = sub.add_parser("profile-cb-stream-spectrum",
+                                help="Eigenspectrum + power-law exponent of streamed bank states for arbitrary byte streams (arm-A instrument: variance spectra = kernel × marginal). Compares random vs trained embedding drive.")
+    p_cb_spec.add_argument("--model", required=True, help="Checkpoint path (.checkpoint.pt)")
+    p_cb_spec.add_argument("--streams", nargs="+", required=True,
+                            help="Byte stream file(s): raw uint8 or chronohorn byte shards (header auto-detected)")
+    p_cb_spec.add_argument("--embedding", choices=["random", "trained", "both"], default="random",
+                            help="Drive: random (untrained substrate, default), trained (the body's linear_embedding), or both")
+    p_cb_spec.add_argument("--seed", type=int, default=42, help="Seed for the random embedding (default: 42)")
+    p_cb_spec.add_argument("--fit-lo", type=int, default=8,
+                            help="Low edge of the exponent fit window; fit is PCs fit_lo..min(512, M/4) (default: 8)")
+    p_cb_spec.add_argument("--chunk", type=int, default=32768, help="FFT streaming chunk (default: 32768)")
+    p_cb_spec.add_argument("--device", default=None, help="cuda|cpu (default: auto)")
+
+    p_cb_knn = sub.add_parser("profile-cb-knn-lift",
+                               help="State-kNN lift over a causal-bank base: continuous frozen-tensor keys (truncate-then-whiten), windowed base logits, paired-window CI. Heinrich's independent witness to the kNN-LM organ (ruling ccd02828).")
+    p_cb_knn.add_argument("--model", required=True, help="Checkpoint path (.checkpoint.pt)")
+    p_cb_knn.add_argument("--corpus", required=True, help="Raw byte corpus (e.g. enwik8)")
+    p_cb_knn.add_argument("--store-range", type=str, default="0:8000000",
+                           help="start:end byte slice for the store (default: 0:8000000)")
+    p_cb_knn.add_argument("--query-range", type=str, default="95000000:96500000",
+                           help="start:end slice for cal+test windows (default: 95000000:96500000)")
+    p_cb_knn.add_argument("--extra-range", type=str, default="96500000:100000000",
+                           help="start:end slice for pooled extra windows; 'none' disables (default: 96500000:100000000)")
+    p_cb_knn.add_argument("--n-cal", type=int, default=12, help="Calibration windows (default: 12)")
+    p_cb_knn.add_argument("--n-test", type=int, default=32, help="Test windows in query range (default: 32)")
+    p_cb_knn.add_argument("--n-extra", type=int, default=32, help="Extra pooled windows (default: 32)")
+    p_cb_knn.add_argument("--query-seed", type=int, default=0, help="rng seed for query window starts (default: 0)")
+    p_cb_knn.add_argument("--extra-seed", type=int, default=1, help="rng seed for extra window starts (default: 1)")
+    p_cb_knn.add_argument("--key-dim", type=int, default=128, help="Whitened key dim (default: 128)")
+    p_cb_knn.add_argument("--window", type=int, default=1024, help="Base logits window (default: 1024)")
+    p_cb_knn.add_argument("--burn", type=int, default=256, help="Burn-in positions per window (default: 256)")
+    p_cb_knn.add_argument("--pinned", type=str, default="k=64,tau=20,eps=0.1,lam=0.05",
+                           help="Pinned hyperparameter row, k=..,tau=..,eps=..,lam=..")
+    p_cb_knn.add_argument("--device", default=None, help="cuda|cpu (default: auto)")
+
+    p_aniso = sub.add_parser("profile-anisotropy",
+                              help="Per-layer residual eigenspectrum exponent for an HF transformer, trained vs random-init twin (arm-B instrument: training regulates the spectrum, it does not steepen it).")
+    p_aniso.add_argument("--model", required=True, help="HF model name or path")
+    p_aniso.add_argument("--n-sample", type=int, default=8000, help="Residual vectors sampled per layer (default: 8000)")
+    p_aniso.add_argument("--max-len", type=int, default=256, help="Prompt truncation length (default: 256)")
+    p_aniso.add_argument("--batches", type=int, default=64, help="Prompts used (default: 64)")
+    p_aniso.add_argument("--n-prompts", type=int, default=256, help="Prompts drawn from the DB (default: 256)")
+    p_aniso.add_argument("--skip-untrained", action="store_true", help="Skip the random-init twin (trained spectra only)")
+
     p_cb_traj = sub.add_parser("profile-cb-trajectory", help="Trajectory analysis across multiple checkpoints: EffDim, R², mode utilization derivatives")
     p_cb_traj.add_argument("--mris", nargs="+", required=True, help="Ordered MRI paths (by training step)")
 
@@ -484,8 +538,27 @@ def build_parser() -> argparse.ArgumentParser:
                               help="Comma-separated bucket bounds (default: 1,2,4,8,16,32,64,128,256,512)")
     p_cb_effctx.add_argument("--knee-threshold", type=float, default=0.01,
                               help="bpb delta below which adjacent buckets count as saturated (default: 0.01)")
+    p_cb_effctx.add_argument("--seeds", type=str, default="42",
+                              help="Comma-separated val-draw seeds; slices are "
+                                   "seqlen-aligned so ONE seed pins content to "
+                                   "depths — pass several for absolute "
+                                   "cross-bucket claims (default: 42)")
     p_cb_effctx.add_argument("--result-json", default=None, help="Path to result.json for model config")
     p_cb_effctx.add_argument("--tokenizer-path", default=None, help="Path to tokenizer model")
+
+    p_cb_chctx = sub.add_parser("profile-cb-channel-context",
+                                 help="Per-depth-bucket bpb for each logit channel (joined/binding/local) from one forward per sequence. The depth-blind local head is the built-in content-difficulty control: a depth feature it mirrors is data, not model (retired the 'kernel trough', ruling 0762dfb6).")
+    p_cb_chctx.add_argument("--model", required=True, help="Checkpoint path (.checkpoint.pt)")
+    p_cb_chctx.add_argument("--val", default=None, help="Val bytes file (optional; random tokens if omitted)")
+    p_cb_chctx.add_argument("--seqlen", type=int, default=2048, help="Sequence length (default: 2048)")
+    p_cb_chctx.add_argument("--n-trials", type=int, default=48, help="Sequences per seed (default: 48)")
+    p_cb_chctx.add_argument("--buckets", type=str,
+                             default="1,2,4,8,16,32,64,128,256,512,1024,1280,1536,1792",
+                             help="Comma-separated bucket bounds (default: definitive 256-wide deep bins)")
+    p_cb_chctx.add_argument("--seeds", type=str, default="42",
+                             help="Comma-separated val-draw seeds (default: 42); several for absolute cross-bucket claims")
+    p_cb_chctx.add_argument("--result-json", default=None, help="Path to result.json for model config")
+    p_cb_chctx.add_argument("--tokenizer-path", default=None, help="Path to tokenizer model")
 
     p_cb_abl = sub.add_parser("profile-cb-ablations",
                               help="Per-path bpb contribution: substrate/local/truncate ablations")
@@ -1359,6 +1432,14 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_cb_additivity(args)
     elif args.command == "profile-cb-pc-bands":
         _cmd_cb_pc_bands(args)
+    elif args.command == "profile-cb-pc-information":
+        _cmd_cb_pc_information(args)
+    elif args.command == "profile-cb-stream-spectrum":
+        _cmd_cb_stream_spectrum(args)
+    elif args.command == "profile-cb-knn-lift":
+        _cmd_cb_knn_lift(args)
+    elif args.command == "profile-anisotropy":
+        _cmd_anisotropy(args)
     elif args.command == "profile-cb-trajectory":
         _cmd_cb_trajectory(args)
     elif args.command == "profile-cb-invertibility":
@@ -1379,6 +1460,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_cb_reproduce(args)
     elif args.command == "profile-cb-effective-context":
         _cmd_cb_effective_context(args)
+    elif args.command == "profile-cb-channel-context":
+        _cmd_cb_channel_context(args)
     elif args.command == "profile-cb-ablations":
         _cmd_cb_ablations(args)
     elif args.command == "profile-lookup-fraction":
@@ -4246,6 +4329,169 @@ def _cmd_cb_pc_bands(args: argparse.Namespace) -> None:
     _json_or(args, result, _fmt)
 
 
+def _cmd_cb_pc_information(args: argparse.Namespace) -> None:
+    """Per-PC-band information ledger (variance vs position vs lagged bytes)."""
+    from .profile.compare import (PC_INFO_LAGS_ARROW,
+                                  causal_bank_pc_information)
+
+    if args.arrow:
+        lags = tuple(PC_INFO_LAGS_ARROW)
+    else:
+        lags = tuple(int(x) for x in args.lags.split(",") if x.strip())
+
+    reports = []
+    for m in args.mris:
+        r = causal_bank_pc_information(m, lags=lags, dims=args.dims)
+        if "error" in r:
+            print(f"Error on {m}: {r['error']}")
+            continue
+        reports.append(r)
+    result = {"lags": list(lags), "dims": args.dims, "reports": reports}
+
+    def _fmt(res: dict) -> None:
+        for r in res["reports"]:
+            name = r["mri"].rstrip("/").split("/")[-1]
+            print(f"\n=== {name}  "
+                  f"[{r['shape'][0]}x{r['shape'][1]}x{r['shape'][2]}] ===")
+            print(f"  {'band':<11} {'var%':>8} {'pos_r2':>7} "
+                  + " ".join(f"{'lag' + str(l):>7}" for l in res["lags"]))
+            for b in r["bands"]:
+                print(f"  {b['band']:<11} {b['var_pct']:>8.4f} "
+                      f"{b['pos_r2']:>7.4f} "
+                      + " ".join(f"{b['byte_r2_lag' + str(l)]:>7.4f}"
+                                 for l in res["lags"]))
+        print("\n  (negative lags = prospective/future bytes; a recorder "
+              "points backward, a prediction organ points at the present "
+              "edge — rulings bafe1c44, b7b915b7)")
+
+    _json_or(args, result, _fmt)
+
+
+def _cmd_cb_stream_spectrum(args: argparse.Namespace) -> None:
+    """Streamed bank-state eigenspectrum + exponent per stream x embedding."""
+    from .profile.compare import _cb_stream_spectrum
+
+    result = _cb_stream_spectrum(
+        args.model,
+        streams=args.streams,
+        embedding=args.embedding,
+        seed=args.seed,
+        fit_lo=args.fit_lo,
+        chunk=args.chunk,
+        device=args.device,
+    )
+
+    def _fmt(r: dict) -> None:
+        print(f"\n=== Stream spectrum: {r['model']} ===")
+        print(f"  M={r['n_modes']}  fit window: {r['fit_window_rule']}  "
+              f"seed={r['seed']}\n")
+        print(f"  {'stream':<32} {'emb':<8} {'alpha':>7} {'pc1%':>7} "
+              f"{'top128%':>8} {'pcs90':>6}")
+        for row in r["rows"]:
+            name = row["stream"].rstrip("/").split("/")[-1][-32:]
+            print(f"  {name:<32} {row['embedding']:<8} "
+                  f"{row['alpha']:>7.3f} {row['pc1_pct']:>7.2f} "
+                  f"{row['top128_pct']:>8.2f} {row['pcs_for_90pct']:>6}")
+        print("\n  (compare across substrates by full curve + gap, never "
+              "bare exponents — the fit ruler is dimension-dependent)")
+
+    _json_or(args, result, _fmt)
+
+
+def _cmd_cb_knn_lift(args: argparse.Namespace) -> None:
+    """State-kNN lift with paired-window CI (independent witness)."""
+    from .profile.compare import _cb_knn_lift
+
+    def _rng(spec: str) -> tuple[int, int] | None:
+        if spec.strip().lower() == "none":
+            return None
+        lo, hi = spec.split(":")
+        return (int(lo), int(hi))
+
+    pinned = {}
+    for part in args.pinned.split(","):
+        key, val = part.split("=")
+        pinned[key.strip()] = float(val) if key.strip() != "k" else int(val)
+    if pinned.get("k") is not None:
+        pinned["k"] = int(pinned["k"])
+
+    result = _cb_knn_lift(
+        args.model,
+        corpus=args.corpus,
+        store_range=_rng(args.store_range),
+        query_range=_rng(args.query_range),
+        extra_range=_rng(args.extra_range),
+        n_cal=args.n_cal, n_test=args.n_test, n_extra=args.n_extra,
+        query_seed=args.query_seed, extra_seed=args.extra_seed,
+        key_dim=args.key_dim, window=args.window, burn=args.burn,
+        pinned=pinned, device=args.device,
+    )
+
+    def _fmt(r: dict) -> None:
+        print(f"\n=== State-kNN lift: {r['model']} ===")
+        print(f"  store {r['store_range']}  queries {r['query_range']}  "
+              f"extra {r['extra_range']}")
+        print(f"  key_dim={r['key_dim']} (whitening top share "
+              f"{r['whitening_top_share']})  window={r['window']} "
+              f"burn={r['burn']}")
+        print(f"  pinned {r['pinned']}   cal-grid chose {r['cal_params']}\n")
+        print(f"  {'row':<18} {'delta':>8} {'ci95':>8}  {'improved':>9}  "
+              f"{'base':>7}  {'mix':>7}")
+        for tag, row in r["rows"].items():
+            print(f"  {tag:<18} {row['delta']:>+8.4f} {row['ci95']:>8.4f}  "
+                  f"{row['improved']:>9}  {row['base_bpb']:>7.4f}  "
+                  f"{row['mix_bpb']:>7.4f}")
+        print("\n  (negative delta = the store helps; CI is 1.96-sigma "
+              "across paired windows)")
+
+    _json_or(args, result, _fmt)
+
+
+def _cmd_anisotropy(args: argparse.Namespace) -> None:
+    """Per-layer spectrum exponent, trained vs random-init twin."""
+    from .profile.compare import transformer_anisotropy
+
+    result = transformer_anisotropy(
+        args.model,
+        n_sample=args.n_sample,
+        max_len=args.max_len,
+        batches=args.batches,
+        n_prompts=args.n_prompts,
+        include_untrained=not args.skip_untrained,
+    )
+
+    def _fmt(r: dict) -> None:
+        print(f"\n=== {r['model']} — spectrum exponent by depth "
+              f"({r['fit_window_rule']}, {r['n_texts']} texts) ===")
+        has_un = "untrained" in r
+        head = f"  {'layer':>5}  {'alpha_tr':>8}"
+        if has_un:
+            head += f"  {'alpha_un':>8}"
+        head += f"  {'pc1%_tr':>7}"
+        if has_un:
+            head += f"  {'pc1%_un':>7}"
+        print(head)
+        un_rows = r.get("untrained") or [None] * len(r["trained"])
+        for tr, un in zip(r["trained"], un_rows):
+            tag = "emb" if tr["layer"] == 0 else f"L{tr['layer'] - 1:02d}"
+            row = f"  {tag:>5}  {tr['alpha']:>8.3f}"
+            if un is not None:
+                row += f"  {un['alpha']:>8.3f}"
+            row += f"  {tr['pc1_pct']:>7.2f}"
+            if un is not None:
+                row += f"  {un['pc1_pct']:>7.2f}"
+            print(row)
+        if has_un:
+            print(f"\n  mean alpha (residual layers): trained "
+                  f"{r['mean_alpha_trained']:.3f}  untrained "
+                  f"{r['mean_alpha_untrained']:.3f}  "
+                  f"ratio {r['alpha_ratio']}")
+            print("  (regulation, not steepening: trained alpha should sit "
+                  "in the homeostatic band while the twin drifts)")
+
+    _json_or(args, result, _fmt)
+
+
 def _cmd_cb_trajectory(args: argparse.Namespace) -> None:
     """Trajectory analysis across checkpoints."""
     from .profile.compare import causal_bank_trajectory
@@ -4517,18 +4763,31 @@ def _cmd_cb_effective_context(args: argparse.Namespace) -> None:
         knee_threshold=args.knee_threshold,
         result_json=getattr(args, "result_json", None),
         tokenizer_path=getattr(args, "tokenizer_path", None),
+        seeds=[int(s) for s in getattr(args, "seeds", "42").split(",")
+               if s.strip()],
     )
 
     def _fmt(r: dict) -> None:
         print(f"\n=== Effective-context for {r['model']} ===\n")
         print(f"  val_data: {r['val_data']}")
-        print(f"  n_trials={r['n_trials']}  seqlen={r['seqlen']}  "
-              f"threshold={r['knee_threshold']}\n")
-        print(f"  {'bucket':<16} {'n':>6}  {'bpb_mean':>8}  {'bpb_sem':>8}")
+        multi = len(r.get("seeds", [42])) > 1
+        print(f"  n_trials={r['n_trials']}/seed  seeds={r.get('seeds', [42])}  "
+              f"seqlen={r['seqlen']}  threshold={r['knee_threshold']}")
+        print(f"  (bpb_sem is across-sequence — the honest bar for bucket "
+              f"comparisons; sem_pos is the legacy position-pooled bar)\n")
+        head = (f"  {'bucket':<16} {'n':>6}  {'bpb_mean':>8}  {'bpb_sem':>8}  "
+                f"{'sem_pos':>8}")
+        if multi:
+            head += f"  {'seed_spread':>11}"
+        print(head)
         for b in r["buckets"]:
             label = f"[{b['min']},{b['max']})"
-            print(f"  {label:<16} {b['n']:>6}  {b['bpb_mean']:>8.4f}  "
-                  f"{b['bpb_sem']:>8.4f}")
+            row = (f"  {label:<16} {b['n']:>6}  {b['bpb_mean']:>8.4f}  "
+                   f"{b['bpb_sem']:>8.4f}  "
+                   f"{b.get('bpb_sem_positions', float('nan')):>8.4f}")
+            if multi:
+                row += f"  {b.get('seed_spread', float('nan')):>11.4f}"
+            print(row)
         print()
         if r["knee_bucket_min"] is None:
             print(f"  knee: NOT DETECTED (curve still decreasing)")
@@ -4541,6 +4800,42 @@ def _cmd_cb_effective_context(args: argparse.Namespace) -> None:
             print(f"  U-SHAPE: depth={r['u_shape_depth_bpb']:.4f} bpb "
                   f"(saturation - optimum). The model is best at the optimum bucket "
                   f"and degrades at longer context.")
+        print()
+
+    _json_or(args, result, _fmt)
+
+
+def _cmd_cb_channel_context(args: argparse.Namespace) -> None:
+    """Per-depth-bucket bpb per logit channel (joined/binding/local)."""
+    from .profile.compare import _cb_channel_context
+
+    buckets = [int(x) for x in args.buckets.split(",") if x.strip()]
+    result = _cb_channel_context(
+        model_path=args.model,
+        val=args.val,
+        seqlen=args.seqlen,
+        n_trials=args.n_trials,
+        buckets=buckets,
+        result_json=getattr(args, "result_json", None),
+        tokenizer_path=getattr(args, "tokenizer_path", None),
+        seeds=[int(s) for s in getattr(args, "seeds", "42").split(",")
+               if s.strip()],
+    )
+
+    def _fmt(r: dict) -> None:
+        print(f"\n=== Channel-context decompose: {r['model']} ===\n")
+        print(f"  gate (local_scale): {r['gate']}   "
+              f"n_trials={r['n_trials']}/seed  seeds={r['seeds']}  "
+              f"seqlen={r['seqlen']}")
+        print(f"  (SEMs are across-sequence; the depth-blind local channel "
+              f"is the content-difficulty control)\n")
+        print(f"  {'bucket':<16} {'n':>6}  {'joined':>8} {'binding':>8} "
+              f"{'local':>8}  {'local_buys':>10}")
+        for b in r["buckets"]:
+            label = f"[{b['min']},{b['max']})"
+            print(f"  {label:<16} {b['n']:>6}  {b['bpb_joined']:>8.4f} "
+                  f"{b['bpb_binding']:>8.4f} {b['bpb_local']:>8.4f}  "
+                  f"{b['local_buys']:>10.4f}")
         print()
 
     _json_or(args, result, _fmt)

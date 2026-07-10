@@ -87,8 +87,8 @@ def test_cb_effective_context_decreasing_bpb_with_fake_backend(monkeypatch):
     monkeypatch.setattr(cmp_mod, "_load_effective_context_backend",
                          lambda path, result_json, tokenizer_path: fake_backend)
     monkeypatch.setattr(cmp_mod, "_load_effective_context_val",
-                         lambda val, seqlen, n_trials, vocab_size:
-                         np.random.default_rng(0).integers(
+                         lambda val, seqlen, n_trials, vocab_size, seed=42:
+                         np.random.default_rng(seed).integers(
                              0, 256, size=(n_trials, seqlen), dtype=np.int64))
 
     result = cmp_mod._cb_effective_context(
@@ -108,6 +108,40 @@ def test_cb_effective_context_decreasing_bpb_with_fake_backend(monkeypatch):
     assert "knee_bucket_min" in result
     assert "saturation_bpb" in result
     assert result["saturation_bpb"] == bpbs[-1]
+
+
+def test_cb_effective_context_multiseed_reports_spread(monkeypatch):
+    """Multi-seed draws must pool sequences, report across-sequence SEM,
+    and expose per-seed bucket means + spread (the trough-retraction fix:
+    one seed pins content to depths)."""
+    import heinrich.profile.compare as cmp_mod
+
+    fake_backend = _FakeCausalBackend(vocab_size=256)
+    monkeypatch.setattr(cmp_mod, "_load_effective_context_backend",
+                         lambda path, result_json, tokenizer_path: fake_backend)
+    monkeypatch.setattr(cmp_mod, "_load_effective_context_val",
+                         lambda val, seqlen, n_trials, vocab_size, seed=42:
+                         np.random.default_rng(seed).integers(
+                             0, 256, size=(n_trials, seqlen), dtype=np.int64))
+
+    result = cmp_mod._cb_effective_context(
+        model_path="IGNORED",
+        val=None,
+        seqlen=32,
+        n_trials=3,
+        buckets=[1, 2, 4, 8, 16, 32],
+        knee_threshold=0.01,
+        seeds=[42, 43],
+    )
+
+    assert result["seeds"] == [42, 43]
+    assert result["n_sequences_total"] == 6  # 3 trials x 2 seeds
+    for b in result["buckets"]:
+        assert "bpb_sem" in b                 # across-sequence SEM
+        assert "bpb_sem_positions" in b       # legacy bar kept
+        if b["n"] > 0:
+            assert set(b["per_seed_bpb"]) == {"42", "43"}
+            assert b["seed_spread"] >= 0
 
 
 def test_parse_ablation_spec_handles_three_modes():

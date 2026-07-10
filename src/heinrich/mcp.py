@@ -560,6 +560,19 @@ TOOLS = {
             "n_trials": {"type": "integer", "description": "Number of trial sequences (default: 30)"},
             "buckets": {"type": "string", "description": "Comma-separated bucket bounds (default: 1,2,4,8,16,32,64,128,256,512)"},
             "knee_threshold": {"type": "number", "description": "bpb delta threshold for saturation (default: 0.01)"},
+            "seeds": {"type": "string", "description": "Comma-separated val-draw seeds (default: 42). Slices are seqlen-aligned: one seed pins content to depths, so absolute cross-bucket claims need several seeds"},
+        },
+    },
+    "heinrich_cb_channel_context": {
+        "description": "Per-depth-bucket bpb per logit channel (joined/binding/local) from one forward per sequence. The depth-blind local head is the built-in content-difficulty control: a depth feature it mirrors is data, not model. Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "Checkpoint path (.checkpoint.pt)", "required": True},
+            "val": {"type": "string", "description": "Val bytes file (optional)"},
+            "seqlen": {"type": "integer", "description": "Sequence length (default: 2048)"},
+            "n_trials": {"type": "integer", "description": "Sequences per seed (default: 48)"},
+            "buckets": {"type": "string", "description": "Comma-separated bucket bounds (default: definitive 256-wide deep bins)"},
+            "seeds": {"type": "string", "description": "Comma-separated val-draw seeds (default: 42); pass several for absolute cross-bucket claims"},
+            "result_json": {"type": "string", "description": "Path to result.json for model config"},
         },
     },
     "heinrich_cb_ablations": {
@@ -1312,6 +1325,49 @@ TOOLS = {
             "extra_args": {"type": "array", "description": "Additional raw CLI args"},
         },
     },
+    "heinrich_cb_pc_information": {
+        "description": "Information-per-PC vs variance-per-PC (arm-C ledger): per deep PC band, variance % vs position R² vs lagged-byte R². Negative lags = prospective (arrow of memory). Divergence of the ledgers = superposition proper.",
+        "parameters": {
+            "mris": {"type": "array", "description": "One or more sequence-mode .seq.mri directories", "required": True},
+            "lags": {"type": "string", "description": "Comma-separated byte lags, negative = future (default: 0,8,64,512)"},
+            "arrow": {"type": "boolean", "description": "Use the arrow-of-memory lag set (-64,-8,-1,0,1,8,64,512)"},
+            "dims": {"type": "integer", "description": "Keep only first N state dims (n_modes drops the x_embed concat)"},
+        },
+    },
+    "heinrich_cb_stream_spectrum": {
+        "description": "Eigenspectrum + power-law exponent of streamed bank states for arbitrary byte streams (arm-A instrument: variance = kernel × marginal). Random vs trained embedding drive. Needs model + streams.",
+        "parameters": {
+            "model": {"type": "string", "description": "Checkpoint path (.checkpoint.pt)", "required": True},
+            "streams": {"type": "array", "description": "Byte stream file(s); chronohorn shard headers auto-detected", "required": True},
+            "embedding": {"type": "string", "description": "random | trained | both (default: random)"},
+            "seed": {"type": "integer", "description": "Random-embedding seed (default: 42)"},
+            "device": {"type": "string", "description": "cuda | cpu (default: auto)"},
+        },
+    },
+    "heinrich_profile_anisotropy": {
+        "description": "Per-layer residual eigenspectrum exponent for an HF transformer, trained vs random-init twin (arm-B instrument: training regulates the spectrum, not steepens). Needs model.",
+        "parameters": {
+            "model": {"type": "string", "description": "HF model name or path", "required": True},
+            "n_sample": {"type": "integer", "description": "Residual vectors per layer (default: 8000)"},
+            "max_len": {"type": "integer", "description": "Prompt truncation (default: 256)"},
+            "batches": {"type": "integer", "description": "Prompts used (default: 64)"},
+            "skip_untrained": {"type": "boolean", "description": "Skip the random-init twin"},
+        },
+    },
+    "heinrich_cb_knn_lift": {
+        "description": "State-kNN lift over a causal-bank base: continuous frozen-tensor keys (truncate-then-whiten), windowed base logits, paired-window CI. Heinrich's independent witness to the kNN-LM organ. Needs model + corpus. GPU-heavy.",
+        "parameters": {
+            "model": {"type": "string", "description": "Checkpoint path (.checkpoint.pt)", "required": True},
+            "corpus": {"type": "string", "description": "Raw byte corpus, e.g. enwik8", "required": True},
+            "store_range": {"type": "string", "description": "start:end store slice (default: 0:8000000)"},
+            "query_range": {"type": "string", "description": "start:end query slice (default: 95000000:96500000)"},
+            "extra_range": {"type": "string", "description": "start:end pooled extra slice or 'none' (default: 96500000:100000000)"},
+            "n_test": {"type": "integer", "description": "Test windows (default: 32)"},
+            "n_extra": {"type": "integer", "description": "Extra pooled windows (default: 32)"},
+            "key_dim": {"type": "integer", "description": "Whitened key dim (default: 128)"},
+            "pinned": {"type": "string", "description": "Pinned params row, e.g. k=64,tau=20,eps=0.1,lam=0.05"},
+        },
+    },
     "heinrich_cb_trajectory": {
         "description": "Trajectory analysis across multiple checkpoints: EffDim, R², mode-utilization derivatives.",
         "parameters": {
@@ -1748,7 +1804,15 @@ class ToolServer:
                 ["--model", arguments["model"]],
                 optional={"val": "--val", "seqlen": "--seqlen",
                           "n_trials": "--n-trials", "buckets": "--buckets",
-                          "knee_threshold": "--knee-threshold"},
+                          "knee_threshold": "--knee-threshold",
+                          "seeds": "--seeds"},
+                timeout=1800)
+        if name == "heinrich_cb_channel_context":
+            return self._do_subprocess(arguments, "profile-cb-channel-context",
+                ["--model", arguments["model"]],
+                optional={"val": "--val", "seqlen": "--seqlen",
+                          "n_trials": "--n-trials", "buckets": "--buckets",
+                          "seeds": "--seeds", "result_json": "--result-json"},
                 timeout=1800)
         if name == "heinrich_cb_ablations":
             return self._do_subprocess(arguments, "profile-cb-ablations",
@@ -2057,6 +2121,37 @@ class ToolServer:
         if name == "heinrich_cb_pc_bands":
             return self._do_subprocess(arguments, "profile-cb-pc-bands",
                 ["--mris", *arguments["mris"]], optional={"n_bootstrap": "--n-bootstrap"}, timeout=600)
+        if name == "heinrich_profile_anisotropy":
+            base = ["--model", arguments["model"]]
+            if arguments.get("skip_untrained"):
+                base.append("--skip-untrained")
+            return self._do_subprocess(arguments, "profile-anisotropy",
+                base, optional={"n_sample": "--n-sample",
+                                "max_len": "--max-len",
+                                "batches": "--batches"},
+                timeout=3600)
+        if name == "heinrich_cb_knn_lift":
+            return self._do_subprocess(arguments, "profile-cb-knn-lift",
+                ["--model", arguments["model"], "--corpus", arguments["corpus"]],
+                optional={"store_range": "--store-range",
+                          "query_range": "--query-range",
+                          "extra_range": "--extra-range",
+                          "n_test": "--n-test", "n_extra": "--n-extra",
+                          "key_dim": "--key-dim", "pinned": "--pinned"},
+                timeout=7200)
+        if name == "heinrich_cb_stream_spectrum":
+            return self._do_subprocess(arguments, "profile-cb-stream-spectrum",
+                ["--model", arguments["model"], "--streams", *arguments["streams"]],
+                optional={"embedding": "--embedding", "seed": "--seed",
+                          "device": "--device"},
+                timeout=3600)
+        if name == "heinrich_cb_pc_information":
+            base = ["--mris", *arguments["mris"]]
+            if arguments.get("arrow"):
+                base.append("--arrow")
+            return self._do_subprocess(arguments, "profile-cb-pc-information",
+                base, optional={"lags": "--lags", "dims": "--dims"},
+                timeout=1200)
         if name == "heinrich_cb_trajectory":
             return self._do_subprocess(arguments, "profile-cb-trajectory",
                 ["--mris", *arguments["mris"]], timeout=600)

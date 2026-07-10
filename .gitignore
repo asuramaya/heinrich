@@ -92,3 +92,4 @@ web/docs/.vitepress/dist/
 
 # Book reading page (generated from the .tex by web/book/build.sh)
 web/public/book/
+data/mris/
