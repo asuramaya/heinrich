@@ -5359,6 +5359,155 @@ def _cb_stream_spectrum(model_path: str,
     }
 
 
+def _cb_spectral_bands(*,
+                       mris: list[str] | None = None,
+                       model_path: str | None = None,
+                       stream: str | None = None,
+                       embedding: str = "both",
+                       seed: int = 42,
+                       skip: int = 256,
+                       subsample: int = 8,
+                       n_bands: int = 4,
+                       fit_frac: float = 1.0,
+                       chunk: int = 32768,
+                       device: str | None = None) -> dict:
+    """Per-timescale-band variance spectral exponent — decepticons'
+    ``spectral_bands`` diagnostic run as heinrich's co-witness (the ON/OFF
+    control for arm A's "variance spectra = kernel x marginal").
+
+    Two row sources, ONE scorer: every row is scored by
+    ``decepticons.models.diagnostics.spectral_bands`` — their instrument on
+    heinrich's data, so numbers are comparable to their frozen baseline.
+    (Their function centers states internally; heinrich's stream-spectrum
+    does not — never compare alphas across the two instruments, only
+    structure and drift within this one.)
+
+      mris: sequence-mode .seq.mri captures — trained bodies. Substrate
+        columns are truncated to metadata ``n_modes`` (adaptive bodies
+        stash concat(modes, x_embed)); per-mode decays are recovered
+        exactly from the stored half-lives (d = 0.5**(1/hl)). The first
+        ``skip`` positions of each sequence are dropped — cold-start EMA
+        states bias slow-mode variance low.
+      model_path + stream: the FROZEN control — kernel states regenerated
+        from the checkpoint's linear_decays via the arm-A FFT template,
+        position-subsampled by ``subsample`` to bound memory. 'random'
+        drive = no trained tensor in the loop; 'trained' adds the one
+        trained input tensor (the front-door whitener, ruling f9d9a48).
+
+    The staked read (thread d1b0656e item 2): frozen rows show the alpha
+    ladder tracking the decay physics; trained rows flatten it (whitened).
+    """
+    from decepticons.models.diagnostics import spectral_bands
+
+    if not mris and not (model_path and stream):
+        raise ValueError("need --mris and/or --model + --stream")
+
+    rows: list[dict] = []
+
+    for mri_dir in (mris or []):
+        d = Path(mri_dir)
+        meta = json.loads((d / "metadata.json").read_text())
+        n_modes = int(meta["model"]["n_modes"])
+        half_lives = np.load(d / "half_lives.npy")
+        if half_lives.shape[0] != n_modes:
+            raise ValueError(
+                f"{mri_dir}: half_lives {half_lives.shape[0]} != "
+                f"n_modes {n_modes}")
+        decays = np.power(0.5, 1.0 / half_lives)
+        sub = np.load(d / "substrate.npy", mmap_mode="r")
+        states = np.asarray(sub[:, skip:, :n_modes], dtype=np.float32)
+        states = states.reshape(-1, n_modes)
+        r = spectral_bands(states, decays, n_bands=n_bands,
+                           fit_frac=fit_frac)
+        r["body"] = d.name
+        r["source"] = "mri"
+        r["n_samples"] = int(states.shape[0])
+        r["skip"] = int(skip)
+        rows.append(r)
+        del states
+
+    if model_path and stream:
+        import torch
+
+        from decepticons.loader import load_checkpoint
+
+        dev = device or ("cuda" if torch.cuda.is_available() else "cpu")
+        inf = load_checkpoint(model_path, device=dev)
+        w = inf.weights()
+        in_proj = torch.tensor(w["linear_in_proj"], device=dev)
+        decays_t = torch.tensor(w["linear_decays"], device=dev,
+                                dtype=torch.float64)
+        m = decays_t.shape[0]
+
+        kinds = {"random", "trained", "both"}
+        if embedding not in kinds:
+            raise ValueError(f"embedding must be one of {sorted(kinds)}")
+        drives = {}
+        if embedding in ("random", "both"):
+            torch.manual_seed(seed)
+            emb = torch.randn(256, 256, device=dev)
+            drives["random"] = (emb @ in_proj).T.contiguous()
+        if embedding in ("trained", "both"):
+            emb = torch.tensor(w["linear_embedding.weight"], device=dev)
+            drives["trained"] = (emb @ in_proj).T.contiguous()
+
+        nf = 2 * chunk
+        jj = torch.arange(chunk, device=dev, dtype=torch.float64)
+        la = torch.log(decays_t)[:, None]
+        kf = torch.fft.rfft(((1 - decays_t)[:, None]
+                             * torch.exp(la * jj)).float(), n=nf, dim=1)
+        apow = torch.exp(la * (jj + 1.0)).float()
+        data = _load_byte_stream(stream)
+        decays_np = decays_t.cpu().numpy()
+
+        for kind, drive in drives.items():
+            parts = []
+            h = torch.zeros(m, device=dev)
+            for s in range(0, len(data), chunk):
+                ck = torch.as_tensor(data[s:s + chunk].astype(np.int64),
+                                     device=dev)
+                df = torch.fft.rfft(drive[:, ck], n=nf, dim=1)
+                st = torch.fft.irfft(df * kf, n=nf, dim=1)[:, :len(ck)] \
+                    + h[:, None] * apow[:, :len(ck)]
+                h = st[:, -1].clone()
+                parts.append(st.T[::subsample].float().cpu().numpy())
+            states = np.concatenate(parts, axis=0)
+            del parts
+            r = spectral_bands(states, decays_np, n_bands=n_bands,
+                               fit_frac=fit_frac)
+            r["body"] = f"frozen-kernel({kind})"
+            r["source"] = "stream"
+            r["stream"] = stream
+            r["n_samples"] = int(states.shape[0])
+            r["subsample"] = int(subsample)
+            del states
+            rows.append(r)
+
+    band_names = None
+    for r in rows:
+        names = [b["name"] for b in r["bands"]]
+        if band_names is None:
+            band_names = names
+    alpha_table = {
+        name: [r["bands"][i]["alpha"] for r in rows]
+        for i, name in enumerate(band_names or [])
+    }
+    spreads = []
+    for r in rows:
+        av = [b["alpha"] for b in r["bands"] if b["alpha"] is not None]
+        spreads.append(round(max(av) - min(av), 3) if len(av) >= 2 else None)
+
+    return {
+        "scorer": "decepticons.models.diagnostics.spectral_bands (centered)",
+        "n_bands": int(n_bands),
+        "fit_frac": float(fit_frac),
+        "bodies": [r["body"] for r in rows],
+        "alpha_table": alpha_table,
+        "alpha_spread_per_body": spreads,
+        "rows": rows,
+    }
+
+
 def _cb_knn_lift(model_path: str,
                  *,
                  corpus: str,

@@ -1351,6 +1351,18 @@ TOOLS = {
             "device": {"type": "string", "description": "cuda | cpu (default: auto)"},
         },
     },
+    "heinrich_cb_spectral_bands": {
+        "description": "Per-timescale-band variance spectral exponent scored by decepticons' spectral_bands (their instrument, heinrich's data — the ON/OFF co-witness). Rows from .seq.mri captures (trained bodies) and/or a frozen-kernel stream regeneration. Needs mris and/or model+stream.",
+        "parameters": {
+            "mris": {"type": "array", "description": "Sequence-mode .seq.mri directories (trained bodies)"},
+            "model": {"type": "string", "description": "Checkpoint path for the frozen-kernel control row (with stream)"},
+            "stream": {"type": "string", "description": "Byte stream for the frozen row; shard headers auto-detected"},
+            "embedding": {"type": "string", "description": "Frozen-row drive: random | trained | both (default: both)"},
+            "skip": {"type": "integer", "description": "Cold-start positions dropped per MRI sequence (default: 256)"},
+            "n_bands": {"type": "integer", "description": "Timescale bands (default: 4)"},
+            "device": {"type": "string", "description": "cuda | cpu (default: auto)"},
+        },
+    },
     "heinrich_profile_pc_information": {
         "description": "Transformer information ledger (arm C's transformer half): per layer and PC band, variance % vs position R² vs lagged-token embedding-recovery R² (negative lags = prospective; -1 = next-token recovery). Needs model.",
         "parameters": {
@@ -2222,6 +2234,18 @@ class ToolServer:
                 ["--model", arguments["model"], "--streams", *arguments["streams"]],
                 optional={"embedding": "--embedding", "seed": "--seed",
                           "device": "--device"},
+                timeout=3600)
+        if name == "heinrich_cb_spectral_bands":
+            base = []
+            if arguments.get("mris"):
+                base += ["--mris", *arguments["mris"]]
+            if arguments.get("model"):
+                base += ["--model", arguments["model"]]
+            if arguments.get("stream"):
+                base += ["--stream", arguments["stream"]]
+            return self._do_subprocess(arguments, "profile-cb-spectral-bands",
+                base, optional={"embedding": "--embedding", "skip": "--skip",
+                                "n_bands": "--n-bands", "device": "--device"},
                 timeout=3600)
         if name == "heinrich_cb_pc_information":
             base = ["--mris", *arguments["mris"]]

@@ -467,6 +467,27 @@ def build_parser() -> argparse.ArgumentParser:
     p_cb_spec.add_argument("--chunk", type=int, default=32768, help="FFT streaming chunk (default: 32768)")
     p_cb_spec.add_argument("--device", default=None, help="cuda|cpu (default: auto)")
 
+    p_cb_sb = sub.add_parser("profile-cb-spectral-bands",
+                              help="Per-timescale-band variance spectral exponent scored by decepticons' spectral_bands (their instrument, heinrich's data — the ON/OFF co-witness). Rows from .seq.mri captures (trained bodies) and/or a frozen-kernel stream regeneration.")
+    p_cb_sb.add_argument("--mris", nargs="*", default=None,
+                          help="Sequence-mode .seq.mri directories (trained bodies)")
+    p_cb_sb.add_argument("--model", default=None,
+                          help="Checkpoint path for the frozen-kernel control row (with --stream)")
+    p_cb_sb.add_argument("--stream", default=None,
+                          help="Byte stream for the frozen-kernel row: raw uint8 or chronohorn shard (header auto-detected)")
+    p_cb_sb.add_argument("--embedding", choices=["random", "trained", "both"], default="both",
+                          help="Frozen-row drive: random (no trained tensor), trained (the one trained input tensor), both (default)")
+    p_cb_sb.add_argument("--seed", type=int, default=42, help="Seed for the random drive (default: 42)")
+    p_cb_sb.add_argument("--skip", type=int, default=256,
+                          help="Cold-start positions dropped per MRI sequence (default: 256)")
+    p_cb_sb.add_argument("--subsample", type=int, default=8,
+                          help="Frozen-row position subsampling (default: 8)")
+    p_cb_sb.add_argument("--n-bands", type=int, default=4, help="Timescale bands (default: 4)")
+    p_cb_sb.add_argument("--fit-frac", type=float, default=1.0,
+                          help="Fraction of each band's eigenvalues used in the power-law fit (default: 1.0)")
+    p_cb_sb.add_argument("--chunk", type=int, default=32768, help="FFT streaming chunk (default: 32768)")
+    p_cb_sb.add_argument("--device", default=None, help="cuda|cpu (default: auto)")
+
     p_cb_knn = sub.add_parser("profile-cb-knn-lift",
                                help="State-kNN lift over a causal-bank base: continuous frozen-tensor keys (truncate-then-whiten), windowed base logits, paired-window CI. Heinrich's independent witness to the kNN-LM organ (ruling ccd02828).")
     p_cb_knn.add_argument("--model", required=True, help="Checkpoint path (.checkpoint.pt)")
@@ -1492,6 +1513,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_cb_pc_information(args)
     elif args.command == "profile-cb-stream-spectrum":
         _cmd_cb_stream_spectrum(args)
+    elif args.command == "profile-cb-spectral-bands":
+        _cmd_cb_spectral_bands(args)
     elif args.command == "profile-cb-knn-lift":
         _cmd_cb_knn_lift(args)
     elif args.command == "profile-anisotropy":
@@ -4460,6 +4483,51 @@ def _cmd_cb_stream_spectrum(args: argparse.Namespace) -> None:
                   f"{row['top128_pct']:>8.2f} {row['pcs_for_90pct']:>6}")
         print("\n  (compare across substrates by full curve + gap, never "
               "bare exponents — the fit ruler is dimension-dependent)")
+
+    _json_or(args, result, _fmt)
+
+
+def _cmd_cb_spectral_bands(args: argparse.Namespace) -> None:
+    """Per-band spectral exponent via decepticons' scorer (ON/OFF control)."""
+    from .profile.compare import _cb_spectral_bands
+
+    result = _cb_spectral_bands(
+        mris=args.mris,
+        model_path=args.model,
+        stream=args.stream,
+        embedding=args.embedding,
+        seed=args.seed,
+        skip=args.skip,
+        subsample=args.subsample,
+        n_bands=args.n_bands,
+        fit_frac=args.fit_frac,
+        chunk=args.chunk,
+        device=args.device,
+    )
+
+    def _fmt(r: dict) -> None:
+        print(f"\n=== Spectral bands (scorer: {r['scorer']}) ===\n")
+        for row in r["rows"]:
+            print(f"  --- {row['body']}  (n={row['n_samples']}, "
+                  f"source={row['source']}) ---")
+            print(f"  {'band':<14} {'hl range':>16} {'alpha':>7} "
+                  f"{'r2':>6} {'var%':>6}")
+            for b in row["bands"]:
+                hl = f"{b['half_life_range'][0]}..{b['half_life_range'][1]}"
+                a = "  n/a" if b["alpha"] is None else f"{b['alpha']:7.3f}"
+                r2 = "  n/a" if b["fit_r2"] is None else f"{b['fit_r2']:6.3f}"
+                print(f"  {b['name']:<14} {hl:>16} {a} {r2} "
+                      f"{b['variance_share_pct']:>6.1f}")
+            ga = row.get("global_alpha")
+            print(f"  global alpha: {ga}")
+            for f in row.get("findings", []):
+                print(f"  * {f}")
+            print()
+        print(f"  alpha spread per body: "
+              f"{dict(zip(r['bodies'], r['alpha_spread_per_body']))}")
+        print("  (their scorer CENTERS states — never compare these alphas "
+              "to heinrich's uncentered stream-spectrum; read structure "
+              "and drift)")
 
     _json_or(args, result, _fmt)
 
