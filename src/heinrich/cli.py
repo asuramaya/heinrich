@@ -4440,8 +4440,11 @@ def _cmd_cb_pc_information(args: argparse.Namespace) -> None:
     def _fmt(res: dict) -> None:
         for r in res["reports"]:
             name = r["mri"].rstrip("/").split("/")[-1]
+            bpb = r.get("capture_bpb")
+            bpb_s = f"  capture_bpb={bpb}" if bpb is not None else ""
             print(f"\n=== {name}  "
-                  f"[{r['shape'][0]}x{r['shape'][1]}x{r['shape'][2]}] ===")
+                  f"[{r['shape'][0]}x{r['shape'][1]}x{r['shape'][2]}]"
+                  f"{bpb_s} ===")
             print(f"  {'band':<11} {'var%':>8} {'pos_r2':>7} "
                   + " ".join(f"{'lag' + str(l):>7}" for l in res["lags"]))
             for b in r["bands"]:

@@ -6723,11 +6723,20 @@ def causal_bank_pc_information(mri_path: str, *,
                 _class_mean_r2(X[vtr], lf[vtr], X[vte], lf[vte]), 4)
         bands_out.append(row)
 
+    # The capture's own loss (bpb; position 0 is NaN by construction) —
+    # pairs the information ledger with the loss trajectory, so eviction
+    # vs loss can be read from one report.
+    capture_bpb = None
+    loss = mri.get("loss")
+    if loss is not None:
+        capture_bpb = round(float(np.nanmean(loss)), 4)
+
     return {
         "mri": mri_path,
         "shape": [int(n_seqs), int(seq_len), int(D)],
         "dims": dims,
         "lags": list(lags),
+        "capture_bpb": capture_bpb,
         "eigs_head": [float(e) for e in ev[:64]],
         "bands": bands_out,
     }
