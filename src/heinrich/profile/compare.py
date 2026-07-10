@@ -5375,6 +5375,7 @@ def _cb_knn_lift(model_path: str,
                  window: int = 1024,
                  burn: int = 256,
                  chunk: int = 32768,
+                 ktile: int = 1_000_000,
                  pinned: dict | None = None,
                  device: str | None = None) -> dict:
     """State-kNN lift over a causal-bank base — heinrich's independent
@@ -5496,7 +5497,7 @@ def _cb_knn_lift(model_path: str,
     cal = slice(0, n_cal * npos)
     tst = slice(n_cal * npos, (n_cal + n_test) * npos)
 
-    def search(Q, k=64, qtile=1024, ktile=1_000_000):
+    def search(Q, k=64, qtile=1024, ktile=ktile):
         ov, oi = [], []
         for qs in range(0, len(Q), qtile):
             q = Q[qs:qs + qtile]

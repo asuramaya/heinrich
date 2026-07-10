@@ -479,6 +479,8 @@ def build_parser() -> argparse.ArgumentParser:
     p_cb_knn.add_argument("--burn", type=int, default=256, help="Burn-in positions per window (default: 256)")
     p_cb_knn.add_argument("--pinned", type=str, default="k=64,tau=20,eps=0.1,lam=0.05",
                            help="Pinned hyperparameter row, k=..,tau=..,eps=..,lam=..")
+    p_cb_knn.add_argument("--ktile", type=int, default=1_000_000,
+                           help="Store rows scored per search tile; shrink for big stores on small cards (default: 1000000)")
     p_cb_knn.add_argument("--device", default=None, help="cuda|cpu (default: auto)")
 
     p_aniso = sub.add_parser("profile-anisotropy",
@@ -4424,7 +4426,7 @@ def _cmd_cb_knn_lift(args: argparse.Namespace) -> None:
         n_cal=args.n_cal, n_test=args.n_test, n_extra=args.n_extra,
         query_seed=args.query_seed, extra_seed=args.extra_seed,
         key_dim=args.key_dim, window=args.window, burn=args.burn,
-        pinned=pinned, device=args.device,
+        ktile=args.ktile, pinned=pinned, device=args.device,
     )
 
     def _fmt(r: dict) -> None:
