@@ -1,0 +1,13 @@
+
+=== State-kNN lift: /home/asuramaya/code/REPOS/chronohorn/out/results/fo-noadapt-enwik90-50k.checkpoint.pt ===
+  store [0, 64000000]  queries [95000000, 96500000]  extra [96500000, 100000000]
+  key_dim=128 (whitening top share 0.967)  window=1024 burn=256
+  pinned {'k': 64, 'tau': 40.0, 'eps': 0.1, 'lam': 0.1}   cal-grid chose {'k': 16, 'tau': 40.0, 'eps': 0.05, 'lam': 0.2}
+
+  row                   delta     ci95   improved     base      mix
+  direct_pinned       -0.0488   0.0182      29/32   2.0367   1.9880
+  direct_calgrid      -0.0561   0.0259      25/32   2.0367   1.9806
+  pooled_pinned       -0.0463   0.0109      60/64   2.0166   1.9704
+  pooled_calgrid      -0.0547   0.0157      55/64   2.0166   1.9619
+
+  (negative delta = the store helps; CI is 1.96-sigma across paired windows)

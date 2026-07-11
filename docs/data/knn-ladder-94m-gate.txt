@@ -1,0 +1,28 @@
+
+=== State-kNN lift: /home/asuramaya/code/REPOS/chronohorn/out/results/fo-noadapt-enwik90-50k.checkpoint.pt ===
+  store [0, 94000000]  queries [95000000, 96500000]  extra [96500000, 100000000]
+  key_dim=128 (whitening top share 0.967)  window=1024 burn=256
+  pinned {'k': 64, 'tau': 40.0, 'eps': 0.1, 'lam': 0.2}   cal-grid chose {'k': 32, 'tau': 40.0, 'eps': 0.05, 'lam': 0.2}
+
+  row                   delta     ci95   improved     base      mix
+  direct_pinned       -0.0686   0.0290      24/32   2.0367   1.9682
+  direct_calgrid      -0.0761   0.0299      29/32   2.0367   1.9607
+  pooled_pinned       -0.0624   0.0170      54/64   2.0166   1.9543
+  pooled_calgrid      -0.0715   0.0177      59/64   2.0166   1.9452
+
+  (negative delta = the store helps; CI is 1.96-sigma across paired windows)
+
+  --- oracle-gate bound (binary endpoints {base, pure kNN vote}; thresholds tuned on cal windows only; shares on test(+extra pooled)) ---
+  base 2.0166  oracle 1.6255 (delta -0.3912; purse 0.3912 bpb; kNN wins 31.8% of positions)
+  scalar mix 1.9452 collects 18.3% of the purse
+
+  gate                         rule        test_bpb  share%   used%
+  top1_sim                     >= 0.9922     2.0101     1.7     1.9
+  topk_sim_mean                >= 0.9713     2.0187    -0.5     2.5
+  vote_entropy                 <= 0.8895     2.0130     0.9    27.3
+  base_entropy                 <= 0.0015     2.0223    -1.4     3.6
+  knn_mass_on_base_argmax      >= 0.9529     2.0180    -0.3     3.2
+
+  best pair: vote_entropy <= 0.8895 AND base_entropy >= 0.8517
+    test 1.9939  purse share 5.8%  kNN used 4.7%
+  (oracle uses labels — it prices the ceiling, not the expected win; gates see only label-free features)

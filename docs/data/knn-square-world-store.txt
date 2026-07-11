@@ -1,0 +1,38 @@
+
+=== State-kNN lift: /home/asuramaya/code/REPOS/chronohorn/out/results/fo-noadapt-enwik90-50k.checkpoint.pt ===
+  store [0, 64000000]  queries [0, 1500000]  extra None
+  key_dim=128 (whitening top share 0.991)  window=1024 burn=256
+  pinned {'k': 64, 'tau': 40.0, 'eps': 0.1, 'lam': 0.05}   cal-grid chose {'k': 64, 'tau': 20.0, 'eps': 0.05, 'lam': 0.3}
+
+  row                   delta     ci95   improved     base      mix
+  direct_pinned       -0.2502   0.0298      32/32   4.8797   4.6295
+  direct_calgrid      -0.4849   0.0531      32/32   4.8797   4.3949
+
+  (negative delta = the store helps; CI is 1.96-sigma across paired windows)
+
+  --- oracle-gate bound (binary endpoints {base, pure kNN vote}; thresholds tuned on cal windows only; shares on test(+extra pooled)) ---
+  base 4.8797  oracle 3.7606 (delta -1.1191; purse 1.1191 bpb; kNN wins 43.0% of positions)
+  scalar mix 4.3949 collects 43.3% of the purse
+
+  gate                         rule        test_bpb  share%   used%
+  top1_sim                     >= 0.9301     4.9005    -1.9     5.0
+  topk_sim_mean                >= 0.8632     4.9310    -4.6     6.0
+  vote_entropy                 >= 3.0692     4.9558    -6.8     5.0
+  base_entropy                 <= 0.5485     4.8545     2.3     5.4
+  knn_mass_on_base_argmax      >= 0.5422     4.9133    -3.0     5.0
+
+  best pair: top1_sim >= 0.8789 AND base_entropy <= 0.8521
+    test 4.8588  purse share 1.9%  kNN used 4.5%
+
+  learned gate (5 base + 10 pairwise, standardized on cal):
+    binary switch: 4.9321  purse share -4.7%  kNN used 16.4%
+    lam(x) direct: 4.3692  purse share 45.6%  mean lam 0.371
+
+  class          pos%    base  oracle   win%  purse%
+  letter         81.6  4.8803  3.9368   39.3    68.8
+  digit           0.5  5.6298  4.4067   41.1     0.5
+  whitespace     13.6  4.3096  2.2628   66.4    24.9
+  utf8_lead       0.8  4.2961  3.5158   44.4     0.6
+  other_ascii     2.4  8.2419  6.8561   33.5     3.0
+  utf8_cont       1.1  4.7012  2.3816   47.1     2.2
+  (oracle uses labels — it prices the ceiling, not the expected win; gates see only label-free features)

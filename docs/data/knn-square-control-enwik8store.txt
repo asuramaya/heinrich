@@ -1,0 +1,38 @@
+
+=== State-kNN lift: /home/asuramaya/code/REPOS/chronohorn/out/results/fo-noadapt-enwik90-50k.checkpoint.pt ===
+  store [0, 64000000]  queries [0, 1500000]  extra None
+  key_dim=128 (whitening top share 0.967)  window=1024 burn=256
+  pinned {'k': 64, 'tau': 40.0, 'eps': 0.1, 'lam': 0.05}   cal-grid chose {'k': 64, 'tau': 5.0, 'eps': 0.25, 'lam': 0.5}
+
+  row                   delta     ci95   improved     base      mix
+  direct_pinned       -0.2374   0.0223      32/32   4.8797   4.6423
+  direct_calgrid      -0.6245   0.0487      32/32   4.8797   4.2553
+
+  (negative delta = the store helps; CI is 1.96-sigma across paired windows)
+
+  --- oracle-gate bound (binary endpoints {base, pure kNN vote}; thresholds tuned on cal windows only; shares on test(+extra pooled)) ---
+  base 4.8797  oracle 3.6896 (delta -1.1902; purse 1.1902 bpb; kNN wins 47.8% of positions)
+  scalar mix 4.2553 collects 52.5% of the purse
+
+  gate                         rule        test_bpb  share%   used%
+  top1_sim                     <= 0.8555     4.6084    22.8    88.9
+  topk_sim_mean                <= 0.8103     4.6056    23.0    88.8
+  vote_entropy                 <= 3.0671     4.6187    21.9    83.1
+  base_entropy                 <= 2.224      4.5472    27.9    75.4
+  knn_mass_on_base_argmax      >= 0.0276     4.6585    18.6    85.8
+
+  best pair: topk_sim_mean <= 0.8103 AND base_entropy <= 2.3304
+    test 4.534  purse share 29.0%  kNN used 70.6%
+
+  learned gate (5 base + 10 pairwise, standardized on cal):
+    binary switch: 4.6404  purse share 20.1%  kNN used 39.0%
+    lam(x) direct: 4.2417  purse share 53.6%  mean lam 0.504
+
+  class          pos%    base  oracle   win%  purse%
+  letter         81.6  4.8803  3.8267   45.6    72.2
+  digit           0.5  5.6298  4.5758   41.1     0.4
+  whitespace     13.6  4.3096  2.3721   63.1    22.2
+  utf8_lead       0.8  4.2961  3.8007   20.0     0.3
+  other_ascii     2.4  8.2419  6.4206   48.7     3.7
+  utf8_cont       1.1  4.7012  3.4368   34.9     1.1
+  (oracle uses labels — it prices the ceiling, not the expected win; gates see only label-free features)

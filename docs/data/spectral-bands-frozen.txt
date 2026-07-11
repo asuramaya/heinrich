@@ -1,0 +1,25 @@
+
+=== Spectral bands (scorer: decepticons.models.diagnostics.spectral_bands (centered)) ===
+
+  --- frozen-kernel(random)  (n=65536, source=stream) ---
+  band                   hl range   alpha     r2   var%
+  fast                  1.5..6.43   3.993  0.833   69.9
+  medium_fast         6.45..27.67   4.011  0.836   19.0
+  medium_slow       27.75..119.03   4.157  0.841    7.3
+  slow             119.37..511.97   4.459  0.844    3.8
+  global alpha: 5.89
+  * KERNEL-IMPRINTED: exponent varies 0.47 across timescale bands — the frozen decay ladder shapes the per-band variance spectrum.
+  * TREND: exponent steepens fast->slow (3.99 -> 4.46).
+
+  --- frozen-kernel(trained)  (n=65536, source=stream) ---
+  band                   hl range   alpha     r2   var%
+  fast                  1.5..6.43   4.185  0.854   62.3
+  medium_fast         6.45..27.67   4.206  0.860   21.7
+  medium_slow       27.75..119.03   4.376  0.866   10.4
+  slow             119.37..511.97   4.683  0.867    5.5
+  global alpha: 5.339
+  * KERNEL-IMPRINTED: exponent varies 0.50 across timescale bands — the frozen decay ladder shapes the per-band variance spectrum.
+  * TREND: exponent steepens fast->slow (4.18 -> 4.68).
+
+  alpha spread per body: {'frozen-kernel(random)': 0.466, 'frozen-kernel(trained)': 0.498}
+  (their scorer CENTERS states — never compare these alphas to heinrich's uncentered stream-spectrum; read structure and drift)
