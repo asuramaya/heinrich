@@ -491,7 +491,12 @@ def build_parser() -> argparse.ArgumentParser:
     p_cb_knn = sub.add_parser("profile-cb-knn-lift",
                                help="State-kNN lift over a causal-bank base: continuous frozen-tensor keys (truncate-then-whiten), windowed base logits, paired-window CI. Heinrich's independent witness to the kNN-LM organ (ruling ccd02828).")
     p_cb_knn.add_argument("--model", required=True, help="Checkpoint path (.checkpoint.pt)")
-    p_cb_knn.add_argument("--corpus", required=True, help="Raw byte corpus (e.g. enwik8)")
+    p_cb_knn.add_argument("--corpus", required=True,
+                           help="Store byte corpus: file path(s) and/or globs, comma-separated; raw uint8 or chronohorn shards (auto-unwrapped); glob matches concatenate in sorted name order (chronohorn's pentad recipe)")
+    p_cb_knn.add_argument("--query-corpus", default=None,
+                           help="Separate byte source for query/extra windows (same spec syntax); default: the store corpus")
+    p_cb_knn.add_argument("--lam-grid", type=str, default="0.02,0.05,0.1,0.2",
+                           help="Comma-separated lambda grid for calibration (pentad pre-reg extends to 0.02,0.05,0.1,0.2,0.3,0.5,0.7,0.9)")
     p_cb_knn.add_argument("--store-range", type=str, default="0:8000000",
                            help="start:end byte slice for the store (default: 0:8000000)")
     p_cb_knn.add_argument("--query-range", type=str, default="95000000:96500000",
@@ -4557,6 +4562,8 @@ def _cmd_cb_knn_lift(args: argparse.Namespace) -> None:
     result = _cb_knn_lift(
         args.model,
         corpus=args.corpus,
+        query_corpus=args.query_corpus,
+        lam_grid=tuple(float(x) for x in args.lam_grid.split(",") if x.strip()),
         store_range=_rng(args.store_range),
         query_range=_rng(args.query_range),
         extra_range=_rng(args.extra_range),

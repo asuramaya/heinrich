@@ -1426,6 +1426,8 @@ TOOLS = {
             "pinned": {"type": "string", "description": "Pinned params row, e.g. k=64,tau=20,eps=0.1,lam=0.05"},
             "store_device": {"type": "string", "description": "'cpu' holds keys in host RAM (unlocks 32M+ stores past VRAM)"},
             "gate": {"type": "boolean", "description": "Oracle-gate bound + label-free feature gates (thresholds tuned on cal, purse shares on test)"},
+            "query_corpus": {"type": "string", "description": "Separate byte source for query/extra windows (paths/globs, shard-aware); default: store corpus"},
+            "lam_grid": {"type": "string", "description": "Comma-separated lambda calibration grid (pentad pre-reg: 0.02,0.05,0.1,0.2,0.3,0.5,0.7,0.9)"},
         },
     },
     "heinrich_cb_trajectory": {
@@ -2232,7 +2234,9 @@ class ToolServer:
                           "extra_range": "--extra-range",
                           "n_test": "--n-test", "n_extra": "--n-extra",
                           "key_dim": "--key-dim", "pinned": "--pinned",
-                          "store_device": "--store-device"},
+                          "store_device": "--store-device",
+                          "query_corpus": "--query-corpus",
+                          "lam_grid": "--lam-grid"},
                 timeout=7200)
         if name == "heinrich_cb_stream_spectrum":
             return self._do_subprocess(arguments, "profile-cb-stream-spectrum",

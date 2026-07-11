@@ -5508,9 +5508,68 @@ def _cb_spectral_bands(*,
     }
 
 
+def _load_corpus_file(path: str) -> np.ndarray:
+    """One byte-corpus file: decepticons shard, chronohorn byte shard,
+    or raw uint8 — detected in that order.
+
+    Chronohorn byte shards have a 1024-byte header with NO magic (text
+    metadata) and a uint16 payload whose values are all <=255 (low byte =
+    value, high byte = 0). Reading one as raw uint8 produces
+    null-interleaved garbage — the session-11 bug, and the mistake this
+    detector exists to make impossible (caught here by hash-verifying
+    against chronohorn's own reader before first use)."""
+    raw = np.fromfile(path, dtype=np.uint8)
+    # decepticons shard (magic-checked) — _load_byte_stream handles it
+    from ..backend.decepticon import (_SHARD_HEADER_BYTES, _SHARD_MAGIC,
+                                      _SHARD_VERSION)
+    if raw.size >= _SHARD_HEADER_BYTES:
+        header = raw[:_SHARD_HEADER_BYTES].view(np.int32)
+        if int(header[0]) == _SHARD_MAGIC and int(header[1]) == _SHARD_VERSION:
+            return _load_byte_stream(path)
+        # chronohorn byte shard: header, even payload, all-uint16 <= 255
+        payload = raw[_SHARD_HEADER_BYTES:]
+        if payload.size >= 2 and payload.size % 2 == 0:
+            u16 = payload.view(np.uint16)
+            probe = u16[:min(1_000_000, u16.size)]
+            if probe.size and int(probe.max()) <= 255:
+                if int(u16.max()) > 255:
+                    raise ValueError(
+                        f"{path}: probe read as chronohorn byte shard but "
+                        f"full payload has values > 255 — refusing to guess")
+                return u16.astype(np.uint8)
+    return raw
+
+
+def _load_corpus_bytes(spec: str) -> np.ndarray:
+    """Byte corpus from comma-separated file paths and/or globs.
+
+    Glob matches are concatenated in SORTED name order — the same recipe
+    chronohorn's pentad loader uses
+    (`sorted(glob(f"*_{fold}_train_*.bin"))`), so a fold store built here
+    is byte-identical to theirs (hash-verified against their reader)."""
+    from glob import glob as _glob
+
+    parts = []
+    for item in spec.split(","):
+        item = item.strip()
+        if not item:
+            continue
+        paths = sorted(_glob(item)) if any(c in item for c in "*?[") \
+            else [item]
+        if not paths:
+            raise ValueError(f"corpus glob matched nothing: {item!r}")
+        for p in paths:
+            parts.append(_load_corpus_file(p))
+    if not parts:
+        raise ValueError(f"empty corpus spec: {spec!r}")
+    return parts[0] if len(parts) == 1 else np.concatenate(parts)
+
+
 def _cb_knn_lift(model_path: str,
                  *,
                  corpus: str,
+                 query_corpus: str | None = None,
+                 lam_grid: tuple[float, ...] = (0.02, 0.05, 0.1, 0.2),
                  store_range: tuple[int, int] = (0, 8_000_000),
                  query_range: tuple[int, int] = (95_000_000, 96_500_000),
                  extra_range: tuple[int, int] | None = (96_500_000,
@@ -5563,7 +5622,9 @@ def _cb_knn_lift(model_path: str,
     sdev = store_device or dev
     pinned = pinned or {"k": 64, "tau": 20.0, "eps": 0.1, "lam": 0.05}
 
-    corpus_bytes = np.fromfile(corpus, dtype=np.uint8)
+    corpus_bytes = _load_corpus_bytes(corpus)
+    query_bytes = (_load_corpus_bytes(query_corpus) if query_corpus
+                   else corpus_bytes)
     train = corpus_bytes[store_range[0]:store_range[1]].astype(np.int64)
     store_n = len(train)
     marg = torch.tensor(np.bincount(train, minlength=256) / store_n,
@@ -5638,11 +5699,11 @@ def _cb_knn_lift(model_path: str,
             torch.cuda.empty_cache()
         return torch.cat(Q), torch.cat(Y), torch.cat(B)
 
-    region_a = corpus_bytes[query_range[0]:query_range[1]].astype(np.int64)
+    region_a = query_bytes[query_range[0]:query_range[1]].astype(np.int64)
     qa, ya, ba = gather(region_a, np.random.default_rng(query_seed),
                         n_cal + n_test)
     if extra_range is not None and n_extra > 0:
-        region_b = corpus_bytes[extra_range[0]:extra_range[1]] \
+        region_b = query_bytes[extra_range[0]:extra_range[1]] \
             .astype(np.int64)
         qb, yb, bb = gather(region_b, np.random.default_rng(extra_seed),
                             n_extra)
@@ -5699,7 +5760,7 @@ def _cb_knn_lift(model_path: str,
     for k in (8, 16, 32, 64):
         for tau in (5.0, 10.0, 20.0, 40.0):
             for eps in (0.05, 0.1, 0.25):
-                for lam in (0.02, 0.05, 0.1, 0.2):
+                for lam in lam_grid:
                     b = float(mix_bits(va[cal], ia[cal], ba[cal], ya[cal],
                                        k, tau, eps, lam).mean())
                     if best is None or b < best[0]:
@@ -5866,6 +5927,8 @@ def _cb_knn_lift(model_path: str,
     return {
         "model": model_path,
         "corpus": corpus,
+        "query_corpus": query_corpus,
+        "lam_grid": list(lam_grid),
         "store_range": list(store_range),
         "query_range": list(query_range),
         "extra_range": list(extra_range) if extra_range else None,
