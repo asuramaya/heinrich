@@ -1351,6 +1351,16 @@ TOOLS = {
             "device": {"type": "string", "description": "cuda | cpu (default: auto)"},
         },
     },
+    "heinrich_cb_retro_subspace": {
+        "description": "Export the retrospective subspace of a frozen bank capture — orthonormal state directions that linearly decode lagged bytes (E4 evict-init operationalization). Needs mri; writes .npz when out given.",
+        "parameters": {
+            "mri": {"type": "string", "description": "Sequence-mode .seq.mri directory (the E4 body's OWN frozen init)", "required": True},
+            "lags": {"type": "string", "description": "Comma-separated retrospective lags (default: 64,512)"},
+            "energy": {"type": "number", "description": "Between-class variance fraction kept per lag (default: 0.90)"},
+            "dims": {"type": "integer", "description": "Keep first N state dims (n_modes drops concat x_embed)"},
+            "out": {"type": "string", "description": "Output .npz path"},
+        },
+    },
     "heinrich_cb_spectral_bands": {
         "description": "Per-timescale-band variance spectral exponent scored by decepticons' spectral_bands (their instrument, heinrich's data — the ON/OFF co-witness). Rows from .seq.mri captures (trained bodies) and/or a frozen-kernel stream regeneration. Needs mris and/or model+stream.",
         "parameters": {
@@ -2244,6 +2254,12 @@ class ToolServer:
                 optional={"embedding": "--embedding", "seed": "--seed",
                           "device": "--device"},
                 timeout=3600)
+        if name == "heinrich_cb_retro_subspace":
+            return self._do_subprocess(arguments, "profile-cb-retro-subspace",
+                ["--mri", arguments["mri"]],
+                optional={"lags": "--lags", "energy": "--energy",
+                          "dims": "--dims", "out": "--out"},
+                timeout=900)
         if name == "heinrich_cb_spectral_bands":
             base = []
             if arguments.get("mris"):

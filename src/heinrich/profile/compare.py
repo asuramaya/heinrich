@@ -5908,10 +5908,112 @@ def _cb_knn_lift(model_path: str,
             "knn_used_frac": round(float((mi & mj).float().mean()), 4),
         }
 
+        # --- learned micro-gate (Tier-0 delegation, msg 307): does
+        # LEARNING the boundary change the threshold-gate verdict?
+        # Two learners on the same five features (+pairwise products),
+        # cal-trained, test-priced: a binary switch (logistic on the
+        # oracle's choice) and a direct per-position lam(x) trained
+        # end-to-end on the cal mix NLL. ---
+        def _std_feats(f, mu, sd):
+            z = (f - mu) / sd
+            pairs = [z[:, i] * z[:, j]
+                     for i in range(z.shape[1])
+                     for j in range(i + 1, z.shape[1])]
+            return torch.cat([z, torch.stack(pairs, 1),
+                              torch.ones(len(z), 1, device=z.device)], 1)
+
+        mu, sd = f_c.mean(0, keepdim=True), f_c.std(0, keepdim=True) + 1e-6
+        X_c, X_t = _std_feats(f_c, mu, sd), _std_feats(f_t, mu, sd)
+
+        # (a) binary switch: logistic on "kNN wins here"
+        w = torch.zeros(X_c.shape[1], device=dev, requires_grad=True)
+        target = (nk_c < nb_c).float()
+        opt = torch.optim.Adam([w], lr=0.05)
+        for _ in range(600):
+            opt.zero_grad()
+            loss = F.binary_cross_entropy_with_logits(X_c @ w, target)
+            loss.backward()
+            opt.step()
+        with torch.no_grad():
+            sw_mask = (X_t @ w) > 0
+            switch_bpb = float(torch.where(sw_mask, nk_t, nb_t).mean())
+
+        # (b) direct lam(x): sigmoid head trained on the cal mix NLL
+        p_knn_c = vote(va[cal], ia[cal], **gp)
+        p_base_c = torch.softmax(ba[cal].float(), -1)
+        pk_y_c = p_knn_c.gather(1, ya[cal][:, None]).squeeze(1)
+        pb_y_c = p_base_c.gather(1, ya[cal][:, None]).squeeze(1)
+        w2 = torch.zeros(X_c.shape[1], device=dev, requires_grad=True)
+        opt2 = torch.optim.Adam([w2], lr=0.05)
+        for _ in range(800):
+            opt2.zero_grad()
+            lamx = torch.sigmoid(X_c @ w2)
+            nll = -torch.log((lamx * pk_y_c
+                              + (1 - lamx) * pb_y_c).clamp_min(1e-12))
+            nll.mean().backward()
+            opt2.step()
+        with torch.no_grad():
+            p_knn_t = vote(vt, it_, **gp)
+            p_base_t = torch.softmax(bt.float(), -1)
+            pk_y_t = p_knn_t.gather(1, yt[:, None]).squeeze(1)
+            pb_y_t = p_base_t.gather(1, yt[:, None]).squeeze(1)
+            lamx_t = torch.sigmoid(X_t @ w2)
+            lamx_bpb = float((-torch.log(
+                (lamx_t * pk_y_t + (1 - lamx_t) * pb_y_t)
+                .clamp_min(1e-12)) / np.log(2)).mean())
+        learned = {
+            "features": "5 base + 10 pairwise, standardized on cal",
+            "switch_bpb": round(switch_bpb, 4),
+            "switch_purse_share": share(switch_bpb),
+            "switch_knn_used_frac": round(
+                float(sw_mask.float().mean()), 4),
+            "lamx_bpb": round(lamx_bpb, 4),
+            "lamx_purse_share": share(lamx_bpb),
+            "lamx_mean": round(float(lamx_t.mean()), 4),
+        }
+
+        # --- purse by target-byte class (E2 store-composition input) ---
+        def _byte_class(y):
+            cls = torch.full_like(y, 4)                       # other ascii
+            cls[((y >= 65) & (y <= 90))
+                | ((y >= 97) & (y <= 122))] = 0               # letter
+            cls[(y >= 48) & (y <= 57)] = 1                    # digit
+            cls[(y == 32) | (y == 10) | (y == 9) | (y == 13)] = 2
+            cls[(y >= 0x80) & (y <= 0xBF)] = 5                # utf8 cont
+            cls[y >= 0xC0] = 3                                # utf8 lead
+            return cls
+
+        cls_t = _byte_class(yt)
+        cls_names = ("letter", "digit", "whitespace", "utf8_lead",
+                     "other_ascii", "utf8_cont")
+        total_purse_bits = float((nb_t - torch.minimum(nb_t, nk_t)).sum())
+        by_class = []
+        for ci, cname in enumerate(cls_names):
+            m = cls_t == ci
+            n = int(m.sum())
+            if n == 0:
+                continue
+            purse_c = float((nb_t[m]
+                             - torch.minimum(nb_t[m], nk_t[m])).sum())
+            by_class.append({
+                "class": cname,
+                "n": n,
+                "frac_positions": round(n / len(yt), 4),
+                "base_bpb": round(float(nb_t[m].mean()), 4),
+                "oracle_bpb": round(
+                    float(torch.minimum(nb_t[m], nk_t[m]).mean()), 4),
+                "knn_win_frac": round(
+                    float((nk_t[m] < nb_t[m]).float().mean()), 4),
+                "purse_share_pct": round(
+                    100 * purse_c / max(total_purse_bits, 1e-9), 1),
+            })
+
         gate_report = {
             "protocol": ("binary endpoints {base, pure kNN vote}; "
                          "thresholds tuned on cal windows only; "
                          "shares on test(+extra pooled)"),
+            "learned_gate": learned,
+            "purse_by_class": by_class,
             "vote_params": gp,
             "base_bpb": round(base_t, 4),
             "oracle_bpb": round(oracle_t, 4),
@@ -6940,6 +7042,94 @@ def causal_bank_pc_information(mri_path: str, *,
         "eigs_head": [float(e) for e in ev[:64]],
         "bands": bands_out,
     }
+
+
+def causal_bank_retro_subspace(mri_path: str,
+                               *,
+                               lags: tuple[int, ...] = (64, 512),
+                               energy: float = 0.90,
+                               dims: int | None = None,
+                               out: str | None = None) -> dict:
+    """Export the retrospective subspace of a (frozen) bank capture — the
+    state directions that linearly decode bytes ``lags`` positions back.
+
+    This is the E4 evict-init operationalization (thread 308): arm B
+    initializes the readout orthogonal to these directions, arm C keeps a
+    measured-R² reserve along them. The subspace is the span of the top
+    singular directions of the frequency-weighted lagged-class-mean
+    matrix (between-class scatter), per lag, kept until ``energy`` of the
+    between-class variance is captured, then QR-merged across lags.
+
+    Directions are computed on the CAPTURE'S OWN kernel — probe the E4
+    body's frozen init, not a lookalike (amendment 1: subspaces do not
+    transfer across decay ladders/seeds).
+
+    Writes ``out`` (.npz: directions [r, D] orthonormal rows, per-source
+    ledger) when given; returns the ledger either way.
+    """
+    from .mri import load_mri
+
+    mri = load_mri(mri_path)
+    if mri['metadata'].get('capture', {}).get('mode') != 'sequence':
+        return {"error": "Requires sequence-mode MRI"}
+    sub = mri["substrate_states"].astype(np.float32)
+    if dims is not None:
+        sub = sub[:, :, :dims]
+    tok = np.load(Path(mri_path) / "tokens.npz")["token_ids"]
+    n_seqs, seq_len, D = sub.shape
+    flat = sub.reshape(-1, D).astype(np.float64)
+    gmean = flat.mean(0)
+    flat -= gmean
+
+    ledger = []
+    blocks = []
+    for lag in lags:
+        lagged = np.full((n_seqs, seq_len), -1, dtype=np.int64)
+        lagged[:, lag:] = tok[:, : seq_len - lag]
+        lf = lagged.reshape(-1)
+        valid = lf >= 0
+        X, c = flat[valid], lf[valid]
+        # frequency-weighted class-mean matrix = between-class scatter root
+        M = np.zeros((256, D))
+        wts = np.zeros(256)
+        for b in range(256):
+            m = c == b
+            n = int(m.sum())
+            if n > 3:
+                M[b] = X[m].mean(0)
+                wts[b] = n
+        Mw = M * np.sqrt(wts / max(wts.sum(), 1))[:, None]
+        U, S, Vt = np.linalg.svd(Mw, full_matrices=False)
+        e = S ** 2
+        keep = int(np.searchsorted(np.cumsum(e) / max(e.sum(), 1e-12),
+                                   energy)) + 1
+        blocks.append(Vt[:keep])
+        ledger.append({
+            "lag": int(lag),
+            "n_directions": int(keep),
+            "energy_kept": round(float(e[:keep].sum() / e.sum()), 4),
+            "top_sv_share": round(float(e[0] / e.sum()), 4),
+        })
+
+    stacked = np.concatenate(blocks, axis=0)
+    q, r_ = np.linalg.qr(stacked.T)
+    rank = int((np.abs(np.diag(r_)) > 1e-8).sum())
+    directions = q[:, :rank].T          # [r, D], orthonormal rows
+
+    result = {
+        "mri": mri_path,
+        "dims": int(D),
+        "lags": [int(x) for x in lags],
+        "energy": float(energy),
+        "rank": rank,
+        "per_lag": ledger,
+        "out": out,
+    }
+    if out:
+        np.savez(out, directions=directions.astype(np.float32),
+                 state_mean=gmean.astype(np.float32),
+                 lags=np.asarray(lags), rank=rank)
+    return result
 
 
 def causal_bank_trajectory(mri_paths: list[str]) -> dict:

@@ -454,6 +454,17 @@ def build_parser() -> argparse.ArgumentParser:
     p_cb_pci.add_argument("--dims", type=int, default=None,
                            help="Keep only the first N state dims (e.g. n_modes to drop the concatenated x_embed columns)")
 
+    p_cb_retro = sub.add_parser("profile-cb-retro-subspace",
+                                 help="Export the retrospective subspace of a frozen bank capture — state directions that linearly decode lagged bytes (E4 evict-init operationalization). Writes an .npz of orthonormal directions + ledger.")
+    p_cb_retro.add_argument("--mri", required=True, help="Sequence-mode .seq.mri directory (probe the E4 body's OWN frozen init)")
+    p_cb_retro.add_argument("--lags", type=str, default="64,512",
+                             help="Comma-separated retrospective lags (default: 64,512)")
+    p_cb_retro.add_argument("--energy", type=float, default=0.90,
+                             help="Between-class variance fraction kept per lag (default: 0.90)")
+    p_cb_retro.add_argument("--dims", type=int, default=None,
+                             help="Keep only the first N state dims (n_modes drops concat x_embed)")
+    p_cb_retro.add_argument("--out", default=None, help="Output .npz path for the directions")
+
     p_cb_spec = sub.add_parser("profile-cb-stream-spectrum",
                                 help="Eigenspectrum + power-law exponent of streamed bank states for arbitrary byte streams (arm-A instrument: variance spectra = kernel × marginal). Compares random vs trained embedding drive.")
     p_cb_spec.add_argument("--model", required=True, help="Checkpoint path (.checkpoint.pt)")
@@ -1522,6 +1533,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_cb_stream_spectrum(args)
     elif args.command == "profile-cb-spectral-bands":
         _cmd_cb_spectral_bands(args)
+    elif args.command == "profile-cb-retro-subspace":
+        _cmd_cb_retro_subspace(args)
     elif args.command == "profile-cb-knn-lift":
         _cmd_cb_knn_lift(args)
     elif args.command == "profile-anisotropy":
@@ -4542,6 +4555,31 @@ def _cmd_cb_spectral_bands(args: argparse.Namespace) -> None:
     _json_or(args, result, _fmt)
 
 
+def _cmd_cb_retro_subspace(args: argparse.Namespace) -> None:
+    """Export the retrospective probe subspace (E4 evict-init input)."""
+    from .profile.compare import causal_bank_retro_subspace
+
+    lags = tuple(int(x) for x in args.lags.split(",") if x.strip())
+    result = causal_bank_retro_subspace(
+        args.mri, lags=lags, energy=args.energy, dims=args.dims,
+        out=args.out)
+
+    def _fmt(r: dict) -> None:
+        if "error" in r:
+            print(f"Error: {r['error']}")
+            return
+        print(f"\n=== Retrospective subspace: {r['mri']} (D={r['dims']}) ===")
+        for row in r["per_lag"]:
+            print(f"  lag {row['lag']:>4}: {row['n_directions']} directions "
+                  f"({row['energy_kept'] * 100:.1f}% between-class energy, "
+                  f"top sv {row['top_sv_share'] * 100:.1f}%)")
+        print(f"  merged rank: {r['rank']}  -> {r['out'] or '(not written)'}")
+        print("  (probe the E4 body's OWN frozen init — subspaces do not "
+              "transfer across kernels)")
+
+    _json_or(args, result, _fmt)
+
+
 def _cmd_cb_knn_lift(args: argparse.Namespace) -> None:
     """State-kNN lift with paired-window CI (independent witness)."""
     from .profile.compare import _cb_knn_lift
@@ -4611,6 +4649,25 @@ def _cmd_cb_knn_lift(args: argparse.Namespace) -> None:
             print(f"    test {t['test_bpb']}  purse share "
                   f"{t['test_purse_share'] * 100:.1f}%  kNN used "
                   f"{t['knn_used_frac'] * 100:.1f}%")
+            lg = g.get("learned_gate")
+            if lg:
+                print(f"\n  learned gate ({lg['features']}):")
+                print(f"    binary switch: {lg['switch_bpb']}  purse share "
+                      f"{lg['switch_purse_share'] * 100:.1f}%  kNN used "
+                      f"{lg['switch_knn_used_frac'] * 100:.1f}%")
+                print(f"    lam(x) direct: {lg['lamx_bpb']}  purse share "
+                      f"{lg['lamx_purse_share'] * 100:.1f}%  mean lam "
+                      f"{lg['lamx_mean']:.3f}")
+            bc = g.get("purse_by_class")
+            if bc:
+                print(f"\n  {'class':<12} {'pos%':>6} {'base':>7} "
+                      f"{'oracle':>7} {'win%':>6} {'purse%':>7}")
+                for c in bc:
+                    print(f"  {c['class']:<12} "
+                          f"{c['frac_positions'] * 100:>6.1f} "
+                          f"{c['base_bpb']:>7.4f} {c['oracle_bpb']:>7.4f} "
+                          f"{c['knn_win_frac'] * 100:>6.1f} "
+                          f"{c['purse_share_pct']:>7.1f}")
             print("  (oracle uses labels — it prices the ceiling, not the "
                   "expected win; gates see only label-free features)")
 
