@@ -5663,6 +5663,11 @@ def _cb_knn_lift(model_path: str,
             for ks in range(0, len(keys), ktile):
                 tile = keys[ks:ks + ktile]
                 if tile.device.type != q.device.type:
+                    # PAGEABLE host memory: non_blocking degrades to a sync
+                    # copy into a fresh device tensor — safe by construction.
+                    # Do NOT add a reused pinned staging buffer without
+                    # per-buffer CUDA events: reuse-before-sync corrupts
+                    # tiles under multi-tile search (decepticons de15362).
                     tile = tile.to(q.device, non_blocking=True)
                 sc = q @ tile.T
                 v, i = sc.topk(k, dim=1)
