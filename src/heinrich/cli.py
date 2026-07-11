@@ -512,6 +512,8 @@ def build_parser() -> argparse.ArgumentParser:
                            help="Store rows scored per search tile; shrink for big stores on small cards (default: 1000000)")
     p_cb_knn.add_argument("--store-device", default=None,
                            help="Where keys live (default: compute device). 'cpu' holds the store in host RAM with per-tile transfer — unlocks 32M+ stores past the VRAM ceiling")
+    p_cb_knn.add_argument("--gate", action="store_true",
+                           help="Oracle-gate bound + label-free feature gates: per-position binary oracle over {base, kNN} (the ceiling every lam(x) gate is bounded by) and threshold gates on label-free features (top-sim, vote/base entropy, agreement), tuned on cal, priced on test as purse shares")
     p_cb_knn.add_argument("--device", default=None, help="cuda|cpu (default: auto)")
 
     p_aniso = sub.add_parser("profile-anisotropy",
@@ -4562,7 +4564,7 @@ def _cmd_cb_knn_lift(args: argparse.Namespace) -> None:
         query_seed=args.query_seed, extra_seed=args.extra_seed,
         key_dim=args.key_dim, window=args.window, burn=args.burn,
         ktile=args.ktile, pinned=pinned, device=args.device,
-        store_device=args.store_device,
+        store_device=args.store_device, gate=args.gate,
     )
 
     def _fmt(r: dict) -> None:
@@ -4581,6 +4583,29 @@ def _cmd_cb_knn_lift(args: argparse.Namespace) -> None:
                   f"{row['mix_bpb']:>7.4f}")
         print("\n  (negative delta = the store helps; CI is 1.96-sigma "
               "across paired windows)")
+        g = r.get("gate")
+        if g:
+            print(f"\n  --- oracle-gate bound ({g['protocol']}) ---")
+            print(f"  base {g['base_bpb']}  oracle {g['oracle_bpb']} "
+                  f"(delta {g['oracle_delta']:+.4f}; purse "
+                  f"{g['purse_bpb']} bpb; kNN wins "
+                  f"{g['knn_win_frac'] * 100:.1f}% of positions)")
+            print(f"  scalar mix {g['scalar_mix_bpb']} collects "
+                  f"{g['scalar_mix_purse_share'] * 100:.1f}% of the purse")
+            print(f"\n  {'gate':<28} {'rule':<10} {'test_bpb':>9} "
+                  f"{'share%':>7} {'used%':>7}")
+            for s in g["single_gates"]:
+                print(f"  {s['feature']:<28} {s['direction'] + ' ' + str(s['threshold']):<10} "
+                      f"{s['test_bpb']:>9.4f} "
+                      f"{s['test_purse_share'] * 100:>7.1f} "
+                      f"{s['knn_used_frac'] * 100:>7.1f}")
+            t = g["best_two_feature"]
+            print(f"\n  best pair: {t['rule']}")
+            print(f"    test {t['test_bpb']}  purse share "
+                  f"{t['test_purse_share'] * 100:.1f}%  kNN used "
+                  f"{t['knn_used_frac'] * 100:.1f}%")
+            print("  (oracle uses labels — it prices the ceiling, not the "
+                  "expected win; gates see only label-free features)")
 
     _json_or(args, result, _fmt)
 

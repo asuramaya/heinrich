@@ -1425,6 +1425,7 @@ TOOLS = {
             "key_dim": {"type": "integer", "description": "Whitened key dim (default: 128)"},
             "pinned": {"type": "string", "description": "Pinned params row, e.g. k=64,tau=20,eps=0.1,lam=0.05"},
             "store_device": {"type": "string", "description": "'cpu' holds keys in host RAM (unlocks 32M+ stores past VRAM)"},
+            "gate": {"type": "boolean", "description": "Oracle-gate bound + label-free feature gates (thresholds tuned on cal, purse shares on test)"},
         },
     },
     "heinrich_cb_trajectory": {
@@ -2220,8 +2221,12 @@ class ToolServer:
                                 "batches": "--batches"},
                 timeout=3600)
         if name == "heinrich_cb_knn_lift":
+            knn_base = ["--model", arguments["model"],
+                        "--corpus", arguments["corpus"]]
+            if arguments.get("gate"):
+                knn_base.append("--gate")
             return self._do_subprocess(arguments, "profile-cb-knn-lift",
-                ["--model", arguments["model"], "--corpus", arguments["corpus"]],
+                knn_base,
                 optional={"store_range": "--store-range",
                           "query_range": "--query-range",
                           "extra_range": "--extra-range",

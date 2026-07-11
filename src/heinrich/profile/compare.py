@@ -5527,7 +5527,8 @@ def _cb_knn_lift(model_path: str,
                  ktile: int = 1_000_000,
                  pinned: dict | None = None,
                  device: str | None = None,
-                 store_device: str | None = None) -> dict:
+                 store_device: str | None = None,
+                 gate: bool = False) -> dict:
     """State-kNN lift over a causal-bank base — heinrich's independent
     witness to the kNN-LM memory organ (verified two-witness, ruling
     ccd02828: pooled 64 windows -0.0090 +/- 0.0069, CI excludes zero).
@@ -5727,6 +5728,136 @@ def _cb_knn_lift(model_path: str,
         rows["pooled_calgrid"] = report(*pooled, n_test + n_extra,
                                         cal_params)
 
+    # --- oracle-gate bound + label-free feature gates (opt-in) ---------
+    # The per-position binary oracle over {base, pure kNN vote} is the
+    # exact per-token-optimal mix (the mix is linear in lam, so the
+    # optimum is an endpoint) — it upper-bounds every lam(x) gate. The
+    # feature gates then price how much of that purse LABEL-FREE features
+    # collect: thresholds are tuned on CAL windows only (labels enter
+    # tuning exactly as they already do for lam calibration) and shares
+    # are reported on TEST. Oracle uses labels: it prices the ceiling,
+    # never the expected win.
+    gate_report = None
+    if gate:
+        gp = {q: cal_params[q] for q in ("k", "tau", "eps")}
+        feat_names = ("top1_sim", "topk_sim_mean", "vote_entropy",
+                      "base_entropy", "knn_mass_on_base_argmax")
+
+        def endpoint_nlls(v, i, base, y):
+            p_knn = vote(v, i, **gp)
+            nk = bits(torch.log(p_knn.clamp_min(1e-12)), y)
+            nb = bits(torch.log_softmax(base.float(), -1), y)
+            return nb, nk
+
+        def features(v, i, base):
+            p_knn = vote(v, i, **gp)
+            p_base = torch.softmax(base.float(), -1)
+            kk = gp["k"]
+            return torch.stack([
+                v[:, 0],
+                v[:, :kk].mean(1),
+                -(p_knn * p_knn.clamp_min(1e-12).log()).sum(1),
+                -(p_base * p_base.clamp_min(1e-12).log()).sum(1),
+                p_knn.gather(1, p_base.argmax(1, keepdim=True)).squeeze(1),
+            ], dim=1)
+
+        nb_c, nk_c = endpoint_nlls(va[cal], ia[cal], ba[cal], ya[cal])
+        f_c = features(va[cal], ia[cal], ba[cal])
+        if vb is not None:
+            vt, it_, bt, yt = (torch.cat([va[tst], vb]),
+                               torch.cat([ia[tst], ib]),
+                               torch.cat([ba[tst], bb]),
+                               torch.cat([ya[tst], yb]))
+        else:
+            vt, it_, bt, yt = va[tst], ia[tst], ba[tst], ya[tst]
+        nb_t, nk_t = endpoint_nlls(vt, it_, bt, yt)
+        f_t = features(vt, it_, bt)
+
+        base_t = float(nb_t.mean())
+        oracle_t = float(torch.minimum(nb_t, nk_t).mean())
+        purse = base_t - oracle_t
+        mix_t = float(mix_bits(vt, it_, bt, yt, **cal_params).mean())
+
+        def share(gated_bpb: float) -> float:
+            return round((base_t - gated_bpb) / max(purse, 1e-9), 4)
+
+        qgrid_1 = torch.linspace(0.05, 0.95, 19, device=dev)
+        qgrid_2 = torch.linspace(0.1, 0.9, 9, device=dev)
+
+        def tune_single(fi, qgrid):
+            thr = torch.quantile(f_c[:, fi].float(), qgrid)
+            best = None
+            for t in thr:
+                for hi in (True, False):
+                    mask = f_c[:, fi] >= t if hi else f_c[:, fi] <= t
+                    b = float(torch.where(mask, nk_c, nb_c).mean())
+                    if best is None or b < best[0]:
+                        best = (b, float(t), hi)
+            return best
+
+        singles = []
+        for fi in range(f_c.shape[1]):
+            cal_b, t, hi = tune_single(fi, qgrid_1)
+            mask_t = f_t[:, fi] >= t if hi else f_t[:, fi] <= t
+            test_b = float(torch.where(mask_t, nk_t, nb_t).mean())
+            singles.append({
+                "feature": feat_names[fi],
+                "direction": ">=" if hi else "<=",
+                "threshold": round(t, 4),
+                "cal_bpb": round(cal_b, 4),
+                "test_bpb": round(test_b, 4),
+                "test_purse_share": share(test_b),
+                "knn_used_frac": round(float(mask_t.float().mean()), 4),
+            })
+
+        best_pair = None
+        for fi in range(f_c.shape[1]):
+            for fj in range(fi + 1, f_c.shape[1]):
+                thr_i = torch.quantile(f_c[:, fi].float(), qgrid_2)
+                thr_j = torch.quantile(f_c[:, fj].float(), qgrid_2)
+                for ti in thr_i:
+                    for hi_i in (True, False):
+                        mi = f_c[:, fi] >= ti if hi_i else f_c[:, fi] <= ti
+                        for tj in thr_j:
+                            for hi_j in (True, False):
+                                mj = (f_c[:, fj] >= tj if hi_j
+                                      else f_c[:, fj] <= tj)
+                                b = float(torch.where(mi & mj,
+                                                      nk_c, nb_c).mean())
+                                if best_pair is None or b < best_pair[0]:
+                                    best_pair = (b, fi, float(ti), hi_i,
+                                                 fj, float(tj), hi_j)
+        cb, fi, ti, hi_i, fj, tj, hi_j = best_pair
+        mi = f_t[:, fi] >= ti if hi_i else f_t[:, fi] <= ti
+        mj = f_t[:, fj] >= tj if hi_j else f_t[:, fj] <= tj
+        pair_test = float(torch.where(mi & mj, nk_t, nb_t).mean())
+        two_feature = {
+            "features": [feat_names[fi], feat_names[fj]],
+            "rule": f"{feat_names[fi]} {'>=' if hi_i else '<='} "
+                    f"{round(ti, 4)} AND {feat_names[fj]} "
+                    f"{'>=' if hi_j else '<='} {round(tj, 4)}",
+            "cal_bpb": round(cb, 4),
+            "test_bpb": round(pair_test, 4),
+            "test_purse_share": share(pair_test),
+            "knn_used_frac": round(float((mi & mj).float().mean()), 4),
+        }
+
+        gate_report = {
+            "protocol": ("binary endpoints {base, pure kNN vote}; "
+                         "thresholds tuned on cal windows only; "
+                         "shares on test(+extra pooled)"),
+            "vote_params": gp,
+            "base_bpb": round(base_t, 4),
+            "oracle_bpb": round(oracle_t, 4),
+            "oracle_delta": round(oracle_t - base_t, 4),
+            "purse_bpb": round(purse, 4),
+            "knn_win_frac": round(float((nk_t < nb_t).float().mean()), 4),
+            "scalar_mix_bpb": round(mix_t, 4),
+            "scalar_mix_purse_share": share(mix_t),
+            "single_gates": singles,
+            "best_two_feature": two_feature,
+        }
+
     return {
         "model": model_path,
         "corpus": corpus,
@@ -5739,6 +5870,7 @@ def _cb_knn_lift(model_path: str,
         "pinned": pinned,
         "cal_params": cal_params,
         "rows": rows,
+        "gate": gate_report,
     }
 
 
