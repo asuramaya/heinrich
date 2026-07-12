@@ -5787,6 +5787,40 @@ def _cb_knn_lift(model_path: str,
         "direct_calgrid": report(va[tst], ia[tst], ba[tst], ya[tst],
                                  n_test, cal_params),
     }
+
+    # THE UNIGRAM CONTROL. Mix the base with the store corpus's BYTE MARGINAL —
+    # 256 numbers, no keys, no search — on the SAME positions, the SAME base and
+    # a lambda tuned on the SAME cal split. Any retrieval claim owes this number:
+    # a store that beats the base but not its own unigram has bought a smoother,
+    # not a retriever, and priced it like an archive.
+    def marg_bits(base, y, lam):
+        p_base = torch.softmax(base.float(), -1)
+        return bits(torch.log((lam * marg[None, :]
+                               + (1 - lam) * p_base).clamp_min(1e-12)), y)
+
+    m_best = None
+    for lam in lam_grid:
+        b = float(marg_bits(ba[cal], ya[cal], lam).mean())
+        if m_best is None or b < m_best[0]:
+            m_best = (b, lam)
+    m_lam = m_best[1]
+    mb = marg_bits(ba[tst], ya[tst], m_lam).reshape(n_test, -1).mean(1)
+    bb_ = bits(torch.log_softmax(ba[tst].float(), -1), ya[tst]) \
+        .reshape(n_test, -1).mean(1)
+    dm = (mb - bb_).cpu().numpy()
+    rows["marginal_only"] = {
+        "delta": round(float(dm.mean()), 4),
+        "ci95": round(float(1.96 * dm.std(ddof=1) / np.sqrt(len(dm))), 4),
+        "improved": f"{int((dm < 0).sum())}/{len(dm)}",
+        "base_bpb": round(float(bb_.mean()), 4),
+        "mix_bpb": round(float(mb.mean()), 4),
+        "n_windows": int(n_test),
+        "lam": float(m_lam),
+    }
+    knn_delta = rows["direct_calgrid"]["delta"]
+    rows["marginal_only"]["knn_share_of_marginal"] = (
+        round(float(rows["marginal_only"]["delta"] / knn_delta), 4)
+        if knn_delta < 0 else None)
     if vb is not None:
         pooled = (torch.cat([va[tst], vb]), torch.cat([ia[tst], ib]),
                   torch.cat([ba[tst], bb]), torch.cat([ya[tst], yb]))

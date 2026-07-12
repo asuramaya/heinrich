@@ -4674,6 +4674,16 @@ def _cmd_cb_knn_lift(args: argparse.Namespace) -> None:
                   f"{row['mix_bpb']:>7.4f}")
         print("\n  (negative delta = the store helps; CI is 1.96-sigma "
               "across paired windows)")
+        m = r["rows"].get("marginal_only")
+        if m and m.get("knn_share_of_marginal") is not None:
+            pct = m["knn_share_of_marginal"] * 100
+            print(f"\n  UNIGRAM CONTROL: the store corpus's byte marginal — 256 "
+                  f"numbers, no keys, no search —\n  mixed at lam={m['lam']} on the "
+                  f"same positions buys {m['delta']:+.4f}, which is {pct:.1f}% of what "
+                  f"the\n  {'ENTIRE ARCHIVE' if pct >= 50 else 'archive'} buys "
+                  f"({m['base_bpb']:.4f} -> {m['mix_bpb']:.4f}). A store that cannot "
+                  f"clear its own\n  unigram by a wide margin has bought a SMOOTHER, "
+                  f"not a retriever.")
         g = r.get("gate")
         if g:
             print(f"\n  --- oracle-gate bound ({g['protocol']}) ---")

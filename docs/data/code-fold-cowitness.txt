@@ -1,0 +1,116 @@
+CODE FOLD + CONTROL — heinrich co-witness (Anubis X, 2026-07-12)
+Witness 2 on SW's fdc5db22 (fold) and 1900a4b9 (control). Independent instrument
+(heinrich profile-cb-knn-lift), independent CE accounting, same store/query ranges.
+
+=== FOLD: pentad code store [0:64M] x code_val  (the knowledge fold)
+  === State-kNN lift: /home/asuramaya/code/REPOS/chronohorn/out/results/fo-noadapt-enwik90-50k.checkpoint.pt ===
+    store [0, 64000000]  queries [0, 1500000]  extra None
+    key_dim=128 (whitening top share 0.984)  window=1024 burn=256
+    pinned {'k': 64, 'tau': 40.0, 'eps': 0.1, 'lam': 0.05}   cal-grid chose {'k': 64, 'tau': 40.0, 'eps': 0.1, 'lam': 0.9}
+    row                   delta     ci95   improved     base      mix
+    direct_pinned       -1.7884   0.4371      32/32   4.9036   3.1152
+    direct_calgrid      -2.9080   0.5662      31/32   4.9036   1.9956
+    (negative delta = the store helps; CI is 1.96-sigma across paired windows)
+    --- oracle-gate bound (binary endpoints {base, pure kNN vote}; thresholds tuned on cal windows only; shares on test(+extra pooled)) ---
+    base 4.9036  oracle 1.6034 (delta -3.3002; purse 3.3002 bpb; kNN wins 64.6% of positions)
+    scalar mix 1.9956 collects 88.1% of the purse
+    gate                         rule        test_bpb  share%   used%
+    top1_sim                     >= 0.7271     2.1014    84.9    96.5
+    topk_sim_mean                >= 0.6671     2.1252    84.2    95.8
+    vote_entropy                 >= 0.6182     2.1158    84.5    94.2
+    base_entropy                 <= 2.8891     2.1842    82.4    94.6
+    knn_mass_on_base_argmax      <= 0.9049     2.0751    85.7    94.0
+    best pair: vote_entropy >= 0.6585 AND knn_mass_on_base_argmax <= 0.885
+      test 2.3832  purse share 76.4%  kNN used 83.3%
+    learned gate (5 base + 10 pairwise, standardized on cal):
+      binary switch: 2.2255  purse share 81.2%  kNN used 71.1%
+      lam(x) direct: 1.9212  purse share 90.4%  mean lam 0.798
+    class          pos%    base  oracle   win%  purse%
+    letter         59.7  4.5816  1.9043   65.6    48.4
+    digit           0.8  9.4022  4.1115   67.6     1.4
+    whitespace     27.1  1.6255  0.4516   51.9     9.6
+    utf8_lead       0.0 14.0514  0.3459  100.0     0.0
+    other_ascii    12.4 13.3005  2.5023   87.5    40.6
+    utf8_cont       0.0  1.5361  0.1716   50.0     0.0
+    (oracle uses labels — it prices the ceiling, not the expected win; gates see only label-free features)
+
+=== CONTROL: enwik8 store [0:64M] x code_val  (the irrelevant-store smoothing floor)
+  === State-kNN lift: /home/asuramaya/code/REPOS/chronohorn/out/results/fo-noadapt-enwik90-50k.checkpoint.pt ===
+    store [0, 64000000]  queries [0, 1500000]  extra None
+    key_dim=128 (whitening top share 0.967)  window=1024 burn=256
+    pinned {'k': 64, 'tau': 40.0, 'eps': 0.1, 'lam': 0.05}   cal-grid chose {'k': 64, 'tau': 20.0, 'eps': 0.25, 'lam': 0.3}
+    row                   delta     ci95   improved     base      mix
+    direct_pinned       -0.8746   0.3408      32/32   4.9036   4.0289
+    direct_calgrid      -1.1837   0.4313      31/32   4.9036   3.7199
+    (negative delta = the store helps; CI is 1.96-sigma across paired windows)
+    --- oracle-gate bound (binary endpoints {base, pure kNN vote}; thresholds tuned on cal windows only; shares on test(+extra pooled)) ---
+    base 4.9036  oracle 3.1543 (delta -1.7493; purse 1.7493 bpb; kNN wins 33.1% of positions)
+    scalar mix 3.7199 collects 67.7% of the purse
+    gate                         rule        test_bpb  share%   used%
+    top1_sim                     >= 0.6523     4.5241    21.7    96.0
+    topk_sim_mean                >= 0.623      4.5220    21.8    89.5
+    vote_entropy                 <= 3.2708     4.5387    20.9    95.3
+    base_entropy                 <= 1.611      4.3413    32.1    62.9
+    knn_mass_on_base_argmax      <= 0.69       4.5493    20.2    94.0
+    best pair: topk_sim_mean >= 0.623 AND base_entropy <= 1.2462
+      test 4.3397  purse share 32.2%  kNN used 44.1%
+    learned gate (5 base + 10 pairwise, standardized on cal):
+      binary switch: 4.6485  purse share 14.6%  kNN used 6.4%
+      lam(x) direct: 3.7025  purse share 68.7%  mean lam 0.369
+    class          pos%    base  oracle   win%  purse%
+    letter         59.7  4.5816  3.2573   33.1    45.2
+    digit           0.8  9.4022  5.9171   55.1     1.7
+    whitespace     27.1  1.6255  1.0422   20.4     9.0
+    utf8_lead       0.0 14.0514 14.0514    0.0     0.0
+    other_ascii    12.4 13.3005  7.0769   59.1    44.1
+    utf8_cont       0.0  1.5361  1.3082   50.0     0.0
+    (oracle uses labels — it prices the ceiling, not the expected win; gates see only label-free features)
+
+=== AGREEMENT (SW = witness 1, heinrich = witness 2)
+  FOLD      base 4.9036 / 4.9036 EXACT | delta -2.9080 / -2.9080 EXACT
+            oracle 1.6034 / 1.6034 EXACT | kNN wins 64.7% / 64.6%
+            lam 0.9 / 0.9 (independently cal-chosen) | mix 1.9955 / 1.9956 (one-ulp)
+  CONTROL   base 4.9036 / 4.9036 EXACT | delta -1.1836 / -1.1837 (one-ulp)
+            oracle 3.1543 / 3.1543 EXACT | kNN wins 33.1% / 33.1% EXACT
+            lam 0.3 / 0.3 (independently cal-chosen) | mix 3.7199 / 3.7199 EXACT
+
+  THE SPLIT, now two-witnessed on BOTH components:
+    code TOTAL -2.9080 = SMOOTHING -1.1837 + KNOWLEDGE -1.7243
+  An irrelevant English store still buys -1.18 on code, because the enwik90-trained
+  base is genuinely broken there (4.9036) and ANY archive repairs that calibration.
+  The relevant store buys -1.72 MORE. Quoting the raw -2.9080 as retrieval would
+  credit relevance with 41% of a delta it never earned.
+
+=== THE GATE LANE (heinrich-only; SW's harness has no gate block)
+  purse take, scalar mix / learned lam(x):
+    code FOLD (relevant)      88.1% / 90.4%   purse 3.3002   mean lam 0.798
+    code CONTROL (irrelevant) 67.7% / 68.7%   purse 1.7493   mean lam 0.369
+    enwik HOME (prior work)   43.3% / 45.6%   purse 0.39
+    enwik rungs (SW)          ~19%            purse 0.4377
+
+  READ used% BEFORE CREDITING ANY PURSE SHARE. On the fold the threshold gates look
+  spectacular (84-86% share vs ~1-6% at home) and it is an ARTIFACT: kNN used% is
+  94-96%, i.e. every 'winning' gate has degenerated to ALWAYS-RETRIEVE, which is
+  near-optimal when pure kNN (2.0602) beats base (4.9036) and wins 64.6% of positions.
+  No routing is being learned. The fold is simply lopsided.
+
+  LEARNED lam(x) ADDS 1-2pp OF PURSE EVERYWHERE (+2.3pp fold, +1.0pp control,
+  +2.3pp world). That is a cross-fold regularity, not a world-specific bar.
+
+=== CONSEQUENCE FOR E3 — the unrealized purse is the SAME SIZE for OPPOSITE REASONS
+    home:  mixture takes 19% of 0.4377 -> 0.354 bpb left BECAUSE THE MIXTURE CANNOT
+           FIND THE WINS (gates dead, lam(x) turns itself off)
+    code:  mixture takes 88% of 3.3002 -> 0.393 bpb left BECAUSE IT TAKES NEARLY
+           EVERYTHING AND THE RESIDUAL IS THE HARD TAIL
+  A port that merely fixes ROUTING collects the home purse. It will not collect
+  code's — there is almost nothing left there for a router to find. If E3 is to be
+  justified on both folds it must be doing two different jobs, and each number
+  should say which one it is buying.
+
+=== PURSE ANATOMY (code) — the first fold whose class profile genuinely moves
+    other_ascii  12.4% of positions -> 40.6% of the purse   (code's symbols)
+    letter       59.7%              -> 48.4%
+    whitespace   27.1%              ->  9.6%
+  SW's 'a bigger store buys more of the same bytes' invariance (a925dea4) was
+  measured on enwik-family stores. Code is a different anatomy. Code's value is
+  in the SYMBOLS, not the prose.
