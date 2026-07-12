@@ -4573,7 +4573,11 @@ def _cmd_cb_retro_subspace(args: argparse.Namespace) -> None:
             print(f"  lag {row['lag']:>4}: {row['n_directions']} directions "
                   f"({row['energy_kept'] * 100:.1f}% between-class energy, "
                   f"top sv {row['top_sv_share'] * 100:.1f}%)")
-        print(f"  merged rank: {r['rank']}  -> {r['out'] or '(not written)'}")
+        print(f"  merged rank: {r['rank']}  directions {r['shape'][0]}x{r['shape'][1]}"
+              f"  -> {r['out'] or '(not written)'}")
+        print(f"  chance energy frac: {r['chance_energy_frac']:.4f} "
+              f"(= rank/D; an isotropic init already sits here in ANY fixed "
+              f"subspace — quote it beside any alignment effect)")
         print("  (probe the E4 body's OWN frozen init — subspaces do not "
               "transfer across kernels)")
 

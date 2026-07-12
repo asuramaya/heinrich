@@ -1,0 +1,37 @@
+E4 evict-init — retrospective subspace export (heinrich, Anubis X, 2026-07-12)
+Input: chronohorn out/results/e4-body-init.checkpoint.pt (SW's frozen init capture)
+
+--- covenant verification (recomputed from the checkpoint's OWN weights, not the JSON claim)
+  tensors          12
+  params           476,672
+  declared         1048782c684479c01eb90611e07bdb6936510892c798ee76526d02327b234ac0
+  recomputed       1048782c684479c01eb90611e07bdb6936510892c798ee76526d02327b234ac0
+  COVENANT         HOLDS — capture describes the body arm A will train
+  (476,672 state_dict tensors vs 443,392 'params': the gap is BUFFERS —
+   frozen linear_in_proj 64x512 + 512 decays. Not a discrepancy.)
+
+--- capture: heinrich mri --mode sequence --byte-level --n-seqs 48 --seq-len 1024
+    --data chronohorn data/roots/diet_text/enwik_val_000000.bin  (CPU; card was SW's)
+
+--- export: heinrich profile-cb-retro-subspace --dims 512 --lags 64,512
+  
+  === Retrospective subspace: data/mris/e4-body-init.seq.mri (D=512) ===
+    lag   64: 5 directions (91.4% between-class energy, top sv 51.9%)
+    lag  512: 2 directions (94.8% between-class energy, top sv 89.6%)
+    merged rank: 7  directions 7x512  -> data/e4/e4-retro-directions.npz
+    chance energy frac: 0.0137 (= rank/D; an isotropic init already sits here in ANY fixed subspace — quote it beside any alignment effect)
+    (probe the E4 body's OWN frozen init — subspaces do not transfer across kernels)
+
+--- npz contract (what chronohorn's --init-directions hook loads; it fails loud on width mismatch)
+  directions   (7, 512) float32
+  state_mean   (512,)
+  lags         [ 64 512]   rank 7
+  orthonormal  True  (max|GGt-I| = 3.58e-07)
+  width == 512 True
+
+--- READING
+  Rank 7 of D=512. CHANCE energy fraction = 7/512 = 0.0137 — an isotropic (xavier)
+  init already sits there in ANY fixed rank-7 subspace. SW's 0.1153/chance-0.109
+  figure was a rank-7-of-64-modes illustration; at the E4 body's true width the
+  floor is 8x lower. Consequence for arm C: --init-energy-frac 1/3 is ~24x chance
+  concentration, not ~3x. Quote 0.0137 beside every arm-C effect.

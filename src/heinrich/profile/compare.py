@@ -7122,10 +7122,17 @@ def causal_bank_retro_subspace(mri_path: str,
         "lags": [int(x) for x in lags],
         "energy": float(energy),
         "rank": rank,
+        "shape": [rank, int(D)],
+        # An isotropic (xavier) init already places rank/D of its weight energy
+        # in ANY fixed rank-r subspace. A projected init is only "aligned" to
+        # the extent it beats this floor — quote it beside every arm-C effect
+        # or the effect size is unreadable.
+        "chance_energy_frac": round(rank / float(D), 6),
         "per_lag": ledger,
         "out": out,
     }
     if out:
+        Path(out).expanduser().resolve().parent.mkdir(parents=True, exist_ok=True)
         np.savez(out, directions=directions.astype(np.float32),
                  state_mean=gmean.astype(np.float32),
                  lags=np.asarray(lags), rank=rank)
