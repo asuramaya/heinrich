@@ -1,0 +1,53 @@
+E4 — DOES THE INIT GEOMETRY SURVIVE TRAINING? (heinrich, Anubis X, 2026-07-12)
+Weight-level read of SW's E4 arms (ruling 6ecf9cdf), which inferred survival from LOSS.
+Instrument: heinrich profile-cb-subspace-energy (new). Measures the readout's
+state-facing block (linear_readout.layers.0.weight[:, :512] — the exact block
+decepticons' init hook writes) inside the rank-7 retro subspace.
+
+
+=== State-facing block energy in span(data/e4/e4-retro-directions.npz) ===
+  rank 7 of D=512   chance energy frac 0.0137 (an isotropic init sits HERE for free)
+
+  checkpoint                     energy  xchance   |block|  eff_rank
+  init (pre-hook)                0.0131    0.96x   17.7333    170.60
+  A naive @1k                    0.0087    0.64x   31.0650     40.27
+  A naive @5k                    0.0056    0.41x   48.3611     33.44
+  B zeroed @1k                   0.0104    0.76x   23.5018     18.91
+  B zeroed @5k                   0.0059    0.43x   41.1516     25.94
+  C reserve @1k                  0.0727    5.32x   31.0307     40.33
+  C reserve @5k                  0.0138    1.01x   48.5016     36.04
+  C2 mid @1k                     0.0119    0.87x   31.0332     40.13
+  C2 mid @5k                     0.0054    0.40x   47.3537     35.50
+
+  (eff_rank is the participation ratio of the block's singular values; max 512. A projected init that trains badly should show LOW eff_rank early — over-concentration is a rank statement, and an energy fraction alone cannot see it.)
+
+--- READING
+1. THE NULL HOLDS ON THE REAL BODY. The naive init measures 0.0131 against the
+   predicted chance floor 0.0137 (0.96x). An untrained readout is ALREADY as
+   'aligned' with the retrospective subspace as chance allows.
+
+2. THE RESERVE DISSOLVES — MEASURED, NOT INFERRED. Arm C starts at frac 0.333
+   (SW's hook, 24.4x chance) and decays 0.0727 @1k (5.3x) -> 0.0138 @5k (1.01x).
+   By 5k the imposed geometry is INDISTINGUISHABLE FROM CHANCE. E4's verdict
+   'init geometry does not survive training' is now a statement about weights.
+
+3. TRAINING DOES NOT MERELY FORGET THE SUBSPACE — IT EVACUATES IT. Arms A, B and
+   C2 all finish BELOW chance (0.0056 / 0.0059 / 0.0054 = 0.40-0.43x). The trained
+   readout puts LESS energy in the retrospective directions than a random matrix
+   would. It is not neutral about the lagged past; it turns away from it. This is
+   the eviction story appearing in the READOUT's own geometry, where the campaign
+   had only ever seen it in the state's information content.
+
+4. MY OVER-CONCENTRATION HYPOTHESIS IS NOT SUPPORTED BY THIS EVIDENCE, and I will
+   not let it stand on a correct prediction it did not earn. At 1k, arm C's
+   effective rank (40.33) EQUALS naive's (40.27) — no rank collapse. But C's early
+   penalty lived at steps 50-200, and the earliest saved checkpoint is 1k, by which
+   time the loss curves had already converged. The regime where the effect existed
+   was never captured. UNTESTED, not confirmed. What would settle it: checkpoints
+   at 50/100/200 on arms C and C2.
+
+5. FREE FINDING — ZEROED BUILDS LESS. Arm B ends with a SMALLER, LOWER-RANK block
+   (norm 41.15, eff_rank 25.9) than naive (48.36, 33.4) at equal loss. B never has
+   to unlearn anything, so it builds only what it needs. Independent support for
+   SW's reading that the naive init's state-facing weights are noise the readout
+   spends its early steps suppressing.

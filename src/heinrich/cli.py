@@ -465,6 +465,15 @@ def build_parser() -> argparse.ArgumentParser:
                              help="Keep only the first N state dims (n_modes drops concat x_embed)")
     p_cb_retro.add_argument("--out", default=None, help="Output .npz path for the directions")
 
+    p_cb_energy = sub.add_parser("profile-cb-subspace-energy",
+                                 help="Does an init geometry SURVIVE training? Track the readout's state-facing energy inside a fixed retro subspace across checkpoints, against the rank/D chance floor an isotropic init occupies for free. Reads the E4 arms' mechanism off the WEIGHTS instead of inferring it from loss curves.")
+    p_cb_energy.add_argument("--directions", required=True,
+                             help="Directions .npz from profile-cb-retro-subspace")
+    p_cb_energy.add_argument("--models", nargs="+", required=True,
+                             help="Checkpoint path(s), in the order you want them tabulated")
+    p_cb_energy.add_argument("--labels", default=None,
+                             help="Comma-separated row labels (default: checkpoint stems)")
+
     p_cb_spec = sub.add_parser("profile-cb-stream-spectrum",
                                 help="Eigenspectrum + power-law exponent of streamed bank states for arbitrary byte streams (arm-A instrument: variance spectra = kernel × marginal). Compares random vs trained embedding drive.")
     p_cb_spec.add_argument("--model", required=True, help="Checkpoint path (.checkpoint.pt)")
@@ -1535,6 +1544,8 @@ def main(argv: list[str] | None = None) -> None:
         _cmd_cb_spectral_bands(args)
     elif args.command == "profile-cb-retro-subspace":
         _cmd_cb_retro_subspace(args)
+    elif args.command == "profile-cb-subspace-energy":
+        _cmd_cb_subspace_energy(args)
     elif args.command == "profile-cb-knn-lift":
         _cmd_cb_knn_lift(args)
     elif args.command == "profile-anisotropy":
@@ -4580,6 +4591,37 @@ def _cmd_cb_retro_subspace(args: argparse.Namespace) -> None:
               f"subspace — quote it beside any alignment effect)")
         print("  (probe the E4 body's OWN frozen init — subspaces do not "
               "transfer across kernels)")
+
+    _json_or(args, result, _fmt)
+
+
+def _cmd_cb_subspace_energy(args: argparse.Namespace) -> None:
+    """Track an init geometry's survival through training (E4 mechanism read)."""
+    from .profile.compare import causal_bank_subspace_energy
+
+    labels = ([x.strip() for x in args.labels.split(",")] if args.labels
+              else None)
+    result = causal_bank_subspace_energy(
+        args.directions, args.models, labels=labels)
+
+    def _fmt(r: dict) -> None:
+        if "error" in r:
+            print(f"Error: {r['error']}")
+            return
+        print(f"\n=== State-facing block energy in span({r['directions']}) ===")
+        print(f"  rank {r['rank']} of D={r['dims']}   chance energy frac "
+              f"{r['chance_energy_frac']:.4f} (an isotropic init sits HERE for free)")
+        print(f"\n  {'checkpoint':<28} {'energy':>8} {'xchance':>8} "
+              f"{'|block|':>9} {'eff_rank':>9}")
+        for row in r["rows"]:
+            lift = (f"{row['lift_vs_chance']:.2f}x"
+                    if row["lift_vs_chance"] is not None else "n/a")
+            print(f"  {row['label']:<28} {row['energy_frac']:>8.4f} {lift:>8} "
+                  f"{row['block_norm']:>9.4f} {row['eff_rank']:>9.2f}")
+        print(f"\n  (eff_rank is the participation ratio of the block's singular"
+              f" values; max {r['max_eff_rank']}. A projected init that trains"
+              f" badly should show LOW eff_rank early — over-concentration is a"
+              f" rank statement, and an energy fraction alone cannot see it.)")
 
     _json_or(args, result, _fmt)
 

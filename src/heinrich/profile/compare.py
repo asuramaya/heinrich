@@ -7139,6 +7139,93 @@ def causal_bank_retro_subspace(mri_path: str,
     return result
 
 
+# The readout is fed concat(state[linear_modes], embedding[embed_dim]), so the
+# FIRST linear_modes columns of its first Linear are the state-facing block.
+# Same layout decepticons' init hook writes into — measure the block it wrote,
+# not a block that merely resembles it.
+_STATE_FACING_KEYS = (
+    "linear_readout.layers.0.weight",
+    "linear_readout.in_proj.weight",
+    "linear_readout.out.weight",
+)
+
+
+def _state_facing_block(state: dict, dims: int) -> np.ndarray:
+    for key in _STATE_FACING_KEYS:
+        w = state.get(key)
+        if w is None:
+            continue
+        w = np.asarray(w.detach().cpu().double().numpy() if hasattr(w, "detach")
+                       else w, dtype=np.float64)
+        if w.shape[1] < dims:
+            raise ValueError(
+                f"{key} input width {w.shape[1]} < dims {dims} — the state-facing "
+                "block cannot be the leading columns")
+        return w[:, :dims]
+    raise ValueError(
+        f"no state-facing readout weight in checkpoint (looked for "
+        f"{', '.join(_STATE_FACING_KEYS)})")
+
+
+def causal_bank_subspace_energy(directions_path: str,
+                                model_paths: list[str],
+                                *,
+                                labels: list[str] | None = None) -> dict:
+    """Does an init geometry SURVIVE training? Track the state-facing block's
+    energy inside a fixed retro subspace across checkpoints.
+
+    E4 read "init geometry does not survive training" off four loss curves
+    converging. That is an inference from behaviour. This measures the weights
+    directly: how much of the readout's state-facing energy actually sits in
+    span(directions) at each step, against the chance floor rank/D that an
+    isotropic init already occupies for free.
+
+    Also reports the block's participation-ratio effective rank — the
+    over-concentration failure (a projected init collapsing the readout onto
+    too few directions) is a rank statement, and a fraction alone cannot see it.
+    """
+    import torch
+
+    z = np.load(directions_path)
+    basis = np.asarray(z["directions"], dtype=np.float64)     # [r, D]
+    r, D = basis.shape
+    rows = []
+    for i, path in enumerate(model_paths):
+        state = torch.load(path, map_location="cpu", weights_only=False)
+        if not (isinstance(state, dict)
+                and all(hasattr(v, "detach") for v in state.values())):
+            state = next((state[k] for k in ("model", "state_dict")
+                          if isinstance(state, dict) and k in state), state)
+        block = _state_facing_block(state, D)                 # [H, D]
+
+        total = float(np.linalg.norm(block))
+        par = block @ basis.T @ basis                         # inside span
+        frac = (float(np.linalg.norm(par)) / total) ** 2 if total > 0 else float("nan")
+
+        sv = np.linalg.svd(block, compute_uv=False)
+        e = sv ** 2
+        eff_rank = float(e.sum() ** 2 / max(float((e ** 2).sum()), 1e-30))
+
+        rows.append({
+            "label": (labels[i] if labels and i < len(labels)
+                      else Path(path).stem),
+            "model": path,
+            "energy_frac": round(frac, 6),
+            "lift_vs_chance": (round(frac / (r / D), 2) if total > 0 else None),
+            "block_norm": round(total, 4),
+            "eff_rank": round(eff_rank, 2),
+        })
+
+    return {
+        "directions": directions_path,
+        "rank": int(r),
+        "dims": int(D),
+        "chance_energy_frac": round(r / float(D), 6),
+        "max_eff_rank": int(D),
+        "rows": rows,
+    }
+
+
 def causal_bank_trajectory(mri_paths: list[str]) -> dict:
     """Forensic trajectory analysis across multiple checkpoints from the same run.
 
