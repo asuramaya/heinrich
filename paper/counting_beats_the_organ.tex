@@ -1,0 +1,620 @@
+\documentclass[11pt,a4paper]{article}
+\usepackage{fontspec}
+\usepackage{amsmath,amssymb,amsthm}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{geometry}
+\usepackage{enumitem}
+\usepackage{multirow}
+\usepackage{float}
+\usepackage{longtable}
+\geometry{margin=1in}
+
+% --- The provenance apparatus, inherited from The Frozen Frame: every number
+% states the artifact it was measured from and the code that produced it. In a
+% paper whose subject is a number we believed too easily, this is not decoration. ---
+\definecolor{prov}{RGB}{95,95,95}
+\newcommand{\provenance}[1]{\par\vspace{2pt}{\footnotesize\ttfamily\raggedright\color{prov}#1\par}}
+\newcommand{\heinrich}{\textsc{Heinrich}}
+\newcommand{\chronohorn}{\textsc{Chronohorn}}
+\newcommand{\decepticons}{\textsc{Decepticons}}
+\newcommand{\bpb}{\,bpb}
+
+\title{Counting Beats the Organ\\[0.5em]
+\large A Negative Result on Retrieval-Augmented Causal Banks,\\
+and the Baseline We Never Ran}
+
+\author{Built by Claude instances, steered by a human, measured by machines\\
+Systems: \decepticons{} (kernel) $\cdot$ \chronohorn{} (runtime) $\cdot$ \heinrich{} (forensics)\\[0.5em]
+\small Every number below was co-witnessed by two independent instruments\\
+and none of them was worth having.}
+
+\date{July 2026}
+
+\begin{document}
+\maketitle
+
+\begin{abstract}
+We set out to buy bits. A frozen-substrate causal bank---a recurrent body whose
+kernel is fixed at initialization and whose readout is trained---was to be given a
+memory organ: a $k$-nearest-neighbour datastore over its own hidden states, mixed
+into its output distribution. Over five store sizes from 8M to 150M bytes we
+measured the organ's value, co-witnessing every rung to the fourth decimal across
+two independent implementations, and it behaved: the lift grew monotonically, the
+optimal mixing weight rose with store size, an oracle bound priced the ceiling, and
+a four-corner control experiment cleanly separated what retrieval was buying
+(calibration repair) from what it was not (cross-domain knowledge). Then we ran, at
+the operator's suggestion, the control we should have run first. \textbf{An
+order-7 byte $n$-gram---a count table, ninety seconds of CPU---dominates the organ at
+every store size, does not saturate, and, alone, out-predicts the trained model
+itself} (2.0197 vs.\ 2.0367\bpb). Our best mix, 150M keys and 38\,GB of RAM at
+1.9530\bpb, is beaten by a count table holding a third of the bytes (1.8681\bpb).
+Independently and from the opposite end, a weight-level measurement finds that the
+trained readout places \emph{less} energy in the directions that decode the lagged
+past than a random matrix would ($0.40$--$0.43\times$ chance): training does not
+merely fail to use long context---it turns away from it. The two results are the
+same fact seen from two sides, and the fact is that the body was not using its
+long context, so an organ that supplies more of it could not have helped. We report
+the negative result, the one claim that survives it (a byte unigram---256
+numbers---captures 93.6\% of what a 64-million-key archive buys on foreign text),
+and the methodological failure that produced a month of honest, precise,
+irrelevant measurement: every pre-registration we wrote carried a literature line
+and a kill line, and none carried a \emph{baseline} line.
+\end{abstract}
+
+\section{What This Document Is}
+
+This is a negative result, reported in full, by the two agents who produced it and
+the human who ended it with one question.
+
+Three repositories are involved and it matters which does what. \decepticons{}
+supplies the kernel: the causal-bank model, its frozen linear substrate, and the
+retrieval primitives. \chronohorn{} supplies the runtime: training, evaluation
+harnesses, and the datastore experiments. \heinrich{} is the forensic instrument:
+it measures what a model \emph{computes}---residual geometry, state information,
+weight structure---rather than what it outputs, and it was used here both to
+co-witness \chronohorn{}'s claims on an independent implementation and to make
+measurements no loss curve can make.
+
+The campaign had a target: 1.0 bits per byte on \texttt{enwik8}-family text with a
+small byte-level model. It had a strategy: since the substrate is frozen and cannot
+learn to store the past, \emph{give} it the past, as an external archive of its own
+states. It had a protocol we were proud of---pre-registration before every run, a
+declared kill line, two independent witnesses agreeing to the fourth decimal before
+any number entered the record. Section \ref{sec:campaign} reports what that
+protocol produced. Sections \ref{sec:ngram} and \ref{sec:evacuation} report the two
+measurements that destroyed it. Section \ref{sec:anatomy} is the part we think is
+actually worth publishing.
+
+\section{The Bet}
+
+The causal bank is a recurrent architecture whose state is a bank of exponential
+moving averages of a projected byte embedding, with decay rates fixed at
+initialization across a spectrum of half-lives. The substrate is \emph{frozen}: it
+is never trained. Only a readout---an MLP reading the concatenation of the state and
+a local embedding---learns. The architectural bet is that a rich enough fixed
+temporal basis, plus a trained readout, can substitute for a learned recurrence,
+and that this buys enormous efficiency.
+
+The bet's obvious weakness is memory. A frozen EMA bank cannot choose what to keep.
+Long-range structure that a transformer holds verbatim in its KV cache, or that an
+LSTM learns to gate, must here be recoverable from a fixed linear mixture of the
+past---or not at all. This is the gap the retrieval organ was meant to close: if
+the body cannot hold the past, let it \emph{look the past up}.
+
+Concretely: run the body over a large corpus, store each state vector alongside the
+byte that followed it, and at inference retrieve the $k$ nearest stored states to
+the current one, vote over their successor bytes, and mix that vote into the body's
+output distribution with weight $\lambda$. This is $k$NN-LM, transplanted from
+transformers onto a causal bank, and the ladder that follows measures what it buys.
+
+\section{The Campaign, As It Looked From Inside}
+\label{sec:campaign}
+
+\subsection{The ladder}
+
+The base model is \texttt{fo-noadapt-enwik90-50k}: a byte-level causal bank trained
+on the first 90M bytes of \texttt{enwik9}, evaluated on held-out
+\texttt{enwik8}-family windows at \textbf{2.0367\bpb}. Every rung below stores
+states from the same corpus and queries held-out windows; every rung was run twice,
+once in \chronohorn{}'s harness and once in \heinrich{}'s independent
+implementation with its own cross-entropy accounting, and the two agreed to the
+fourth decimal at all five rungs.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrrr}
+\toprule
+store & $\Delta$ vs.\ base & $\lambda$ & mix \\
+\midrule
+8M   & $-0.0144$ & 0.05 & 2.0223 \\
+16M  & $-0.0187$ & 0.05 & 2.0180 \\
+32M  & $-0.0367$ & 0.10 & 2.0000 \\
+64M  & $-0.0488$ & 0.10 & 1.9880 \\
+94M  & $-0.0686$ & 0.20 & 1.9682 \\
+150M & $-0.0837$ & 0.50 & 1.9530 \\
+\bottomrule
+\end{tabular}
+\caption{The kNN ladder. Monotone, double-witnessed, and beside the point.}
+\end{table}
+\provenance{goldens: docs/data/knn-ladder-*.txt \quad{} base guard: 2.0367 exact or abort}
+
+It behaved exactly as a working mechanism should. The lift grew with store size.
+The optimal mixing weight $\lambda$ rose with it---roughly doubling per two store
+doublings---which we read as a demand curve: the bigger the archive, the more the
+model wants to listen to it. Two independently constructed calibration grids, with
+different geometries, never disagreed about the shape of that curve.
+
+\subsection{The oracle purse, and a case for a port}
+
+For each rung we computed a per-position oracle over the two endpoints
+$\{$base, pure $k$NN vote$\}$: an upper bound on what \emph{any} gating function
+$\lambda(x)$ could collect. The purse grew with the store (0.2610\bpb at 8M,
+0.3788 at 94M, 0.4377 at 150M) while the scalar mixture's take of it plateaued
+around 19\%. We called this the \emph{widening gap} and it became the strongest
+quantitative argument for the next experiment---an attention port that would read
+the retrieved neighbours directly instead of averaging them into a vote. The
+argument had the pleasing property of not depending on the oracle being achievable:
+it rested only on the mixture demonstrably failing to track a growing purse.
+
+It was an artifact. See \S\ref{sec:ngram}.
+
+\subsection{The relevance square, and the surface table}
+
+The one part of the campaign that still stands as \emph{method} is the
+decomposition. A raw retrieval delta conflates two different purchases: an archive
+of \emph{any} text repairs a badly calibrated base (\emph{smoothing}), and an
+archive of \emph{relevant} text supplies content the base lacks (\emph{knowledge}).
+Running a store of irrelevant text as a control isolates the first, and the
+difference gives the second.
+
+Across four held-out domains, with an \texttt{enwik8} store as the irrelevant
+control:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+fold & base & total & smoothing & knowledge \\
+\midrule
+code   & 4.9036 & $-2.9080$ & $-1.1837$ & $\mathbf{-1.7243}$ \\
+math   & --     & $-0.7666$ & $-0.3233$ & $\mathbf{-0.4433}$ \\
+wikiml & --     & $-0.4566$ & $-0.5740$ & $+0.1174$ \\
+world  & 4.8797 & $-0.4204$ & $-0.6245$ & $+0.2041$ \\
+\bottomrule
+\end{tabular}
+\caption{The surface table. On foreign prose, \emph{relevance subtracts}: the
+irrelevant store beats the relevant one. On templated text (code, math) the
+knowledge column is real and large.}
+\end{table}
+\provenance{goldens: docs/data/code-fold-cowitness.txt, knn-square-*.txt \quad{} code fold + control co-witnessed at the 4th decimal}
+
+The sign of the knowledge column separates two regimes cleanly, and a cheap
+label-free discriminator---is the archive alone a better predictor than the base?
+---predicted that sign correctly in all four folds without needing the control at
+all. The policy sentence we drew from it was: \emph{build stores for templated
+domains; calibrate for foreign ones.}
+
+Hold onto the word \emph{calibrate}. It is about to become the whole story.
+
+\section{Refutation I: A Byte Count Table Dominates the Organ}
+\label{sec:ngram}
+
+The operator asked why we had never used $n$-grams.
+
+The question stings because the answer is not ``we lacked them.'' \decepticons{}
+ships \texttt{OnlineCausalMemory}, a causal $n$-gram accumulator. The polyhash
+module ships \texttt{NgramTable}. We had count tables in both repositories the
+entire time and never pointed one at the organ.
+
+So we built the control properly: an interpolated byte $n$-gram over orders $0..K$
+with Witten-Bell-style backoff and 64-bit rolling context hashes, trained on
+\emph{the same store bytes} a $k$NN rung uses, scored on \emph{the same query
+windows}, mixed into \emph{the same base logits}. Two numbers decide it: which is
+the better standalone predictor, and which buys more when mixed.
+
+\subsection{Standalone}
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lr}
+\toprule
+predictor & bpb \\
+\midrule
+best byte $n$-gram, \textbf{8M} store (order 7, $\alpha{=}64$) & \textbf{2.3128} \\
+state-$k$NN organ alone, 8M store & 2.9743 \\
+state-$k$NN organ alone, \textbf{150M} store & 2.3892 \\
+\midrule
+the trained base itself & 2.0367 \\
+$n$-gram alone, 94M store & $\mathbf{2.0197}$ \\
+\bottomrule
+\end{tabular}
+\caption{An order-7 count table on 8M bytes beats the retrieval organ on 150M
+bytes. At matched store size it is not close. And at 94M, the count table
+out-predicts \emph{the trained model}.}
+\end{table}
+\provenance{chronohorn: python/chronohorn/eval/ngram\_control.py \quad{} ruling b2815ef5}
+
+\subsection{Mixed---the decisive test}
+
+Standalone strength is not the claim the ladder made. The ladder measured what the
+organ buys \emph{mixed into a trained base}, and complementarity is not strength:
+the base is a neural LM trained on this very corpus and may already contain every
+$n$-gram statistic there is, in which case mixing them back in would buy nothing.
+That was the organ's last defence, and it fails.
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrrr}
+\toprule
+store & organ $\Delta$ & $n$-gram $\Delta$ & ratio \\
+\midrule
+8M  & $-0.0144$ & $\mathbf{-0.0515}$ & 3.6$\times$ \\
+94M & $-0.0686$ & $\mathbf{-0.1686}$ & 2.5$\times$ \\
+\bottomrule
+\end{tabular}
+\caption{Same body, same store bytes, same canonical eval windows (the base must
+reproduce 2.0367 exactly or the run aborts). The $n$-gram does not saturate: it
+scales alongside the organ from a far higher base, so the organ never catches up.}
+\end{table}
+\provenance{chronohorn commit bd68f85 \quad{} ruling abff0759 (reset)}
+
+\textbf{base $+$ $n$-gram at 94M $=$ 1.8681\bpb beats base $+$ organ at 150M $=$
+1.9530\bpb}---our best-ever mix, beaten by a count table with a third of the bytes,
+in ninety seconds of CPU and 5.3\,GB, against hours of GPU and 38\,GB.
+
+\subsection{What this retracts}
+
+The \emph{widening gap}---our strongest argument for the attention port---dies
+here, and it dies in the most embarrassing way available: the scalar mixture
+collects the $n$-gram at \textbf{41.4\%} of its purse where it collects the organ
+at \textbf{18.1\%}. The mixture was never structurally blind. It was being handed a
+weak, badly calibrated predictor. The ``unrealized purse'' we were pointing at was
+\emph{the organ's own incompetence}, wearing the costume of a mechanism.
+
+Dead, therefore: the five-rung ladder as a value claim; the product-quantization
+tier that would have built 900M keys; the attention port's premise as written. The
+ladder measured the \emph{cost} of retrieval, not its value.
+
+\subsection{The near-miss that should frighten us most}
+
+The first pass of this control used $\alpha = 1.0$, untuned, and reported that
+\emph{the organ beats the $n$-gram by 0.345\bpb}. Pushing $\alpha$ until the curve
+turned inverted the verdict by \textbf{1.03\bpb}.
+
+We came within one lazy hyperparameter of publishing the opposite conclusion, with
+four decimals and two witnesses behind it. \textbf{An untuned control is not a
+control; it is a prop.} The rule we extract in \S\ref{sec:anatomy} is stronger than
+``run a baseline,'' and this is why.
+
+\section{Refutation II: The Readout Evacuates the Past}
+\label{sec:evacuation}
+
+The second refutation was not looking for the first. It came from \heinrich{}, from
+a weight measurement, and it arrived on the same day.
+
+\subsection{The question, and the null}
+
+The frozen substrate holds the past in a fixed linear mixture. \emph{Which
+directions of the state actually decode the lagged past?} We answered it by
+frequency-weighted class-mean SVD on a sequence-mode capture of the body's own
+frozen initialization---for each lag $\ell$, the directions along which the state
+separates by the byte that occurred $\ell$ steps ago. For the experimental body
+(512 modes) this yields a rank-7 subspace: 5 directions at lag 64, 2 at lag 512,
+merged and orthonormalized.
+
+Then, the crucial part, and the part we nearly got wrong. \emph{How much energy
+would a readout put in those 7 directions by accident?} An isotropic (Xavier) init
+already places a fraction $r/D$ of its weight energy in \emph{any} fixed rank-$r$
+subspace. Here $7/512 = \mathbf{0.0137}$. The measured value on the real untrained
+body is $0.0131$. \textbf{An untrained readout is already as ``aligned'' with the
+retrospective subspace as chance allows}, and any alignment claim not quoted
+against this floor is unreadable. (We initially carried a floor of $0.109$ from a
+64-mode toy---a number correct in its own context and meaningless in this one. The
+error is the same class as everything else in this paper.)
+
+\subsection{The measurement}
+
+Four training arms, identical but for how the readout's state-facing block is
+seeded: naive (Xavier), zeroed, and two \emph{projected} arms that rotate a
+prescribed fraction of the block's energy into the retrospective subspace while
+conserving its Frobenius norm exactly---$1/3$ (a $24.4\times$ chance
+concentration) and $0.05$ ($3.7\times$).
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrrrr}
+\toprule
+checkpoint & energy in subspace & $\times$ chance & $\|$block$\|$ & eff.\ rank \\
+\midrule
+init (pre-hook)   & 0.0131 & 0.96 & 17.73 & 170.60 \\
+\midrule
+A naive @1k       & 0.0087 & 0.64 & 31.07 & 40.27 \\
+A naive @5k       & 0.0056 & \textbf{0.41} & 48.36 & 33.44 \\
+B zeroed @1k      & 0.0104 & 0.76 & 23.50 & 18.91 \\
+B zeroed @5k      & 0.0059 & \textbf{0.43} & 41.15 & 25.94 \\
+C reserve @1k     & 0.0727 & 5.32 & 31.03 & 40.33 \\
+C reserve @5k     & 0.0138 & \textbf{1.01} & 48.50 & 36.04 \\
+C2 mid @1k        & 0.0119 & 0.87 & 31.03 & 40.13 \\
+C2 mid @5k        & 0.0054 & \textbf{0.40} & 47.35 & 35.50 \\
+\bottomrule
+\end{tabular}
+\caption{The readout's state-facing block, projected into the rank-7 retrospective
+subspace. Chance is $1.00\times$.}
+\end{table}
+\provenance{golden: docs/data/e4-init-geometry-survival.txt \quad{} instrument: heinrich profile-cb-subspace-energy \quad{} ruling 75906b12}
+
+Two things are visible and only one of them was predicted.
+
+\textbf{The imposed geometry dissolves.} Arm C begins at $24.4\times$ chance and
+decays to $5.32\times$ by step 1000 and $1.01\times$ by step 5000. Whatever we
+seed, training returns the readout to chance. The final losses of all four arms
+(2.4107, 2.4103, 2.4061, 2.4107) lie inside the $\sim$0.004\bpb init-noise floor:
+\emph{the init geometry does not survive training.} That much we expected to read
+off the loss curves; here it is read off the weights.
+
+\textbf{But the trained readout does not stop at chance---it goes below it.} Arms
+A, B and C2 all finish at $0.40$--$0.43\times$ chance. \emph{The trained readout
+places less energy in the directions that decode the lagged past than a random
+matrix would.} It does not merely fail to use long context. It \emph{turns away
+from it}, systematically, and it spends its training steps doing so.
+
+This is the same arrow the forensic program had already found in the state's
+information content---that training moves the body from an archive with its head in
+the past toward attention on the present edge---now visible in a second, independent
+surface: the readout's own weights.
+
+\subsection{What we withdrew}
+
+We had a story for why the aggressive projected arm (C) was slowest early:
+over-concentration, i.e.\ rank collapse in the readout. It is \emph{not supported}.
+At step 1000 arm C's effective rank (40.33) equals naive's (40.27). And our
+evidence cannot see the regime where the effect lived---C's early penalty is at
+steps 50--200, the earliest checkpoint is 1000, and by then the loss curves have
+converged. The mechanism of C's early penalty is \textbf{unknown}. We record it as
+unknown, having proposed it loudly and having had a collaborator build an
+experimental arm around it.
+
+\section{Convergence: The Body Is Not Using Its Long Context}
+
+Put the two refutations side by side.
+
+\begin{itemize}[leftmargin=1.5em]
+\item A 7-byte count table out-predicts the entire trained body (2.0197 vs.\ 2.0367).
+\item The trained readout actively turns away from long-lag directions (0.41$\times$ chance).
+\end{itemize}
+
+They are the same fact from opposite ends. The first says: whatever the body earns
+above the count table's reach, it does not earn from context longer than about
+seven bytes. The second says: the body's readout has \emph{decided} not to look
+there. The frozen substrate's long-timescale modes---the entire architectural
+premise, the thing the retrieval organ was built to supplement---may be dead weight
+the readout has learned to ignore.
+
+This reframes the negative result. The organ did not fail because retrieval is
+worthless, or because $k$NN is the wrong retrieval mechanism. \textbf{It failed
+because it was supplying more of a resource the body had already refused.} No
+better organ, no attention port, no product-quantized 900M-key store would have
+changed that, and each was on our roadmap.
+
+\section{What Survives}
+
+\subsection{The unigram prices the smoothing column}
+
+The single most useful number the campaign produced is the one that embarrassed it.
+On a foreign fold (\texttt{enwik8} store, \texttt{world} queries, base 4.8797), we
+scored the archive against the store corpus's \textbf{byte marginal}---256 numbers,
+no keys, no search---on identical positions, identical base logits, with $\lambda$
+tuned on the same calibration split:
+
+\begin{table}[H]
+\centering
+\begin{tabular}{lrr}
+\toprule
+mixed with & $\Delta$ & mix \\
+\midrule
+the archive (64M keys) & $-0.6245$ & 4.2553 \\
+a byte unigram (256 numbers) & $-0.5843$ & 4.2955 \\
+\bottomrule
+\end{tabular}
+\caption{The unigram captures \textbf{93.6\%} of what a 64-million-key archive
+buys. Co-witnessed on two instruments; the figure reproduces to the digit.}
+\end{table}
+\provenance{golden: docs/data/marginal-unigram-cowitness.txt \quad{} ruling ac7bc509}
+
+This does not kill the smoothing/knowledge decomposition---it \emph{prices} it. What
+we had been calling ``calibration repair'' was never retrieval at all: it is an
+overconfident base being pulled toward byte frequencies, and \emph{anything} that
+pulls it there works. An archive is an extraordinarily expensive way to compute a
+unigram. The policy sentence survives with a cost column attached: for a smoothing
+fold, do not build a store---ship 256 numbers.
+
+\subsection{The decomposition, as method}
+
+The square and the smoothing/knowledge split are claims about \emph{mixing an
+archive into a base}, not about state-$k$NN. They survive the reset as a method,
+and every number in them must be re-measured with a counting archive. The open
+question it leaves is sharp and cheap: templated text is exactly what $n$-grams
+eat, so \emph{does code's $-1.7243$ knowledge column survive against a count-table
+archive?} If it does, relevance is real. If it does not, the square was about count
+statistics all along.
+
+\subsection{The instruments}
+
+The forensic tools outlive the hypothesis they were built to test:
+\texttt{profile-cb-subspace-energy} (does an init geometry survive training?),
+\texttt{profile-cb-retro-subspace} (which state directions decode the lagged
+past?), and a $k$NN-lift harness that now \emph{always} emits its own unigram
+control. That last change is the paper's one line of code worth copying: the
+refutation is no longer optional, so it cannot be forgotten.
+
+\section{Anatomy of an Error}
+\label{sec:anatomy}
+
+This is the part we believe is worth publishing.
+
+The campaign was not sloppy. It was, by every local measure, unusually careful:
+pre-registration before each run, a declared kill line, two independent
+implementations agreeing to the fourth decimal before anything entered the record,
+a written protocol for hardware contention, and an explicit rule that no analysis
+survives as a script---it becomes an instrument or it does not exist. We caught, in
+flight, a corpus loader silently interleaving nulls (by hashing bytes against their
+producing reader), a GPU throttled 8$\times$ while reporting 100\% utilization, and
+an evaluation harness in which \emph{raising the calibration count silently drew a
+disjoint test set}---caught only because a guard tied the new harness to a known
+base value and refused to run when it drifted by 0.03\bpb.
+
+And all of that precision was spent measuring a mechanism that a ninety-second
+count table beats.
+
+\subsection{The rule}
+
+\begin{quote}
+\textbf{No experiment without its cheapest competent baseline, tuned to its own
+optimum---and the baseline is tuned by whoever stands to lose from it.}
+\end{quote}
+
+Every pre-registration we wrote had a literature line and a kill line. None had a
+\emph{baseline} line. The kill line asks ``what result would make me abandon this
+hypothesis?''---and we answered it honestly every time, which is exactly why it felt
+like rigour. But a kill line polices the hypothesis \emph{against itself}. It never
+asks the other question: \emph{what cheap thing might already do this, and would I
+notice if it did?}
+
+The second clause is not rhetoric. The untuned $\alpha{=}1.0$ pass had the $n$-gram
+losing by 0.345\bpb; tuning it flipped the verdict by 1.03. A baseline tuned by its
+proponent's opponent is the only kind you can trust, and in a two-agent system that
+is a role you can actually assign.
+
+\subsection{The error class, five times in one day}
+
+Once named, the same failure was everywhere---always a number that meant one thing
+in one regime, quoted as if it meant the same in another:
+
+\begin{enumerate}[leftmargin=1.5em,itemsep=2pt]
+\item An untuned $n$-gram ($\alpha{=}1.0$) reported as ``the organ wins.''
+\item A chance floor measured on a 64-mode toy ($0.109$) carried into a 512-mode
+body, where the true floor is $0.0137$---an $8\times$ error in the null of the
+central alignment claim.
+\item A purse-anatomy figure remembered from a letter and compared against a fresh
+measurement, nearly producing a spurious ``whitespace collapse.''
+\item Gate rules posting an 84--86\% purse share on a lopsided fold---which we
+nearly cashed as evidence of learned routing, until we read the usage column: the
+gates were firing 94--96\% of the time. They had degenerated to
+\emph{always-retrieve}, which is near-optimal when retrieval alone beats the base.
+No routing was being learned at all. \emph{Read the usage before crediting the
+share.}
+\item An API argument written from memory of its own signature rather than copied,
+silently mis-passed.
+\end{enumerate}
+
+\subsection{The fourth decimal is not rigour}
+
+It is the \emph{last} step of rigour, and we performed it first and hardest because
+it is the one that feels like virtue. Two witnesses agreeing to four decimals is a
+strong guarantee that a number is \emph{correct}. It is no guarantee whatsoever that
+the number is \emph{about anything}. We had a protocol optimized end-to-end for
+precision and containing no step whose job was relevance.
+
+Rigour is asking what would make the entire enterprise pointless, and then spending
+ninety seconds of CPU to find out.
+
+\section{Threats to Validity, and What We Did Not Show}
+
+We are reporting a negative result and the temptation to over-generalize it is
+exactly symmetrical to the temptation that produced the positive one. So, plainly:
+
+\begin{itemize}[leftmargin=1.5em,itemsep=3pt]
+\item \textbf{One architecture, one scale, one corpus family.} All of this is a
+byte-level causal bank with a frozen substrate, 0.4M--11M parameters, on
+\texttt{enwik}-family text. A count table beating \emph{this} body says nothing
+about count tables beating a transformer, or a larger bank. Everything above
+$\sim$1.8\bpb on this corpus is commodity statistics---PPM's well---and our best mix
+(1.9530) never left the well. A model that had left it might use its long context.
+\item \textbf{The organ was \emph{our} organ.} Whitened state $k$NN with a softmax
+vote is one retrieval design. A different key construction might not be dominated.
+We showed that \emph{this} organ is dominated, and that the reason is upstream of
+the organ---but the second half of that claim rests on the readout measurement,
+which is a single body.
+\item \textbf{E4 is one seed per arm.} The early-training inversions are
+46--69$\times$ the noise floor, so they should hold, but they are not replicated.
+The steps 50--200 regime, where the only unexplained effect lives, was never
+captured.
+\item \textbf{The context-length decomposition was never run.} Our central claim
+---the body is not using its long context---rests on two convergent measurements,
+not on a direct one. The direct measurement is stated below and it is cheap. We did
+not run it, and a reader is entitled to hold the claim at exactly the confidence two
+indirect witnesses earn.
+\end{itemize}
+
+\section{Conclusion, and the One Question Left}
+
+We built a retrieval organ for a frozen-substrate causal bank, measured it across
+six store sizes with two independent instruments to the fourth decimal, priced its
+ceiling with an oracle, decomposed its value into smoothing and knowledge with a
+four-corner control, and designed an attention port to collect the residual. A byte
+count table beats it at every size, does not saturate, and out-predicts the model
+itself. The model, independently, turns out to place less weight on the directions
+that decode its own distant past than a random matrix would.
+
+The organ was supplying more of something the body had already refused.
+
+The question that follows is the only one we would now spend a GPU-hour on, and it
+was never asked because it does not presuppose the answer we wanted:
+
+\begin{quote}
+\textbf{Where, if anywhere, does the body beat counting?}
+\end{quote}
+
+Decompose base-versus-$n$-gram performance by context length. If the body beats a
+count table \emph{nowhere} beyond about seven bytes, then the frozen-substrate bet
+is refuted on its own terms, no store of any kind deserves another hour, and the
+only remaining source of non-commodity bits is the core architecture. If there
+\emph{is} a horizon where the body pulls ahead, then that horizon is the entire
+value of the architecture, and every future bit comes from widening it.
+
+Either answer is worth more than the ladder was. Both are cheap. Neither requires
+an archive.
+
+\section*{Reproduction}
+
+Every number in this paper has a committed artifact.
+
+\begin{table}[H]
+\centering
+\small
+\begin{tabular}{ll}
+\toprule
+claim & artifact \\
+\midrule
+the ladder & \texttt{heinrich docs/data/knn-ladder-*.txt} \\
+the square, surface table & \texttt{heinrich docs/data/knn-square-*.txt} \\
+code fold + control (2 witnesses) & \texttt{heinrich docs/data/code-fold-cowitness.txt} \\
+the unigram control (93.6\%) & \texttt{heinrich docs/data/marginal-unigram-cowitness.txt} \\
+retro subspace + chance floor & \texttt{heinrich docs/data/e4-retro-subspace-init.txt} \\
+readout evacuation & \texttt{heinrich docs/data/e4-init-geometry-survival.txt} \\
+$n$-gram standalone & \texttt{chronohorn eval/ngram\_control.py} (ruling b2815ef5) \\
+$n$-gram mixed (the reset) & \texttt{chronohorn commit bd68f85} (ruling abff0759) \\
+init hooks, E4 arms & \texttt{decepticons commit 0ba25a0} \\
+\bottomrule
+\end{tabular}
+\end{table}
+
+\section*{Coda}
+
+The operator asked one question, in eight words, and it cost the campaign its
+premise and bought it its only durable finding. We had the tooling to answer that
+question on day one, in both repositories, and we spent the month racing each other
+to the fourth decimal instead.
+
+The instruments were good. The witnesses were honest. The protocol was followed.
+And none of it was pointed at the one thing that could have shown us we were wrong,
+because everything in the protocol was designed to check whether we were
+\emph{precise}, and nothing in it was designed to check whether we were
+\emph{necessary}.
+
+That is the result. It is negative, and it is a result.
+
+\end{document}
