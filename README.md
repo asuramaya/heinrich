@@ -1,12 +1,25 @@
 # Heinrich
 
-<p align="center">
-  <img src="docs/heinrich.jpg" alt="Heinrich" width="400">
-</p>
+**A model-forensics instrument. It measures what a language model _computes_, not what it says.** Residual-stream geometry, attention routing, activation traces, and language-level scores from independent judges — each signal in its own lane, no ground-truth calibration, the interpretation left to the reader. The signal stack is the finding.
 
-> Mascot: Heinrich is the final boss of Conker's Bad Fur Day, an alien xenomorph parody that Conker must defeat in a robotic suit after it bursts from the Panther King's chest.
+### → **[hcirnieh.com](https://hcirnieh.com)** — the Observatory. Fly through a real model's residual stream in your browser. No install, no account, no server compute.
 
-Model forensics through geometry. Heinrich measures what language models compute — residual stream projections, attention routing, activation traces — alongside language-level signals from independent scorers. Each measurement stays in its own lane. No ground-truth calibration. The signal stack is the finding.
+`Python 3.10+` · captures transformers (MLX/HF) and causal banks · Three.js viewer on a static edge deploy · MIT
+
+![The Heinrich Observatory: a twenty-viewport cockpit over SmolLM2-135M at layer 18. Three point clouds and three trajectory lanes are coloured red-to-blue along PC0; three radial weight-alignment flowers sit beneath them; the PC spectrum and the live inspector panel fill the right, showing token A ')(' against token B ' boulders'.](docs/observatory-cockpit.png)
+
+Every viewport above reads the same `.mri` — one capture of SmolLM2-135M's residual stream — through a different lane. The red/blue split is not decoration. At layer 18, **PC0 carries 94.4% of the variance and it is bimodal**: two lobes, not one, at the 98th percentile against a random-direction baseline. Its extremes are the code fragment `')('` at one end and the English word ` boulders` at the other. Heinrich picked that axis by ranking every PC on that test — it was not chosen because it photographs well, and the two-token extremes are a hint about what the axis means, not proof of it.
+
+Heinrich is a **producer** (capture, decompose, eval, audit — runs models, needs weights and a GPU) and a **consumer** (the viewer and the model-free analyses — reads recordings, runs anywhere). The `.mri` artifact is the contract between them, and the Observatory is the consumer published to the edge.
+
+## Screenshots
+
+| The Readout River | The vocabulary, revealed | Weight-alignment flower |
+|---|---|---|
+| ![A straight rod through layer-space with a labelled band reading 'commit L26 → " the"', thin candidate strands fanning away from it](docs/observatory-river.png) | ![A dense field of tens of thousands of token squares, graded blue on the left to red on the right, tagged in the corner with the number of tokens actually drawn out of 48,660](docs/observatory-cloud.png) | ![Coloured petals radiating from an origin, one per weight matrix — Q, K, V, O, gate, up, down](docs/observatory-flower.png) |
+| The logit lens as geometry: where the model **commits**. For `The capital of France is`, this 135M base model commits at layer 26 — to `" the"`, not `" Paris"`. The instrument reports what the model does, not what we hoped. | Zoom past a threshold and the 2,000-token sample is replaced by the **real 48,660-row vocabulary** at its true frozen coordinates. The tag in the corner is the viewer refusing to imply it drew more than it drew. | Each petal is one weight matrix, its length the alignment of that matrix with the pinned direction. Q/K/V/O and the MLP's gate/up/down, read off the live weights. |
+
+<sub>Every Observatory image in this README is the output of [`docs/capture_observatory.mjs`](docs/capture_observatory.mjs) — it boots the real viewer against a real `.mri`, drives it the way a reader would, and photographs it. Nothing in them is drawn by the capture script. Frame: `smollm2-135m/raw`, layer 18, pins `#1692 ')('` / `#1659 ' boulders'` — paste `#m=smollm2-135m&d=raw&l=18&a=1692&b=1659&p=0-10,2-1` onto a running viewer to land on exactly this view.</sub>
 
 ## What It Does
 
@@ -61,6 +74,10 @@ read-only (`live:false`); a local `heinrich companion` is full-power
 exact view down to a local instance via a deep-link — the on-ramp ladder is
 cloud → slim-local (numpy, no GPU) → full-local (torch). See
 [`docs/observatory.md`](docs/observatory.md).
+
+![The PC spectrum lane: a 3D scree waterfall, one row per layer, 576 principal components deep. A few tall components dominate the near edge and the rest collapse into a long flat tail running to the horizon.](docs/observatory-spectrum.png)
+
+<sub>The decomposition itself, all 576 components across all 32 layers of SmolLM2-135M. The near wall is where the variance lives; the flat plain behind it is the tail. This is the artifact the edge actually serves — the viewer streams these columns by byte-range out of R2 and never runs a model.</sub>
 
 - Architecture & positioning: [`docs/observatory.md`](docs/observatory.md)
 - The open artifact format (producer↔consumer contract): [`web/ARTIFACT_FORMAT.md`](web/ARTIFACT_FORMAT.md)
@@ -266,6 +283,14 @@ These were learned by getting them wrong. See `memory/feedback_measurement_princ
 ## Origin
 
 Merges [conker-detect](https://github.com/asuramaya/conker-detect) and [conker-ledger](https://github.com/asuramaya/conker-ledger) into a single pipeline. Extended with eval pipeline, geometry capture, shart theory, and signal-stack architecture.
+
+## The name
+
+<p align="center">
+  <img src="docs/heinrich.jpg" alt="Heinrich, the final boss of Conker's Bad Fur Day: a xenomorph parody in a robotic suit" width="360">
+</p>
+
+Heinrich is the final boss of *Conker's Bad Fur Day* — an alien xenomorph parody that bursts from the Panther King's chest, and that Conker can only fight by climbing into a robotic suit of his own. The lineage above (conker-detect, conker-ledger) is not a coincidence. Neither is the moral: you do not get to look inside the thing barehanded.
 
 ## License
 
