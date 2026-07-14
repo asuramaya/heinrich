@@ -1,0 +1,14 @@
+# The operator's standing model choice FOR THIS REPO.
+#
+# The fleet's default intent is Fable 5, and Osiris raises a MODEL DIVERGENCE banner on every
+# mount where the running model does not match the intent on file — a rug-pull must be confessed,
+# never inherited blind. That banner is load-bearing, and it only works if it is rare.
+#
+# Here it was firing every single session against a choice the operator had made ON PURPOSE
+# (/model → Opus 4.8, saved as the default). The RUN was right; the INTENT ON FILE was wrong. A
+# banner that cries wolf every session is one the next seat learns to ignore, which is the one
+# thing that must never happen to this particular banner.
+#
+# So: heinrich runs Opus. Declared, not inherited. If that changes, change it here — and if you
+# find yourself running something this file does not name, say so in your first reply.
+model = "claude-opus-4-8"

@@ -16,8 +16,10 @@ design canon (verified: returns your ingested `ref:heinrich-*` notes). Source do
 on disk: `docs/`, `paper/`, `PLAN.md`, and git.
 
 ## Identity check
-The operator's standing choice is **Fable 5**. If your environment names a different model,
-SAY SO in your first reply — a rug-pull is confessed, never inherited blind.
+This repo runs **Opus 4.8** — declared in `.osiris` (`model = "claude-opus-4-8"`), which is the
+operator's deliberate per-project choice, not the fleet default (Fable 5). If your environment
+names a different model, SAY SO in your first reply — a rug-pull is confessed, never inherited
+blind. That rule only has teeth while the banner is rare, which is why the intent is on file.
 
 ## What heinrich is
 A model-forensics instrument: it measures what a model **computes**, not what it outputs —
