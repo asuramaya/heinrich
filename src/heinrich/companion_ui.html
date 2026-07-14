@@ -47,9 +47,20 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 /* Opaque, not translucent: these two PIN over the scrolling body, and at 0.94 alpha the token
    metadata underneath ghosted straight through them. */
 #tokHead{flex:0 0 auto;padding:8px 10px 7px;border-bottom:1px solid var(--rule);background:#0e0e0e}
-#tokHead .th-top{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+#tokHead .th-top{display:flex;align-items:center;gap:7px;flex-wrap:wrap}
 #tokHead .th-gap{flex:1;min-width:0}
-#tokHead .th-model{font-size:var(--fs-lg);font-weight:bold;color:#eee;letter-spacing:0.01em}
+/* THE TITLE IS A <select>. Borderless until you reach for it, with its own caret — so it reads as
+   a heading and behaves as a control. max-width:none overrides the 200px cap on ordinary selects. */
+#tokHead .th-title,#tokHead .th-mode{appearance:none;-webkit-appearance:none;background-color:transparent;border:1px solid transparent;font-family:inherit;cursor:pointer;border-radius:4px;
+  background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 10 6'%3E%3Cpath d='M0 0h10L5 6z' fill='%23777'/%3E%3C/svg%3E");
+  background-repeat:no-repeat;background-size:8px 5px}
+#tokHead .th-title{font-size:var(--fs-lg);font-weight:bold;color:#eee;letter-spacing:0.01em;max-width:none;padding:2px 20px 2px 5px;margin-left:-5px;background-position:right 6px center}
+#tokHead .th-mode{font-size:var(--fs-xs);color:var(--ink-dim);max-width:none;padding:3px 17px 3px 6px;background-position:right 5px center;letter-spacing:0.06em;text-transform:uppercase}
+#tokHead .th-title:hover,#tokHead .th-mode:hover{background-color:#1c1c1c;border-color:#3a3a3a}
+#tokHead .th-title:focus,#tokHead .th-mode:focus{outline:none;background-color:#1c1c1c;border-color:#3a5a30}
+#tokHead .th-go{background:transparent;border:1px solid transparent;color:var(--ink-faint);font-family:inherit;font-size:var(--fs-md);line-height:1;padding:3px 6px;border-radius:4px;cursor:pointer}
+#tokHead .th-go:hover{color:#bf9;border-color:#3a5a30;background:#17240f}
+#tokHead .th-layer{font-size:var(--fs-md);font-weight:bold;color:var(--ink);font-variant-numeric:tabular-nums}
 #tokHead .th-verdict{font-size:var(--fs-xs);font-weight:bold;letter-spacing:0.14em}
 #tokHead .th-tel{font-size:var(--fs-xs);color:var(--ink-faint);white-space:nowrap;font-variant-numeric:tabular-nums}
 #tokHead .th-sub{font-size:var(--fs-xs);color:var(--ink-faint);margin-top:2px;min-height:1em}
@@ -60,22 +71,17 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 
 /* ---- FOOT: the state bar. Never scrolls, and it is the only place state changes. ---- */
 #tokFoot{flex:0 0 auto;padding:7px 10px;border-top:1px solid var(--rule);background:#0e0e0e}
-#ctrlbar{display:flex;flex-direction:column;gap:6px}
-#ctrlbar .ctrl-row{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+#ctrlbar .ctrl-row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+#ctrlbar .ctrl-grp{display:flex;gap:3px;align-items:center}
+#ctrlbar .ctrl-sep{width:1px;height:16px;background:#333;margin:0 2px}
 #ctrlbar .ctrl-gap{flex:1;min-width:0}
-#ctrlbar select,#ctrlbar button{background:#181818;border:1px solid #343434;color:var(--ink);font-family:inherit;font-size:var(--fs-md);padding:3px 8px;border-radius:3px;cursor:pointer;line-height:1.4}
-#ctrlbar select:hover,#ctrlbar button:hover{border-color:#5a5a5a;color:#fff}
-#ctrlbar .ctrl-go{background:#17240f;border-color:#3a5a30;color:#bf9}
+#ctrlbar button{background:#181818;border:1px solid #343434;color:var(--ink);font-family:inherit;font-size:var(--fs-md);padding:3px 9px;border-radius:3px;cursor:pointer;line-height:1.4}
+#ctrlbar button:hover{border-color:#5a5a5a;color:#fff}
 #ctrlbar .ctrl-rec{color:#a05a5a}
-#ctrlbar #llbl{color:var(--ink);font-size:var(--fs-md);min-width:34px;text-align:center;font-variant-numeric:tabular-nums}
+#ctrlbar #llbl{color:var(--ink);font-size:var(--fs-md);min-width:36px;text-align:center;font-variant-numeric:tabular-nums;font-weight:bold}
 #ctrlbar #lemb,#ctrlbar #llmh{color:var(--ink-dim)}
 #ctrlbar .cbtn{position:static;gap:2px}                 /* not a viewport overlay down here */
 #ctrlbar .cbtn button{padding:3px 7px;font-size:var(--fs-xs);color:var(--ink-faint);background:#161616}
-/* One line once there is room for one. Two stacked rows is a phone layout, not a desktop one. */
-@container panel (min-width:660px){
-  #ctrlbar{flex-direction:row;align-items:center;gap:14px}
-  #ctrlbar #ctrlLayer{flex:1}
-}
 /* Docked: fills its grid cell, occludes nothing, and cannot be dragged into the way.
    It is a flex COLUMN whose fixed chrome (controls, header, the pinned pair) stays put and
    whose active tab pane takes the rest — so the panel itself never scrolls away from you. */
@@ -85,10 +91,23 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #tokHead{position:sticky;top:0;z-index:3}
 #tokFoot{position:sticky;bottom:0;z-index:3}
 #tokpanel.docked{position:static!important;left:auto!important;top:auto!important;right:auto!important;width:auto!important;max-width:none;height:100%;max-height:none!important;border-radius:0;border:none;border-left:1px solid #222;z-index:1;overflow:hidden;backdrop-filter:none;background:rgba(10,10,10,0.6);display:flex;flex-direction:column}
-#tokpanel.docked>#tokBody{flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto}
+/* ONE SCROLLER, AND IT IS A LIST. The body does not scroll; the tab pane does not scroll. They
+   REFLOW (cards into columns) and they TAB. The only things that move are the unbounded lists —
+   search results, the chat logs — because a list is a list and everyone expects it to scroll.
+   Three nested scroll containers was the old shape, and two scrollbars could appear at once. */
+#tokpanel.docked>#tokBody{flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden}
 #tokpanel.docked #tokTabContent{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
-#tokpanel.docked .tab-pane.active{flex:1;min-height:130px;display:flex;flex-direction:column;overflow-y:auto}
-#tokpanel.docked .tab-pane.active>div{flex:1;min-height:0}
+#tokpanel.docked .tab-pane.active{flex:1;min-height:130px;display:flex;flex-direction:column;overflow:hidden}
+/* If a pane's cards genuinely cannot fit (Live, with all four expanded), the CARD STACK takes the
+   scroll — never the body and never the pane. In Find and Chat the lists flex to fill, so the stack
+   fits exactly and this never engages: one scrollbar in the panel, at most, ever. */
+#tokpanel.docked .tab-pane.active>div{flex:1;min-height:0;overflow-y:auto}
+/* Thin, dark, and out of the way. The raw platform scrollbar was a bright slab down the panel. */
+#tokpanel{scrollbar-width:thin;scrollbar-color:#2f2f2f transparent}
+#tokpanel ::-webkit-scrollbar{width:6px;height:6px}
+#tokpanel ::-webkit-scrollbar-track{background:transparent}
+#tokpanel ::-webkit-scrollbar-thumb{background:#2f2f2f;border-radius:3px}
+#tokpanel ::-webkit-scrollbar-thumb:hover{background:#4a4a4a}
 /* Docked, the grabber has nowhere to drag to and the minimize button nothing to reveal —
    #tokHead is the title bar. So the grabber removes itself rather than sit there as a stub. */
 #tokpanel.docked .drag-handle{display:none}
@@ -284,7 +303,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .rlbl-mode{float:right;font-size:9px;color:#b8a45a;background:#2a2410;border:1px solid #5a4e20;border-radius:2px;padding:0 4px;margin-left:4px;font-family:monospace;font-weight:bold}
 /* ============ MOBILE: single-pane focus + carousel over all 14 lanes ============ */
 #mstage,#mswitch{display:none}
-body.mobile{--mtop:44px;--peek:196px}     /* peek reveals the HEAD and the FOOT — see below */
+body.mobile{--mtop:44px;--peek:162px}     /* peek reveals the HEAD and the FOOT — see below */
 body.mobile #main{display:none}                       /* the whole desktop grid is parked */
 /* transparent: the shared #glCanvas (z-index:0) renders the lanes *behind* this;
    an opaque background here would paint over the cloud (the viewports are windows) */
@@ -379,8 +398,15 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
     <button id="tokMin" class="tok-min" title="Minimize panel (show only this bar)">&minus;</button>
   </div>
   <header id="tokHead">
+    <!-- THE TITLE IS THE CONTROL. The panel used to print the model name as a heading and ALSO
+         offer a selector for it further down — a label and its own control, twice. The heading
+         is now the <select>: what you are looking at is the thing you change. Picking a model
+         or a mode LOADS it; Go is left as an explicit re-run. -->
     <div class="th-top">
-      <span id="ht" class="th-model"></span>
+      <select id="sm" class="th-title" title="which model"></select>
+      <select id="smd" class="th-mode" title="prompt mode: raw text, naked, or chat template"><option>raw</option><option>naked</option><option>template</option></select>
+      <button id="bl" class="th-go" title="re-run this frame">&#8635;</button>
+      <span id="ht" class="th-layer"></span>
       <span id="hs" class="th-verdict"></span>
       <span class="th-gap"></span>
       <span id="ntok" class="th-tel"></span>
@@ -507,21 +533,27 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
        which model, which prompt mode, which layer. It used to sit at the top of the scrolling
        column, which meant the model selector could scroll out of sight while you read the
        tokens it had selected. It is now pinned, and it is the only place state changes. -->
+  <!-- FOOT — the transport. Only one thing lives here now: WHICH LAYER. Model and mode moved up
+       into the title, where they belong. The groups are separated because ▶ (step one layer) sat
+       flush against ▶▶ (play through them) and read as one button pressed twice. -->
   <footer id="tokFoot">
     <div id="ctrlbar">
-      <div class="ctrl-row" id="ctrlModel">
-        <select id="sm"></select>
-        <select id="smd"><option>raw</option><option>naked</option><option>template</option></select>
-        <button id="bl" class="ctrl-go">Go</button>
-      </div>
       <div class="ctrl-row" id="ctrlLayer">
-        <button id="lprev" title="previous layer">&#9664;</button>
-        <span id="llbl">L00</span>
-        <button id="lnext" title="next layer">&#9654;</button>
-        <button id="lplay" title="play through the layers">&#9654;&#9654;</button>
-        <button id="lrec" class="ctrl-rec" title="record a layer sweep">&#9679;</button>
-        <button id="lemb" title="jump to the embedding">emb</button>
-        <button id="llmh" title="jump to the readout">lmh</button>
+        <span class="ctrl-grp">
+          <button id="lprev" title="previous layer">&#9664;</button>
+          <span id="llbl">L00</span>
+          <button id="lnext" title="next layer">&#9654;</button>
+        </span>
+        <span class="ctrl-sep"></span>
+        <span class="ctrl-grp">
+          <button id="lplay" title="play through the layers">&#9654;&#9654;</button>
+          <button id="lrec" class="ctrl-rec" title="record a layer sweep">&#9679;</button>
+        </span>
+        <span class="ctrl-sep"></span>
+        <span class="ctrl-grp">
+          <button id="lemb" title="jump to the embedding">emb</button>
+          <button id="llmh" title="jump to the readout">lmh</button>
+        </span>
         <span class="ctrl-gap"></span>
         <div class="cbtn" data-v="all" title="snap every camera to an axis"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div>
       </div>
@@ -5796,9 +5828,11 @@ function updateHUD(){
   const lm=dm?.layers[cL]||{};const p1=lm.pc1_pct||0;
   let s,co;if(p1>95){s='DOMINANT';co='#FF4444';}else if(p1>50){s='PARTIAL';co='#FFAA44';}else{s='DISTRIBUTED';co='#44FF44';}
   const ln=_layerName(cL);
-  document.getElementById('ht').textContent=model+' '+ln;
+  // The model name is the <select> in the title now — printing it here too was the same fact
+  // stated three times (heading, sub-line, selector). The heading keeps only the LAYER.
+  document.getElementById('ht').textContent=ln;
   const se=document.getElementById('hs');se.textContent=s;se.style.color=co;
-  document.getElementById('hst').textContent=`PC1:${p1}% dim:${lm.intrinsic_dim||'?'}`;
+  document.getElementById('hst').textContent=`PC1:${p1}% · dim:${lm.intrinsic_dim||'?'} · ${nL}L`;
   document.getElementById('llbl').textContent=ln;
   _updateTokMiniSummary();
 }
@@ -5994,7 +6028,9 @@ async function loadAll(){
   _clearBrowserSelBoxes();_lastPK='';
   setLayer(_rstL);showPinDetail(pinnedToken);updatePinMarkers();
   _updateOverlayTag();// render the honesty tag (sample-of-vocab counts) even with no overlay
-  document.getElementById('st').textContent=`${model}/${mode} ${nN}tok ${nL}L`;
+  // #st is the STATUS line — 'Loading...', 'Preparing...', errors. On success it has nothing to
+  // say: model/mode are the title, and tok/PC are the telemetry. It clears rather than repeat them.
+  document.getElementById('st').textContent='';
   _prevModel=model;_prevMode=mode;
   // If both pins restored from URL, trigger the dependent fetches so
   // direction-depth, direction-weights, and direction-colors populate.
@@ -6026,6 +6062,11 @@ async function init(){const models=await api('models');const sel=document.getEle
   if(_st&&_st.pn)_activateTab(_st.pn);
   if(_st&&_st.pc)_setPcTab(_st.pc);
   document.getElementById('bl').addEventListener('click',loadAll);
+  // The title IS the control: picking a model or a mode loads it. (Programmatic .value writes —
+  // _handleNavigate, the restore path, the test harness — do NOT fire 'change', so they still
+  // drive the load explicitly and nothing double-fires.)
+  document.getElementById('sm').addEventListener('change',loadAll);
+  document.getElementById('smd').addEventListener('change',loadAll);
   document.getElementById('lemb').addEventListener('click',()=>{if(nL>_nRealLayers)setLayer(_nRealLayers);else setLayer(0);});
   document.getElementById('llmh').addEventListener('click',()=>{if(nL>_nRealLayers+1)setLayer(_nRealLayers+1);else setLayer(_nRealLayers-1);});
   document.getElementById('lprev').addEventListener('click',()=>{if(_layerSeq.length)setLayer(_seqPrev(cL));});
