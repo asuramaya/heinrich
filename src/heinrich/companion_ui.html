@@ -259,18 +259,23 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .cbtn{display:flex;gap:2px;z-index:5;position:absolute;bottom:3px;right:4px}
 .cbtn button{background:rgba(20,20,20,0.85);border:1px solid #333;color:#666;padding:1px 4px;font-size:7px;font-family:inherit;cursor:pointer;border-radius:2px;line-height:13px}
 /* Touch devices: the SCALE steps up (a thumb needs the type a mouse doesn't) and every tap target
-   clears 36px. Sizes come from the same variables — nothing here re-hardcodes a font. */
+   clears 44px — the number Apple and Google both land near, and the number the old panel missed by
+   half (the ↻ was 22px wide). Sizes come from the same variables; nothing re-hardcodes a font. */
 @media (pointer: coarse){
   #tokpanel{width:min(620px,calc(100vw - 16px))!important;max-height:82vh;
     --fs-xs:11px;--fs-sm:12px;--fs-md:14px;--fs-lg:17px;--fs-tok:24px}
-  #tokpanel button,#tokpanel select{min-height:36px}
-  #tokpanel .tok-tabs .tab-btn{min-height:44px;padding:11px 18px}
-  #tokpanel .search-row input,#tokpanel input[type=text],#chatInput,#tokpanel .p-input{min-height:38px}
-  #tokpanel .tok-min{min-height:34px;min-width:34px}
+  #tokpanel button,#tokpanel select{min-height:44px}
+  #tokpanel input[type=text],#tokpanel input[type=number],#chatInput,#tokpanel .p-input,#tokHead .th-search input{min-height:44px}
+  #tokpanel .tok-min{min-height:44px;min-width:44px}
   #tokpanel .drag-handle{min-height:34px;padding:9px 6px}
-  #tokpanel .legend-compact{padding:8px 0}
-  #ctrlbar .cbtn button{min-height:32px;min-width:30px}
-  #ctrlbar #llbl{min-width:38px}
+  #tokpanel .legend-compact{min-height:40px;display:inline-flex;align-items:center}
+  #tokHead .th-go{min-width:44px}                       /* the ↻ was a 22px target */
+  /* 44px WIDE, not 44px of padding: seven transport buttons plus their padding overran 375px and
+     spilled `emb lmh` onto a second row. The width is the target; the padding is not. */
+  #ctrlbar button{min-width:44px;padding:0 6px}
+  #ctrlbar .ctrl-row{gap:6px}
+  #ctrlbar .ctrl-grp{gap:4px}
+  #ctrlbar #llbl{min-width:46px}
   .cbtn{gap:4px}
   .cbtn button{min-height:28px;min-width:26px;padding:4px 7px!important;font-size:11px!important;line-height:1!important}
 }
@@ -363,15 +368,46 @@ body.mobile #mswitch{display:flex;align-items:center;gap:6px;position:fixed;left
    scrolls between them — the head and foot stay pinned, because they are position:sticky. */
 body.mobile #tokpanel{position:fixed!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;width:100%!important;max-width:none!important;margin:0;border-radius:14px 14px 0 0;border-bottom:none;max-height:var(--peek);overflow:hidden;transition:max-height .28s ease;z-index:21;backdrop-filter:blur(8px);display:flex;flex-direction:column}
 body.mobile #tokpanel:not(.expanded) #tokBody{display:none}
-/* Collapsed, the head keeps ONLY its identity line and the foot only its two control rows —
-   the sub-line, the script legend and the camera snaps are not worth a phone's peek budget.
-   Without this the two bands do not fit in --peek and the foot rides up over the head. */
-body.mobile #tokpanel:not(.expanded) .th-sub,
-body.mobile #tokpanel:not(.expanded) #legendWrap,
-body.mobile #tokpanel:not(.expanded) #loadStatus,
-body.mobile #tokpanel:not(.expanded) #ctrlbar .cbtn{display:none}
 body.mobile #tokpanel.expanded{max-height:84vh;overflow-y:auto}
 body.mobile #tokpanel.expanded #tokBody{flex:1 1 auto;min-height:0}
+
+/* ---- THE PHONE'S HEADER IS A DIFFERENT HEADER. -----------------------------------------
+   On a 375px screen the desktop head cost 340 of 667 pixels — HALF THE SCREEN before you saw a
+   single token — and it is STICKY, so that half never comes back. A phone header may state what
+   you are looking at and let you change it. Everything else is desk furniture:
+
+   CUT to the scrolling body / cut entirely on a phone:
+     · fps          — a dev stat, not a vital sign
+     · the overlay /regex/ box — a power tool; nobody writes a regex with a thumb
+     · the camera X/Y/Z/R snaps — every lane already carries its own, on the lane
+   What survives: the model, the mode, the layer, the verdict, and a search box.                */
+body.mobile #fpsDisplay,
+body.mobile #ovinput,
+body.mobile #lrec,                /* recording a layer sweep is a capture action, not a thumb one */
+body.mobile #ctrlbar .cbtn{display:none}
+body.mobile #tokHead{padding:6px 12px 8px}
+body.mobile #tokHead .th-top{gap:6px}
+body.mobile #tokHead .th-title{flex:1 1 auto;min-width:0}   /* the model name owns the row */
+body.mobile #tokHead .th-tel,body.mobile #tokHead .th-sub{font-size:var(--fs-xs);line-height:1.5}
+body.mobile #tokHead .th-search{margin-top:6px}
+body.mobile #tokHead #legendWrap{gap:16px;margin-top:2px}
+
+/* THE PEEK is identity + transport, and nothing else: the two things you want WITHOUT giving up
+   the view of the lane behind the sheet. Search is not one of them — you are looking, not typing. */
+body.mobile #tokpanel:not(.expanded) .th-sub,
+body.mobile #tokpanel:not(.expanded) .th-search,
+body.mobile #tokpanel:not(.expanded) #tsresults,
+body.mobile #tokpanel:not(.expanded) #legendWrap,
+body.mobile #tokpanel:not(.expanded) #loadStatus{display:none}
+
+/* LANDSCAPE. 390px of height total: the portrait peek (162px) would eat 42% of the screen and
+   leave the instrument less room than its own control panel. The sheet gets out of the way. */
+@media (orientation:landscape) and (max-height:480px){
+  body.mobile{--peek:112px}
+  body.mobile #tokpanel.expanded{max-height:92vh}
+  body.mobile #tokpanel:not(.expanded) .th-tel{display:none}
+  body.mobile #tokHead{padding:4px 12px 6px}
+}
 body.mobile #tokpanel .drag-handle{cursor:pointer;justify-content:center;position:relative;padding:15px 6px 5px;min-height:0}
 body.mobile #tokpanel .drag-handle::before{content:"";position:absolute;top:6px;left:50%;transform:translateX(-50%);width:40px;height:4px;border-radius:2px;background:#4a4a4a}
 body.mobile #tokpanel .drag-mid{display:none}   /* the ":: drag ::" hint — it toggles, not drags */
