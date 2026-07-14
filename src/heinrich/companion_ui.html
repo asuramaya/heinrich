@@ -28,45 +28,125 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #dock{grid-column:4/6;grid-row:2/4;overflow:hidden;position:relative;min-width:0;min-height:0}
 .rvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .rvp .rlbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
-/* Docked: fills its grid cell, occludes nothing, and cannot be dragged into the way. */
-#tokpanel.docked{position:static!important;left:auto!important;top:auto!important;right:auto!important;width:auto!important;max-width:none;height:100%;max-height:none!important;border-radius:0;border:none;border-left:1px solid #222;z-index:1;overflow-y:auto;backdrop-filter:none;background:rgba(10,10,10,0.6)}
-#tokpanel.docked .drag-handle{cursor:default}
-#tokpanel.docked .drag-mid{opacity:0.25}
-#tokpanel{position:fixed;right:8px;top:8px;width:620px;max-height:85vh;overflow-y:auto;background:rgba(10,10,10,0.95);border:1px solid #222;border-radius:4px;padding:8px;z-index:20;font-size:9px;backdrop-filter:blur(4px);cursor:default}
+/* THE PANEL IS ITS OWN CONTAINER. Its width is no longer a function of the viewport: the same
+   1920px screen hands it 853px docked, and a 390px phone hands it 100vw as a bottom sheet. A
+   media query cannot tell those apart — so every breakpoint below is a @container query. */
+#tokpanel{container-type:inline-size;container-name:panel;
+  /* ONE TYPE SCALE. The panel used to run 7px, 8px and 9px — those are not sizes, they are a
+     dare. Every rule below is a step on this scale; nothing hard-codes a px font any more. */
+  --fs-xs:10px;   /* section labels, notes, the honesty chrome */
+  --fs-sm:11px;   /* body copy: token metadata, result lists, log lines */
+  --fs-md:12px;   /* things you click: tabs, buttons, selects, inputs */
+  --fs-lg:15px;   /* the identity line — which model, which layer */
+  --fs-tok:20px;  /* the pinned token itself: the subject of the whole panel */
+  --ink:#d2d2d2; --ink-dim:#8d8d8d; --ink-faint:#6a6a6a; --rule:#242424;
+  position:fixed;right:8px;top:8px;width:620px;max-height:85vh;overflow-y:auto;background:rgba(10,10,10,0.95);border:1px solid #222;border-radius:4px;z-index:20;font-size:var(--fs-sm);line-height:1.5;backdrop-filter:blur(4px);cursor:default}
+@container panel (min-width:640px){#tokpanel{--fs-sm:12px;--fs-md:13px;--fs-lg:16px;--fs-tok:22px}}
+
+/* ---- HEAD: what you are looking at, and the instrument's vitals. Never scrolls. ---- */
+/* Opaque, not translucent: these two PIN over the scrolling body, and at 0.94 alpha the token
+   metadata underneath ghosted straight through them. */
+#tokHead{flex:0 0 auto;padding:8px 10px 7px;border-bottom:1px solid var(--rule);background:#0e0e0e}
+#tokHead .th-top{display:flex;align-items:baseline;gap:9px;flex-wrap:wrap}
+#tokHead .th-gap{flex:1;min-width:0}
+#tokHead .th-model{font-size:var(--fs-lg);font-weight:bold;color:#eee;letter-spacing:0.01em}
+#tokHead .th-verdict{font-size:var(--fs-xs);font-weight:bold;letter-spacing:0.14em}
+#tokHead .th-tel{font-size:var(--fs-xs);color:var(--ink-faint);white-space:nowrap;font-variant-numeric:tabular-nums}
+#tokHead .th-sub{font-size:var(--fs-xs);color:var(--ink-faint);margin-top:2px;min-height:1em}
+#tokHead #legendWrap{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:5px}
+#tokHead #legend2{flex-basis:100%;display:none;font-size:var(--fs-xs);color:var(--ink-faint);line-height:1.7}
+#tokHead #loadStatus{font-size:var(--fs-xs);color:var(--ink-faint);min-height:1em}
+#tokHead #unlockPill{cursor:pointer;color:#9c6;border:1px solid #3a5a30;border-radius:999px;padding:1px 8px;font-size:var(--fs-xs);white-space:nowrap}
+
+/* ---- FOOT: the state bar. Never scrolls, and it is the only place state changes. ---- */
+#tokFoot{flex:0 0 auto;padding:7px 10px;border-top:1px solid var(--rule);background:#0e0e0e}
+#ctrlbar{display:flex;flex-direction:column;gap:6px}
+#ctrlbar .ctrl-row{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+#ctrlbar .ctrl-gap{flex:1;min-width:0}
+#ctrlbar select,#ctrlbar button{background:#181818;border:1px solid #343434;color:var(--ink);font-family:inherit;font-size:var(--fs-md);padding:3px 8px;border-radius:3px;cursor:pointer;line-height:1.4}
+#ctrlbar select:hover,#ctrlbar button:hover{border-color:#5a5a5a;color:#fff}
+#ctrlbar .ctrl-go{background:#17240f;border-color:#3a5a30;color:#bf9}
+#ctrlbar .ctrl-rec{color:#a05a5a}
+#ctrlbar #llbl{color:var(--ink);font-size:var(--fs-md);min-width:34px;text-align:center;font-variant-numeric:tabular-nums}
+#ctrlbar #lemb,#ctrlbar #llmh{color:var(--ink-dim)}
+#ctrlbar .cbtn{position:static;gap:2px}                 /* not a viewport overlay down here */
+#ctrlbar .cbtn button{padding:3px 7px;font-size:var(--fs-xs);color:var(--ink-faint);background:#161616}
+/* One line once there is room for one. Two stacked rows is a phone layout, not a desktop one. */
+@container panel (min-width:660px){
+  #ctrlbar{flex-direction:row;align-items:center;gap:14px}
+  #ctrlbar #ctrlLayer{flex:1}
+}
+/* Docked: fills its grid cell, occludes nothing, and cannot be dragged into the way.
+   It is a flex COLUMN whose fixed chrome (controls, header, the pinned pair) stays put and
+   whose active tab pane takes the rest — so the panel itself never scrolls away from you. */
+#tokBody{padding:9px 10px}
+/* In the scrolling modes (floating panel, mobile sheet) the panel itself is the scroller, so the
+   two bands PIN themselves. Docked they are flex items and this is inert. Same rule, both modes. */
+#tokHead{position:sticky;top:0;z-index:3}
+#tokFoot{position:sticky;bottom:0;z-index:3}
+#tokpanel.docked{position:static!important;left:auto!important;top:auto!important;right:auto!important;width:auto!important;max-width:none;height:100%;max-height:none!important;border-radius:0;border:none;border-left:1px solid #222;z-index:1;overflow:hidden;backdrop-filter:none;background:rgba(10,10,10,0.6);display:flex;flex-direction:column}
+#tokpanel.docked>#tokBody{flex:1;min-height:0;display:flex;flex-direction:column;overflow-y:auto}
+#tokpanel.docked #tokTabContent{flex:1 1 auto;min-height:0;display:flex;flex-direction:column}
+#tokpanel.docked .tab-pane.active{flex:1;min-height:130px;display:flex;flex-direction:column;overflow-y:auto}
+#tokpanel.docked .tab-pane.active>div{flex:1;min-height:0}
+/* Docked, the grabber has nowhere to drag to and the minimize button nothing to reveal —
+   #tokHead is the title bar. So the grabber removes itself rather than sit there as a stub. */
+#tokpanel.docked .drag-handle{display:none}
 #tokpanel.minimized{max-height:auto;overflow:hidden}
 #tokpanel.minimized #tokBody{display:none}
 #tokpanel.minimized #tokMiniSummary{display:block}
-#tokAB{display:flex;gap:8px}
-#tokAB>div{flex:1;min-width:0}
-#chatBody{max-height:150px;overflow-y:auto;margin-top:4px;font-size:8px}
-#chatInput{width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:8px;font-family:inherit;border-radius:2px;margin-top:4px}
-#tokpanel .drag-handle{cursor:move;padding:2px 4px;margin-bottom:4px;border-bottom:1px solid #222;color:#444;font-size:7px;user-select:none;display:flex;align-items:center;gap:6px}
+/* The pinned pair stacks on a phone and sits side-by-side the moment there is room for both.
+   Side-by-side at 390px is what CLIPPED the PC readout — two 180px cards cannot hold it. */
+#tokAB{display:grid;grid-template-columns:1fr;gap:8px}
+#tokAB>div{min-width:0}
+@container panel (min-width:520px){#tokAB{grid-template-columns:1fr 1fr}}
+#chatBody{max-height:150px;overflow-y:auto;margin-top:4px;font-size:var(--fs-sm)}
+#chatInput{width:100%;background:#181818;border:1px solid #343434;color:var(--ink);padding:5px 8px;font-size:var(--fs-md);font-family:inherit;border-radius:3px;margin-top:5px}
+#tokpanel .drag-handle{cursor:move;padding:3px 6px;border-bottom:1px solid var(--rule);color:var(--ink-faint);font-size:var(--fs-xs);user-select:none;display:flex;align-items:center;gap:6px}
 #tokpanel .drag-handle .drag-mid{flex:1;text-align:center;opacity:0.6}
-#tokMiniSummary{display:none;flex:1;min-width:0;color:#777;font-size:8px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-#tokpanel .tok-min{background:transparent;border:1px solid #333;color:#666;padding:0 4px;font-size:9px;font-family:inherit;cursor:pointer;border-radius:2px;line-height:12px}
+#tokMiniSummary{display:none;flex:1;min-width:0;color:var(--ink-dim);font-size:var(--fs-xs);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#tokpanel .tok-min{background:transparent;border:1px solid #343434;color:var(--ink-faint);padding:0 6px;font-size:var(--fs-md);font-family:inherit;cursor:pointer;border-radius:3px;line-height:16px}
 #tokpanel .tok-min:hover{color:#ccc;border-color:#666}
-#tokpanel .tok-header{margin-bottom:4px}
-#tokpanel .legend-compact{cursor:pointer;color:#666;font-size:8px;padding:2px 0;user-select:none}
-#tokpanel .legend-compact:hover{color:#aaa}
-#tokpanel .legend-compact.open{color:#aaa}
-#tokpanel .search-row{display:flex;gap:4px;margin-bottom:4px;align-items:center}
-#tokpanel .search-row input{flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:8px;font-family:inherit;border-radius:2px}
-#tokpanel .search-row button{background:#1a2a1a;border:1px solid #333;color:#6c6;padding:2px 6px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer;white-space:nowrap}
-#tokpanel .tok-tabs{display:flex;gap:1px;border-bottom:1px solid #222;margin-top:6px}
-#tokpanel .tok-tabs .tab-btn{background:transparent;border:none;border-bottom:2px solid transparent;color:#666;padding:3px 8px;font-size:8px;font-family:inherit;cursor:pointer}
-#tokpanel .tok-tabs .tab-btn:hover{color:#aaa}
-#tokpanel .tok-tabs .tab-btn.active{color:#ccc;border-bottom-color:#6c6}
-#tokpanel .tab-pane{display:none;padding:4px 0;min-height:40px}
+#tokpanel .legend-compact{cursor:pointer;color:var(--ink-faint);font-size:var(--fs-xs);user-select:none}
+#tokpanel .legend-compact:hover{color:#bbb}
+#tokpanel .legend-compact.open{color:#bbb}
+#tokpanel .search-row{display:flex;gap:5px;margin-bottom:5px;align-items:center}
+#tokpanel .search-row input{flex:1;background:#181818;border:1px solid #343434;color:var(--ink);padding:5px 8px;font-size:var(--fs-md);font-family:inherit;border-radius:3px}
+#tokpanel .search-row input::placeholder{color:#5a5a5a}
+#tokpanel .search-row button{background:#17240f;border:1px solid #3a5a30;color:#bf9;padding:5px 10px;font-size:var(--fs-md);font-family:inherit;border-radius:3px;cursor:pointer;white-space:nowrap}
+#tokpanel .search-row select{background:#181818;border:1px solid #343434;color:var(--ink);padding:5px 8px;font-size:var(--fs-md);font-family:inherit;border-radius:3px;cursor:pointer}
+/* THE TABS ARE A CONTROL, NOT A FOOTNOTE. They were 8px — the operator could not read them. */
+#tokpanel .tok-tabs{display:flex;gap:2px;border-bottom:1px solid var(--rule);margin:2px 0 8px}
+#tokpanel .tok-tabs .tab-btn{background:transparent;border:none;border-bottom:2px solid transparent;color:var(--ink-faint);padding:7px 14px;font-size:var(--fs-md);font-family:inherit;cursor:pointer;letter-spacing:0.02em}
+#tokpanel .tok-tabs .tab-btn:hover{color:#bbb}
+#tokpanel .tok-tabs .tab-btn.active{color:#eee;border-bottom-color:#6c6;font-weight:bold}
+#tokpanel .tab-pane{display:none;min-height:40px}
 #tokpanel .tab-pane.active{display:block}
-#tokpanel .pane-head{display:flex;align-items:center;justify-content:space-between;gap:8px;margin-bottom:4px}
-#tokpanel .pane-title{color:#777;font-size:7px;letter-spacing:0.08em;text-transform:uppercase}
-#tokpanel .pane-note{color:#555;font-size:7px}
-#tokpanel .inspect-stack,#tokpanel .find-stack,#tokpanel .run-stack,#tokpanel .live-stack,#tokpanel .chat-stack{display:flex;flex-direction:column;gap:8px}
+/* The caret is injected as the head's FIRST child, so `space-between` on three children stranded
+   every card title in the dead centre of a 1100px header. The element after the caret — title, or
+   the title+note wrapper — takes the slack instead, and the note/button ride the right edge. */
+#tokpanel .pane-head{display:flex;align-items:center;justify-content:flex-start;gap:8px;margin-bottom:4px}
+#tokpanel .pane-head>.card-caret+*{margin-right:auto}
+#tokpanel .pane-title{color:#9a9a9a;font-size:var(--fs-xs);letter-spacing:0.1em;text-transform:uppercase;font-weight:bold}
+#tokpanel .pane-note{color:var(--ink-faint);font-size:var(--fs-xs)}
+/* CARDS REFLOW, THEY DO NOT STRETCH. Every stack is a grid that grows a column when it has
+   room for one, instead of widening a single column until a text input is 1100px across. */
+#tokpanel .inspect-stack,#tokpanel .find-stack,#tokpanel .compare-stack,#tokpanel .run-stack,#tokpanel .live-stack,#tokpanel .chat-stack,#tokpanel .inspect-side{
+  display:grid;grid-template-columns:1fr;gap:8px;align-content:start}
+@container panel (min-width:640px){
+  #tokpanel .find-stack,#tokpanel .run-stack,#tokpanel .live-stack,#tokpanel .chat-stack,#tokpanel .inspect-side{
+    grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
+}
+/* Find and Chat are dominated by a scrolling LIST — give them the leftover height (that is the
+   void the operator saw). Compare is a form and Live is already dense: those keep their natural
+   height and leave honest whitespace rather than inflating a 3-line card to 300px. */
+#tokpanel.docked .find-stack,#tokpanel.docked .chat-stack{align-content:stretch}
+#tokpanel .panel-card.clps{align-self:start}  /* a collapsed card is a header, not a tall empty box */
 /* Collapse-by-default cards: header stays, body hidden, one-line summary shows. */
 #tokpanel .panel-card>.pane-head,#tokpanel .token-card>.subhead{cursor:pointer}
-#tokpanel .card-caret{display:inline-block;width:8px;color:#555;font-size:7px;user-select:none;margin-right:2px;transition:color .1s}
+#tokpanel .card-caret{display:inline-block;width:9px;color:var(--ink-faint);font-size:var(--fs-xs);user-select:none;transition:color .1s}
 #tokpanel .panel-card>.pane-head:hover .card-caret,#tokpanel .token-card>.subhead:hover .card-caret{color:#9c9}
-#tokpanel .card-summary{display:none;color:#8a8a8a;font-size:7px;font-weight:normal;letter-spacing:0;text-transform:none;margin-left:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;text-align:right}
+#tokpanel .card-summary{display:none;color:var(--ink-dim);font-size:var(--fs-xs);font-weight:normal;letter-spacing:0;text-transform:none;margin-left:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;text-align:right}
 /* !important beats inline display styles on card bodies (e.g. steer's flex row, live canvases) */
 #tokpanel .panel-card.clps>*:not(.pane-head){display:none!important}
 #tokpanel .token-card.clps>*:not(.subhead){display:none!important}
@@ -77,32 +157,49 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #tokpanel .tok-tabs .tab-btn.has-dot .tab-dot{display:inline-block}
 @keyframes card-flash-kf{0%{background:rgba(110,204,110,0.28)}100%{background:transparent}}
 #tokpanel .card-flash{animation:card-flash-kf .9s ease-out}
-#tokpanel .panel-card{background:rgba(18,18,18,0.85);border:1px solid #222;border-radius:4px;padding:6px}
-#tokpanel .token-card{background:rgba(18,18,18,0.85);border:1px solid #222;border-radius:4px;padding:6px}
+/* FORM CONTROLS ARE CAPPED. A dropdown that spans 1100px is the loudest possible tell that a
+   layout is stretching rather than reflowing — and no <select> was ever easier to read wide. */
+#tokpanel select{max-width:200px}
+/* wide enough for the longest name we ship ("qwen2.5-0.5b-instruct"); it used to be capped at
+   90px inline, which truncated every model to "smollm2-3…" on a phone */
+#tokpanel #sm{max-width:190px}
+#tokpanel #crossModel{max-width:300px}
+#tokpanel #crossCard{max-width:640px}   /* a form, not a banner */
+#tokpanel input[type=text]{max-width:520px}
+/* The layer-scrub row and the model row WRAP. On a 390px sheet they used to run 82px off the
+   right edge, taking the X/Y/Z/R camera buttons clean off the screen. */
+#ctrlbar>div{flex-wrap:wrap}
+/* Docked, a card whose job is a scrolling list should EAT the leftover height rather than stop
+   at 140px and leave a void beneath it. (Not on mobile: there the whole sheet scrolls.) */
+#tokpanel.docked #searchCard,#tokpanel.docked #discoverCard,#tokpanel.docked #analysisChatCard,#tokpanel.docked #modelChatCard{display:flex;flex-direction:column;min-height:0}
+#tokpanel.docked .panel-card.clps{display:block}
+#tokpanel.docked #tsresults,#tokpanel.docked #discoverResults,#tokpanel.docked #chatLog,#tokpanel.docked #liveChatLog{flex:1 1 auto;min-height:80px;max-height:none}
+#tokpanel .panel-card{background:rgba(20,20,20,0.85);border:1px solid var(--rule);border-radius:4px;padding:8px 9px}
+#tokpanel .token-card{background:rgba(20,20,20,0.85);border:1px solid var(--rule);border-radius:4px;padding:8px 9px}
 #tokpanel .section-row{display:flex;gap:8px;align-items:flex-start}
 #tokpanel .section-row>div{flex:1;min-width:0}
-#tokpanel .subhead{color:#555;font-size:7px;margin-bottom:3px;text-transform:uppercase;letter-spacing:0.06em}
-#tokpanel .compact-note{color:#666;font-size:7px;line-height:1.4}
-#tokpanel .mini-btn{background:#1a1a1a;border:1px solid #333;color:#6c6;padding:2px 6px;font-size:7px;font-family:inherit;border-radius:2px;cursor:pointer;white-space:nowrap}
-#tokpanel .mini-btn:hover{border-color:#555;color:#9f9}
-#tokpanel .mini-btn[disabled]{color:#555;border-color:#222;cursor:default}
-#tokpanel .live-status-row{display:flex;gap:4px;align-items:center;flex-wrap:wrap}
-#tokpanel .live-status-text{color:#777;font-size:7px;line-height:1.5}
+#tokpanel .subhead{color:#9a9a9a;font-size:var(--fs-xs);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.1em;font-weight:bold;gap:8px}
+#tokpanel .compact-note{color:var(--ink-faint);font-size:var(--fs-xs);line-height:1.5}
+#tokpanel .mini-btn{background:#181818;border:1px solid #343434;color:#6c6;padding:4px 9px;font-size:var(--fs-xs);font-family:inherit;border-radius:3px;cursor:pointer;white-space:nowrap}
+#tokpanel .mini-btn:hover{border-color:#5a5a5a;color:#9f9}
+#tokpanel .mini-btn[disabled]{color:#4a4a4a;border-color:#252525;cursor:default}
+#tokpanel .live-status-row{display:flex;gap:5px;align-items:center;flex-wrap:wrap}
+#tokpanel .live-status-text{color:var(--ink-dim);font-size:var(--fs-xs);line-height:1.6}
 #tokpanel .live-log{max-height:160px;overflow-y:auto;display:flex;flex-direction:column;gap:6px}
-#tokpanel .live-msg{border:1px solid #222;border-radius:3px;padding:4px;background:#141414}
+#tokpanel .live-msg{border:1px solid var(--rule);border-radius:3px;padding:6px;background:#141414}
 #tokpanel .live-msg.user{border-color:#243224;background:#121812}
 #tokpanel .live-msg.assistant{border-color:#223033;background:#121619}
-#tokpanel .live-msg .role{font-size:7px;color:#666;text-transform:uppercase;letter-spacing:0.06em;margin-bottom:2px}
-#tokpanel .live-msg .body{font-size:8px;color:#bbb;white-space:pre-wrap;line-height:1.5}
-#tokpanel .live-msg .meta{font-size:7px;color:#666;margin-top:3px}
-#tokpanel .live-actions{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
-#tokpanel .live-chip-grid{display:flex;gap:4px;flex-wrap:wrap;margin-top:4px}
-#tokpanel .live-chip{background:#1a1a1a;border:1px solid #333;color:#aaa;padding:1px 5px;font-size:7px;font-family:inherit;border-radius:999px;cursor:pointer}
+#tokpanel .live-msg .role{font-size:var(--fs-xs);color:var(--ink-faint);text-transform:uppercase;letter-spacing:0.1em;margin-bottom:3px}
+#tokpanel .live-msg .body{font-size:var(--fs-sm);color:#bbb;white-space:pre-wrap;line-height:1.6}
+#tokpanel .live-msg .meta{font-size:var(--fs-xs);color:var(--ink-faint);margin-top:3px}
+#tokpanel .live-actions{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}
+#tokpanel .live-chip-grid{display:flex;gap:5px;flex-wrap:wrap;margin-top:5px}
+#tokpanel .live-chip{background:#181818;border:1px solid #343434;color:#aaa;padding:2px 8px;font-size:var(--fs-xs);font-family:inherit;border-radius:999px;cursor:pointer}
 #tokpanel .live-chip:hover{border-color:#666;color:#ddd}
-#tokpanel .live-chip.unmatched{color:#555;border-color:#252525;cursor:default}
+#tokpanel .live-chip.unmatched{color:#5a5a5a;border-color:#252525;cursor:default}
 #tokpanel .live-chip.pred{color:#9cd;border-color:#355}
 #tokpanel .live-chip.action{color:#9d9;border-color:#353}
-.live-subtle{color:#555;font-size:7px;margin-top:4px}
+.live-subtle{color:var(--ink-faint);font-size:var(--fs-xs);margin-top:5px}
 .lvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .lvp .llbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
 /* lv-btn/lv-top/lv-bot removed — .cbtn handles all positioning (bottom-right) */
@@ -115,18 +212,19 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .vp .info .t{font-weight:bold}.vp .info .s{font-weight:bold;margin-left:4px}
 .cbtn{display:flex;gap:2px;z-index:5;position:absolute;bottom:3px;right:4px}
 .cbtn button{background:rgba(20,20,20,0.85);border:1px solid #333;color:#666;padding:1px 4px;font-size:7px;font-family:inherit;cursor:pointer;border-radius:2px;line-height:13px}
-/* Touch devices: enlarge tap targets and let the panel fit a phone. Inline styles on the
-   buttons force !important here. Untouched on mouse/trackpad (pointer:fine). */
+/* Touch devices: the SCALE steps up (a thumb needs the type a mouse doesn't) and every tap target
+   clears 36px. Sizes come from the same variables — nothing here re-hardcodes a font. */
 @media (pointer: coarse){
-  #tokpanel{width:min(620px,calc(100vw - 16px))!important;font-size:11px;max-height:82vh;padding:10px}
-  #tokpanel button,#tokpanel select{min-height:34px;padding:6px 10px!important;font-size:12px!important}
-  #tokpanel .tok-tabs .tab-btn{min-height:40px;padding:9px 16px!important;font-size:12px!important}
-  #tokpanel .search-row input,#tokpanel input[type=text],#chatInput{min-height:36px;font-size:12px!important;padding:7px 9px!important}
-  #tokpanel .tok-min{min-height:32px;min-width:32px;font-size:15px!important;line-height:1!important}
-  #tokpanel .drag-handle{min-height:34px;padding:9px 6px;font-size:11px!important}
-  #tokpanel .legend-compact{padding:9px 0;font-size:11px!important}
-  #tokpanel #ctrlbar .cbtn button{min-height:30px;min-width:28px;padding:5px 8px!important;font-size:11px!important;line-height:1!important}
-  #tokpanel #llbl{font-size:12px!important;min-width:30px}
+  #tokpanel{width:min(620px,calc(100vw - 16px))!important;max-height:82vh;
+    --fs-xs:11px;--fs-sm:12px;--fs-md:14px;--fs-lg:17px;--fs-tok:24px}
+  #tokpanel button,#tokpanel select{min-height:36px}
+  #tokpanel .tok-tabs .tab-btn{min-height:44px;padding:11px 18px}
+  #tokpanel .search-row input,#tokpanel input[type=text],#chatInput,#tokpanel .p-input{min-height:38px}
+  #tokpanel .tok-min{min-height:34px;min-width:34px}
+  #tokpanel .drag-handle{min-height:34px;padding:9px 6px}
+  #tokpanel .legend-compact{padding:8px 0}
+  #ctrlbar .cbtn button{min-height:32px;min-width:30px}
+  #ctrlbar #llbl{min-width:38px}
   .cbtn{gap:4px}
   .cbtn button{min-height:28px;min-width:26px;padding:4px 7px!important;font-size:11px!important;line-height:1!important}
 }
@@ -149,13 +247,27 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #main.maxmode .vp:not(.vp-max),#main.maxmode .lvp:not(.vp-max),#main.maxmode .rvp:not(.vp-max),#main.maxmode .browse,#main.maxmode #br0bot:not(.vp-max){visibility:hidden}
 .browse{position:relative;overflow:hidden;background:transparent}
 .browse .blbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
-#tokpanel .th{font-size:8px;color:#555;margin-bottom:4px}
+#tokpanel .th{font-size:var(--fs-xs);color:var(--ink-faint);margin-bottom:4px}
 #tokpanel .ta,.tokpanel .tb{margin-bottom:6px}
-#tokpanel .tn{font-size:18px;font-weight:bold;margin-bottom:4px}
+#tokpanel .tn{font-size:var(--fs-tok);font-weight:bold;margin-bottom:5px;line-height:1.2;word-break:break-all}
+/* The predicted-next-token list: the readout's own opinion. Small, but it must be READABLE. */
+#tokpanel .preds{font-size:var(--fs-xs);color:var(--ink-faint);margin-top:5px;line-height:1.7}
+/* The panel's four utility classes. Every inline `font-size:7px` in the markup was replaced by
+   one of these — an inline size beats a stylesheet, so a type scale the markup can override is
+   not a type scale. */
+#tokpanel .p-note{font-size:var(--fs-xs);color:var(--ink-faint);line-height:1.6}
+#tokpanel .p-out{font-size:var(--fs-sm);color:var(--ink-dim);line-height:1.6;margin-top:5px}
+#tokpanel .p-list{font-size:var(--fs-sm);color:var(--ink-dim);line-height:1.7;overflow-y:auto;margin-top:6px}
+#tokpanel .p-input{width:100%;background:#181818;border:1px solid #343434;color:var(--ink);padding:5px 8px;font-size:var(--fs-md);font-family:inherit;border-radius:3px}
+#tokpanel .p-input::placeholder{color:#5a5a5a}
+#tokpanel .p-chipbtn{cursor:pointer;font-size:var(--fs-xs);color:var(--ink-dim);border:1px solid #343434;border-radius:3px;padding:1px 6px}
+#tokpanel .p-chipbtn:hover{color:#ddd;border-color:#5a5a5a}
 #sepPanel .sep-cols{display:flex;gap:8px}
 #sepPanel .sep-cols>div{flex:1;min-width:0}
 #sepPanel .sep-metrics{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:4px}
-#tokpanel .tm{color:#666;font-size:8px;white-space:pre;line-height:1.4}
+/* pre-WRAP, not pre. _tokInfo() emits real newlines (script/id/bytes · the top PCs · traj), and
+   `pre` meant the PC line ran off the right edge of a narrow card and was silently cut. */
+#tokpanel .tm{color:var(--ink-dim);font-size:var(--fs-sm);white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6}
 .nbar{display:flex;gap:1px;height:8px;margin:2px 0}
 .nbar .nb{height:100%;min-width:1px;border-radius:1px}
 #detail{position:fixed;background:rgba(8,8,8,0.95);border:1px solid #444;border-radius:4px;padding:6px 10px;display:none;z-index:30;pointer-events:none;font-size:9px;min-width:140px;max-width:220px;box-shadow:0 4px 20px rgba(0,0,0,0.8)}
@@ -172,7 +284,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .rlbl-mode{float:right;font-size:9px;color:#b8a45a;background:#2a2410;border:1px solid #5a4e20;border-radius:2px;padding:0 4px;margin-left:4px;font-family:monospace;font-weight:bold}
 /* ============ MOBILE: single-pane focus + carousel over all 14 lanes ============ */
 #mstage,#mswitch{display:none}
-body.mobile{--mtop:44px;--peek:150px}     /* peek reveals the model + layer-scrub rows */
+body.mobile{--mtop:44px;--peek:196px}     /* peek reveals the HEAD and the FOOT — see below */
 body.mobile #main{display:none}                       /* the whole desktop grid is parked */
 /* transparent: the shared #glCanvas (z-index:0) renders the lanes *behind* this;
    an opaque background here would paint over the cloud (the viewports are windows) */
@@ -190,8 +302,22 @@ body.mobile #mswitch{display:flex;align-items:center;gap:6px;position:fixed;left
 #mswitch .m2up{flex:none;width:36px;height:32px;background:#161616;border:1px solid #333;color:#889;border-radius:6px;font-size:14px;font-family:inherit}
 #mswitch .m2up.on{background:#1a2230;border-color:#356;color:#9cf}
 /* the floating panel becomes a bottom sheet */
-body.mobile #tokpanel{position:fixed!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;width:100%!important;max-width:none!important;margin:0;border-radius:14px 14px 0 0;border-bottom:none;max-height:var(--peek);overflow:hidden;transition:max-height .28s ease;z-index:21;backdrop-filter:blur(8px)}
+/* THE PEEK IS THE HEAD AND THE FOOT, and nothing else. Collapsed, the sheet drops only its BODY
+   — so you keep the identity line (which model, which layer, is it PARTIAL) and the state bar
+   (scrub the layer, switch the model) while you watch the lane behind it. That is the whole point
+   of a peek: the two things you want WITHOUT giving up the view. Expanded, the body comes back and
+   scrolls between them — the head and foot stay pinned, because they are position:sticky. */
+body.mobile #tokpanel{position:fixed!important;left:0!important;right:0!important;bottom:0!important;top:auto!important;width:100%!important;max-width:none!important;margin:0;border-radius:14px 14px 0 0;border-bottom:none;max-height:var(--peek);overflow:hidden;transition:max-height .28s ease;z-index:21;backdrop-filter:blur(8px);display:flex;flex-direction:column}
+body.mobile #tokpanel:not(.expanded) #tokBody{display:none}
+/* Collapsed, the head keeps ONLY its identity line and the foot only its two control rows —
+   the sub-line, the script legend and the camera snaps are not worth a phone's peek budget.
+   Without this the two bands do not fit in --peek and the foot rides up over the head. */
+body.mobile #tokpanel:not(.expanded) .th-sub,
+body.mobile #tokpanel:not(.expanded) #legendWrap,
+body.mobile #tokpanel:not(.expanded) #loadStatus,
+body.mobile #tokpanel:not(.expanded) #ctrlbar .cbtn{display:none}
 body.mobile #tokpanel.expanded{max-height:84vh;overflow-y:auto}
+body.mobile #tokpanel.expanded #tokBody{flex:1 1 auto;min-height:0}
 body.mobile #tokpanel .drag-handle{cursor:pointer;justify-content:center;position:relative;padding:15px 6px 5px;min-height:0}
 body.mobile #tokpanel .drag-handle::before{content:"";position:absolute;top:6px;left:50%;transform:translateX(-50%);width:40px;height:4px;border-radius:2px;background:#4a4a4a}
 body.mobile #tokpanel .drag-mid{display:none}   /* the ":: drag ::" hint — it toggles, not drags */
@@ -238,55 +364,51 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
        lived here as a floating sheet that occluded whatever lane it covered; now it has a home. -->
   <div id="dock"></div>
 </div>
+<!-- THE INSPECTOR — three bands, and the middle one is the only one that moves.
+       HEAD  what you are looking at + the instrument's vitals   (persistent)
+       BODY  the pinned pair, and the tools                      (scrolls)
+       FOOT  everything that CHANGES the state: model, mode, layer  (persistent)
+     The old panel had all three interleaved in one scrolling column, so the model selector
+     could scroll off the top while you were reading the tokens it selected. -->
 <div id="tokpanel">
+  <!-- The grabber. Floating it drags; on mobile it toggles the sheet. Docked it is neither,
+       and the header below is the title bar — so it hides itself. -->
   <div class="drag-handle" id="tokDrag">
-    <span id="fpsDisplay" style="color:#555">--fps</span>
     <span class="drag-mid">:: drag ::</span>
     <span id="tokMiniSummary">no pair selected</span>
     <button id="tokMin" class="tok-min" title="Minimize panel (show only this bar)">&minus;</button>
   </div>
+  <header id="tokHead">
+    <div class="th-top">
+      <span id="ht" class="th-model"></span>
+      <span id="hs" class="th-verdict"></span>
+      <span class="th-gap"></span>
+      <span id="ntok" class="th-tel"></span>
+      <span id="fpsDisplay" class="th-tel">&mdash;&mdash;fps</span>
+      <span id="unlockPill" title="Connect a local heinrich companion to go live in place (Chrome), or open the local view" style="display:none">&#128275; unlock</span>
+    </div>
+    <div class="th-sub"><span id="hst"></span> <span id="st"></span></div>
+    <div id="legendWrap">
+      <span id="legendToggle" class="legend-compact">scripts &#9656;</span>
+      <span id="vocabToggle" class="legend-compact" title="zoom a cloud viewport to reveal points from the full vocabulary">vocab reveal: on</span>
+      <div id="legend2"></div>
+    </div>
+    <div id="loadStatus"></div>
+  </header>
   <div id="tokBody">
-    <div id="ctrlbar" style="margin-bottom:4px">
-      <div style="display:flex;gap:3px;align-items:center;margin-bottom:2px">
-        <select id="sm" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px;max-width:90px"></select>
-        <select id="smd" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"><option>raw</option><option>naked</option><option>template</option></select>
-        <button id="bl" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">Go</button>
-        <span style="flex:1"></span>
-        <span id="ntok" style="color:#444;font-size:7px"></span>
-        <span id="unlockPill" title="Connect a local heinrich companion to go live in place (Chrome), or open the local view" style="display:none;cursor:pointer;color:#9c6;border:1px solid #353;border-radius:999px;padding:0 5px;font-size:7px;margin-left:3px;white-space:nowrap">&#128275; unlock</span>
-      </div>
-      <div style="display:flex;gap:3px;align-items:center">
-        <button id="lprev" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9664;</button>
-        <span id="llbl" style="color:#aaa;font-size:9px;min-width:24px;text-align:center">L00</span>
-        <button id="lplay" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9654;</button>
-        <button id="lnext" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9654;</button>
-        <button id="lrec" style="background:#1a1a1a;border:1px solid #333;color:#664444;padding:1px 4px;font-size:9px;border-radius:2px;cursor:pointer">&#9679;</button>
-        <button id="lemb" style="background:#1a1a1a;border:1px solid #333;color:#666;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">emb</button>
-        <button id="llmh" style="background:#1a1a1a;border:1px solid #333;color:#666;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">lmh</button>
-        <span style="flex:1"></span>
-        <div class="cbtn" data-v="all" style="position:static;bottom:auto;right:auto"><button data-a="x" style="border-color:#444;color:#666">X</button><button data-a="y" style="border-color:#444;color:#666">Y</button><button data-a="z" style="border-color:#444;color:#666">Z</button><button data-a="r" style="border-color:#444;color:#666">R</button></div>
-      </div>
-    </div>
-    <div id="loadStatus" style="font-size:7px;color:#555;margin-bottom:2px;min-height:9px"></div>
-    <div class="tok-header">
-      <span id="ht" style="font-weight:bold;font-size:10px"></span>
-      <span id="hs" style="font-weight:bold;font-size:10px"></span>
-      <div id="hst" style="color:#555;font-size:7px"></div>
-      <span id="st" style="color:#444;font-size:7px"></span>
-      <div id="legendWrap" style="margin-top:2px">
-        <div id="legendToggle" class="legend-compact">scripts &#9656;</div>
-        <div id="vocabToggle" class="legend-compact" title="zoom a cloud viewport to reveal points from the full vocabulary">vocab reveal: on</div>
-        <div id="legend2" style="font-size:7px;color:#555;display:none;margin-top:2px"></div>
-      </div>
-    </div>
     <div id="tokInspect" class="inspect-stack">
       <div id="tokAB">
-        <div id="tokA" class="token-card"><div class="subhead">Token A · click</div><div class="tn" id="taName" style="color:#FF6644">&mdash;</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarA" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="taMeta" style="font-size:8px">click a token to pin</div><div id="predsA" style="font-size:7px;color:#555;margin-top:3px"></div></div>
-        <div id="tokB" class="token-card"><div class="subhead">Token B · right-click / long-press</div><div class="tn" id="tbName" style="color:#4477AA">&mdash;</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarB" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="tbMeta" style="font-size:8px">right-click or long-press to compare</div><div id="predsB" style="font-size:7px;color:#555;margin-top:3px"></div></div>
+        <div id="tokA" class="token-card"><div class="subhead">Token A · click</div><div class="tn" id="taName" style="color:#FF6644">&mdash;</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarA" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="taMeta">click a token to pin</div><div id="predsA" class="preds"></div></div>
+        <div id="tokB" class="token-card"><div class="subhead">Token B · right-click / long-press</div><div class="tn" id="tbName" style="color:#4477AA">&mdash;</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarB" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="tbMeta">right-click or long-press to compare</div><div id="predsB" class="preds"></div></div>
       </div>
       <div id="dirColorStatus" class="dcs" style="display:none">projecting direction&hellip;</div>
-      <div id="sepPanel" class="panel-card" style="display:none" title="Run exact direction analysis for the pinned pair"><div class="pane-head"><div><div class="pane-title">Direction Analysis</div><div class="pane-note" id="sepNote">exact, on demand</div></div><button id="sepRun" class="mini-btn" type="button">Analyze</button></div><div style="color:#555;font-size:7px;margin-bottom:2px">Max separation PCs <span id="sepDist" style="color:#888"></span></div><div id="sepList" style="font-size:8px"></div></div>
+      <!-- Direction + Attention share a row when BOTH are showing, and whichever is alone takes
+           the full width. They need their own grid for that: auto-fit only collapses an empty
+           track, and in the parent stack #tokAB spans every track, so none is ever empty. -->
+      <div class="inspect-side">
+      <div id="sepPanel" class="panel-card" style="display:none" title="Run exact direction analysis for the pinned pair"><div class="pane-head"><div><div class="pane-title">Direction Analysis</div><div class="pane-note" id="sepNote">exact, on demand</div></div><button id="sepRun" class="mini-btn" type="button">Analyze</button></div><div class="p-note">Max separation PCs <span id="sepDist" style="color:#aaa"></span></div><div id="sepList" class="p-out"></div></div>
       <div id="attnPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Attention</div><div class="pane-note">Token A · current layer</div></div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
+      </div>
     </div>
     <div class="tok-tabs" id="tokTabs">
       <button class="tab-btn active" data-tab="find">Find<span class="tab-dot"></span></button>
@@ -305,7 +427,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
             <div class="search-row" style="margin-bottom:0;margin-top:4px">
               <input id="ovinput" type="text" placeholder="overlay: texts, or /regex/" title="Spotlight up to 200 full-vocabulary tokens as gold points in the clouds. Comma-separated texts, or /regex/ over the vocab.">
             </div>
-            <div id="tsresults" style="max-height:140px;overflow-y:auto;font-size:8px;color:#555;margin-top:6px"></div>
+            <div id="tsresults" class="p-list" style="max-height:140px"></div>
           </div>
           <div class="panel-card" id="discoverCard">
             <div class="pane-head"><div class="pane-title">Discover Features</div><div class="pane-note">layer-local PCA candidates</div></div>
@@ -313,20 +435,22 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
               <button id="discoverBtn" title="Find the layer with the strongest A/B separation across PCs">Discover</button>
               <div class="compact-note" style="flex:1">find candidate opposing token clusters for the current layer</div>
             </div>
-            <div id="discoverResults" style="max-height:300px;overflow-y:auto;font-size:7px;color:#555;margin-top:6px"></div>
+            <div id="discoverResults" class="p-list" style="max-height:300px"></div>
           </div>
         </div>
       </div>
       <div class="tab-pane" data-pane="compare">
+        <div class="compare-stack">
         <div class="panel-card" id="crossCard">
           <div class="pane-head"><div class="pane-title">Cross-Model Compare</div><div class="pane-note">same pair, second model</div></div>
-          <div style="display:flex;gap:3px;align-items:center">
-            <select id="crossModel" style="flex:1;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"></select>
-            <select id="crossMode" style="background:#1a1a1a;border:1px solid #333;color:#ccc;padding:1px 2px;font-size:8px;font-family:inherit;border-radius:2px"><option>raw</option><option>naked</option><option>template</option></select>
-            <button id="crossRun" style="background:#1a1a1a;border:1px solid #333;color:#6c6;padding:1px 4px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">Run</button>
+          <div class="search-row" style="margin-bottom:0">
+            <select id="crossModel" style="flex:1"></select>
+            <select id="crossMode"><option>raw</option><option>naked</option><option>template</option></select>
+            <button id="crossRun">Run</button>
           </div>
-          <div id="crossStatus" style="color:#555;font-size:7px;margin-top:3px">pin A and B; pick a second model; Run</div>
-          <div id="crossResult" style="font-size:7px;color:#888;margin-top:4px"></div>
+          <div id="crossStatus" class="p-note" style="margin-top:5px">pin A and B; pick a second model; Run</div>
+          <div id="crossResult" class="p-out"></div>
+        </div>
         </div>
       </div>
       <div class="tab-pane" data-pane="live">
@@ -342,43 +466,67 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
           </div>
           <div class="panel-card" id="liveForwardCard">
             <div class="pane-head"><div class="pane-title">Live Forward</div><div class="pane-note">run a prompt through the model</div></div>
-            <input id="liveModelId" type="text" placeholder="HF model id (optional, e.g. HuggingFaceTB/SmolLM2-135M)" style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:7px;font-family:inherit;border-radius:2px">
-            <input id="liveInput" type="text" placeholder="type a prompt, Enter to run..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:8px;font-family:inherit;border-radius:2px;margin-top:4px">
-            <div id="liveStatus" style="color:#555;font-size:7px;margin-top:3px">set HF id above; model load on first run ~5-30s</div>
-            <div id="liveResult" style="font-size:7px;color:#888;margin-top:4px"></div>
-            <div id="walkReadout" style="display:none;font-size:7px;color:#8fc;margin-top:4px;border-top:1px solid #233;padding-top:3px;line-height:1.4"></div>
+            <input id="liveModelId" class="p-input" type="text" placeholder="HF model id (optional, e.g. HuggingFaceTB/SmolLM2-135M)">
+            <input id="liveInput" class="p-input" type="text" placeholder="type a prompt, Enter to run..." style="margin-top:5px">
+            <div id="liveStatus" class="p-note" style="margin-top:5px">set HF id above; model load on first run ~5-30s</div>
+            <div id="liveResult" class="p-out"></div>
+            <div id="walkReadout" class="p-out" style="display:none;color:#8fc;border-top:1px solid #233;padding-top:4px"></div>
           </div>
           <div id="steerPanel" class="panel-card" style="display:none">
             <div class="pane-head"><div class="pane-title">Steer</div><div class="pane-note">inject A&minus;B into the live forward</div></div>
-            <div style="display:flex;gap:6px;align-items:center;font-size:8px;color:#888;margin-bottom:3px">
-              <span>layer</span><input id="steerLayer" type="number" min="0" step="1" style="width:46px;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:2px 4px;font-size:8px;font-family:inherit;border-radius:2px">
-              <span>&alpha;</span><span id="steerAlphaVal" style="color:#F4C;min-width:30px;text-align:right">+4.0</span>
+            <div class="live-status-row" style="margin-bottom:5px">
+              <span class="p-note">layer</span><input id="steerLayer" class="p-input" type="number" min="0" step="1" style="width:56px">
+              <span class="p-note">&alpha;</span><span id="steerAlphaVal" style="color:#F4C;min-width:34px;text-align:right;font-size:var(--fs-md)">+4.0</span>
             </div>
             <input id="steerAlpha" type="range" min="-6" max="6" step="0.5" value="4" style="width:100%">
-            <button id="steerBtn" style="width:100%;margin-top:4px;background:#3a1030;border:1px solid #a2c;color:#f9d;padding:3px;font-size:8px;font-family:inherit;border-radius:2px;cursor:pointer">steer</button>
-            <div id="steerStatus" style="color:#555;font-size:7px;margin-top:3px"></div>
-            <div id="steerResult" style="font-size:7px;color:#888;margin-top:4px"></div>
+            <button id="steerBtn" style="width:100%;margin-top:5px;background:#3a1030;border:1px solid #a2c;color:#f9d;padding:5px;font-size:var(--fs-md);font-family:inherit;border-radius:3px;cursor:pointer">steer</button>
+            <div id="steerStatus" class="p-note" style="margin-top:5px"></div>
+            <div id="steerResult" class="p-out"></div>
           </div>
-          <div id="homingPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Homing</div><span style="display:flex;gap:3px;align-items:center"><span class="pane-note">live &rarr; pinned</span><span id="homingLogBtn" data-noclps title="log-scale y (asinh) so the crystal plateau doesn't crush early structure" style="cursor:pointer;font-size:7px;color:#888;border:1px solid #333;border-radius:2px;padding:0 3px">log</span><span id="homingJsonBtn" data-noclps title="download this homing run as JSON" style="cursor:pointer;font-size:7px;color:#888;border:1px solid #333;border-radius:2px;padding:0 3px">json</span></span></div><canvas id="homingChart" height="110" style="width:100%;height:110px"></canvas><div id="homingLegend" style="font-size:8px;color:#888;margin-top:1px;line-height:1.4"></div><div id="homingText" style="font-size:8px;color:#888;margin-top:2px"></div><div id="homingTarget" style="display:none;font-size:8px;margin-top:2px"><div id="homingTargetT1" style="display:none;color:#FFD700">&#9673; T <span id="homingTargetText"></span> <span id="homingTargetClear" style="cursor:pointer;color:#888;text-decoration:underline">clear</span></div><div id="homingTargetT2" style="display:none;color:#66A8FF">&#9673; T2 <span id="homingTargetText2"></span> <span id="homingTargetClear2" style="cursor:pointer;color:#888;text-decoration:underline">clear</span></div></div></div>
+          <div id="homingPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Homing</div><span style="display:flex;gap:3px;align-items:center"><span class="pane-note">live &rarr; pinned</span><span id="homingLogBtn" class="p-chipbtn" data-noclps title="log-scale y (asinh) so the crystal plateau doesn't crush early structure">log</span><span id="homingJsonBtn" class="p-chipbtn" data-noclps title="download this homing run as JSON">json</span></span></div><canvas id="homingChart" height="110" style="width:100%;height:110px"></canvas><div id="homingLegend" class="p-note" style="margin-top:2px"></div><div id="homingText" class="p-out" style="margin-top:2px"></div><div id="homingTarget" class="p-out" style="display:none"><div id="homingTargetT1" style="display:none;color:#FFD700">&#9673; T <span id="homingTargetText"></span> <span id="homingTargetClear" style="cursor:pointer;color:#888;text-decoration:underline">clear</span></div><div id="homingTargetT2" style="display:none;color:#66A8FF">&#9673; T2 <span id="homingTargetText2"></span> <span id="homingTargetClear2" style="cursor:pointer;color:#888;text-decoration:underline">clear</span></div></div></div>
         </div>
       </div>
       <div class="tab-pane" data-pane="chat">
         <div class="chat-stack">
           <div class="panel-card" id="analysisChatCard">
             <div class="pane-head"><div class="pane-title">Analysis Chat</div><div class="pane-note">MCP-backed notes and questions</div></div>
-            <div id="chatLog" style="color:#666;font-size:8px;line-height:1.5;max-height:200px;overflow-y:auto"></div>
+            <div id="chatLog" class="p-list" style="max-height:200px"></div>
             <input id="chatInput" type="text" placeholder="ask about this direction...">
           </div>
           <div class="panel-card" id="modelChatCard">
             <div class="pane-head"><div class="pane-title">Model Chat</div><div class="pane-note">talk to the loaded model directly</div></div>
             <div id="liveChatStatus" class="live-status-text">uses the same live backend as prompt MRI</div>
             <div id="liveChatLog" class="live-log" style="margin-top:6px"></div>
-            <input id="liveChatInput" type="text" placeholder="ask the live model..." style="width:100%;background:#1a1a1a;border:1px solid #333;color:#ccc;padding:3px 6px;font-size:8px;font-family:inherit;border-radius:2px;margin-top:6px">
+            <input id="liveChatInput" class="p-input" type="text" placeholder="ask the live model..." style="margin-top:6px">
           </div>
         </div>
       </div>
     </div>
   </div>
+  <!-- FOOT — the state bar. Every control here CHANGES what the instrument is measuring:
+       which model, which prompt mode, which layer. It used to sit at the top of the scrolling
+       column, which meant the model selector could scroll out of sight while you read the
+       tokens it had selected. It is now pinned, and it is the only place state changes. -->
+  <footer id="tokFoot">
+    <div id="ctrlbar">
+      <div class="ctrl-row" id="ctrlModel">
+        <select id="sm"></select>
+        <select id="smd"><option>raw</option><option>naked</option><option>template</option></select>
+        <button id="bl" class="ctrl-go">Go</button>
+      </div>
+      <div class="ctrl-row" id="ctrlLayer">
+        <button id="lprev" title="previous layer">&#9664;</button>
+        <span id="llbl">L00</span>
+        <button id="lnext" title="next layer">&#9654;</button>
+        <button id="lplay" title="play through the layers">&#9654;&#9654;</button>
+        <button id="lrec" class="ctrl-rec" title="record a layer sweep">&#9679;</button>
+        <button id="lemb" title="jump to the embedding">emb</button>
+        <button id="llmh" title="jump to the readout">lmh</button>
+        <span class="ctrl-gap"></span>
+        <div class="cbtn" data-v="all" title="snap every camera to an axis"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div>
+      </div>
+    </div>
+  </footer>
 </div>
 <div id="unlockPanel" style="display:none;position:fixed;inset:0;z-index:60;background:rgba(0,0,0,0.72);align-items:center;justify-content:center;font-size:11px">
   <div style="background:#0e0e0e;border:1px solid #2a3a2a;border-radius:6px;max-width:440px;padding:16px 18px;color:#bbb;box-shadow:0 8px 40px rgba(0,0,0,0.6)">
@@ -1633,6 +1781,10 @@ function _tokInfo(idx){if(idx<0)return'—';const S=_getTokenSpectrumEntry(idx);
   if(ts)m+=`\ntraj:${ts.total.toFixed(0)} maxΔ:L${ts.maxL}(${ts.maxDelta.toFixed(0)})`;
   return m;}
 
+// The panel's canvases carry labels too, and CSS cannot reach them — they were drawn at 5px, 6px
+// and 7px, which is smaller than anything the stylesheet ever did. One size, on the same scale as
+// --fs-xs. (These contexts are ctx.scale(2,2) for retina, so this is CSS px, not device px.)
+const PANEL_CANVAS_FONT='10px monospace';
 // PC distribution bar chart — shows where this token sits relative to all tokens
 function renderPCBar(idx,canvasId,rgb){
   const cv=document.getElementById(canvasId);if(!cv)return;
@@ -1663,10 +1815,10 @@ function renderPCBar(idx,canvasId,rgb){
     // Center line
     ctx.fillStyle='rgba(255,255,255,0.1)';ctx.fillRect(p*bw,midY,bw,0.5);
     // PC label
-    ctx.font='5px monospace';ctx.fillStyle=`rgba(${rgb},0.5)`;
+    ctx.font=PANEL_CANVAS_FONT;ctx.fillStyle=`rgba(${rgb},0.75)`;
     ctx.fillText(p.toString(),p*bw+1,h-1);
     // Value
-    if(Math.abs(pct-0.5)>0.3){ctx.fillStyle=`rgba(${rgb},0.8)`;ctx.fillText(v.toFixed(1),p*bw+1,isPos?midY-barH-1:midY+barH+5);}
+    if(Math.abs(pct-0.5)>0.3){ctx.fillStyle=`rgba(${rgb},0.95)`;ctx.fillText(v.toFixed(1),p*bw+1,isPos?midY-barH-2:midY+barH+9);}
   }
 }
 let _predsReqA=0,_predsReqB=0;
@@ -4452,8 +4604,9 @@ function renderNeuronChart(tok,canvasId,rgb){
   const px=peakL*bw+bw/2,py=h-(row[peakL]/mx)*(h-2);
   ctx.beginPath();ctx.arc(px,py,2,0,Math.PI*2);ctx.fillStyle=`rgb(${rgb})`;ctx.fill();
   // Label
-  ctx.font='7px monospace';ctx.fillStyle=`rgba(${rgb},0.6)`;
-  ctx.fillText(`peak L${peakL}`,2,8);ctx.fillText(`${(row[cL]||0).toFixed(1)}`,w-30,8);
+  ctx.font=PANEL_CANVAS_FONT;ctx.fillStyle=`rgba(${rgb},0.85)`;
+  ctx.fillText(`peak L${peakL}`,2,9);
+  ctx.textAlign='right';ctx.fillText(`${(row[cL]||0).toFixed(1)}`,w-2,9);ctx.textAlign='left';
 }
 // --- Attention heatmap (template mode) ---
 let _attnData=null,_attnToken=-1;
@@ -4490,9 +4643,9 @@ function renderAttnChart(){
     }
   }
   // Labels
-  ctx.font='6px monospace';ctx.fillStyle='rgba(255,255,255,0.4)';
-  ctx.fillText(`${nHeads}h × ${seqLen}pos`,2,8);
-  ctx.fillText(`L${cL}`,w-20,8);
+  ctx.font=PANEL_CANVAS_FONT;ctx.fillStyle='rgba(255,255,255,0.65)';
+  ctx.fillText(`${nHeads}h × ${seqLen}pos`,2,9);
+  ctx.textAlign='right';ctx.fillText(`L${cL}`,w-2,9);ctx.textAlign='left';
 }
 // Click on neuron chart to jump to layer
 ['neuronA','neuronB'].forEach(id=>{
@@ -5684,6 +5837,10 @@ function _saveState(){
   if(!model)return;
   const s={m:model,d:mode,l:cL,p:[vpPairs[0],vpPairs[2]].map(p=>p.join('-')).join(',')};
   if(pinnedToken>=0)s.a=pinnedToken;if(pinnedTokenB>=0)s.b=pinnedTokenB;
+  // Which tab you were on is part of what you're sharing: a link to a steer run should open on
+  // Live, not on Find. (`pn` = panel tab, `pc` = the PC pane's tab — `t`/`t2` are the vocab targets.)
+  const pn=_activeTabName();if(pn!=='find')s.pn=pn;
+  const pc=_activePcTab();if(pc!=='pcs')s.pc=pc;
   // Vocab targets are per model|mode — persist row+text, restored only if m|d matches.
   if(_vocabTarget){s.t=_vocabTarget.row;s.tx=_vocabTarget.text;}
   if(_vocabTarget2){s.t2=_vocabTarget2.row;s.t2x=_vocabTarget2.text;}
@@ -5865,6 +6022,9 @@ async function init(){const models=await api('models');const sel=document.getEle
   const _st=_loadState();
   if(_st&&_st.m&&bm[_st.m]){sel.value=_st.m;if(_st.d)document.getElementById('smd').value=_st.d;}
   else{const prefer=['smollm2-135m','smollm2-360m','qwen-0.5b'];for(const p of prefer){if(bm[p]){sel.value=p;break;}}}
+  // Tabs are model-independent, so they restore whether or not the shared model resolved.
+  if(_st&&_st.pn)_activateTab(_st.pn);
+  if(_st&&_st.pc)_setPcTab(_st.pc);
   document.getElementById('bl').addEventListener('click',loadAll);
   document.getElementById('lemb').addEventListener('click',()=>{if(nL>_nRealLayers)setLayer(_nRealLayers);else setLayer(0);});
   document.getElementById('llmh').addEventListener('click',()=>{if(nL>_nRealLayers+1)setLayer(_nRealLayers+1);else setLayer(_nRealLayers-1);});
@@ -6031,7 +6191,9 @@ function _playFrame(t){
   _playRAF=requestAnimationFrame(_playFrame);
 }
 function _togglePlay(){
-  play=!play;document.getElementById('lplay').textContent=play?'\u23F8':'\u25B6';
+  // \u25B6\u25B6 not \u25B6 \u2014 the step-one-layer button next to it is already \u25B6, and two identical arrows
+  // side by side meant you could not tell "next layer" from "play through the layers".
+  play=!play;document.getElementById('lplay').textContent=play?'\u23F8':'\u25B6\u25B6';
   if(play){_playLastT=performance.now();_playRAF=requestAnimationFrame(_playFrame);}
   else{if(_playRAF){cancelAnimationFrame(_playRAF);_playRAF=null;}_updateBrowserLayer();_updateBrowserSelBoxes();_updateBrowserOverlay();if(pinnedToken>=0){updatePinMarkers();showPinDetail(pinnedToken);}}
 }
@@ -6694,7 +6856,7 @@ function _activateTab(name){
 }
 (function(){
   const tabs=document.getElementById('tokTabs');if(!tabs)return;
-  tabs.addEventListener('click',e=>{const btn=e.target.closest('.tab-btn');if(!btn)return;_activateTab(btn.dataset.tab);});
+  tabs.addEventListener('click',e=>{const btn=e.target.closest('.tab-btn');if(!btn)return;_activateTab(btn.dataset.tab);_saveState();});
 })();
 
 // === Collapsible panel cards + attention routing =========================
@@ -6776,6 +6938,33 @@ function _initCollapsibles(){
   }
 }
 _initCollapsibles();
+
+// === The panel's box CHANGES now — so its canvases have to be redrawn ====================
+// renderNeuronChart / renderPCBar / renderAttnChart / _homingDraw all size their backing store
+// from the parent's clientWidth AT DRAW TIME (cv.width = w*2, for retina) and never again. When
+// the panel only ever floated at 620px that was harmless. Docked, it is 853px at 1920 and 1137px
+// at 2560, it reflows when the window resizes, and on mobile the sheet expands from 150px to
+// 84vh — every one of those left a stale bitmap stretched by CSS until the next pin change.
+function _redrawPanelCanvases(){
+  renderNeuronChart(pinnedToken,'neuronA','200,80,50');
+  renderNeuronChart(pinnedTokenB,'neuronB','60,100,180');
+  renderPCBar(pinnedToken,'pcBarA','200,80,50');
+  renderPCBar(pinnedTokenB,'pcBarB','60,100,180');
+  renderAttnChart();
+  if(_homingCache)_homingDraw();
+}
+(function(){
+  const p=document.getElementById('tokpanel');
+  if(!p||typeof ResizeObserver==='undefined')return;
+  let lw=0,lh=0,raf=0;
+  new ResizeObserver(entries=>{
+    const r=entries[0].contentRect;
+    if(Math.abs(r.width-lw)<2&&Math.abs(r.height-lh)<2)return;// ignore sub-pixel churn
+    lw=r.width;lh=r.height;
+    if(raf)cancelAnimationFrame(raf);
+    raf=requestAnimationFrame(()=>{raf=0;_redrawPanelCanvases();});// coalesce a drag-resize
+  }).observe(p);
+})();
 // === Capability manifest (the inverted contract) ===
 // The backend DECLARES what it can do; the SPA composes from that — instead of
 // the SPA probing for failures. /api/capabilities is the whole boundary:
@@ -7680,15 +7869,21 @@ function _applyMobile(){
 // decomposition as a variance profile and as the two prism frames. Only the visible tab has a
 // layout box, and the shared renderer already skips any viewport whose rect is empty
 // (w<=0||h<=0), so a hidden tab costs nothing — no per-tab render guard is needed.
+const _PC_TAB_EL={pcs:'br0bot',a:'br0topA',b:'br0topB'};
+function _activePcTab(){return document.querySelector('#pcTabs button.on')?.dataset.pc||'pcs';}
+function _setPcTab(k){
+  const bar=document.getElementById('pcTabs');if(!bar||!_PC_TAB_EL[k])return _activePcTab();
+  for(const j in _PC_TAB_EL){const el=document.getElementById(_PC_TAB_EL[j]);if(el)el.style.display=(j===k)?'':'none';}
+  bar.querySelectorAll('button[data-pc]').forEach(x=>x.classList.toggle('on',x.dataset.pc===k));
+  if(typeof _resizeCanvas==='function')_resizeCanvas();
+  _needsRender=true;if(typeof _markDirty==='function')_markDirty();
+  return k;
+}
 (function(){
   const bar=document.getElementById('pcTabs');if(!bar)return;
-  const EL={pcs:'br0bot',a:'br0topA',b:'br0topB'};
   bar.addEventListener('click',e=>{
     const b=e.target.closest('button[data-pc]');if(!b)return;
-    for(const k in EL){const el=document.getElementById(EL[k]);if(el)el.style.display=(k===b.dataset.pc)?'':'none';}
-    bar.querySelectorAll('button').forEach(x=>x.classList.toggle('on',x===b));
-    if(typeof _resizeCanvas==='function')_resizeCanvas();
-    _needsRender=true;if(typeof _markDirty==='function')_markDirty();
+    _setPcTab(b.dataset.pc);_saveState();
   });
 })();
 addEventListener('resize',_applyMobile);
@@ -7843,6 +8038,8 @@ window.__heinrich = {
   maximize:(vk)=>{_setMaximized(vk==null?null:vk);return _maxKey;}, get maximized(){return _maxKey;},
   // --- panel redesign: collapsible cards + tab attention routing (test surface) ---
   activeTab:()=>_activeTabName(), gotoTab:(name)=>{_activateTab(name);return _activeTabName();},
+  pcTab:()=>_activePcTab(), gotoPcTab:(k)=>_setPcTab(k),
+  redrawPanel:()=>{_redrawPanelCanvases();return true;},
   cardKeys:()=>Object.keys(_CARDS),
   cardState:(key)=>{const c=_CARDS[key];return c?{collapsed:c.card.classList.contains('clps'),summary:c.summaryEl?c.summaryEl.textContent:'',tab:c.tab,visible:!!(c.card.offsetParent),pendingFlash:c.pendingFlash}:null;},
   toggleCard:(key)=>{const c=_CARDS[key];if(!c)return null;_toggleCard(c);return c.card.classList.contains('clps');},
