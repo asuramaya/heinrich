@@ -170,7 +170,15 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #tokpanel .panel-card.clps>*:not(.pane-head){display:none!important}
 #tokpanel .token-card.clps>*:not(.subhead){display:none!important}
 #tokpanel .panel-card.clps>.pane-head .card-summary,#tokpanel .token-card.clps>.subhead .card-summary{display:inline-block}
-#tokpanel .panel-card.clps>.pane-head>.pane-note{display:none}
+/* A COLLAPSED HEAD IS: caret · title · summary. Nothing else.
+   It used to keep its action button, and the button LANDED IN THE MIDDLE OF THE ROW — because
+   .card-summary is flex:1, it eats every scrap of free space, so the title wrapper's
+   `margin-right:auto` has nothing left to push with and the button just sits where it falls.
+   Expanded, the same button rides the right edge. So it JUMPED on every collapse. Hiding it is
+   also the honest call: a button whose output you cannot see is a button you should not press. */
+#tokpanel .panel-card.clps>.pane-head .pane-note,
+#tokpanel .panel-card.clps>.pane-head>button,
+#tokpanel .panel-card.clps>.pane-head>span:not(.card-caret):not(.card-summary){display:none}
 #tokpanel .token-card>.subhead{display:flex;align-items:center}
 #tokpanel .tab-dot{display:none;width:5px;height:5px;border-radius:50%;background:#6c6;margin-left:5px;vertical-align:middle;box-shadow:0 0 3px rgba(110,204,110,0.6)}
 #tokpanel .tok-tabs .tab-btn.has-dot .tab-dot{display:inline-block}
@@ -185,6 +193,9 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #tokpanel #crossModel{max-width:300px}
 #tokpanel #crossCard{max-width:640px}   /* a form, not a banner */
 #tokpanel input[type=text]{max-width:520px}
+/* Steer's card now spans the full row (it closes the trailing row), so its slider and its button —
+   both width:100% — would stretch to 800px. A form is a form at any card width. */
+#tokpanel #steerAlpha,#tokpanel #steerBtn{max-width:420px}
 /* The layer-scrub row and the model row WRAP. On a 390px sheet they used to run 82px off the
    right edge, taking the X/Y/Z/R camera buttons clean off the screen. */
 #ctrlbar>div{flex-wrap:wrap}
@@ -6894,6 +6905,8 @@ function _activateTab(name){
   // Opening a tab clears its attention dot and flushes any deferred header flashes.
   _setTabDot(name,false);
   try{_flushPendingFlashes(name);}catch(e){}
+  // A hidden pane has no grid columns to count — the newly shown one has to close its own row.
+  if(typeof _fillTrailingRow==='function')_fillTrailingRow();
 }
 (function(){
   const tabs=document.getElementById('tokTabs');if(!tabs)return;
@@ -6994,6 +7007,27 @@ function _redrawPanelCanvases(){
   renderAttnChart();
   if(_homingCache)_homingDraw();
 }
+// A card left ALONE in the grid's final row leaves a half-width rule hanging just above the
+// footer — and cropped, that reads as a rendering artifact rather than as the bottom of a card.
+// (Live is the usual offender: Session | Forward, then Steer on its own.) The trailing card
+// stretches to close its row, so the grid never ends ragged. Column count is READ from the used
+// value of grid-template-columns, so this is right at every container width and needs no
+// breakpoint of its own.
+const _FR_STACKS='#tokpanel .find-stack,#tokpanel .live-stack,#tokpanel .chat-stack,#tokpanel .inspect-side';
+let _frBusy=false;
+function _fillTrailingRow(){
+  if(_frBusy)return; _frBusy=true;
+  for(const st of document.querySelectorAll(_FR_STACKS)){
+    const cards=[...st.children].filter(c=>getComputedStyle(c).display!=='none');
+    const cols=getComputedStyle(st).gridTemplateColumns.split(/\s+/).filter(Boolean).length;
+    const rem=cols>1?cards.length%cols:0;
+    cards.forEach((c,i)=>{
+      const want=(rem&&i===cards.length-1)?('span '+(cols-rem+1)):'';
+      if(c.style.gridColumn!==want)c.style.gridColumn=want;
+    });
+  }
+  _frBusy=false;
+}
 (function(){
   const p=document.getElementById('tokpanel');
   if(!p||typeof ResizeObserver==='undefined')return;
@@ -7003,8 +7037,18 @@ function _redrawPanelCanvases(){
     if(Math.abs(r.width-lw)<2&&Math.abs(r.height-lh)<2)return;// ignore sub-pixel churn
     lw=r.width;lh=r.height;
     if(raf)cancelAnimationFrame(raf);
-    raf=requestAnimationFrame(()=>{raf=0;_redrawPanelCanvases();});// coalesce a drag-resize
+    raf=requestAnimationFrame(()=>{raf=0;_redrawPanelCanvases();_fillTrailingRow();});// coalesce a drag-resize
   }).observe(p);
+  // Cards also APPEAR (steer and homing arrive with a live run) and collapse. Watch the stacks
+  // themselves rather than trying to find every call site that flips a display.
+  let mraf=0;
+  const mo=new MutationObserver(()=>{
+    if(_frBusy||mraf)return;
+    mraf=requestAnimationFrame(()=>{mraf=0;_fillTrailingRow();});
+  });
+  for(const st of document.querySelectorAll(_FR_STACKS))
+    mo.observe(st,{childList:true,subtree:true,attributes:true,attributeFilter:['style','class']});
+  _fillTrailingRow();
 })();
 // === Capability manifest (the inverted contract) ===
 // The backend DECLARES what it can do; the SPA composes from that — instead of
@@ -8081,6 +8125,7 @@ window.__heinrich = {
   activeTab:()=>_activeTabName(), gotoTab:(name)=>{_activateTab(name);return _activeTabName();},
   pcTab:()=>_activePcTab(), gotoPcTab:(k)=>_setPcTab(k),
   redrawPanel:()=>{_redrawPanelCanvases();return true;},
+  fillTrailingRow:()=>{_fillTrailingRow();return true;},
   cardKeys:()=>Object.keys(_CARDS),
   cardState:(key)=>{const c=_CARDS[key];return c?{collapsed:c.card.classList.contains('clps'),summary:c.summaryEl?c.summaryEl.textContent:'',tab:c.tab,visible:!!(c.card.offsetParent),pendingFlash:c.pendingFlash}:null;},
   toggleCard:(key)=>{const c=_CARDS[key];if(!c)return null;_toggleCard(c);return c.card.classList.contains('clps');},
