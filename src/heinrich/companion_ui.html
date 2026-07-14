@@ -3252,6 +3252,7 @@ let _riverTethers=null,_riverTethersSteer=null; // LineSegments: clean gold stra
 let _riverStemGroup=null,_riverStemSegs=[]; // stem body = straight-axis cylinder segments (Group)
 let _riverRings=null,_riverBand=null,_riverCommitLabel=null; // funnel rings / current band / commit tag sprite
 let _riverAxisLabels=[];            // depth-axis endpoint + onset marks (the lane had no scale at all)
+let _riverRibbon=null;              // the entropy PROFILE as a surface — the readable form of the rings
 let _riverDispersion=[],_riverStemAlive=[],_riverBankByLayer=new Map(); // [{l,disp}] / aliveness / l→{disp,r,z}
 let _riverScale=1;                  // global relative-frame scale s (p90 offset → radius ~0.9)
 let _riverStrands=[];               // [{row,text,layers:[l],maxP,maxL,committed,steered,positions:[{l,x,y,z,p}]}]
@@ -3260,7 +3261,11 @@ let _riverPickPts=[];               // [{row,text,pos:[x,y,z]}] raycast targets 
 let _riverSprites=[];               // [{row,text,sprite,tex}] ONE static label per clean strand (at maxP layer)
 let _riverTagEl=null,_riverTipEl=null; // corner truth tag + hover tooltip
 const _riverRay=new THREE.Raycaster();
-function _riverZAt(l){return (typeof _layerZ!=='undefined'&&_layerZ&&_layerZ[l]!=null)?_layerZ[l]:0;}
+// Depth runs LEFT TO RIGHT: L0 on the left, the commit on the right, like reading order and
+// like every other layer plot. The shared _layerZ puts L0 at +z (which the trajectory lanes
+// depend on), so the river negates it for its own scene only — every depth in this lane goes
+// through this one function, so the flip is total and local.
+function _riverZAt(l){return -((typeof _layerZ!=='undefined'&&_layerZ&&_layerZ[l]!=null)?_layerZ[l]:0);}
 function _riverModelId(){return document.getElementById('liveModelId')?.value.trim()||'';}
 // Build scene objects once — the rv0 scene persists across pin/model changes, so this
 // is idempotent. Also creates the corner tag / tooltip DOM and wires click+hover.
@@ -3276,6 +3281,10 @@ function _riverInit(){
     // FUNNEL — one merged LineSegments of per-layer dispersion rings (faint gold, additive).
     _riverRings=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:1.0,blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false}));
     _riverRings.frustumCulled=false;_riverRings.visible=false;rv.sc.add(_riverRings);
+    // PROFILE RIBBON — the entropy envelope as a translucent skin. Low opacity + additive so
+    // it reads as a silhouette from any angle without hiding the strands running inside it.
+    _riverRibbon=new THREE.Mesh(new THREE.BufferGeometry(),new THREE.MeshBasicMaterial({vertexColors:true,transparent:true,opacity:0.09,blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false,side:THREE.DoubleSide}));
+    _riverRibbon.frustumCulled=false;_riverRibbon.renderOrder=6;_riverRibbon.visible=false;rv.sc.add(_riverRibbon);
     // CURRENT BAND — one bright unit ring that slides to the current layer and scales to its dispersion.
     _riverBand=new THREE.LineLoop(_riverUnitRing(48),new THREE.LineBasicMaterial({color:0xfff2b0,transparent:true,opacity:0.6,blending:THREE.AdditiveBlending,depthWrite:false,depthTest:false}));
     _riverBand.frustumCulled=false;_riverBand.renderOrder=9;_riverBand.visible=false;rv.sc.add(_riverBand);
@@ -3302,6 +3311,36 @@ function _riverInit(){
     rvEl.addEventListener('pointerleave',()=>{if(_riverTipEl)_riverTipEl.style.display='none';});
   }
   if(!_riverStemSegs.length)_riverUpdateStem();// ghost stem so the port isn't blank pre-forward
+}
+// The entropy profile as a surface of revolution: one ring of SEG verts per layer, quads
+// between consecutive layers, vertex-coloured by the answer-leading channel. Additive and
+// faint, so the strands stay readable straight through it — the ribbon is an envelope, not
+// an occluder.
+function _riverBuildRibbon(prof){
+  if(!_riverRibbon)return;
+  if(prof.length<2){_riverRibbon.visible=false;return;}
+  const SEG=40,pos=[],col=[],idx=[];
+  for(let i=0;i<prof.length;i++){
+    const P=prof[i];
+    for(let s=0;s<SEG;s++){
+      const a=s/SEG*Math.PI*2;
+      pos.push(P.r*Math.cos(a),P.r*Math.sin(a),P.z);
+      col.push(P.h[0],P.h[1],P.h[2]);
+    }
+  }
+  for(let i=0;i<prof.length-1;i++){
+    const a=i*SEG,b=(i+1)*SEG;
+    for(let s=0;s<SEG;s++){
+      const s2=(s+1)%SEG;
+      idx.push(a+s,b+s,b+s2, a+s,b+s2,a+s2);
+    }
+  }
+  const g=_riverRibbon.geometry;
+  g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
+  g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(col),3));
+  g.setIndex(idx);
+  g.computeBoundingSphere&&g.computeBoundingSphere();
+  _riverRibbon.visible=true;
 }
 // Unit ring in the XY plane (radius 1) — scaled/positioned per use.
 function _riverUnitRing(seg){const p=[];for(let i=0;i<seg;i++){const a=i/seg*Math.PI*2;p.push(Math.cos(a),Math.sin(a),0);}
@@ -3397,7 +3436,14 @@ function _riverBuildSprites(){
   // pile. Keep each label on its strand's true bearing when it can be read there; when two
   // would collide (close in bearing and in depth), rotate the later one off it. Bearing is
   // data, so it is given up reluctantly and only to stay legible.
+  // The commit banner is placed FIRST, straight up from the spine at the waist, and it is the
+  // one label that must never be stepped on — so it enters the collision set as an occupant
+  // rather than being discovered as an obstacle after the fact.
   const placed=[];
+  if(_riverCommit){
+    const bank=_riverBankByLayer.get(_riverCommit.l);
+    if(bank)placed.push({ang:Math.PI/2,z:bank.z});
+  }
   let rank=0;
   for(const {st,r} of cand){
     const at=st.positions.find(p=>p.l===r.l)||st.positions[st.positions.length-1];
@@ -3533,7 +3579,7 @@ function _riverRebuild(){
   if(!_riverTethers)return;
   _riverStrands=[];_riverStubs=[];_riverPickPts=[];_riverDispersion=[];_riverScale=1;_riverOnset=null;_riverStats=null;
   const clean=_riverData&&_riverData.clean;
-  if(!clean||!clean.length){_riverTethers.visible=false;if(_riverTethersSteer)_riverTethersSteer.visible=false;if(_riverRings)_riverRings.visible=false;if(_riverBand)_riverBand.visible=false;_riverCommit=null;_riverCommitS=null;return;}
+  if(!clean||!clean.length){_riverTethers.visible=false;if(_riverTethersSteer)_riverTethersSteer.visible=false;if(_riverRings)_riverRings.visible=false;if(_riverRibbon)_riverRibbon.visible=false;if(_riverBand)_riverBand.visible=false;_riverCommit=null;_riverCommitS=null;return;}
   _riverCommit=_riverFindWaist(clean);
   // THE DECISION ONSET — the first layer at which the answer enters the top-k at all.
   // Everything before it is the lens reading a state that is not yet about the answer, and
@@ -3588,6 +3634,12 @@ function _riverRebuild(){
     let sw=0,sd2=0;for(const o of arr){const w=o.p;sw+=w;sd2+=w*s*s*(o.dx*o.dx+o.dy*o.dy);}
     dispByLayer.set(l,sw>0?Math.sqrt(sd2/sw):0);
   }
+  // Size alone cannot say whether the model is certain about the RIGHT thing — a tight ring
+  // at L6 (confidently 'nt') and a tight ring at the commit look identical. So carry a second
+  // channel: at each layer, is the eventual answer absent from the top-k (0), present but
+  // losing (1), or already leading (2)? Rendered as colour, "narrow + grey" then reads at a
+  // glance as what it is: certain, and certainly wrong.
+  const answer=_riverCommit?_riverCommit.text:((clean[clean.length-1].top||[])[0]||{}).text;
   for(const e of clean){
     const ps=(e.top||[]).map(c=>Math.max(0,c.p||0));
     const S=ps.reduce((a,b)=>a+b,0);
@@ -3596,7 +3648,11 @@ function _riverRebuild(){
       for(const p of ps){const q=p/S;if(q>0)H-=q*Math.log(q);}
       H/=Math.log(ps.length);
     }
-    _riverDispersion.push({l:e.l,disp:dispByLayer.get(e.l)||0,ent:Math.max(0,Math.min(1,H))});
+    const top=(e.top||[])[0];
+    const leads=(answer==null)?0
+      :(top&&top.text===answer)?2
+      :((e.top||[]).some(c=>c.text===answer)?1:0);
+    _riverDispersion.push({l:e.l,disp:dispByLayer.get(e.l)||0,ent:Math.max(0,Math.min(1,H)),leads});
   }
   _riverDispersion.sort((a,b)=>a.l-b.l);
   _markDirty();
@@ -3670,19 +3726,39 @@ function _riverDisposeAxis(){for(const a of _riverAxisLabels){const s=a.sprite;i
 function _riverBuildBanks(){
   if(!_riverRings)return;
   _riverBankByLayer.clear();_riverDisposeCommitLabel();
-  if(!_riverDispersion.length){_riverRings.visible=false;if(_riverBand)_riverBand.visible=false;_markDirty();return;}
+  if(!_riverDispersion.length){_riverRings.visible=false;if(_riverRibbon)_riverRibbon.visible=false;if(_riverBand)_riverBand.visible=false;_markDirty();return;}
   const RMIN=0.016;// collapse floor so a decided layer renders as a tiny point, not a hole
   const RMAX=0.90; // a fully undecided layer reaches the strands' own p90 radius
   const SEG=40,pos=[],col=[];
+  // Colour by the second channel. Grey = the answer is not even in the top-k here; amber =
+  // it is in play but losing; gold = it leads. The eye gets certainty from the WIDTH and
+  // correctness from the HUE, which is the pair of questions the lane exists to answer.
+  const HUE=[[0.42,0.46,0.50],[0.86,0.66,0.30],[1.00,0.84,0.42]];
+  const prof=[];
   for(const d of _riverDispersion){
     const z=_riverZAt(d.l);
-    const r=Math.max(RMIN,Math.min(RMAX,RMIN+(RMAX-RMIN)*(d.ent||0)));// ring = readout entropy
-    const isC=_riverCommit&&_riverCommit.l===d.l;const b=isC?0.34:0.13;
-    const R=1.0*b,G=0.84*b,B=0.40*b;
-    for(let i=0;i<SEG;i++){const a0=i/SEG*Math.PI*2,a1=(i+1)/SEG*Math.PI*2;
-      pos.push(r*Math.cos(a0),r*Math.sin(a0),z, r*Math.cos(a1),r*Math.sin(a1),z);
-      col.push(R,G,B,R,G,B);}
+    const r=Math.max(RMIN,Math.min(RMAX,RMIN+(RMAX-RMIN)*(d.ent||0)));// radius = readout entropy
+    const isC=_riverCommit&&_riverCommit.l===d.l;
+    const h=HUE[d.leads||0];
+    prof.push({z,r,h,isC});
     _riverBankByLayer.set(d.l,{disp:d.disp,ent:d.ent,r,z});
+  }
+  // THE PROFILE, as a surface. 32 wireframe rings drew a 1-D curve (entropy against depth) as
+  // 32 overlapping circles, and overlap is exactly the encoding that destroys an envelope —
+  // the eye got coil texture where the whole point was the silhouette. The ribbon IS the
+  // envelope: a translucent tube of revolution whose radius is the profile, so from any angle
+  // you read the shape directly. Rings stay, thinned to every 4th layer plus the commit, doing
+  // the only job they were ever good at: depth cues on a 3-D rod.
+  _riverBuildRibbon(prof);
+  const KEEP=6;
+  for(let i=0;i<prof.length;i++){
+    const P=prof[i];
+    if(!P.isC&&(i%KEEP)!==0&&i!==prof.length-1)continue;
+    const b=P.isC?0.60:0.09;   // the commit is the one ring worth looking at
+    const R=P.h[0]*b,G=P.h[1]*b,B=P.h[2]*b;
+    for(let s=0;s<SEG;s++){const a0=s/SEG*Math.PI*2,a1=(s+1)/SEG*Math.PI*2;
+      pos.push(P.r*Math.cos(a0),P.r*Math.sin(a0),P.z, P.r*Math.cos(a1),P.r*Math.sin(a1),P.z);
+      col.push(R,G,B,R,G,B);}
   }
   if(pos.length){_riverRings.geometry.setAttribute('position',new THREE.BufferAttribute(new Float32Array(pos),3));
     _riverRings.geometry.setAttribute('color',new THREE.BufferAttribute(new Float32Array(col),3));
@@ -3745,7 +3821,7 @@ function _riverTagUpdate(){
     let tight=_riverDispersion[0];
     for(const d of _riverDispersion)if((d.ent||0)<(tight.ent||0))tight=d;
     const wd=_riverCommit?_riverDispersion.find(d=>d.l===_riverCommit.l):null;
-    funnel=` · ring=readout entropy · most certain @L${tight.l} H=${(tight.ent||0).toFixed(2)}`
+    funnel=` · width=how undecided · gold=answer leads · most certain @L${tight.l} H=${(tight.ent||0).toFixed(2)}`
       +(wd?` · H@commit ${(wd.ent||0).toFixed(2)}`:'');
   }
   const ns=_riverStrands.filter(s=>!s.steered).length;
@@ -3825,6 +3901,7 @@ function _clearRiver(){
   if(_riverTethers)_riverTethers.visible=false;
   if(_riverTethersSteer)_riverTethersSteer.visible=false;
   if(_riverRings)_riverRings.visible=false;
+  if(_riverRibbon)_riverRibbon.visible=false;
   if(_riverBand)_riverBand.visible=false;
   _riverDisposeCommitLabel();_riverDisposeAxis();
   _riverDispersion=[];_riverStemAlive=[];_riverBankByLayer.clear();
