@@ -129,7 +129,11 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #tokpanel .legend-compact{cursor:pointer;color:var(--ink-faint);font-size:var(--fs-xs);user-select:none}
 #tokpanel .legend-compact:hover{color:#bbb}
 #tokpanel .legend-compact.open{color:#bbb}
-#tokpanel .search-row{display:flex;gap:5px;margin-bottom:5px;align-items:center}
+/* WRAP, and let the select SHRINK. A flex item's default min-width is auto, and a <select>'s
+   min-content width is its longest option ("qwen2.5-0.5b-instruct / raw") — so in a 3-column
+   Direction pane the row refused to shrink and pushed Run clean off the card. */
+#tokpanel .search-row{display:flex;gap:5px;margin-bottom:5px;align-items:center;flex-wrap:wrap}
+#tokpanel .search-row select,#tokpanel .search-row input{min-width:0}
 #tokpanel .search-row input{flex:1;background:#181818;border:1px solid #343434;color:var(--ink);padding:5px 8px;font-size:var(--fs-md);font-family:inherit;border-radius:3px}
 #tokpanel .search-row input::placeholder{color:#5a5a5a}
 #tokpanel .search-row button{background:#17240f;border:1px solid #3a5a30;color:#bf9;padding:5px 10px;font-size:var(--fs-md);font-family:inherit;border-radius:3px;cursor:pointer;white-space:nowrap}
@@ -150,16 +154,16 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #tokpanel .pane-note{color:var(--ink-faint);font-size:var(--fs-xs)}
 /* CARDS REFLOW, THEY DO NOT STRETCH. Every stack is a grid that grows a column when it has
    room for one, instead of widening a single column until a text input is 1100px across. */
-#tokpanel .inspect-stack,#tokpanel .find-stack,#tokpanel .compare-stack,#tokpanel .run-stack,#tokpanel .live-stack,#tokpanel .chat-stack,#tokpanel .inspect-side{
+#tokpanel .inspect-stack,#tokpanel .find-stack,#tokpanel .direction-stack,#tokpanel .live-stack,#tokpanel .notes-stack,#tokpanel .inspect-side{
   display:grid;grid-template-columns:1fr;gap:8px;align-content:start}
 @container panel (min-width:640px){
-  #tokpanel .find-stack,#tokpanel .run-stack,#tokpanel .live-stack,#tokpanel .chat-stack,#tokpanel .inspect-side{
+  #tokpanel .find-stack,#tokpanel .direction-stack,#tokpanel .live-stack,#tokpanel .inspect-side{
     grid-template-columns:repeat(auto-fit,minmax(300px,1fr))}
 }
-/* Find and Chat are dominated by a scrolling LIST — give them the leftover height (that is the
-   void the operator saw). Compare is a form and Live is already dense: those keep their natural
-   height and leave honest whitespace rather than inflating a 3-line card to 300px. */
-#tokpanel.docked .find-stack,#tokpanel.docked .chat-stack{align-content:stretch}
+/* Find and Notes are dominated by a scrolling LIST — give them the leftover height. Direction and
+   Live are forms and charts: they keep their natural height and leave honest whitespace rather
+   than inflating a 3-line card to 300px. */
+#tokpanel.docked .find-stack,#tokpanel.docked .notes-stack{align-content:stretch}
 #tokpanel .panel-card.clps{align-self:start}  /* a collapsed card is a header, not a tall empty box */
 /* Collapse-by-default cards: header stays, body hidden, one-line summary shows. */
 #tokpanel .panel-card>.pane-head,#tokpanel .token-card>.subhead{cursor:pointer}
@@ -190,8 +194,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 /* wide enough for the longest name we ship ("qwen2.5-0.5b-instruct"); it used to be capped at
    90px inline, which truncated every model to "smollm2-3…" on a phone */
 #tokpanel #sm{max-width:190px}
-#tokpanel #crossModel{max-width:300px}
-#tokpanel #crossCard{max-width:640px}   /* a form, not a banner */
+#tokpanel #crossModel{max-width:340px}
 #tokpanel input[type=text]{max-width:520px}
 /* Steer's card now spans the full row (it closes the trailing row), so its slider and its button —
    both width:100% — would stretch to 800px. A form is a form at any card width. */
@@ -201,9 +204,11 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #ctrlbar>div{flex-wrap:wrap}
 /* Docked, a card whose job is a scrolling list should EAT the leftover height rather than stop
    at 140px and leave a void beneath it. (Not on mobile: there the whole sheet scrolls.) */
-#tokpanel.docked #searchCard,#tokpanel.docked #discoverCard,#tokpanel.docked #analysisChatCard,#tokpanel.docked #modelChatCard{display:flex;flex-direction:column;min-height:0}
+#tokpanel.docked #searchCard,#tokpanel.docked #discoverCard,#tokpanel.docked #analysisChatCard{display:flex;flex-direction:column;min-height:0}
 #tokpanel.docked .panel-card.clps{display:block}
-#tokpanel.docked #tsresults,#tokpanel.docked #discoverResults,#tokpanel.docked #chatLog,#tokpanel.docked #liveChatLog{flex:1 1 auto;min-height:80px;max-height:none}
+/* Only in the stacks that STRETCH (Find, Notes). Model Chat now lives in Live, which keeps its
+   natural height — so its log keeps the 160px cap rather than growing the card without bound. */
+#tokpanel.docked #tsresults,#tokpanel.docked #discoverResults,#tokpanel.docked #chatLog{flex:1 1 auto;min-height:80px;max-height:none}
 #tokpanel .panel-card{background:rgba(20,20,20,0.85);border:1px solid var(--rule);border-radius:4px;padding:8px 9px}
 #tokpanel .token-card{background:rgba(20,20,20,0.85);border:1px solid var(--rule);border-radius:4px;padding:8px 9px}
 #tokpanel .section-row{display:flex;gap:8px;align-items:flex-start}
@@ -292,6 +297,14 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #tokpanel .p-input::placeholder{color:#5a5a5a}
 #tokpanel .p-chipbtn{cursor:pointer;font-size:var(--fs-xs);color:var(--ink-dim);border:1px solid #343434;border-radius:3px;padding:1px 6px}
 #tokpanel .p-chipbtn:hover{color:#ddd;border-color:#5a5a5a}
+/* RESTING STATES. An empty results box used to be a large empty frame with nothing to say about
+   why. `:empty` means these cost no JS and cannot go stale — the moment a result lands, the hint
+   is gone by definition. */
+#tokpanel .pane-empty{grid-column:1/-1;align-self:start;font-size:var(--fs-sm);color:var(--ink-faint);line-height:1.7;
+  border:1px dashed #2b2b2b;border-radius:4px;padding:10px 12px;background:rgba(18,18,18,0.4)}
+#tokpanel #tsresults:empty::before,#tokpanel #discoverResults:empty::before,
+#tokpanel #chatLog:empty::before,#tokpanel #liveChatLog:empty::before{
+  content:attr(data-rest);color:#5a5a5a;font-size:var(--fs-xs);line-height:1.7;display:block}
 #sepPanel .sep-cols{display:flex;gap:8px}
 #sepPanel .sep-cols>div{flex:1;min-width:0}
 #sepPanel .sep-metrics{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:4px}
@@ -443,15 +456,19 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
            the full width. They need their own grid for that: auto-fit only collapses an empty
            track, and in the parent stack #tokAB spans every track, so none is ever empty. -->
       <div class="inspect-side">
-      <div id="sepPanel" class="panel-card" style="display:none" title="Run exact direction analysis for the pinned pair"><div class="pane-head"><div><div class="pane-title">Direction Analysis</div><div class="pane-note" id="sepNote">exact, on demand</div></div><button id="sepRun" class="mini-btn" type="button">Analyze</button></div><div class="p-note">Max separation PCs <span id="sepDist" style="color:#aaa"></span></div><div id="sepList" class="p-out"></div></div>
       <div id="attnPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Attention</div><div class="pane-note">Token A · current layer</div></div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
       </div>
     </div>
+    <!-- THE TABS ARE THE ARC, not a list of subsystems. You pin a pair, you ask what SEPARATES
+         them, you test whether that direction DOES anything, and you check whether it holds
+         elsewhere. Direction is that middle act — and it is why Compare died as a tab: a
+         cross-model run is not its own mode, it is the A−B axis asked of a second model, so it
+         belongs beside the analysis and the steer that share its subject. -->
     <div class="tok-tabs" id="tokTabs">
-      <button class="tab-btn active" data-tab="find">Find<span class="tab-dot"></span></button>
-      <button class="tab-btn" data-tab="compare">Compare<span class="tab-dot"></span></button>
-      <button class="tab-btn" data-tab="live">Live<span class="tab-dot"></span></button>
-      <button class="tab-btn" data-tab="chat">Chat<span class="tab-dot"></span></button>
+      <button class="tab-btn active" data-tab="find" title="acquire a pair">Find<span class="tab-dot"></span></button>
+      <button class="tab-btn" data-tab="direction" title="the A−B axis: what it is, what it does, where else it holds">Direction<span class="tab-dot"></span></button>
+      <button class="tab-btn" data-tab="live" title="the running model">Live<span class="tab-dot"></span></button>
+      <button class="tab-btn" data-tab="notes" title="ask about what you are seeing">Notes<span class="tab-dot"></span></button>
     </div>
     <div id="tokTabContent">
       <div class="tab-pane active" data-pane="find">
@@ -464,7 +481,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
             <div class="search-row" style="margin-bottom:0;margin-top:4px">
               <input id="ovinput" type="text" placeholder="overlay: texts, or /regex/" title="Spotlight up to 200 full-vocabulary tokens as gold points in the clouds. Comma-separated texts, or /regex/ over the vocab.">
             </div>
-            <div id="tsresults" class="p-list" style="max-height:140px"></div>
+            <div id="tsresults" class="p-list" style="max-height:140px" data-rest="Type above to filter the 2,000-token sample. Click a hit to pin it as A, right-click for B. The overlay box takes a /regex/ and spotlights matches from the FULL vocabulary in the clouds."></div>
           </div>
           <div class="panel-card" id="discoverCard">
             <div class="pane-head"><div class="pane-title">Discover Features</div><div class="pane-note">layer-local PCA candidates</div></div>
@@ -472,16 +489,36 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
               <button id="discoverBtn" title="Find the layer with the strongest A/B separation across PCs">Discover</button>
               <div class="compact-note" style="flex:1">find candidate opposing token clusters for the current layer</div>
             </div>
-            <div id="discoverResults" class="p-list" style="max-height:300px"></div>
+            <div id="discoverResults" class="p-list" style="max-height:300px" data-rest="Discover runs a layer-local PCA and proposes token clusters that sit at opposite ends of a component — candidate pairs to pin, when you do not already know what you are looking for."></div>
           </div>
         </div>
       </div>
-      <div class="tab-pane" data-pane="compare">
-        <div class="compare-stack">
+      <!-- DIRECTION — the A−B axis, in the order you actually ask about it:
+           what IS it (the separating PCs) → does it DO anything (inject it and watch the output
+           bend) → does it HOLD anywhere else (the same pair, a second model). -->
+      <div class="tab-pane" data-pane="direction">
+        <div class="direction-stack">
+        <div class="pane-empty" id="dirEmpty">Pin a pair to open this tab &mdash; click a token for A, right-click for B. Everything here is the axis between them.</div>
+        <div id="sepPanel" class="panel-card" style="display:none" title="Run exact direction analysis for the pinned pair"><div class="pane-head"><div><div class="pane-title">Direction Analysis</div><div class="pane-note" id="sepNote">exact, on demand</div></div><button id="sepRun" class="mini-btn" type="button">Analyze</button></div><div class="p-note">Max separation PCs <span id="sepDist" style="color:#aaa"></span></div><div id="sepList" class="p-out"></div></div>
+        <div id="steerPanel" class="panel-card" style="display:none">
+          <div class="pane-head"><div class="pane-title">Steer</div><div class="pane-note">inject A&minus;B into the live forward</div></div>
+          <div class="live-status-row" style="margin-bottom:5px">
+            <span class="p-note">layer</span><input id="steerLayer" class="p-input" type="number" min="0" step="1" style="width:56px">
+            <span class="p-note">&alpha;</span><span id="steerAlphaVal" style="color:#F4C;min-width:34px;text-align:right;font-size:var(--fs-md)">+4.0</span>
+          </div>
+          <input id="steerAlpha" type="range" min="-6" max="6" step="0.5" value="4" style="width:100%">
+          <button id="steerBtn" style="width:100%;margin-top:5px;background:#3a1030;border:1px solid #a2c;color:#f9d;padding:5px;font-size:var(--fs-md);font-family:inherit;border-radius:3px;cursor:pointer">steer</button>
+          <div id="steerStatus" class="p-note" style="margin-top:5px"></div>
+          <div id="steerResult" class="p-out"></div>
+        </div>
         <div class="panel-card" id="crossCard">
           <div class="pane-head"><div class="pane-title">Cross-Model Compare</div><div class="pane-note">same pair, second model</div></div>
+          <!-- The model gets its own row: its longest option ("qwen2.5-0.5b-instruct / raw") is
+               wider than a third of the panel, and a truncated model name is worse than a wrap. -->
           <div class="search-row" style="margin-bottom:0">
-            <select id="crossModel" style="flex:1"></select>
+            <select id="crossModel" style="flex:1 1 100%"></select>
+          </div>
+          <div class="search-row" style="margin:5px 0 0">
             <select id="crossMode"><option>raw</option><option>naked</option><option>template</option></select>
             <button id="crossRun">Run</button>
           </div>
@@ -509,32 +546,26 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
             <div id="liveResult" class="p-out"></div>
             <div id="walkReadout" class="p-out" style="display:none;color:#8fc;border-top:1px solid #233;padding-top:4px"></div>
           </div>
-          <div id="steerPanel" class="panel-card" style="display:none">
-            <div class="pane-head"><div class="pane-title">Steer</div><div class="pane-note">inject A&minus;B into the live forward</div></div>
-            <div class="live-status-row" style="margin-bottom:5px">
-              <span class="p-note">layer</span><input id="steerLayer" class="p-input" type="number" min="0" step="1" style="width:56px">
-              <span class="p-note">&alpha;</span><span id="steerAlphaVal" style="color:#F4C;min-width:34px;text-align:right;font-size:var(--fs-md)">+4.0</span>
-            </div>
-            <input id="steerAlpha" type="range" min="-6" max="6" step="0.5" value="4" style="width:100%">
-            <button id="steerBtn" style="width:100%;margin-top:5px;background:#3a1030;border:1px solid #a2c;color:#f9d;padding:5px;font-size:var(--fs-md);font-family:inherit;border-radius:3px;cursor:pointer">steer</button>
-            <div id="steerStatus" class="p-note" style="margin-top:5px"></div>
-            <div id="steerResult" class="p-out"></div>
-          </div>
           <div id="homingPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Homing</div><span style="display:flex;gap:3px;align-items:center"><span class="pane-note">live &rarr; pinned</span><span id="homingLogBtn" class="p-chipbtn" data-noclps title="log-scale y (asinh) so the crystal plateau doesn't crush early structure">log</span><span id="homingJsonBtn" class="p-chipbtn" data-noclps title="download this homing run as JSON">json</span></span></div><canvas id="homingChart" height="110" style="width:100%;height:110px"></canvas><div id="homingLegend" class="p-note" style="margin-top:2px"></div><div id="homingText" class="p-out" style="margin-top:2px"></div><div id="homingTarget" class="p-out" style="display:none"><div id="homingTargetT1" style="display:none;color:#FFD700">&#9673; T <span id="homingTargetText"></span> <span id="homingTargetClear" style="cursor:pointer;color:#888;text-decoration:underline">clear</span></div><div id="homingTargetT2" style="display:none;color:#66A8FF">&#9673; T2 <span id="homingTargetText2"></span> <span id="homingTargetClear2" style="cursor:pointer;color:#888;text-decoration:underline">clear</span></div></div></div>
-        </div>
-      </div>
-      <div class="tab-pane" data-pane="chat">
-        <div class="chat-stack">
-          <div class="panel-card" id="analysisChatCard">
-            <div class="pane-head"><div class="pane-title">Analysis Chat</div><div class="pane-note">MCP-backed notes and questions</div></div>
-            <div id="chatLog" class="p-list" style="max-height:200px"></div>
-            <input id="chatInput" type="text" placeholder="ask about this direction...">
-          </div>
+          <!-- Model Chat is the SPECIMEN talking. It belongs with the running model, not beside
+               Analysis Chat — those two were only ever filed together because both are chats. -->
           <div class="panel-card" id="modelChatCard">
             <div class="pane-head"><div class="pane-title">Model Chat</div><div class="pane-note">talk to the loaded model directly</div></div>
             <div id="liveChatStatus" class="live-status-text">uses the same live backend as prompt MRI</div>
-            <div id="liveChatLog" class="live-log" style="margin-top:6px"></div>
+            <div id="liveChatLog" class="live-log" style="margin-top:6px" data-rest="This is the SPECIMEN talking — the model currently loaded, answering for itself. Its geometry is what every lane on the left is drawing."></div>
             <input id="liveChatInput" class="p-input" type="text" placeholder="ask the live model..." style="margin-top:6px">
+          </div>
+        </div>
+      </div>
+      <!-- NOTES — the OBSERVER's channel. Analysis Chat asks about what you are seeing; Model Chat
+           (above, in Live) is the thing being looked at, answering for itself. Opposite ends of the
+           microscope; they were tabbed together only because both take typed text. -->
+      <div class="tab-pane" data-pane="notes">
+        <div class="notes-stack">
+          <div class="panel-card" id="analysisChatCard">
+            <div class="pane-head"><div class="pane-title">Analysis Chat</div><div class="pane-note">MCP-backed notes and questions</div></div>
+            <div id="chatLog" class="p-list" style="max-height:200px" data-rest="Ask about what you are looking at. This talks to the analysis backend over MCP — it is the OBSERVER's channel, not the model's. (To talk to the model under the microscope, use Model Chat in Live.)"></div>
+            <input id="chatInput" type="text" placeholder="ask about this direction...">
           </div>
         </div>
       </div>
@@ -2004,9 +2035,16 @@ function _updateSeparation(a,b){
   // delay the full-K server call until the user settles on a layer.
   if(_sepDebounceTimer){clearTimeout(_sepDebounceTimer);_sepDebounceTimer=null;}
   const panel=document.getElementById('sepPanel');
-  if(a<0||b<0||!model||!mode||!nN){panel.style.display='none';return;}
-  if(document.getElementById('loading')?.style.display==='flex'){panel.style.display='none';return;}
-  if(cL>=_nRealLayers){panel.style.display='none';return;}// no decomp at emb/lmh
+  // The Direction tab is ABOUT the pair, so with no pair it has nothing to say — and says so,
+  // rather than showing an empty pane and letting you wonder what you broke.
+  const empty=document.getElementById('dirEmpty');
+  const rest=why=>{panel.style.display='none';if(empty){empty.textContent=why;empty.style.display='block';}};
+  if(a<0||b<0||!model||!mode||!nN)
+    return rest('Pin a pair to open this tab — click a token for A, right-click for B. Everything here is the axis between them.');
+  if(document.getElementById('loading')?.style.display==='flex')return rest('Loading the frame…');
+  if(cL>=_nRealLayers)
+    return rest('No decomposition at the embedding or the readout — step to a real layer to analyse the A−B direction.');
+  if(empty)empty.style.display='none';
   panel.style.display='block';
   const distEl=document.getElementById('sepDist');
   distEl.textContent='computing...';
@@ -6900,7 +6938,7 @@ function _activateTab(name){
   const tabs=document.getElementById('tokTabs');if(!tabs)return;
   tabs.querySelectorAll('.tab-btn').forEach(b=>b.classList.toggle('active',b.dataset.tab===name));
   document.querySelectorAll('#tokTabContent .tab-pane').forEach(p=>p.classList.toggle('active',p.dataset.pane===name));
-  if(name==='compare')_populateCrossModels();
+  if(name==='direction')_populateCrossModels();
   if(name==='live'&&!_deployStatic){_liveSuggestModelId();_refreshLiveStatus();}
   // Opening a tab clears its attention dot and flushes any deferred header flashes.
   _setTabDot(name,false);
@@ -6964,17 +7002,21 @@ function _initCollapsibles(){
   const defs=[
     {key:'tokA',id:'tokA',tab:null,collapsed:false},
     {key:'tokB',id:'tokB',tab:null,collapsed:false},
-    {key:'sep',id:'sepPanel',tab:null,collapsed:false},
     {key:'attn',id:'attnPanel',tab:null,collapsed:true},
     {key:'search',id:'searchCard',tab:'find',collapsed:false},
     {key:'discover',id:'discoverCard',tab:'find',collapsed:true},
-    {key:'cross',id:'crossCard',tab:'compare',collapsed:false},
+    // The A−B axis: what it is, what it does, where else it holds.
+    // Open on the question, collapsed on the answers you have not asked for yet.
+    {key:'sep',id:'sepPanel',tab:'direction',collapsed:false},
+    {key:'steer',id:'steerPanel',tab:'direction',collapsed:true},
+    {key:'cross',id:'crossCard',tab:'direction',collapsed:true},
+    // The running model.
     {key:'liveSession',id:'liveSessionCard',tab:'live',collapsed:true},
-    {key:'liveForward',id:'liveForwardCard',tab:'live',collapsed:true},
-    {key:'steer',id:'steerPanel',tab:'live',collapsed:true},
-    {key:'homing',id:'homingPanel',tab:'live',collapsed:true},
-    {key:'analysisChat',id:'analysisChatCard',tab:'chat',collapsed:true},
-    {key:'modelChat',id:'modelChatCard',tab:'chat',collapsed:true},
+    {key:'liveForward',id:'liveForwardCard',tab:'live',collapsed:false},
+    {key:'homing',id:'homingPanel',tab:'live',collapsed:false},
+    {key:'modelChat',id:'modelChatCard',tab:'live',collapsed:true},
+    // The observer.
+    {key:'analysisChat',id:'analysisChatCard',tab:'notes',collapsed:false},
   ];
   for(const d of defs){
     const card=document.getElementById(d.id);if(!card)continue;
@@ -7013,12 +7055,21 @@ function _redrawPanelCanvases(){
 // stretches to close its row, so the grid never ends ragged. Column count is READ from the used
 // value of grid-template-columns, so this is right at every container width and needs no
 // breakpoint of its own.
-const _FR_STACKS='#tokpanel .find-stack,#tokpanel .live-stack,#tokpanel .chat-stack,#tokpanel .inspect-side';
+const _FR_STACKS='#tokpanel .find-stack,#tokpanel .direction-stack,#tokpanel .live-stack,#tokpanel .notes-stack,#tokpanel .inspect-side';
 let _frBusy=false;
 function _fillTrailingRow(){
   if(_frBusy)return; _frBusy=true;
+  // The resting note is not a card and must never be counted as one — it spans the stack by CSS,
+  // and it is shown ONLY when the analysis it stands in for has nothing to say. sepPanel is
+  // displayed from several async paths, so derive the note from it here rather than trusting any
+  // one of them to remember.
+  const sep=document.getElementById('sepPanel'),dirEmpty=document.getElementById('dirEmpty');
+  if(sep&&dirEmpty){
+    const want=(getComputedStyle(sep).display==='none')?'block':'none';
+    if(dirEmpty.style.display!==want)dirEmpty.style.display=want;
+  }
   for(const st of document.querySelectorAll(_FR_STACKS)){
-    const cards=[...st.children].filter(c=>getComputedStyle(c).display!=='none');
+    const cards=[...st.children].filter(c=>c.classList.contains('panel-card')&&getComputedStyle(c).display!=='none');
     const cols=getComputedStyle(st).gridTemplateColumns.split(/\s+/).filter(Boolean).length;
     const rem=cols>1?cards.length%cols:0;
     cards.forEach((c,i)=>{
@@ -7229,11 +7280,12 @@ async function _chatPollLoop(){
   const MAX_BACKOFF=60000;
   let badgeEl=null;
   const _setBadge=(disconnected)=>{
-    const anchor=document.querySelector('#tokTabs .tab-btn[data-tab="chat"]');
+    // Analysis Chat is the MCP channel, and it lives under Notes now.
+    const anchor=document.querySelector('#tokTabs .tab-btn[data-tab="notes"]');
     if(!anchor)return;
     if(disconnected){
       if(!badgeEl){badgeEl=document.createElement('span');
-        badgeEl.style.cssText='color:#d66;font-size:7px;margin-left:4px';
+        badgeEl.style.cssText='color:#d66;font-size:var(--fs-xs);margin-left:4px';
         badgeEl.textContent='(disconnected)';
         anchor.appendChild(badgeEl);}
     }else if(badgeEl){badgeEl.remove();badgeEl=null;}
