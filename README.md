@@ -6,7 +6,7 @@
 
 `Python 3.10+` · captures transformers (MLX/HF) and causal banks · Three.js viewer on a static edge deploy · MIT
 
-![The Heinrich Observatory: a twenty-viewport cockpit over SmolLM2-135M at layer 18. Three point clouds and three trajectory lanes are coloured red-to-blue along PC0; three radial weight-alignment flowers sit beneath them; the PC spectrum and the live inspector panel fill the right, showing token A ')(' against token B ' boulders'.](docs/observatory-cockpit.png)
+![The Heinrich Observatory cockpit over SmolLM2-135M at layer 18. Three point clouds and three trajectory lanes are coloured red-to-blue along PC0; three radial weight-alignment flowers sit beneath them; the prism browser, the PC spectrum and the neuron field fill the right, with the inspector panel docked across the bottom showing token A ')(' against token B ' boulders'.](docs/observatory-cockpit.png)
 
 Every viewport above reads the same `.mri` — one capture of SmolLM2-135M's residual stream — through a different lane. The red/blue split is not decoration. At layer 18, **PC0 carries 94.4% of the variance and it is bimodal**: two lobes, not one, at the 98th percentile against a random-direction baseline. Its extremes are the code fragment `')('` at one end and the English word ` boulders` at the other. Heinrich picked that axis by ranking every PC on that test — it was not chosen because it photographs well, and the two-token extremes are a hint about what the axis means, not proof of it.
 
@@ -14,10 +14,10 @@ Heinrich is a **producer** (capture, decompose, eval, audit — runs models, nee
 
 ## Screenshots
 
-| The Readout River | The vocabulary, revealed | Weight-alignment flower |
+| The PC spectrum | The vocabulary, revealed | Weight-alignment flower |
 |---|---|---|
-| ![A rod running through layer-space, ringed layer by layer; a band reads 'commit L26 → " the"' and the rivals Paris, located and called are named beside it](docs/observatory-river.png) | ![A dense field of tens of thousands of token squares, graded blue on the left to red on the right, tagged in the corner with the number of tokens actually drawn out of 48,660](docs/observatory-cloud.png) | ![Coloured petals radiating from an origin, one per weight matrix — Q, K, V, O, gate, up, down](docs/observatory-flower.png) |
-| The logit lens as geometry: where the model **commits**, and what it passed over. For `The capital of France is`, this 135M base model commits at layer 26 to `" the"` — with `Paris` named right beside it as a rival it had in hand and declined. Each ring is that layer's readout entropy, so the rod is **tight where the model is certain — including where it is certainly wrong** (its most confident layer here reads whitespace). | Zoom past a threshold and the 2,000-token sample is replaced by the **real 48,660-row vocabulary** at its true frozen coordinates. The tag in the corner is the viewer refusing to imply it drew more than it drew. | Each petal is one weight matrix, its length the alignment of that matrix with the pinned direction. Q/K/V/O and the MLP's gate/up/down, read off the live weights. |
+| ![A 3D scree waterfall: one row per layer, 576 principal components deep, a few tall components dominating the near edge and the rest collapsing into a long flat tail](docs/observatory-spectrum.png) | ![A dense field of tens of thousands of token squares, graded blue on the left to red on the right, tagged in the corner with the number of tokens actually drawn out of 48,660](docs/observatory-cloud.png) | ![Coloured petals radiating from an origin, one per weight matrix — Q, K, V, O, gate, up, down](docs/observatory-flower.png) |
+| The decomposition itself: all 576 components across all 32 layers. The near wall is where the variance lives; the flat plain behind it is the tail. This is the artifact the edge actually serves — the viewer streams these columns by byte-range out of R2 and never runs a model. | Zoom past a threshold and the 2,000-token sample is replaced by the **real 48,660-row vocabulary** at its true frozen coordinates. The tag in the corner is the viewer refusing to imply it drew more than it drew. | Each petal is one weight matrix, its length the alignment of that matrix with the pinned direction. Q/K/V/O and the MLP's gate/up/down, read off the live weights. |
 
 <sub>Every Observatory image in this README is the output of [`docs/capture_observatory.mjs`](docs/capture_observatory.mjs) — it boots the real viewer against a real `.mri`, drives it the way a reader would, and photographs it. Nothing in them is drawn by the capture script. Frame: `smollm2-135m/raw`, layer 18, pins `#1692 ')('` / `#1659 ' boulders'` — paste `#m=smollm2-135m&d=raw&l=18&a=1692&b=1659&p=0-10,2-1` onto a running viewer to land on exactly this view.</sub>
 
@@ -26,7 +26,7 @@ Heinrich is a **producer** (capture, decompose, eval, audit — runs models, nee
 **MRI pipeline** — the primary workflow:
 - **`.mri` (model residual image)** — complete capture of every layer's residual state for every token in the vocabulary. Entry/exit vectors, attention weights, MLP gate activations, projection weights. Three modes: raw (no context), naked (BOS), template (chat frame).
 - **`mri-decompose`** — PCA decomposition at every layer. Produces per-layer score files + three transposed indexes for O(1) queries by token, by PC, or by neuron. Parallel SVD across layers.
-- **`companion`** — 20-viewport 3D viewer at http://localhost:8377. Point clouds, trajectories, radial weight alignment flowers, PC spectrum, neuron field, prism browser. Full vocabulary interactive (150K+ tokens). Snapshot (PNG) and record (GIF) per viewport.
+- **`companion`** — the multi-lane 3D viewer at http://localhost:8377. Point clouds, trajectories, radial weight alignment flowers, PC spectrum, neuron field, prism browser, with the inspector docked across the bottom. Full vocabulary interactive (150K+ tokens). Snapshot (PNG) and record (GIF) per viewport.
 
 **Profile pipeline**:
 - **`.frt` (tokenizer profile)** — vocabulary analysis: byte counts, script detection, system prompt extraction. No model needed.
@@ -74,10 +74,6 @@ read-only (`live:false`); a local `heinrich companion` is full-power
 exact view down to a local instance via a deep-link — the on-ramp ladder is
 cloud → slim-local (numpy, no GPU) → full-local (torch). See
 [`docs/observatory.md`](docs/observatory.md).
-
-![The PC spectrum lane: a 3D scree waterfall, one row per layer, 576 principal components deep. A few tall components dominate the near edge and the rest collapse into a long flat tail running to the horizon.](docs/observatory-spectrum.png)
-
-<sub>The decomposition itself, all 576 components across all 32 layers of SmolLM2-135M. The near wall is where the variance lives; the flat plain behind it is the tail. This is the artifact the edge actually serves — the viewer streams these columns by byte-range out of R2 and never runs a model.</sub>
 
 - Architecture & positioning: [`docs/observatory.md`](docs/observatory.md)
 - The open artifact format (producer↔consumer contract): [`web/ARTIFACT_FORMAT.md`](web/ARTIFACT_FORMAT.md)

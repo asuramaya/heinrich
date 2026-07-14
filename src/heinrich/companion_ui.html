@@ -13,9 +13,14 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #vp3{grid-column:1;grid-row:2}#vp4{grid-column:2;grid-row:2}#vp5{grid-column:3;grid-row:2}
 #lv0{grid-column:1;grid-row:3}#lv1{grid-column:2;grid-row:3}#lv2{grid-column:3;grid-row:3}
 #br0{/* grid placement is now inline */}
-#rightcol{grid-column:5;grid-row:1/4;display:flex;flex-direction:column;gap:1px;overflow:hidden}
+#rightcol{grid-column:5;grid-row:1/3;display:flex;flex-direction:column;gap:1px;overflow:hidden}
+#dock{grid-column:4/6;grid-row:3;overflow:hidden;position:relative;min-width:0;min-height:0}
 .rvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .rvp .rlbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
+/* Docked: fills its grid cell, occludes nothing, and cannot be dragged into the way. */
+#tokpanel.docked{position:static!important;left:auto!important;top:auto!important;right:auto!important;width:auto!important;max-width:none;height:100%;max-height:none!important;border-radius:0;border:none;border-left:1px solid #222;z-index:1;overflow-y:auto;backdrop-filter:none;background:rgba(10,10,10,0.6)}
+#tokpanel.docked .drag-handle{cursor:default}
+#tokpanel.docked .drag-mid{opacity:0.25}
 #tokpanel{position:fixed;right:8px;top:8px;width:620px;max-height:85vh;overflow-y:auto;background:rgba(10,10,10,0.95);border:1px solid #222;border-radius:4px;padding:8px;z-index:20;font-size:9px;backdrop-filter:blur(4px);cursor:default}
 #tokpanel.minimized{max-height:auto;overflow:hidden}
 #tokpanel.minimized #tokBody{display:none}
@@ -191,10 +196,9 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
   <div class="vp" id="vp0"><div class="axes" id="ax0"></div><div class="cbtn" data-v="0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="vp" id="vp1"><div class="axes" id="ax1"></div><div class="cbtn" data-v="1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="vp" id="vp2"><div class="axes" id="ax2"></div><div class="cbtn" data-v="2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
-  <div id="br0" style="grid-column:4;grid-row:1/4;display:flex;flex-direction:column;gap:1px">
+  <div id="br0" style="grid-column:4;grid-row:1/3;display:flex;flex-direction:column;gap:1px">
     <div class="browse" id="br0topA" style="flex:1;position:relative;overflow:hidden;border-top:1px solid #FF6644"><div class="blbl" id="brLblA">click=vpA  R-click=vpB</div></div>
     <div class="browse" id="br0topB" style="flex:1;position:relative;overflow:hidden;border-top:1px solid #4477AA"><div class="blbl" id="brLblB">click=vpA  R-click=vpB</div></div>
-    <div id="br0bot" style="flex:1;position:relative;overflow:hidden;background:transparent"><div class="blbl" id="pcsLabel">PC Spectrum</div><div id="pcsTip" style="display:none;position:absolute;z-index:20;background:rgba(10,10,10,0.9);border:1px solid #333;padding:3px 6px;font-size:9px;color:#ccc;pointer-events:none;border-radius:3px;white-space:nowrap"></div><div class="cbtn" data-v="pcs"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   </div>
   <div class="vp" id="vp3"><div class="axes" id="ax3"></div><div class="cbtn" data-v="3"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="vp" id="vp4"><div class="axes" id="ax4"></div><div class="cbtn" data-v="4"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
@@ -203,10 +207,18 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
   <div class="lvp" id="lv1"><div class="llbl" id="lv1i">Internals Δ</div><div class="cbtn" data-v="l1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div class="lvp" id="lv2"><div class="llbl" id="lv2i">Internals B</div><div class="cbtn" data-v="l2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   <div id="rightcol">
-    <div class="rvp" id="rv0"><div class="rlbl">Readout River</div><div class="cbtn" data-v="r0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+    <div id="br0bot" style="flex:1;position:relative;overflow:hidden;background:transparent"><div class="blbl" id="pcsLabel">PC Spectrum</div><div id="pcsTip" style="display:none;position:absolute;z-index:20;background:rgba(10,10,10,0.9);border:1px solid #333;padding:3px 6px;font-size:9px;color:#ccc;pointer-events:none;border-radius:3px;white-space:nowrap"></div><div class="cbtn" data-v="pcs"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+    <!-- The Readout River and the Interference placeholder are UNMOUNTED, not deleted: the
+         river's geometry never earned this slot (see git history), and Interference only ever
+         said "see PC Spectrum". The elements stay so rightViews[] keeps its indices and the
+         lane can be restored by dropping these two display:none rules. -->
+    <div class="rvp" id="rv0" style="display:none"><div class="rlbl">Readout River</div><div class="cbtn" data-v="r0"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
     <div class="rvp" id="rv1"><div class="rlbl">Neurons</div><div class="cbtn" data-v="r1"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
-    <div class="rvp" id="rv2"><div class="rlbl">Interference</div><div class="cbtn" data-v="r2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
+    <div class="rvp" id="rv2" style="display:none"><div class="rlbl">Interference</div><div class="cbtn" data-v="r2"><button data-a="x">X</button><button data-a="y">Y</button><button data-a="z">Z</button><button data-a="r">R</button></div></div>
   </div>
+  <!-- THE DOCK: the two cells the river and the spectrum used to waste. The inspector panel
+       lived here as a floating sheet that occluded whatever lane it covered; now it has a home. -->
+  <div id="dock"></div>
 </div>
 <div id="tokpanel">
   <div class="drag-handle" id="tokDrag">
@@ -449,12 +461,12 @@ const MPANES=[
   {tag:'0',name:'Cloud A'},{tag:'1',name:'Delta'},{tag:'2',name:'Cloud B'},
   {tag:'3',name:'Traj A'},{tag:'4',name:'Traj Δ'},{tag:'5',name:'Traj B'},
   {tag:'l0',name:'Flower A'},{tag:'l1',name:'Flower Δ'},{tag:'l2',name:'Flower B'},
-  {tag:'r0',name:'River'},{tag:'r1',name:'Neurons'},{tag:'r2',name:'Superpos.'},
+  {tag:'r1',name:'Neurons'},
   {tag:'br0',name:'Prism'},{tag:'pcs',name:'Spectrum'},
 ];
 // 2-up compare pairs the focused lane with its meaningful counterpart (A↔B clouds,
 // A↔B trajectories, A↔B flowers; deltas pair with their A; analysis lanes pair sensibly).
-const MPAIR={'0':'2','2':'0','1':'0','3':'5','5':'3','4':'3','l0':'l2','l2':'l0','l1':'l0','r0':'r1','r1':'r0','r2':'pcs','br0':'pcs','pcs':'r2'};
+const MPAIR={'0':'2','2':'0','1':'0','3':'5','5':'3','4':'3','l0':'l2','l2':'l0','l1':'l0','r1':'pcs','br0':'pcs','pcs':'r1'};
 let MOBILE=false,_focusPane=0,_twoUp=false;const _movedPanes=[];
 // --- Single shared WebGL renderer ---
 const glCanvas=document.getElementById('glCanvas');
@@ -3166,7 +3178,8 @@ for(let i=0;i<3;i++){
   // least the drag bar stays on-screen (you can't fling it into the void).
   const clampL=L=>Math.min(Math.max(0,L),Math.max(0,window.innerWidth-p.offsetWidth));
   const clampT=T=>Math.min(Math.max(0,T),Math.max(0,window.innerHeight-28));
-  function place(L,T){p.style.left=clampL(L)+'px';p.style.top=clampT(T)+'px';p.style.right='auto';}
+  function place(L,T){if(p.classList.contains('docked'))return;// docked: nowhere to drag to
+    p.style.left=clampL(L)+'px';p.style.top=clampT(T)+'px';p.style.right='auto';}
   // Restore last position (persisted across reloads).
   try{const s=JSON.parse(localStorage.getItem('heinrich.panelPos')||'null');
     if(s&&Number.isFinite(s.l)&&Number.isFinite(s.t))place(s.l,s.t);}catch(e){}
@@ -3875,6 +3888,9 @@ async function _riverBuild(){
   _riverRebuild();_riverBuildBanks();_riverBuildSprites();_riverUpdateStem();_riverSetLayer();_riverTagUpdate();_markDirty();
 }
 async function _riverFetch(promptOpt){
+  // The lane is unmounted (see #rv0 in the markup). Do not spend a live forward on a lane
+  // nobody can see — restoring the lane restores the fetch with it.
+  {const rv=rightViews&&rightViews[0];if(!rv||!rv.el||rv.el.offsetParent===null)return null;}
   _riverInit();
   const prompt=(promptOpt||_lastLivePrompt||document.getElementById('liveInput')?.value.trim()||'').trim();
   if(!prompt){_riverTag('no live forward yet');return null;}
@@ -7552,6 +7568,23 @@ function _resolveViewByName(name){
 function _curPane(){return MPANES[((_focusPane%MPANES.length)+MPANES.length)%MPANES.length];}
 function _pairTag(){const tg=_curPane().tag;return MPAIR[tg]||MPANES[(_focusPane+1)%MPANES.length].tag;}
 function _mStage(){return document.getElementById('mstage');}
+// The inspector panel is DOCKED on desktop (a grid cell of its own, occluding nothing) and
+// RELEASED on mobile, where it is a bottom sheet and #main — its desktop parent — is parked
+// with display:none. Reparenting, not restyling, is what makes both true at once.
+function _dockPanel(){
+  const p=document.getElementById('tokpanel'),d=document.getElementById('dock');
+  if(!p||!d||p.parentNode===d)return;
+  d.appendChild(p);
+  p.classList.add('docked');p.classList.remove('minimized');
+  p.style.left='';p.style.top='';p.style.right='';p.style.display='';
+}
+function _undockPanel(){
+  const p=document.getElementById('tokpanel');
+  if(!p||p.parentNode===document.body)return;
+  document.body.appendChild(p);
+  p.classList.remove('docked');
+  p.style.left='';p.style.top='';p.style.right='';
+}
 function _restoreMoved(){for(const m of _movedPanes){try{if(m.next&&m.next.parentNode===m.parent)m.parent.insertBefore(m.el,m.next);else m.parent.appendChild(m.el);}catch(e){}}_movedPanes.length=0;}
 function _moveToStage(el){if(!el)return;_movedPanes.push({el,parent:el.parentNode,next:el.nextSibling});_mStage().appendChild(el);}
 function _renderMobileChips(){const w=document.getElementById('mswitch');if(!w)return;const strip=w.querySelector('.mchips');if(!strip)return;strip.innerHTML='';MPANES.forEach((p,i)=>{const c=document.createElement('button');c.className='mchip'+(i===_focusPane?' on':'');c.textContent=p.name;c.addEventListener('click',()=>_setFocusPane(i));strip.appendChild(c);if(i===_focusPane)setTimeout(()=>{try{c.scrollIntoView({inline:'center',block:'nearest'});}catch(e){}},0);});}
@@ -7608,18 +7641,23 @@ function _applyMobile(){
   const p=document.getElementById('tokpanel');
   if(MOBILE){
     if(_maxKey&&typeof _forceUnmax==='function')_forceUnmax();// desktop maximize doesn't apply on mobile
+    _undockPanel();// out of #main, which mobile parks — otherwise the sheet vanishes with it
     _buildMobileUI();
     if(p){p.style.left='';p.style.top='';p.style.right='';p.classList.remove('minimized','expanded');}
     _setFocusPane(_focusPane);
   }else{
     _restoreMoved();
     if(p)p.classList.remove('expanded');
+    _dockPanel();
   }
   _needsRender=true;if(typeof _resizeCanvas==='function')_resizeCanvas();
 }
 addEventListener('resize',_applyMobile);
 addEventListener('orientationchange',()=>setTimeout(_applyMobile,220));
 _applyMobile();
+// _applyMobile early-returns when the mode has not CHANGED, and desktop is the initial mode —
+// so the first dock has to be done here or the panel stays floating until you resize.
+if(!MOBILE)_dockPanel();
 
 // ============ Desktop viewport maximize ============
 // One lane fills the viz area (FLIP-animated left/top/width/height so the scissor rect,

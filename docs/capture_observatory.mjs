@@ -149,36 +149,18 @@ const pins = await evl('__heinrich.pins');
 console.log(`  pinned A=#${pins.a} B=#${pins.b}, layer ${LAYER}`);
 if (pins.a !== A.idx || pins.b !== B.idx) console.error('  ! pins did not take — frame is not the one reported');
 
-// Run the prompt through the LIVE model FIRST. The River and the live-landing lanes are
-// empty until something is asked of the model, and a cockpit photographed before the
-// question is a cockpit with dead instruments in it.
-console.log(`live forward + river: ${JSON.stringify(PROMPT)}`);
+// Run the prompt through the LIVE model FIRST. The live-landing lanes and the inspector
+// panel are empty until something is asked of the model, and a cockpit photographed before
+// the question is a cockpit with dead instruments in it.
+console.log(`live forward: ${JSON.stringify(PROMPT)}`);
 await evl(`__heinrich.gotoTab('live')`).catch(() => {});
 await evl(`__heinrich.liveForward(${JSON.stringify(PROMPT)})`).catch(e => console.error('  liveForward:', e.message));
-await evl(`__heinrich.riverFetch(${JSON.stringify(PROMPT)})`);
-const riverBuilt = await poll("(__heinrich.river && __heinrich.river.strands && __heinrich.river.strands.length>0)", 90000);
-if (riverBuilt) {
-  const river = await evl('__heinrich.river');
-  console.log(`  commit: L${river.commit?.l} -> ${JSON.stringify(river.commit?.text)} | ${river.strands.length} strands`);
-} else {
-  console.error('  river did not build');
-}
-await sleep(1500);
+await sleep(2500);
 
 // 1. THE COCKPIT — every lane at once, which is the thing the screenshot has to sell.
 console.log('shot: cockpit');
 await shoot('cockpit');
 
-// 2. THE READOUT RIVER — the live lane (needs weights: local companion only).
-if (riverBuilt) {
-  console.log('shot: river');
-  await evl(`__heinrich.maximize('r0')`);   // maximizing auto-hides the floating panel
-  await sleep(1400);
-  await shoot('river');
-  await evl('__heinrich.maximize(null)'); await sleep(800);
-} else {
-  console.error('  river SKIPPED (omit, never fake)');
-}
 
 // 3. THE VOCABULARY CLOUD — the zoom-progressive full-vocab reveal. The cloud holds a
 // 2,000-token sample until you zoom past REVEAL_ZOOM_ON (1.5), at which point the LOD
