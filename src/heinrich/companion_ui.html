@@ -1929,12 +1929,21 @@ function _fetchPredicts(tokIdx,containerId){
       if(i>0)el.appendChild(document.createTextNode(' '));
       const span=document.createElement('span');
       const pct=p.prob*100;
-      span.style.cssText=`color:${pct>10?'#aaa':pct>1?'#777':'#444'};cursor:pointer`;
-      span.textContent=`${p.text}`;
-      span.title=`${p.text} prob=${(pct).toFixed(1)}% logit=${p.logit.toFixed(0)}`;
-      span.addEventListener('click',()=>{
-        if(p.mri_idx>=0){pinnedToken=p.mri_idx;updatePinMarkers();showPinDetail(pinnedToken);_onPinChange();_saveState();}
-      });
+      if(p.unresolved||p.text==null){
+        // Honesty lane (thread 97d910ce): this id has no text in the vocab
+        // projection (special/reserved token, or mri-vocab never run). Show
+        // the id and SAY it is unresolved — never guess a string.
+        span.style.cssText='color:#555;font-style:italic;cursor:default';
+        span.textContent=`⟨id ${p.vocab_id}⟩`;
+        span.title=`unresolved token id ${p.vocab_id} — no text in the vocab projection (special/reserved, or run: heinrich mri-vocab)  prob=${pct.toFixed(1)}% logit=${p.logit.toFixed(0)}`;
+      }else{
+        span.style.cssText=`color:${pct>10?'#aaa':pct>1?'#777':'#444'};cursor:pointer`;
+        span.textContent=`${p.text}`;
+        span.title=`${p.text} prob=${(pct).toFixed(1)}% logit=${p.logit.toFixed(0)}`;
+        span.addEventListener('click',()=>{
+          if(p.mri_idx>=0){pinnedToken=p.mri_idx;updatePinMarkers();showPinDetail(pinnedToken);_onPinChange();_saveState();}
+        });
+      }
       el.appendChild(span);
     });
   }).catch(()=>{el.textContent='';});

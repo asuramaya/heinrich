@@ -585,6 +585,10 @@ _vocab_map_cache: dict[str, tuple] = {}
 _vocab_map_lock = threading.Lock()
 _vocab_map_pending: dict[str, threading.Event] = {}
 
+_full_vocab_text_cache: dict[str, dict] = {}
+_full_vocab_text_lock = threading.Lock()
+_full_vocab_text_pending: dict[str, threading.Event] = {}
+
 
 def _get_vocab_map(mri_path: str) -> tuple:
     """Return (texts, vocab_to_mri_index) for the MRI, cached.
@@ -616,6 +620,45 @@ def _get_vocab_map(mri_path: str) -> tuple:
         return entry
     finally:
         _cache_finish_fill(_vocab_map_lock, _vocab_map_pending, mri_path)
+
+
+def _get_full_vocab_text_map(mri_path: str) -> dict:
+    """Return {token_id: text} for the FULL captured vocabulary, cached.
+
+    The predicts row (logit lens) speaks token-id space: an id is an lmhead
+    row, 0..vocab_size-1. The 2,000-token sample table (`_get_vocab_map`)
+    covers only a sliver of that, so common tokens absent from the sample
+    printed as `[vocab:282]`. The full projection resolves them: vocab_ids.npy
+    is row->token_id and vocab_tokens.json is row->text, so zipping the two
+    gives token_id->text for every CAPTURED token. Ids never captured
+    (special / reserved — 0..16 and friends) are simply absent from the map;
+    the caller tags those unresolved rather than fake a string. Returns an
+    empty dict if the full projection was never built (run: heinrich mri-vocab).
+    """
+    while True:
+        with _full_vocab_text_lock:
+            cached = _full_vocab_text_cache.get(mri_path)
+            if cached is not None:
+                return cached
+        if _cache_claim_fill(_full_vocab_text_lock, _full_vocab_text_pending, mri_path):
+            break
+    try:
+        decomp = Path(mri_path) / "decomp"
+        ids_path = decomp / "vocab_ids.npy"
+        txt_path = decomp / "vocab_tokens.json"
+        entry: dict[int, str] = {}
+        if ids_path.exists() and txt_path.exists():
+            ids = np.load(str(ids_path))
+            texts = json.loads(txt_path.read_text())
+            entry = {int(v): texts[r] for r, v in enumerate(ids) if r < len(texts)}
+        with _full_vocab_text_lock:
+            cached = _full_vocab_text_cache.get(mri_path)
+            if cached is not None:
+                return cached
+            _full_vocab_text_cache[mri_path] = entry
+        return entry
+    finally:
+        _cache_finish_fill(_full_vocab_text_lock, _full_vocab_text_pending, mri_path)
 
 
 def _get_weight_gram(path: Path, side: str) -> np.ndarray | None:
@@ -1302,16 +1345,27 @@ def _token_predicts(mri_path: str, token_idx: int, layer: int, top_k: int = 20) 
     # Token metadata: cached per MRI — rebuilding the 150k-entry vocab→mri
     # dict per call was eating ~1s on warm repeats.
     texts, vocab_to_mri = _get_vocab_map(mri_path)
+    full_text = _get_full_vocab_text_map(mri_path)
 
     predictions = []
     for vi in top_indices:
         vi = int(vi)
         mri_idx = vocab_to_mri.get(vi, -1)
-        text = texts[mri_idx] if mri_idx >= 0 else f"[vocab:{vi}]"
+        # Resolve in token-id space: the sample table first (it also gives the
+        # click-to-pin target), then the full-vocab projection, then honestly
+        # unresolved. The old fallback printed the raw id as if it were text —
+        # `[vocab:282]` on the panel's most important row (thread 97d910ce).
+        if mri_idx >= 0:
+            text, unresolved = texts[mri_idx], False
+        elif vi in full_text:
+            text, unresolved = full_text[vi], False
+        else:
+            text, unresolved = None, True
         predictions.append({
             "vocab_id": vi,
             "mri_idx": mri_idx,
             "text": text,
+            "unresolved": unresolved,
             "logit": float(logits[vi]),
             "prob": float(probs[vi]),
         })
