@@ -311,6 +311,110 @@ async function vocabPcColumn(env, prefix, layer, pc) {
   return octet([head, col]);
 }
 
+// vocab_pc16.bin (VP16) is LAYER-major ([layers x pcs x rows]) — the opposite
+// layout from pc_scores.bin's PC-major slabs, so "all layers for one PC" is
+// n_layers separate range reads, not one contiguous read (mirrors the per-seek
+// cost vocabPcColumn already pays; this batches several PCs behind one request
+// instead of one HTTP round trip per (layer,pc), matching companion.py's
+// _read_vocab_pc_slabs exactly).
+async function vocabPcSlabs(env, prefix, pcIds, nLayers, nPcsFile, nRows, step) {
+  const stride = nRows * 2;
+  const nOut = step > 1 ? Math.ceil(nRows / step) : nRows;
+  const out = new Uint8Array(pcIds.length * nLayers * nOut * 2);
+  let oOff = 0;
+  for (const pc of pcIds) {
+    for (let layer = 0; layer < nLayers; layer++) {
+      const rowBuf = await r2range(env, `${prefix}/decomp/vocab_pc16.bin`, 16 + (layer * nPcsFile + pc) * stride, stride);
+      const row = new Uint8Array(rowBuf);
+      if (step > 1) {
+        let s = 0;
+        for (let t = 0; t < nRows; t += step) { out[oOff + s] = row[t * 2]; out[oOff + s + 1] = row[t * 2 + 1]; s += 2; }
+      } else {
+        out.set(row, oOff);
+      }
+      oOff += nOut * 2;
+    }
+  }
+  return { nOut, bytes: out };
+}
+
+// /api/vocab-pc-bundle?full=..&medium=..&step=N → two-tier VPCB bundle, the
+// full-vocab analog of cloud-bundle — same shape (companion.py _vocab_pc_bundle):
+// [4s magic][7I ver,nFull,nMed,nLayers,nRows,nSample,step][ids][full f16][med f16]
+async function vocabPcBundle(env, prefix, fullPcs, medPcs, step) {
+  const key = `${prefix}/decomp/vocab_pc16.bin`;
+  const headBuf = await r2range(env, key, 0, 16);
+  if (!headBuf) return jsonResponse({ error: "no vocab_pc16.bin" }, 404);
+  const hdv = new DataView(headBuf);
+  const magic = new TextDecoder().decode(new Uint8Array(headBuf, 0, 4));
+  if (magic !== "VP16") return jsonResponse({ error: "bad vocab_pc16 magic" }, 500);
+  const nLayers = hdv.getUint32(4, true);
+  const nPcsFile = hdv.getUint32(8, true);
+  const nRows = hdv.getUint32(12, true);
+
+  const fullIds = [...new Set(fullPcs)].filter((p) => p >= 0 && p < nPcsFile);
+  const fullSet = new Set(fullIds);
+  const medIds = [...new Set(medPcs)].filter((p) => p >= 0 && p < nPcsFile && !fullSet.has(p));
+  if (!fullIds.length && !medIds.length) return jsonResponse({ error: "No PCs requested" }, 400);
+
+  const fullResult = await vocabPcSlabs(env, prefix, fullIds, nLayers, nPcsFile, nRows, 1);
+  const medResult = await vocabPcSlabs(env, prefix, medIds, nLayers, nPcsFile, nRows, step);
+  const nSample = medResult.nOut;
+
+  const head = new ArrayBuffer(4 + 7 * 4);
+  const dv = new DataView(head);
+  new Uint8Array(head).set([0x56, 0x50, 0x43, 0x42]); // 'VPCB'
+  dv.setUint32(4, 1, true);
+  dv.setUint32(8, fullIds.length, true);
+  dv.setUint32(12, medIds.length, true);
+  dv.setUint32(16, nLayers, true);
+  dv.setUint32(20, nRows, true);
+  dv.setUint32(24, nSample, true);
+  dv.setUint32(28, step, true);
+
+  const idBytes = new ArrayBuffer((fullIds.length + medIds.length) * 4);
+  const idv = new DataView(idBytes);
+  let off = 0;
+  for (const id of fullIds) { idv.setUint32(off, id, true); off += 4; }
+  for (const id of medIds) { idv.setUint32(off, id, true); off += 4; }
+
+  return octet([head, idBytes, fullResult.bytes.buffer, medResult.bytes.buffer]);
+}
+
+// /api/vocab-token-bundle?rows=A,B → VTKB bundle (companion.py _vocab_token_bundle):
+// multiple full-vocab rows (all layers, full K) in one response — the
+// pinned-pair fetch's one-round-trip path.
+async function vocabTokenBundle(env, prefix, rows) {
+  const rowIds = [...new Set(rows)];
+  if (!rowIds.length) return jsonResponse({ error: "No rows requested" }, 400);
+  const key = `${prefix}/decomp/vocab_scores.bin`;
+  const headBuf = await r2range(env, key, 0, 16);
+  if (!headBuf) return jsonResponse({ error: "no full-vocab projection" }, 404);
+  const hdv = new DataView(headBuf);
+  const magic = new TextDecoder().decode(new Uint8Array(headBuf, 0, 4));
+  if (magic !== "VSCR") return jsonResponse({ error: "bad vocab_scores magic" }, 500);
+  const nRowsFile = hdv.getUint32(4, true), nLayers = hdv.getUint32(8, true), K = hdv.getUint32(12, true);
+  const stride = nLayers * K * 2;
+  const perRow = nLayers * K;
+  const dataOut = new ArrayBuffer(rowIds.length * perRow * 4);
+  const ddv = new DataView(dataOut);
+  for (let ri = 0; ri < rowIds.length; ri++) {
+    const row = rowIds[ri];
+    if (row < 0 || row >= nRowsFile) return jsonResponse({ error: `vocab row ${row} out of range` }, 400);
+    const slab = await r2range(env, key, 16 + row * stride, stride);
+    const sdv = new DataView(slab);
+    for (let i = 0; i < perRow; i++) ddv.setFloat32((ri * perRow + i) * 4, sdv.getFloat16(i * 2, true), true);
+  }
+  const head = new ArrayBuffer(4 + 4 * 4);
+  new Uint8Array(head).set([0x56, 0x54, 0x4b, 0x42]); // 'VTKB'
+  const hv = new DataView(head);
+  hv.setUint32(4, 1, true); hv.setUint32(8, rowIds.length, true); hv.setUint32(12, nLayers, true); hv.setUint32(16, K, true);
+  const idBytes = new ArrayBuffer(rowIds.length * 4);
+  const idv = new DataView(idBytes);
+  rowIds.forEach((id, i) => idv.setUint32(i * 4, id, true));
+  return octet([head, idBytes, dataOut]);
+}
+
 // token_neurons.bin (TOKN): header <4sIII magic,n_tok,n_layers,intermediate ; [N x layers x inter] f16
 // /api/neuron-field?token=N → raw f16[n_layers*intermediate]
 async function neuronField(env, prefix, token) {
@@ -480,6 +584,20 @@ export default {
         if (ep === "vocab-tokens") {
           const vt = await r2json(env, `${prefix}/decomp/vocab_tokens.json`);
           return vt ? jsonResponse(vt) : jsonResponse({ error: "no full-vocab projection" }, 404);
+        }
+        if (ep === "vocab-scripts") {
+          const vs = await r2json(env, `${prefix}/decomp/vocab_scripts.json`);
+          return vs ? jsonResponse(vs) : jsonResponse({ error: "no full-vocab scripts" }, 404);
+        }
+        if (ep === "vocab-ids") return await serveRaw(env, `${prefix}/decomp/vocab_ids.npy`);
+        if (ep === "vocab-gate-heatmap") return await serveRaw(env, `${prefix}/decomp/vocab_gate_heatmap.npy`);
+        if (ep === "vocab-pc-bundle") {
+          const csv = (s) => (s ? s.split(",").filter(Boolean).map(Number) : []);
+          return await vocabPcBundle(env, prefix, csv(q("full")), csv(q("medium")), parseInt(q("step", "10")));
+        }
+        if (ep === "vocab-token-bundle") {
+          const csv = (s) => (s ? s.split(",").filter(Boolean).map(Number) : []);
+          return await vocabTokenBundle(env, prefix, csv(q("rows")));
         }
         if (ep === "token-layer") return await tokenLayer(env, prefix, parseInt(q("token", "0")), parseInt(q("layer", "0")));
         if (ep === "token-hover") return await tokenHover(env, prefix, parseInt(q("token", "0")), parseInt(q("layer", "0")));

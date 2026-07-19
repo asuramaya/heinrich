@@ -214,13 +214,33 @@ def publish(mri_dir: str | Path, *, bucket: str | None = None,
 
     if not bucket:
         raise ValueError("pass bucket=... (R2) or local_dir=... (export)")
+    from botocore.exceptions import ClientError
+
     client = _r2_client(account_id, endpoint_url, access_key, secret_key)
+    uploaded, skipped = 0, 0
     for p, suffix in files:
-        client.put_object(Bucket=bucket, Key=f"{prefix}/{suffix}",
+        key = f"{prefix}/{suffix}"
+        size = p.stat().st_size
+        # Idempotent: skip if the object already exists at the right size —
+        # matches web/scripts/publish_neuron_indexes.py's existing pattern.
+        # publish() runs per-model and these artifacts can be multi-GB, so an
+        # unconditional re-upload on every re-run wastes real time/bandwidth
+        # for a `.mri` whose decomposition hasn't changed.
+        try:
+            existing = client.head_object(Bucket=bucket, Key=key)["ContentLength"]
+            if existing == size:
+                skipped += 1
+                continue
+        except ClientError:
+            pass
+        client.put_object(Bucket=bucket, Key=key,
                           Body=p.read_bytes(), ContentType=_content_type(suffix),
                           CacheControl="public, max-age=31536000, immutable")
+        uploaded += 1
     _update_manifest_r2(client, bucket, manifest_entry(mri_dir))
     plan["target"] = f"r2://{bucket}"
+    plan["uploaded"] = uploaded
+    plan["skipped"] = skipped
     return plan
 
 

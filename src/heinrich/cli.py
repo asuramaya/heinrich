@@ -3962,6 +3962,9 @@ def _cmd_publish(args: argparse.Namespace) -> None:
         print("  (dry run — nothing uploaded)")
         for k in plan.get("files", []):
             print(f"    {k}")
+    elif "uploaded" in plan:
+        print(f"  published to {plan['target']}  (manifest models.json updated)")
+        print(f"  {plan['uploaded']} uploaded, {plan['skipped']} already present (skipped)")
     else:
         print(f"  published to {plan['target']}  (manifest models.json updated)")
 

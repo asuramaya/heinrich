@@ -6464,6 +6464,23 @@ function _loadState(){
 let _prevModel='',_prevMode='';
 function _yieldFrame(){return new Promise(r=>requestAnimationFrame(r));}
 
+// Gate for loadAll()'s hasVocab check: vTexts/vMeta alone aren't enough to promise
+// vocab-native mode will actually work — a backend can serve full-vocab TEXT/META
+// (e.g. the edge Worker, which has always had /api/vocab-tokens and /api/vocab-meta)
+// while still missing the load-bearing /api/vocab-pc-bundle route CloudStore depends
+// on for every point/trajectory/pin feature. Probe it directly rather than assuming
+// route parity from two unrelated endpoints succeeding.
+async function _probeVocabPcBundle(){
+  try{
+    const resp=await _apiFetch(`/api/vocab-pc-bundle/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?full=0`);
+    if(!resp.ok)return false;
+    const buf=await resp.arrayBuffer();
+    if(buf.byteLength<32)return false;
+    const dv=new DataView(buf);
+    const magic=String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3));
+    return magic==='VPCB';
+  }catch(e){return false;}
+}
 async function loadAll(){
   const newModel=document.getElementById('sm').value,newMode=document.getElementById('smd').value;
   const isSameModel=newModel===_prevModel;
@@ -6513,10 +6530,14 @@ async function loadAll(){
   // get exclusively. Falls back to the sample (with a visible banner) only
   // for an MRI that never ran `heinrich mri-vocab`.
   _setLoad('loading full vocabulary...');
-  const [vTexts,vScripts,vIds,vMeta]=await Promise.all([
-    _ensureVocabTexts(),_ensureVocabScripts(),_ensureVocabIds(),_ensureVocabMeta()
+  const [vTexts,vScripts,vIds,vMeta,vBundleOk]=await Promise.all([
+    _ensureVocabTexts(),_ensureVocabScripts(),_ensureVocabIds(),_ensureVocabMeta(),_probeVocabPcBundle()
   ]);
-  const hasVocab=!!(vTexts&&vMeta&&vMeta.n_rows);
+  // vTexts/vMeta alone can't promise vocab-native mode will work — a backend can
+  // serve full-vocab text/meta while missing the load-bearing PC-bundle route (the
+  // edge Worker did exactly this: /api/vocab-tokens and /api/vocab-meta existed
+  // there long before /api/vocab-pc-bundle did) — vBundleOk is the real gate.
+  const hasVocab=!!(vTexts&&vMeta&&vMeta.n_rows&&vBundleOk);
   _showVocabFallbackBanner(!hasVocab);
   if(hasVocab){
     texts=vTexts;
