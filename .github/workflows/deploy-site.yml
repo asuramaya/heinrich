@@ -46,3 +46,7 @@ jobs:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           workingDirectory: web
           command: deploy
+          # web/ has no package.json, so wrangler-action can't detect a pinned
+          # version and falls back to one predating wrangler.jsonc support
+          # (missing-entry-point failures). Pin explicitly instead.
+          wranglerVersion: '4'
