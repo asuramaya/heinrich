@@ -32,6 +32,62 @@ import numpy as np
 from .mri import _ensure_chat_template, _framework_ops, _is_mlx_backend
 
 
+def _vocab_token_list(backend, mode: str) -> tuple[list[tuple[int, str]], list[int], list[int]]:
+    """The full-vocabulary token list, dedup'd exactly like capture_mri (by
+    decoded text, first token id wins) — shared by every vocab-derived
+    artifact so `vocab_row` means the same row everywhere (vocab_scores.bin,
+    vocab_pc16.bin, vocab_gate_heatmap.npy, vocab_token_neurons.bin, ...).
+    Returns (real_tokens, prefix_ids, suffix_ids) — prefix/suffix are only
+    non-empty in template mode (same splice capture_mri's template mode uses).
+    """
+    vocab_size = backend.tokenizer.vocab_size
+    real_tokens = []
+    seen = set()
+    for tid in range(vocab_size):
+        tok = backend.tokenizer.decode([tid], skip_special_tokens=True,
+                                       clean_up_tokenization_spaces=False)
+        if tok.strip() and tok not in seen:
+            seen.add(tok)
+            real_tokens.append((tid, tok))
+    prefix_ids: list[int] = []
+    suffix_ids: list[int] = []
+    if mode == 'template':
+        from .shrt import _extract_template_parts
+        # Match capture_mri: a base tokenizer with no chat_template gets the
+        # same ChatML fallback, so the splice reproduces the capture exactly.
+        _ensure_chat_template(backend.tokenizer)
+        prefix_ids, suffix_ids = _extract_template_parts(backend.tokenizer)
+    return real_tokens, prefix_ids, suffix_ids
+
+
+def build_vocab_scripts(mri_path: str) -> dict:
+    """Full-vocabulary script/language classification — a pure text-classification
+    backfill over decomp/vocab_tokens.json (row -> text, already row-ordered by
+    _vocab_token_list), no backend/tokenizer/forward-pass needed. Writes
+    decomp/vocab_scripts.json (row -> script), same shape/order as vocab_tokens.json,
+    using the same _detect_script classifier the sample capture already uses — so
+    the two data-scopes color-classify tokens identically.
+    """
+    from .frt import _detect_script
+
+    mri_dir = Path(mri_path)
+    decomp = mri_dir / 'decomp'
+    tokens_path = decomp / 'vocab_tokens.json'
+    if not tokens_path.exists():
+        return {"error": f"No vocab_tokens.json — run: heinrich mri-vocab --model <hf_id> --mri {mri_path}"}
+    t0 = time.time()
+    texts = json.loads(tokens_path.read_text())
+    scripts = [_detect_script(t) for t in texts]
+    out_path = decomp / 'vocab_scripts.json'
+    out_path.write_text(json.dumps(scripts))
+    return {
+        "mri_path": str(mri_dir),
+        "n_rows": len(scripts),
+        "size_mb": round(out_path.stat().st_size / (1024 * 1024), 2),
+        "elapsed_s": round(time.time() - t0, 2),
+    }
+
+
 def capture_vocab_projection(backend, mri_path: str, *, batch_size: int = 0,
                              verify: bool = True) -> dict:
     """Project the full vocabulary through an existing frozen decomposition.
@@ -83,30 +139,7 @@ def capture_vocab_projection(backend, mri_path: str, *, batch_size: int = 0,
         baselines.append(bl[key].astype(np.float32) if key in bl
                          else np.zeros(hidden, dtype=np.float32))
 
-    # === Template splice (template mode only): prefix + [tid] + suffix ===
-    # Same construction as capture_mri template mode. token_pos is unused for
-    # the vocab exit (which reads the LAST position), but the mask must be
-    # causal over the full spliced sequence.
-    prefix_ids: list[int] = []
-    suffix_ids: list[int] = []
-    if mode == 'template':
-        from .shrt import _extract_template_parts
-        # Match capture_mri: a base tokenizer with no chat_template gets the
-        # same ChatML fallback, so the splice reproduces the capture exactly.
-        _ensure_chat_template(backend.tokenizer)
-        prefix_ids, suffix_ids = _extract_template_parts(backend.tokenizer)
-
-    # === Full token list — same filter as capture_mri (dedup by decoded text,
-    # first token id wins), so sample rows land on identical ids ===
-    vocab_size = backend.tokenizer.vocab_size
-    real_tokens = []
-    seen = set()
-    for tid in range(vocab_size):
-        tok = backend.tokenizer.decode([tid], skip_special_tokens=True,
-                                       clean_up_tokenization_spaces=False)
-        if tok.strip() and tok not in seen:
-            seen.add(tok)
-            real_tokens.append((tid, tok))
+    real_tokens, prefix_ids, suffix_ids = _vocab_token_list(backend, mode)
     n_rows = len(real_tokens)
     ids = np.array([tid for tid, _ in real_tokens], dtype=np.int32)
 
@@ -293,6 +326,198 @@ def capture_vocab_projection(backend, mri_path: str, *, batch_size: int = 0,
         "elapsed_s": vocab_meta["elapsed_s"],
     }
 
+
+def capture_vocab_gate_summary(backend, mri_path: str, *, batch_size: int = 0,
+                                top_n: int = 50) -> dict:
+    """Full-vocabulary MLP gate/up signal — the one thing capture_vocab_projection
+    deliberately never touches (it only re-projects hidden-state/PC geometry).
+
+    Two artifacts, from two passes over the SAME per-layer forward structure
+    capture_vocab_projection uses (ops.layer_decomposed; same token list via
+    _vocab_token_list, so vocab_row means the same row everywhere):
+
+      Pass 1 (accumulate) — gate/up ARE ALREADY computed inside
+      ops.layer_decomposed's return tuple (indices 5, 6); capture_vocab_projection
+      just discards them. Reading them instead costs nothing extra per batch:
+        - vocab_gate_heatmap.npy: max|gate*up| per token per layer — the
+          full-vocab depth-curve summary (tiny, a few MB: this closes the exact
+          gap the whole full-vocab investigation started from).
+        - a running per-layer sum|gate*up| accumulator (kept in memory only) —
+          ranks neuron importance over the FULL vocabulary, fixing the bias in
+          the sample's neuron_importance.json (ranked from just 2,000 tokens).
+
+      Pass 2 (targeted extract, skipped entirely if top_n<=0) — now knowing each
+      layer's true important neurons, re-run the same forward structure and
+      keep ONLY those columns' signed gate*up per token per layer:
+        - vocab_token_neurons.bin (VTKN): same semantics as the sample's
+          token_neurons.bin (signed gate*up, not absolute) — a per-token *data*
+          reduction (top_n of intermediate_size columns), not a token-count
+          reduction; every vocab row is covered.
+        - vocab_neuron_importance.json: the corrected top-N indices/contributions.
+
+    Two passes is NOT a "one forward pass, not two" violation — that invariant
+    (generate_with_geometry) is about text generation and geometry capture never
+    diverging from the same event. This is inherently sequential: which neurons
+    matter can only be known after seeing the whole vocabulary, so a single pass
+    cannot both rank importance and extract the ranked columns. Holding the full
+    [n_rows, n_layers, intermediate] tensor in memory to dodge a second pass
+    would run tens of GB at this scale — not viable.
+    """
+    mri_dir = Path(mri_path)
+    meta = json.loads((mri_dir / 'metadata.json').read_text())
+    mode = meta.get('capture', {}).get('mode', 'raw')
+    if mode not in ('raw', 'naked', 'template'):
+        return {"error": f"vocab gate summary supports raw/naked/template captures; this MRI is '{mode}'"}
+
+    decomp = mri_dir / 'decomp'
+    dmeta_path = decomp / 'meta.json'
+    if not dmeta_path.exists():
+        return {"error": f"No decomposition at {decomp} — run mri-decompose first"}
+    dmeta = json.loads(dmeta_path.read_text())
+    n_real = int(dmeta['n_real_layers'])
+    hidden = int(meta['model']['hidden_size'])
+
+    real_tokens, prefix_ids, suffix_ids = _vocab_token_list(backend, mode)
+    n_rows = len(real_tokens)
+
+    # Row parity with vocab_scores.bin — vocab_row must mean the same row
+    # everywhere, or Phase 1's predict-chip pinning would silently point a
+    # depth-curve/neuron-field lookup at the wrong token.
+    vpath = decomp / 'vocab_scores.bin'
+    if vpath.exists():
+        with open(vpath, 'rb') as f:
+            vmagic, vn_rows, _, _ = struct.unpack('<4sIII', f.read(16))
+        if vmagic == b'VSCR' and vn_rows != n_rows:
+            return {"error": f"Row count mismatch vs vocab_scores.bin ({vn_rows} vs {n_rows}) — "
+                             "tokenizer/dedup drifted since mri-vocab ran; re-run mri-vocab first"}
+
+    ops = _framework_ops(backend)
+    is_mlx = _is_mlx_backend(backend)
+    if is_mlx:
+        import mlx.core as mx
+
+        def _to_np(t):
+            return np.array(t.astype(mx.float32))
+        import contextlib
+        _grad_ctx = contextlib.nullcontext
+    else:
+        import torch
+
+        def _to_np(t):
+            return t.float().cpu().numpy()
+        _grad_ctx = torch.no_grad
+
+    if batch_size <= 0:
+        if mode == 'template':
+            batch_size = 16
+        else:
+            batch_size = max(16, min(512, int(6e8 // max(1, n_real * hidden * 4))))
+
+    def _run_layers(inp, mask):
+        """One forward: embed + every real layer's layer_decomposed, yielding
+        (li, gate_val, up_val) at the LAST position — None,None if this
+        architecture has no separate gate/up MLP (fc1/fc2-only, nothing to
+        capture here)."""
+        h = ops.embed(inp)
+        for li, ly in enumerate(ops.model_inner.layers):
+            res = ops.layer_decomposed(ly, h, mask)
+            h = res[0]
+            gate_val, up_val = res[5], res[6]
+            if gate_val is None or up_val is None:
+                yield li, None, None
+                continue
+            g = _to_np(gate_val[:, -1, :] if gate_val.ndim == 3 else gate_val)
+            u = _to_np(up_val[:, -1, :] if up_val.ndim == 3 else up_val)
+            yield li, g, u
+
+    def _batch_input(b0, b1):
+        if mode == 'template':
+            inp = ops.array([prefix_ids + [tid] + suffix_ids for tid, _ in real_tokens[b0:b1]])
+            return inp, ops.triu_mask(inp.shape[1])
+        return ops.array([[tid] for tid, _ in real_tokens[b0:b1]]), None
+
+    t0 = time.time()
+    n_batches = (n_rows + batch_size - 1) // batch_size
+    gate_heat = np.zeros((n_rows, n_real), dtype=np.float16)
+    importance_sum = None  # [n_real, intermediate] float64, sized on first sight
+
+    with _grad_ctx():
+        for bi, b0 in enumerate(range(0, n_rows, batch_size)):
+            b1 = min(b0 + batch_size, n_rows)
+            inp, mask = _batch_input(b0, b1)
+            for li, g, u in _run_layers(inp, mask):
+                if g is None:
+                    continue
+                gu = g * u
+                if importance_sum is None:
+                    importance_sum = np.zeros((n_real, gu.shape[1]), dtype=np.float64)
+                gate_heat[b0:b1, li] = np.abs(gu).max(axis=1).astype(np.float16)
+                importance_sum[li] += np.abs(gu).sum(axis=0)
+            if (bi + 1) % 20 == 0 or b1 == n_rows:
+                rate = b1 / max(time.time() - t0, 1e-6)
+                print(f"  pass 1 (depth curve + importance): batch {bi + 1}/{n_batches} "
+                      f"({b1}/{n_rows} tokens, {rate:.0f} tok/s)", file=sys.stderr)
+
+    if importance_sum is None:
+        return {"error": "Model has no gate/up MLP (fc1/fc2-only architecture) — nothing to capture"}
+
+    np.save(decomp / 'vocab_gate_heatmap.npy', gate_heat)
+    pass1_s = time.time() - t0
+
+    result = {
+        "mri_path": str(mri_dir),
+        "n_rows": n_rows,
+        "n_real_layers": n_real,
+        "gate_heatmap_size_mb": round((128 + n_rows * n_real * 2) / (1024 * 1024), 2),
+        "pass1_s": round(pass1_s, 1),
+    }
+
+    if top_n <= 0:
+        result["top_n"] = 0
+        result["elapsed_s"] = round(time.time() - t0, 1)
+        return result
+
+    # === Derive top-N neuron indices per layer from the FULL-VOCAB accumulator ===
+    importance_mean = importance_sum / n_rows
+    top_n = min(top_n, importance_mean.shape[1])
+    top_idx = np.argsort(importance_mean, axis=1)[:, ::-1][:, :top_n]  # [n_real, top_n]
+
+    # === Pass 2: signed gate*up at just those columns, every token, every layer ===
+    t2 = time.time()
+    tok_neurons = np.zeros((n_rows, n_real, top_n), dtype=np.float16)
+    with _grad_ctx():
+        for bi, b0 in enumerate(range(0, n_rows, batch_size)):
+            b1 = min(b0 + batch_size, n_rows)
+            inp, mask = _batch_input(b0, b1)
+            for li, g, u in _run_layers(inp, mask):
+                if g is None:
+                    continue
+                gu = (g * u)[:, top_idx[li]]
+                tok_neurons[b0:b1, li, :] = gu.astype(np.float16)
+            if (bi + 1) % 20 == 0 or b1 == n_rows:
+                rate = b1 / max(time.time() - t2, 1e-6)
+                print(f"  pass 2 (top-{top_n} neuron field): batch {bi + 1}/{n_batches} "
+                      f"({b1}/{n_rows} tokens, {rate:.0f} tok/s)", file=sys.stderr)
+
+    hdr = struct.pack('<4sIII', b'VTKN', n_rows, n_real, top_n)
+    with open(decomp / 'vocab_token_neurons.bin', 'wb') as f:
+        f.write(hdr)
+        f.write(tok_neurons.tobytes())
+
+    neuron_importance = [{
+        "layer": li,
+        "top_neurons": top_idx[li].tolist(),
+        "top_contrib": importance_mean[li, top_idx[li]].tolist(),
+    } for li in range(n_real)]
+    (decomp / 'vocab_neuron_importance.json').write_text(json.dumps(neuron_importance))
+
+    result["top_n"] = int(top_n)
+    result["token_neurons_size_mb"] = round((16 + n_rows * n_real * top_n * 2) / (1024 * 1024), 1)
+    result["pass2_s"] = round(time.time() - t2, 1)
+    result["elapsed_s"] = round(time.time() - t0, 1)
+    return result
+
+
 def frame_falsification(mri_path: str, *, k: int = 50, z_cut: float = 6.0) -> dict:
     """Does the sample frame hold at full vocabulary? Falsify, don't assume.
 
@@ -374,7 +599,22 @@ def frame_falsification(mri_path: str, *, k: int = 50, z_cut: float = 6.0) -> di
     return result
 
 
-def build_vocab_pc16(mri_path: str, *, n_pcs: int = 16) -> dict:
+def _sample_display_k(mri_path: str) -> int | None:
+    """The PC count the SAMPLE decomposition actually exposes (pc_scores.bin's
+    own `full_k` header field) — the true ceiling on any PC index the UI can
+    ever select, whatever that happens to be for this MRI (commonly the full
+    hidden_size — n_components defaults to 0 = hidden_size in mri-decompose).
+    Returns None if no sample decomposition exists (vocab_pc16 falls back to 16).
+    """
+    p = Path(mri_path) / 'decomp' / 'pc_scores.bin'
+    if not p.exists():
+        return None
+    with open(p, 'rb') as f:
+        magic, _n_layers, _n_tok, full_k = struct.unpack('<4sIII', f.read(16))
+    return int(full_k) if magic == b'PCSC' else None
+
+
+def build_vocab_pc16(mri_path: str, *, n_pcs: int | None = None) -> dict:
     """Layer-major display companion to vocab_scores.bin: vocab_pc16.bin.
 
     vocab_scores.bin is row-major ([token, layer, K]) — perfect for "one
@@ -388,6 +628,16 @@ def build_vocab_pc16(mri_path: str, *, n_pcs: int = 16) -> dict:
 
     One (layer, pc) column = one O(1) range read (~2 bytes * n_rows).
     Display truncation only — measurement stays exact in the row-major blob.
+
+    n_pcs defaults to the SAMPLE decomposition's own PC ceiling (pc_scores.bin's
+    `full_k` header) rather than a fixed 16: the UI never lets a user select a
+    PC index beyond that ceiling anyway (vpPairs/_applyPCSelection are bounded
+    by the client's own `nK`, which IS that same header field), so this keeps
+    every selectable PC pair working against the full vocabulary. In practice
+    `full_k` is commonly the model's full hidden_size (mri-decompose defaults
+    n_components to 0 = hidden_size), so this is frequently the SAME size as
+    vocab_scores.bin, just transposed — not the much smaller ~50-PC file the
+    old fixed default implied.
     """
     import struct as _struct
 
@@ -399,6 +649,8 @@ def build_vocab_pc16(mri_path: str, *, n_pcs: int = 16) -> dict:
         magic, n_rows, n_layers, K = _struct.unpack('<4sIII', f.read(16))
     if magic != b'VSCR':
         return {"error": f"Bad magic {magic!r} in vocab_scores.bin"}
+    if n_pcs is None:
+        n_pcs = _sample_display_k(mri_path) or 16
     n_pcs = min(n_pcs, K)
 
     blob = np.memmap(str(vpath), dtype=np.float16, mode='r', offset=16,

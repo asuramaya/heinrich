@@ -350,7 +350,11 @@ def build_parser() -> argparse.ArgumentParser:
     p_vocab.add_argument("--no-verify", action="store_true", help="Skip the sample-agreement check")
     p_vocab.add_argument("--falsify", action="store_true", help="Also run frame falsification (full-vocab PCA vs frozen frame) after projecting")
     p_vocab.add_argument("--falsify-only", action="store_true", help="Skip projection; run frame falsification on an existing vocab_scores.bin")
-    p_vocab.add_argument("--pc16-only", action="store_true", help="Only build the layer-major display blob (vocab_pc16.bin) from an existing vocab_scores.bin — no model load")
+    p_vocab.add_argument("--pc16-only", action="store_true", help="Only build the layer-major display blob (vocab_pc16.bin) from an existing vocab_scores.bin — no model load. PC count defaults to the sample decomposition's own ceiling (pc_scores.bin's full_k — often the full hidden_size, not a small number), not a fixed 16 — override with --pcs")
+    p_vocab.add_argument("--pcs", type=int, default=None, help="Explicit PC count for vocab_pc16.bin (default: match the sample decomposition's full_k so every selectable PC pair works against the full vocabulary)")
+    p_vocab.add_argument("--gate-summary", action="store_true", help="Capture the full-vocab MLP gate/up signal (needs a model load): vocab_gate_heatmap.npy (the depth-curve summary, cheap) + vocab_token_neurons.bin (top-N important-neuron field chart, ranked from the full vocabulary — --top-n 0 skips this heavier second pass)")
+    p_vocab.add_argument("--top-n", type=int, default=50, help="Neuron field-chart width for --gate-summary (0 = depth-curve only, skip the second pass)")
+    p_vocab.add_argument("--scripts-only", action="store_true", help="Only build the full-vocab script classification (vocab_scripts.json) from an existing vocab_tokens.json — no model load, pure text classification via the same _detect_script the sample capture uses")
 
     p_serve = sub.add_parser("mri-serve", help="Build query-shaped serve/ artifacts for the companion viewer from an existing decomposition")
     p_serve.add_argument("--mri", required=True, help=".mri directory")
@@ -3821,12 +3825,22 @@ def _cmd_mri_vocab(args: argparse.Namespace) -> None:
 
     if getattr(args, "pc16_only", False):
         from .profile.vocab import build_vocab_pc16
-        result = build_vocab_pc16(args.mri)
+        result = build_vocab_pc16(args.mri, n_pcs=getattr(args, "pcs", None))
         if "error" in result:
             print(f"Error: {result['error']}")
             return
         print(f"vocab_pc16: {result['n_layers']} layers x {result['n_pcs']} PCs x "
               f"{result['n_rows']} rows = {result['size_mb']} MB → {result['mri_path']}/decomp/vocab_pc16.bin")
+        return
+
+    if getattr(args, "scripts_only", False):
+        from .profile.vocab import build_vocab_scripts
+        result = build_vocab_scripts(args.mri)
+        if "error" in result:
+            print(f"Error: {result['error']}")
+            return
+        print(f"vocab_scripts: {result['n_rows']} rows, {result['size_mb']} MB "
+              f"({result['elapsed_s']}s) → {result['mri_path']}/decomp/vocab_scripts.json")
         return
 
     if getattr(args, "falsify_only", False):
@@ -3838,6 +3852,26 @@ def _cmd_mri_vocab(args: argparse.Namespace) -> None:
               f"k={result['k']}, z_cut={result['z_cut']}) ===")
         print(f"  worst var-weighted overlap: {result['worst_var_weighted_overlap']}")
         print(f"  verdict: {result['verdict']}")
+        return
+
+    if getattr(args, "gate_summary", False):
+        from .profile.vocab import capture_vocab_gate_summary
+        from .backend.protocol import load_backend
+
+        backend = load_backend(args.model, backend=args.backend)
+        result = capture_vocab_gate_summary(backend, args.mri,
+                                            batch_size=args.batch_size,
+                                            top_n=args.top_n)
+        if "error" in result:
+            print(f"Error: {result['error']}")
+            return
+        print(f"\n=== Vocab gate summary: {result['n_rows']} tokens × {result['n_real_layers']} layers ===")
+        print(f"  depth-curve summary: {result['gate_heatmap_size_mb']} MB "
+              f"({result['pass1_s']}s) → {result['mri_path']}/decomp/vocab_gate_heatmap.npy")
+        if result.get("top_n"):
+            print(f"  top-{result['top_n']} neuron field: {result['token_neurons_size_mb']} MB "
+                  f"({result['pass2_s']}s) → {result['mri_path']}/decomp/vocab_token_neurons.bin")
+        print(f"  total: {result['elapsed_s']}s")
         return
 
     from .backend.protocol import load_backend

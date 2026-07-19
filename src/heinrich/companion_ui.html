@@ -121,9 +121,49 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #tokpanel.minimized #tokMiniSummary{display:block}
 /* The pinned pair stacks on a phone and sits side-by-side the moment there is room for both.
    Side-by-side at 390px is what CLIPPED the PC readout — two 180px cards cannot hold it. */
-#tokAB{display:grid;grid-template-columns:1fr;gap:8px}
+/* align-items:start, NOT stretch. A grid's default cross-axis stretch makes the shorter
+   card match its taller sibling's height — Token B's extra predict chips would stretch Token
+   A's card to match, leaving dead space below A's own last row of chips. Same canyon as
+   #tokWork (align-content:start there, align-items:start here — one row, cross-axis stretch). */
+#tokAB{display:grid;grid-template-columns:1fr;gap:8px;align-items:start}
 #tokAB>div{min-width:0}
-@container panel (min-width:520px){#tokAB{grid-template-columns:1fr 1fr}}
+/* The depth curve is drawn for ~half-panel width; in focus mode the card goes full width, so cap
+   the canvas or a 40px-tall line stretches to 900px and reads as a flat wire. Left-aligned. */
+#tokpanel .token-card canvas{max-width:460px;display:block}
+/* LANES — the canvas draws MARKS ONLY. Every word (the DEPTH/PC caption, the peak/now values, the
+   layer + PC axis ticks, the PC values) is a real HTML element the stylesheet positions, so it can
+   never overlap a mark. CSS cannot reach into a canvas, so we stopped putting anything there to reach. */
+#tokpanel .depth-lane,#tokpanel .pc-lane{margin-top:8px}
+/* Depth caption: values only, no "DEPTH" word — the L0…L29 axis already says it's depth. Two spaced
+   stats; the labels (peak/now/@L) dim, the numbers bright, so the reading pops without a run-on. */
+#tokpanel .depth-stats{display:flex;gap:16px;flex-wrap:wrap;color:var(--ink);font-size:var(--fs-sm);font-variant-numeric:tabular-nums;margin-bottom:4px}
+#tokpanel .depth-stats .stat-lbl{color:var(--ink-dim);font-weight:normal}
+#tokpanel .lane-axis{display:flex;justify-content:space-between;color:var(--ink-faint);font-size:var(--fs-xs);margin-top:1px;max-width:460px;font-variant-numeric:tabular-nums}
+/* PC fingerprint: each row is label · diverging track · signed value. Positive fills right of centre,
+   negative left — sign reads from direction, magnitude from length (scaled to this token's strongest).
+   A whole row is a CONTROL: left-click sets it as an axis of view 1, right-click view 2, shift = 2nd
+   axis (same convention as the 3D PC widget). No persistent highlight for "currently selected" — that
+   was a green inset bracket, a third hue unexplained by anything on screen, on top of the card's own
+   orange/blue language; the 3D widget already shows current-selection state in its own view. */
+#tokpanel .pc-bars{display:flex;flex-direction:column;gap:2px;max-width:460px}
+#tokpanel .pc-row{display:grid;grid-template-columns:3em minmax(60px,1fr) 4em;gap:8px;align-items:center;cursor:pointer;border-radius:2px;padding:1px 3px}
+#tokpanel .pc-row:hover{background:rgba(255,255,255,0.05)}
+#tokpanel .pc-lbl{color:var(--ink-dim);font-size:var(--fs-xs);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+#tokpanel .pc-track{position:relative;height:10px;background:rgba(255,255,255,0.035);border-radius:2px;overflow:hidden}
+#tokpanel .pc-track::before{content:"";position:absolute;left:50%;top:0;bottom:0;width:1px;background:rgba(255,255,255,0.16)}
+#tokpanel .pc-fill{position:absolute;top:1px;bottom:1px;border-radius:2px;min-width:1px}
+#tokpanel .pc-val{font-size:var(--fs-xs);font-variant-numeric:tabular-nums;text-align:right;white-space:nowrap}
+/* ONE PANEL, TWO SIDES — contextual. Nothing pinned: only Token A's invitation shows (B is hidden
+   until you pin it). Exactly one pinned: the empty side VANISHES entirely — no leftover "TOKEN B ·
+   right-click" placeholder eyesore — and the live side takes the full width. Both pinned: two columns,
+   side by side. `.unpinned` = that side holds no token (toggled in showPinDetail). (:has — Chromium.) */
+#tokAB:has(> .token-card:not(.unpinned)) > .token-card.unpinned{display:none}
+#tokAB:not(:has(> .token-card:not(.unpinned))) > #tokB{display:none}
+@container panel (min-width:520px){
+  #tokAB{grid-template-columns:1fr 1fr}
+  #tokAB:has(> .token-card:not(.unpinned)):has(> .token-card.unpinned) > .token-card:not(.unpinned){grid-column:1/-1}
+  #tokAB:not(:has(> .token-card:not(.unpinned))) > #tokA{grid-column:1/-1}
+}
 #chatBody{max-height:150px;overflow-y:auto;margin-top:4px;font-size:var(--fs-sm)}
 #chatInput{width:100%;background:#181818;border:1px solid #343434;color:var(--ink);padding:5px 8px;font-size:var(--fs-md);font-family:inherit;border-radius:3px;margin-top:5px}
 #tokpanel .drag-handle{cursor:move;padding:3px 6px;border-bottom:1px solid var(--rule);color:var(--ink-faint);font-size:var(--fs-xs);user-select:none;display:flex;align-items:center;gap:6px}
@@ -176,14 +216,13 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 }
 #tokpanel .panel-card.clps{align-self:start}  /* a collapsed card is a header, not a tall empty box */
 /* Collapse-by-default cards: header stays, body hidden, one-line summary shows. */
-#tokpanel .panel-card>.pane-head,#tokpanel .token-card>.subhead{cursor:pointer}
+#tokpanel .panel-card>.pane-head{cursor:pointer}
 #tokpanel .card-caret{display:inline-block;width:9px;color:var(--ink-faint);font-size:var(--fs-xs);user-select:none;transition:color .1s}
-#tokpanel .panel-card>.pane-head:hover .card-caret,#tokpanel .token-card>.subhead:hover .card-caret{color:#9c9}
+#tokpanel .panel-card>.pane-head:hover .card-caret{color:#9c9}
 #tokpanel .card-summary{display:none;color:var(--ink-dim);font-size:var(--fs-xs);font-weight:normal;letter-spacing:0;text-transform:none;margin-left:6px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1;min-width:0;text-align:right}
 /* !important beats inline display styles on card bodies (e.g. steer's flex row, live canvases) */
 #tokpanel .panel-card.clps>*:not(.pane-head){display:none!important}
-#tokpanel .token-card.clps>*:not(.subhead){display:none!important}
-#tokpanel .panel-card.clps>.pane-head .card-summary,#tokpanel .token-card.clps>.subhead .card-summary{display:inline-block}
+#tokpanel .panel-card.clps>.pane-head .card-summary{display:inline-block}
 /* A COLLAPSED HEAD IS: caret · title · summary. Nothing else.
    It used to keep its action button, and the button LANDED IN THE MIDDLE OF THE ROW — because
    .card-summary is flex:1, it eats every scrap of free space, so the title wrapper's
@@ -193,7 +232,6 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #tokpanel .panel-card.clps>.pane-head .pane-note,
 #tokpanel .panel-card.clps>.pane-head>button,
 #tokpanel .panel-card.clps>.pane-head>span:not(.card-caret):not(.card-summary){display:none}
-#tokpanel .token-card>.subhead{display:flex;align-items:center}
 #tokpanel .tab-dot{display:none;width:5px;height:5px;border-radius:50%;background:#6c6;margin-left:5px;vertical-align:middle;box-shadow:0 0 3px rgba(110,204,110,0.6)}
 #tokpanel .tok-tabs .tab-btn.has-dot .tab-dot{display:inline-block}
 @keyframes card-flash-kf{0%{background:rgba(110,204,110,0.28)}100%{background:transparent}}
@@ -224,7 +262,6 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #tokpanel .token-card{background:rgba(20,20,20,0.85);border:1px solid var(--rule);border-radius:4px;padding:8px 9px}
 #tokpanel .section-row{display:flex;gap:8px;align-items:flex-start}
 #tokpanel .section-row>div{flex:1;min-width:0}
-#tokpanel .subhead{color:#9a9a9a;font-size:var(--fs-xs);margin-bottom:4px;text-transform:uppercase;letter-spacing:0.1em;font-weight:bold;gap:8px}
 #tokpanel .compact-note{color:var(--ink-faint);font-size:var(--fs-xs);line-height:1.5}
 #tokpanel .mini-btn{background:#181818;border:1px solid #343434;color:#6c6;padding:4px 9px;font-size:var(--fs-xs);font-family:inherit;border-radius:3px;cursor:pointer;white-space:nowrap}
 #tokpanel .mini-btn:hover{border-color:#5a5a5a;color:#9f9}
@@ -300,9 +337,42 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .browse .blbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
 #tokpanel .th{font-size:var(--fs-xs);color:var(--ink-faint);margin-bottom:4px}
 #tokpanel .ta,.tokpanel .tb{margin-bottom:6px}
-#tokpanel .tn{font-size:var(--fs-tok);font-weight:bold;margin-bottom:5px;line-height:1.2;word-break:break-all}
+/* The A/B letter used to be its own full-width row above the name — a whole line of vertical space
+   for one glyph. It's a badge on the name row instead now; `currentColor` on both border and text
+   means it tracks whatever color JS gives the name (idle accent, or the pinned token's script color). */
+#tokpanel .tn{display:flex;align-items:baseline;gap:7px;font-size:var(--fs-tok);font-weight:bold;margin-bottom:5px;line-height:1.2}
+#tokpanel .ab-badge{flex-shrink:0;font-size:var(--fs-xs);font-weight:bold;letter-spacing:0.04em;border:1px solid currentColor;border-radius:3px;padding:1px 5px;opacity:0.7}
+#tokpanel .tn-txt{min-width:0;word-break:break-all}
 /* The predicted-next-token list: the readout's own opinion. Small, but it must be READABLE. */
-#tokpanel .preds{font-size:var(--fs-xs);color:var(--ink-faint);margin-top:5px;line-height:1.7}
+/* Predicts closes the card, after the visuals — a separate question ("what comes next") from the
+   identity/depth/PC readouts above it, so it earns its own clear break from them. */
+#tokpanel .preds{font-size:var(--fs-sm);color:var(--ink-dim);margin-top:8px;padding-top:7px;border-top:1px solid var(--rule)}
+#tokpanel .preds-hdr{display:block;color:var(--ink-dim);font-size:var(--fs-xs);text-transform:uppercase;letter-spacing:0.08em;margin-bottom:5px}
+/* ONE LINE that scrolls sideways, not wraps — a horizontal filmstrip instead of a ragged multi-row
+   block. Chips don't shrink (flex:0 0 auto) so the strip scrolls instead of squeezing text. No
+   visible scrollbar — the wheel (vertical motion redirected to horizontal, in JS) and drag-to-pan
+   are the affordances; `cursor:grab` signals that where a scrollbar normally would. */
+#tokpanel .pred-chips{display:flex;flex-wrap:nowrap;gap:5px;overflow-x:auto;overflow-y:hidden;padding-bottom:1px;cursor:grab;scrollbar-width:none}
+#tokpanel .pred-chips::-webkit-scrollbar{display:none}
+/* Pill, not a translucent-fill badge — the old version washed out at low probability and read as
+   grimy rather than graded. Left-click pins the prediction as Token A, right-click as Token B —
+   same convention as the rest of the panel (see the "click A · shift/right-click B" panel note). */
+#tokpanel .pred-chip{flex:0 0 auto;position:relative;overflow:hidden;white-space:pre;font-size:var(--fs-sm);line-height:1.6;padding:2px 9px;border:1px solid var(--rule);border-radius:10px;background:rgba(255,255,255,0.03);color:var(--ink)}
+#tokpanel .pred-chip[data-pick]{cursor:pointer}
+#tokpanel .pred-chip[data-pick]:hover{border-color:#666}
+/* A track + fill gauge (same track/fill language as the PC bars), not a bare fill — a bare fill
+   VANISHES near 0%, which read as "broken" rather than "unlikely". The track is always visible
+   end-to-end, so the fill is legible as a real 0-100 position on it at any probability. Fill color
+   set inline per side (rgb passed from _fetchPredicts) — a fixed blue bar under Token A's orange
+   chips was the original mismatch; it now ties to that side's own depth-curve/PC-bar accent. */
+#tokpanel .pred-track{position:absolute;left:0;right:0;bottom:0;height:2px;background:rgba(255,255,255,0.08)}
+#tokpanel .pred-bar{position:absolute;left:0;bottom:0;height:2px}
+#tokpanel .pred-chip.unresolved{color:var(--ink-faint);font-style:italic;border-style:dashed}
+/* Known text, but this run never captured that token's own geometry (no resolvable address in
+   the active scope — see _tokInfo's two-vocab-spaces note) — nothing to pin TO. No cursor/hover/
+   click affordance is attached for these (see the chip-building code), so this just keeps them
+   visually flat instead of clickable. */
+#tokpanel .pred-chip.unpinnable{cursor:default}
 /* The panel's four utility classes. Every inline `font-size:7px` in the markup was replaced by
    one of these — an inline size beats a stylesheet, so a type scale the markup can override is
    not a type scale. */
@@ -324,9 +394,14 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 #sepPanel .sep-cols{display:flex;gap:8px}
 #sepPanel .sep-cols>div{flex:1;min-width:0}
 #sepPanel .sep-metrics{display:flex;gap:12px;flex-wrap:wrap;margin-bottom:4px}
-/* pre-WRAP, not pre. _tokInfo() emits real newlines (script/id/bytes · the top PCs · traj), and
-   `pre` meant the PC line ran off the right edge of a narrow card and was silently cut. */
-#tokpanel .tm{color:var(--ink-dim);font-size:var(--fs-sm);white-space:pre-wrap;overflow-wrap:anywhere;line-height:1.6}
+/* Each _tokInfo() field is its own nowrap chip (_renderMetaChips) — "maxΔ L29(272)" used to be one
+   text run with breakable spaces, so a narrow card split it mid-value across two lines. A field
+   can wrap to the next LINE now, never mid-field. The middot is a ::before on the part, not its
+   own flex item — a standalone separator span could wrap alone at a line's end (the part after it
+   pushed down), stranding a lone dot. Bonded to the part it introduces, it travels down with it. */
+#tokpanel .tm{display:flex;flex-wrap:wrap;align-items:baseline;gap:4px 12px;font-size:var(--fs-sm);line-height:1.6;margin-top:9px}
+#tokpanel .meta-part{color:var(--ink);white-space:nowrap;font-variant-numeric:tabular-nums}
+#tokpanel .meta-part:not(:first-child)::before{content:"· ";color:var(--ink-faint)}
 .nbar{display:flex;gap:1px;height:8px;margin:2px 0}
 .nbar .nb{height:100%;min-width:1px;border-radius:1px}
 #detail{position:fixed;background:rgba(8,8,8,0.95);border:1px solid #444;border-radius:4px;padding:6px 10px;display:none;z-index:30;pointer-events:none;font-size:9px;min-width:140px;max-width:220px;box-shadow:0 4px 20px rgba(0,0,0,0.8)}
@@ -486,6 +561,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
       <span id="unlockPill" title="Connect a local heinrich companion to go live in place (Chrome), or open the local view" style="display:none">&#128275; unlock</span>
     </div>
     <div class="th-sub"><span id="hst"></span> <span id="st"></span></div>
+    <div id="vocabBanner" style="display:none;color:#e6a23c;font-size:11px;padding:2px 0">&#9888; no full-vocab projection for this model &mdash; run <code>heinrich mri-vocab</code> &mdash; showing 2,000-token sample only</div>
     <div id="legendWrap">
       <span id="legendToggle" class="legend-compact">scripts &#9656;</span>
       <span id="vocabToggle" class="legend-compact" title="zoom a cloud viewport to reveal points from the full vocabulary">vocab reveal: on</span>
@@ -494,7 +570,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
     <!-- SEARCH IS GLOBAL. It was a card inside a tab, which meant finding a token — the first
          thing you ever do — was three clicks deep. It is chrome now, like the model selector. -->
     <div class="th-search">
-      <input id="tsearch" type="text" placeholder="search the 2,000-token sample &mdash; click a hit to pin A, right-click for B">
+      <input id="tsearch" type="text" placeholder="search sample + full vocab &mdash; click a hit to pin A, right-click for B">
       <input id="ovinput" type="text" placeholder="overlay: texts, or /regex/ over the FULL vocab" title="Spotlight up to 200 full-vocabulary tokens as gold points in the clouds. Comma-separated texts, or /regex/ over the vocab.">
     </div>
     <div id="tsresults" class="p-list"></div>
@@ -502,9 +578,29 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
   </header>
   <div id="tokBody">
     <div id="tokInspect" class="inspect-stack">
+      <!-- ONE PANEL, TWO SIDES: A and B are sides of a single "Tokens" card, not two cards. It
+           collapses as one; inside, the sides compare (both pinned) or focus (one pinned). -->
+      <div id="tokensPanel" class="panel-card">
+        <div class="pane-head"><div class="pane-title">Tokens</div><div class="pane-note">click A &middot; shift / right&#8209;click B</div></div>
       <div id="tokAB">
-        <div id="tokA" class="token-card"><div class="subhead">Token A · click</div><div class="tn" id="taName" style="color:#FF6644">&mdash;</div><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarA" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="taMeta">click a token to pin</div><div id="predsA" class="preds"></div></div>
-        <div id="tokB" class="token-card"><div class="subhead">Token B · right-click / long-press</div><div class="tn" id="tbName" style="color:#4477AA">&mdash;</div><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair;display:none"></canvas><canvas id="pcBarB" height="50" style="width:100%;height:50px;display:none"></canvas><div class="tm" id="tbMeta">right-click or long-press to compare</div><div id="predsB" class="preds"></div></div>
+        <!-- Order is by importance: name, peak/now, THEN the raw identity line (script/id/bytes/
+             traj) right beneath it — those two are both compact text readouts about the token
+             itself. The supporting visuals (depth curve, PC fingerprint) follow, and predicts —
+             what the model does next, a whole separate question from what THIS token is — closes
+             the card, where it always lived. -->
+        <div id="tokA" class="token-card unpinned"><div class="tn" id="taName" style="color:#FF6644"><span class="ab-badge">A</span><span class="tn-txt">&mdash;</span></div>
+          <div class="depth-stats" id="taDepthNote" style="display:none"></div>
+          <div class="tm" id="taMeta">click a token to pin</div>
+          <div class="depth-lane" id="depthLaneA" style="display:none"><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair"></canvas><div class="lane-axis" id="taDepthAxis"></div></div>
+          <div class="pc-lane" id="pcLaneA" style="display:none"><div class="pc-bars" id="taPcBars"></div></div>
+          <div id="predsA" class="preds"></div></div>
+        <div id="tokB" class="token-card unpinned"><div class="tn" id="tbName" style="color:#4477AA"><span class="ab-badge">B</span><span class="tn-txt">&mdash;</span></div>
+          <div class="depth-stats" id="tbDepthNote" style="display:none"></div>
+          <div class="tm" id="tbMeta">right-click or long-press to compare</div>
+          <div class="depth-lane" id="depthLaneB" style="display:none"><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair"></canvas><div class="lane-axis" id="tbDepthAxis"></div></div>
+          <div class="pc-lane" id="pcLaneB" style="display:none"><div class="pc-bars" id="tbPcBars"></div></div>
+          <div id="predsB" class="preds"></div></div>
+      </div>
       </div>
       <div id="dirColorStatus" class="dcs" style="display:none">projecting direction&hellip;</div>
     </div>
@@ -652,7 +748,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
 <script type="module">
 import*as THREE from'three';
 import{OrbitControls}from'three/addons/controls/OrbitControls.js';
-const CL={latin:0x4477AA,CJK:0xEE6677,Cyrillic:0x228833,code:0xCCBB44,Arabic:0x66CCEE,Japanese:0xAA3377,Korean:0x999999,Thai:0x44BB99,Hebrew:0xEE8866,other:0xAAAAAA,special:0x666666};
+const CL={latin:0x4477AA,CJK:0xEE6677,Cyrillic:0x228833,code:0xCCBB44,Arabic:0x66CCEE,Japanese:0xAA3377,Korean:0x999999,Thai:0x44BB99,Hebrew:0xEE8866,Devanagari:0xFF8800,Greek:0x6644CC,other:0xAAAAAA,special:0x666666};
 const CLh=Object.fromEntries(Object.entries(CL).map(([k,v])=>[k,'#'+v.toString(16).padStart(6,'0')]));
 let allL=[],dm=null,cL=0,play=false;
 const vpPairs=[[0,1],[0,2],[2,3]];// [pairA, delta(pcA0×pcB0), pairB]
@@ -1001,6 +1097,50 @@ async function _ensureVocabTexts(){
   })();
   return _vocabTextsPending;
 }
+let _vocabScripts=null,_vocabScriptsPending=null;// full-vocab script list (lazy, per model|mode)
+let _vocabScriptsKey='';
+async function _ensureVocabScripts(){
+  const key=model+'|'+mode;
+  if(_vocabScriptsKey===key&&_vocabScripts)return _vocabScripts;
+  if(_vocabScriptsKey===key&&_vocabScriptsPending)return _vocabScriptsPending;
+  _vocabScriptsKey=key;_vocabScripts=null;
+  _vocabScriptsPending=(async()=>{
+    try{
+      const r=await _apiFetch(`/api/vocab-scripts/${encodeURIComponent(model)}/${encodeURIComponent(mode)}`);
+      if(!r.ok)return null;
+      const j=await r.json();
+      if(Array.isArray(j)&&_vocabScriptsKey===key){_vocabScripts=j;return j;}
+    }catch(e){}
+    return null;
+  })();
+  return _vocabScriptsPending;
+}
+let _vocabIds=null,_vocabIdsPending=null;// full-vocab token-id list (lazy, per model|mode)
+let _vocabIdsKey='';
+async function _ensureVocabIds(){
+  const key=model+'|'+mode;
+  if(_vocabIdsKey===key&&_vocabIds)return _vocabIds;
+  if(_vocabIdsKey===key&&_vocabIdsPending)return _vocabIdsPending;
+  _vocabIdsKey=key;_vocabIds=null;
+  _vocabIdsPending=(async()=>{
+    try{
+      const r=await _apiFetch(`/api/vocab-ids/${encodeURIComponent(model)}/${encodeURIComponent(mode)}`);
+      if(!r.ok)return null;
+      const buf=await r.arrayBuffer();
+      // npy v1 header: magic(6)+ver(2)+HEADER_LEN(2 @ offset 8)+header_str, data starts
+      // at 10+hLen (numpy pads this to a word boundary). int32, row-ordered (row -> token id).
+      const dv=new DataView(buf);const hLen=dv.getUint16(8,true);
+      const arr=new Int32Array(buf,10+hLen);
+      if(_vocabIdsKey===key){_vocabIds=arr;return arr;}
+    }catch(e){}
+    return null;
+  })();
+  return _vocabIdsPending;
+}
+function _showVocabFallbackBanner(show){
+  const el=document.getElementById('vocabBanner');
+  if(el)el.style.display=show?'block':'none';
+}
 async function _ensureVocabMeta(){
   const key=model+'|'+mode;
   if(_vocabMetaKey===key)return _vocabMetaCache;
@@ -1111,6 +1251,11 @@ async function _updateOverlayTag(){
     const rev=views[vi]._rev;let txt;
     if(rev&&rev.active&&rev.shown>0&&nRows){
       txt=`showing ${rev.shown.toLocaleString()} of ${nRows.toLocaleString()} — zoom to reveal more`;
+    }else if(_cloudSource==='vocab'){
+      // The base cloud is retired at vocab scale — before the first reveal fill
+      // lands there is genuinely nothing on screen yet, so say so rather than
+      // claiming a sample count that isn't being shown.
+      txt=nRows?`loading ${nRows.toLocaleString()} vocabulary points…`:`loading vocabulary…`;
     }else{
       txt=nRows?`${nSamp.toLocaleString()} of ${nRows.toLocaleString()} sampled`:`${nSamp.toLocaleString()} sampled`;
     }
@@ -1146,7 +1291,11 @@ function _overlayRayHit(vi,e){
 // the reveal set against the full vocab, not sample+reveal, so nothing is
 // double-counted in the honesty number.
 let _vocabRevealEnabled=true;      // master toggle ([vocab] button, default ON)
-const REVEAL_CAP=50000;            // per-viewport preallocated point capacity
+// 50000 covered the smollm2 family's ~48,660-row vocab exactly, but qwen2.5-0.5b's
+// tokenizer runs ~149,866 rows — a silent, pointless cap on how much of ITS vocabulary
+// could ever be revealed. This is a preallocated Float32Array size, not a forced fill:
+// smaller-vocab models just carry unused headroom (a few MB, once, per viewport).
+const REVEAL_CAP=160000;           // per-viewport preallocated point capacity
 const REVEAL_ZOOM_ON=1.5;          // zoomFactor (2.5/dist) past which reveal activates
 const REVEAL_GRID=32;              // grid cells per axis over the normalized cube
 const REVEAL_CUBE=1.75;            // half-extent of the binned cube (normalized coords)
@@ -1154,8 +1303,10 @@ const VPC_CACHE_MAX=64;            // LRU bound on decoded columns
 const _vpcCache=new Map();         // key model|mode|layer|pc -> Float32Array(nRows), LRU
 const _vpcInflight=new Map();      // key -> Promise (dedupe concurrent fetches)
 let _vocabNRows=0;                 // full-vocab row count (from vocab-meta)
-// Pale, neutral, distinct from the script palette; renders BELOW the sample.
-const revealPts=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(REVEAL_CAP*3),3));g.setDrawRange(0,0);const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.02,color:0x8899AA,transparent:true,opacity:0.5,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=-1;p.visible=false;p.frustumCulled=false;v.sc.add(p);return p;});
+// Per-token script coloring (matches the sample cloud's own CL palette) — this
+// is the sole cloud renderer once vocab is the source, so it needs the same
+// per-token color identity the retired base cloud used to carry.
+const revealPts=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(REVEAL_CAP*3),3));g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(REVEAL_CAP*3),3));g.setDrawRange(0,0);const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.02,vertexColors:true,transparent:true,opacity:0.5,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=-1;p.visible=false;p.frustumCulled=false;v.sc.add(p);return p;});
 function _vpcGet(layer,pc){const k=model+'|'+mode+'|'+layer+'|'+pc;const v=_vpcCache.get(k);if(v){_vpcCache.delete(k);_vpcCache.set(k,v);}return v;}
 function _vpcPut(layer,pc,arr){const k=model+'|'+mode+'|'+layer+'|'+pc;if(_vpcCache.has(k))_vpcCache.delete(k);_vpcCache.set(k,arr);while(_vpcCache.size>VPC_CACHE_MAX){const fk=_vpcCache.keys().next().value;_vpcCache.delete(fk);}}
 // One ~97KB float16 read per (layer,pc); decoded to Float32 once, then cached.
@@ -1224,16 +1375,172 @@ function _revFill(vi){
         const dx=cxw-cp.x,dy=cyw-cp.y,dz=czw-cp.z;cells.push({d:dx*dx+dy*dy+dz*dz,arr});
       }}}
   cells.sort((a,b)=>a.d-b.d);
-  const pos=pts.geometry.attributes.position.array,coords=rev.coords,sr=rev.shownRows;let w=0;
+  const pos=pts.geometry.attributes.position.array,col=pts.geometry.attributes.color.array;
+  const coords=rev.coords,sr=rev.shownRows;const hideScripts=_hiddenScripts.size>0;let w=0;
   for(let ci=0;ci<cells.length&&w<REVEAL_CAP;ci++){const arr=cells[ci].arr;const take=Math.min(perCell,arr.length);
-    for(let j=0;j<take&&w<REVEAL_CAP;j++){const r=arr[j];pos[w*3]=coords[r*3];pos[w*3+1]=coords[r*3+1];pos[w*3+2]=coords[r*3+2];sr[w]=r;w++;}}
+    for(let j=0;j<take&&w<REVEAL_CAP;j++){const r=arr[j];
+      if(hideScripts&&_hiddenScripts.has(scripts[r]))continue;
+      pos[w*3]=coords[r*3];pos[w*3+1]=coords[r*3+1];pos[w*3+2]=coords[r*3+2];
+      // Direction-projection coloring (A vs B, once both are pinned) takes priority
+      // over script coloring — same red/blue gradient _colorFromProj uses for the
+      // (retired) base cloud and the still-visible trajectory markers/lines, just
+      // read per-row here instead of precomputed for all nN at once.
+      if(_dirColorActive&&_dirProjLast){
+        const t=Math.max(-1,Math.min(1,(_dirProjLast[r]-_dirProjMid)/_dirProjSpan)),at=Math.abs(t);
+        if(t>0){col[w*3]=0.25+0.75*at;col[w*3+1]=0.25*(1-at);col[w*3+2]=0.15*(1-at);}
+        else{col[w*3]=0.15*(1-at);col[w*3+1]=0.25*(1-at);col[w*3+2]=0.25+0.55*at;}
+      }else{
+        const hex=CL[scripts[r]]||0xAAAAAA;col[w*3]=((hex>>16)&0xFF)/255;col[w*3+1]=((hex>>8)&0xFF)/255;col[w*3+2]=(hex&0xFF)/255;
+      }
+      sr[w]=r;w++;}}
   rev.shown=w;rev.active=true;
-  pts.geometry.setDrawRange(0,w);pts.geometry.attributes.position.needsUpdate=true;
+  pts.geometry.setDrawRange(0,w);pts.geometry.attributes.position.needsUpdate=true;pts.geometry.attributes.color.needsUpdate=true;
   pts.geometry.computeBoundingSphere&&pts.geometry.computeBoundingSphere();
   pts.visible=w>0;_needsRender=true;
 }
 function _revClear(vi){const v=views[vi],pts=revealPts[vi];pts.visible=false;pts.geometry.setDrawRange(0,0);if(v._rev){v._rev.active=false;v._rev.shown=0;}_needsRender=true;_updateOverlayTag();}
+// Re-fill the reveal cloud after anything that changes what color each row should
+// show (script hide/isolate, direction-coloring on/off) — it's the sole cloud
+// renderer once vocab is the source, so these can't stay base-cloud-only effects.
+function _refreshRevealCloudColors(){
+  if(_cloudSource!=='vocab')return;
+  for(let vi=0;vi<NC;vi++){if(views[vi]._rev&&views[vi]._rev.active)_revFill(vi);}
+}
+// ============================================================================
+// Part B — full-vocabulary trajectory DENSITY (traj viewports only).
+// Naively raising the bulk trajectory group's budget (buildTraj, ~line 3103) to the full
+// vocab is dead on arrival: going from 2,000 to 48,660-149,866 tokens turns today's
+// ~186,000-segment/~9MB worst case (already ~75% of frame time per the anim-loop comment)
+// into millions of segments and hundreds of MB re-uploaded on every layer scrub — no
+// partial/updateRange GPU upload exists anywhere in this file, so that's a full re-upload
+// every time. Instead: bin every vocab token's every layer-to-layer segment MIDPOINT into a
+// 3D grid (same bin() idea as Part A's point reveal, generalized to segments) and render
+// ONE density-colored Points cloud per traj viewport. Every token contributes — nothing is
+// excluded — but per-segment IDENTITY trades for per-cell DENSITY, a per-datum
+// representation change, not a token-count reduction. Render cost becomes constant with
+// respect to vocab size (bounded by grid³, not row count), which is the actual fix for the
+// stable-FPS requirement. Gated by the SAME [vocab] master toggle as Part A — this is
+// still "full vocab visualization," just for trajectories instead of points.
+const TRAJ_DENSITY_GRID=32;         // same resolution as the point-reveal grid
+const _vpcbCache=new Map();         // key model|mode|pcX|pcY -> {nLayers,nRows,data}
+const trajDensityPts=views.map((v,vi)=>{
+  if(vi<NC)return null;
+  const g=new THREE.BufferGeometry();
+  g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(0),3));
+  g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(0),3));
+  g.setDrawRange(0,0);
+  const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.025,vertexColors:true,transparent:true,opacity:0.55,sizeAttenuation:true,depthWrite:false,blending:THREE.AdditiveBlending}));
+  p.renderOrder=-2;p.visible=false;p.frustumCulled=false;v.sc.add(p);return p;
+});
+// Bundle fetch: all layers for one (pcX,pcY) axis pair, all vocab rows, in one request
+// (companion.py's _vocab_pc_bundle) — avoids one HTTP round trip per (layer,pc).
+async function _fetchVocabPCBundle(pcX,pcY){
+  const key=`${model}|${mode}|${pcX}|${pcY}`;
+  const cached=_vpcbCache.get(key);if(cached)return cached;
+  try{
+    // full=pcX,pcY, no medium — server always returns the 7-int two-tier header
+    // (matching /api/cloud-bundle's shape), n_med=0 here since none was requested.
+    const buf=await (await _apiFetch(`/api/vocab-pc-bundle/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?full=${pcX},${pcY}`)).arrayBuffer();
+    if(buf.byteLength<32)return null;
+    const dv=new DataView(buf);
+    const nFull=dv.getUint32(8,true),nMed=dv.getUint32(12,true),nLayers=dv.getUint32(16,true),nRows=dv.getUint32(20,true);
+    if(!nFull||!nLayers||!nRows)return null;
+    const dataOff=32+nFull*4+nMed*4,total=nFull*nLayers*nRows;
+    if(buf.byteLength<dataOff+total*2)return null;
+    const u16=new Uint16Array(buf,dataOff,total);const f32=new Float32Array(total);
+    for(let i=0;i<total;i++)f32[i]=f16(u16[i]);
+    const entry={nLayers,nRows,data:f32};
+    _vpcbCache.set(key,entry);
+    if(_vpcbCache.size>8)_vpcbCache.delete(_vpcbCache.keys().next().value);// small LRU — bundles are MBs, not KBs
+    return entry;
+  }catch(e){return null;}
+}
+// Bin every vocab row's every adjacent-layer segment midpoint (skip any endpoint that hit
+// the render bounds — a wall-bounce, not data, same rule _buildPathForVP already applies).
+function _trajDensityBin(vi,bundle){
+  const v=views[vi];const lm=v._trajLayerMx,cb=v._trajClampBounds;
+  if(!lm||!cb)return null;
+  const{nLayers,nRows,data}=bundle;
+  const cxAll=data.subarray(0,nLayers*nRows),cyAll=data.subarray(nLayers*nRows,2*nLayers*nRows);
+  const G=TRAJ_DENSITY_GRID,C=REVEAL_CUBE,invc=G/(2*C);
+  const bin=(c)=>{const b=((c+C)*invc)|0;return b<0?0:(b>=G?G-1:b);};
+  const seq=(_layerSeq.length?_layerSeq:[...Array(nL).keys()]).filter(l=>l<nLayers);
+  const counts=new Map();
+  for(let si=0;si<seq.length-1;si++){
+    const l0=seq[si],l1=seq[si+1];
+    const mx0=lm[l0],b0=cb[l0],mx1=lm[l1],b1=cb[l1];
+    if(!mx0||!b0||!mx1||!b1)continue;
+    const base0=l0*nRows,base1=l1*nRows;
+    const z0=(_layerZ&&_layerZ[l0]!=null)?_layerZ[l0]:(si/(seq.length-1))*2-1;
+    const z1=(_layerZ&&_layerZ[l1]!=null)?_layerZ[l1]:((si+1)/(seq.length-1))*2-1;
+    for(let r=0;r<nRows;r++){
+      const rx0=(cxAll[base0+r]||0)/(mx0[0]||1),ry0=(cyAll[base0+r]||0)/(mx0[1]||1);
+      const x0=_clampTraj(rx0,b0[0]),y0=_clampTraj(ry0,b0[1]);
+      if(x0!==rx0||y0!==ry0)continue;
+      const rx1=(cxAll[base1+r]||0)/(mx1[0]||1),ry1=(cyAll[base1+r]||0)/(mx1[1]||1);
+      const x1=_clampTraj(rx1,b1[0]),y1=_clampTraj(ry1,b1[1]);
+      if(x1!==rx1||y1!==ry1)continue;
+      const ci=bin((x0+x1)/2)*G*G+bin((y0+y1)/2)*G+bin((z0+z1)/2);
+      counts.set(ci,(counts.get(ci)||0)+1);
+    }
+  }
+  return counts;
+}
+function _trajDensityRender(vi,counts){
+  const pts=trajDensityPts[vi];if(!pts)return;
+  if(!counts||!counts.size){pts.visible=false;pts.geometry.setDrawRange(0,0);return;}
+  const G=TRAJ_DENSITY_GRID,C=REVEAL_CUBE,cw=2*C/G,n=counts.size;
+  let posAttr=pts.geometry.attributes.position;
+  if(!posAttr||posAttr.array.length!==n*3){
+    pts.geometry.dispose();
+    const p=new Float32Array(n*3),c=new Float32Array(n*3);
+    pts.geometry=new THREE.BufferGeometry();
+    pts.geometry.setAttribute('position',new THREE.BufferAttribute(p,3));
+    pts.geometry.setAttribute('color',new THREE.BufferAttribute(c,3));
+  }
+  const buf=pts.geometry.attributes.position.array,col=pts.geometry.attributes.color.array;
+  let maxCount=1;for(const c of counts.values())if(c>maxCount)maxCount=c;
+  const logMax=Math.log(maxCount+1);
+  let w=0;
+  for(const[ci,count]of counts){
+    const gz=ci%G,gy=Math.floor(ci/G)%G,gx=Math.floor(ci/(G*G));
+    buf[w*3]=-C+(gx+0.5)*cw;buf[w*3+1]=-C+(gy+0.5)*cw;buf[w*3+2]=-C+(gz+0.5)*cw;
+    const t=Math.log(count+1)/logMax;// 0..1 log-scaled density — linear would blow out at the mode
+    col[w*3]=0.3+t*0.5;col[w*3+1]=0.35+t*0.45;col[w*3+2]=0.5+t*0.4;
+    w++;
+  }
+  pts.geometry.setDrawRange(0,w);
+  pts.geometry.attributes.position.needsUpdate=true;
+  pts.geometry.attributes.color.needsUpdate=true;
+  pts.geometry.computeBoundingSphere&&pts.geometry.computeBoundingSphere();
+  pts.visible=true;_needsRender=true;
+}
+let _trajDensityGen=0;
+// Driven from updateAllViewports on PC-pair change (a one-time cost per change, not a
+// per-frame cost) — async and self-superseding, so a rapid second pair-change just drops
+// the first's stale in-flight work instead of racing it.
+async function _rebuildTrajDensity(){
+  if(!_vocabRevealEnabled)return;
+  const gen=++_trajDensityGen;
+  for(let vi=NC;vi<NV;vi++){
+    const v=views[vi];
+    if(!v._trajLayerMx||!v._trajClampBounds){trajDensityPts[vi].visible=false;continue;}
+    const bundle=await _fetchVocabPCBundle(v.pcX,v.pcY);
+    if(gen!==_trajDensityGen)return;
+    if(!bundle){trajDensityPts[vi].visible=false;continue;}
+    _trajDensityRender(vi,_trajDensityBin(vi,bundle));
+    if(gen!==_trajDensityGen)return;
+  }
+}
 const _revTimers=[];
+// The zoom-gate below existed to hold reveal back as a "bonus" until the user
+// zoomed past the sample anchor's detail level. Now that reveal is the SOLE
+// cloud renderer once vocab is the source, that gate would leave every fresh
+// model load showing nothing (default zoom = 1.0, under REVEAL_ZOOM_ON = 1.5)
+// — so it's disabled for vocab (0, always active); the sample-fallback case
+// keeps the original bonus-only behavior. _revFill's own perCell budget
+// (scales with zoom, floor of 1) is what keeps the overview sparse instead.
+function _revZoomOn(){return _cloudSource==='vocab'?0:REVEAL_ZOOM_ON;}
 // Debounced fill on zoom/orbit change for one cloud viewport.
 function _revScheduleFill(vi,delay=150){
   if(_revTimers[vi])clearTimeout(_revTimers[vi]);
@@ -1241,7 +1548,7 @@ function _revScheduleFill(vi,delay=150){
     _revTimers[vi]=null;
     if(!_vocabRevealEnabled){_revClear(vi);return;}
     const v=views[vi];const dist=v.cam.position.distanceTo(v.ctl.target)||1;
-    if(2.5/dist<REVEAL_ZOOM_ON){_revClear(vi);return;}
+    if(2.5/dist<_revZoomOn()){_revClear(vi);return;}
     const rev=await _revBuildGrid(vi);if(!rev)return;
     _revFill(vi);_updateOverlayTag();
   },delay);
@@ -1251,7 +1558,7 @@ function _revScheduleFill(vi,delay=150){
 function _revOnZoom(vi){
   if(!_vocabRevealEnabled)return;
   const v=views[vi];const dist=v.cam.position.distanceTo(v.ctl.target)||1;const zoom=2.5/dist;
-  if(zoom<REVEAL_ZOOM_ON){if(v._rev&&v._rev.active)_revClear(vi);return;}
+  if(zoom<_revZoomOn()){if(v._rev&&v._rev.active)_revClear(vi);return;}
   _revScheduleFill(vi,150);
 }
 let _revLayerTimer=null;
@@ -1263,7 +1570,7 @@ function _revOnLayer(){
   _revLayerTimer=setTimeout(async()=>{
     _revLayerTimer=null;if(!_vocabRevealEnabled)return;
     for(let vi=0;vi<NC;vi++){const v=views[vi];const dist=v.cam.position.distanceTo(v.ctl.target)||1;
-      if(2.5/dist<REVEAL_ZOOM_ON){_revClear(vi);continue;}
+      if(2.5/dist<_revZoomOn()){_revClear(vi);continue;}
       const rev=await _revBuildGrid(vi);if(!rev)continue;_revFill(vi);}
     _updateOverlayTag();
   },180);
@@ -1307,8 +1614,13 @@ async function _homingUpdate(){
   const sig=model+'|'+mode+'|'+pinnedToken+'|'+pinnedTokenB+'|T'+(_vocabTarget?_vocabTarget.row:-1)+'|U'+(_vocabTarget2?_vocabTarget2.row:-1)+'|'+nLayers+'|w'+_liveWalkTick;
   if(_homingCache&&_homingCache.sig===sig){_homingDraw();return;}
   panel.style.display='block';
-  const vecA=pinnedToken>=0?await _fetchTokenVec(model,mode,pinnedToken):null;
-  const vecB=pinnedTokenB>=0?await _fetchTokenVec(model,mode,pinnedTokenB):null;
+  // pinnedToken/B are vocab-row-addressed once _cloudSource==='vocab' — the sample-scoped
+  // /api/token-pca/ behind _fetchTokenVec would silently return nothing for any row past
+  // the old 2,000-sample range, so route through the vocab-scale fetch instead (same
+  // wire shape, different endpoint — see _fetchVocabTokenVec's docstring).
+  const _fetchTV=(m,d,t)=>_cloudSource==='vocab'?_fetchVocabTokenVec(m,d,t):_fetchTokenVec(m,d,t);
+  const vecA=pinnedToken>=0?await _fetchTV(model,mode,pinnedToken):null;
+  const vecB=pinnedTokenB>=0?await _fetchTV(model,mode,pinnedTokenB):null;
   const distT=_vocabTarget?_homingDistances(_vocabTarget.vec):null;
   const distT2=_vocabTarget2?_homingDistances(_vocabTarget2.vec):null;
   if(!vecA&&!distT&&!distT2){panel.style.display='none';return;}
@@ -1542,17 +1854,24 @@ function _clampBoundFor(col,scale){
   return Math.max(1.5,Math.min(3.0,pct*1.3));
 }
 
+// Which endpoint backs the base PC-value cache (_pcFull/_pcFullNT/_pcMedium):
+// 'vocab' is the default (full-vocab-native, /api/vocab-pc-bundle) — 'sample'
+// is the fallback for an MRI that never ran `heinrich mri-vocab` (loadAll()
+// decides this once per model load and shows a banner when falling back).
+// Both wire formats are byte-identical past the magic (CLDB vs VPCB), so one
+// ingest path serves either source.
+let _cloudSource='vocab';
 const CloudStore={
   pending:new Map(),
   _key(fullPcs,mediumPcs,step){
     const full=[...new Set(fullPcs)].sort((a,b)=>a-b).join(',');
     const medium=[...new Set(mediumPcs)].sort((a,b)=>a-b).join(',');
-    return `${model}:${mode}:${step}:${full}:${medium}`;
+    return `${model}:${mode}:${_cloudSource}:${step}:${full}:${medium}`;
   },
   _ingest(buf){
     const dv=new DataView(buf);
     const magic=String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3));
-    if(magic!=='CLDB')throw new Error(`cloud-bundle magic ${magic}`);
+    if(magic!=='CLDB'&&magic!=='VPCB')throw new Error(`cloud bundle magic ${magic}`);
     const nFull=dv.getUint32(8,true),nMed=dv.getUint32(12,true);
     const nL_=dv.getUint32(16,true),nTok=dv.getUint32(20,true);
     const nSample=dv.getUint32(24,true),step=dv.getUint32(28,true);
@@ -1592,8 +1911,9 @@ const CloudStore={
       if(needFull.length)q.set('full',needFull.join(','));
       if(needMedium.length)q.set('medium',needMedium.join(','));
       q.set('step',String(step));
-      const resp=await _apiFetch(`/api/cloud-bundle/${model}/${mode}?${q.toString()}`);
-      if(!resp.ok)throw new Error(`cloud-bundle ${resp.status}`);
+      const base=_cloudSource==='vocab'?'vocab-pc-bundle':'cloud-bundle';
+      const resp=await _apiFetch(`/api/${base}/${model}/${mode}?${q.toString()}`);
+      if(!resp.ok)throw new Error(`${base} ${resp.status}`);
       const buf=await resp.arrayBuffer();
       if(gen!==_cloudFetchGen)return;
       this._ingest(buf);
@@ -1713,7 +2033,7 @@ function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
   line.geometry.setDrawRange(0,w/3);
   line.geometry.attributes.position.needsUpdate=true;line.visible=w>0;}
 let _lastDimState=-1;
-function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC)v.mtl.opacity=dim?0.35:0.85;if(vi>=NC&&v.trajGroup){const baseOp=dim?0.08:0.15;v.trajGroup.children.forEach(c=>{if(c.material)c.material.opacity=baseOp;});if(v.trajMarker)v.trajMarker.material.opacity=dim?0.35:0.9;}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible){m.material.opacity=0.95;m.material.size=dim?0.08:0.06;}});}
+function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC){v.mtl.opacity=dim?0.35:0.85;if(revealPts[vi])revealPts[vi].material.opacity=dim?0.2:0.5;}if(vi>=NC&&v.trajGroup){const baseOp=dim?0.08:0.15;v.trajGroup.children.forEach(c=>{if(c.material)c.material.opacity=baseOp;});if(v.trajMarker)v.trajMarker.material.opacity=dim?0.35:0.9;}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible){m.material.opacity=0.95;m.material.size=dim?0.08:0.06;}});}
 let _hoverTimer=0,_hoverTok=-1,_hoverLoading='';
 // Unified hover cache: token,layer → {pcScores: Float32Array[K], neurons: Float32Array[inter]}
 const _hoverCache=new Map();
@@ -1791,7 +2111,7 @@ const TokenStore={
 };
 function highlightToken(idx){hoveredToken=idx;views.forEach((v,vi)=>{const mk=highlightMarkers[vi];if(idx<0){mk.visible=false;hoverPaths[vi].visible=false;return;}mk.visible=true;_positionMarker(mk,v,vi,idx);_buildPathForVP(hoverPaths[vi],v,vi,idx);});_dimAll(idx>=0);
   if(idx!==_hoverTok){_hoverTok=idx;clearTimeout(_hoverTimer);
-    if(idx>=0)_hoverTimer=setTimeout(()=>_fetchHover(idx),30);
+    if(idx>=0){_updatePCSHover(idx);_hoverTimer=setTimeout(()=>_fetchHover(idx),30);}
     else{_updatePCSHover(-1);_nfShowHover(null);}
   }
   _markDirty();}
@@ -1803,6 +2123,24 @@ function _fetchHover(tokIdx){
   if(_hoverLoading===key)return;
   _hoverLoading=key;
   const fetchLayer=cL;
+  if(_cloudSource==='vocab'){
+    // TokenStore's hover tier has no vocab-scale equivalent — reuse the full-vector
+    // fetch instead (_pcsFetchToken, already vocab-scale as of Phase 3) and slice
+    // out the current layer's PC values. The neuron half stays honestly empty:
+    // vocab_token_neurons.bin only has the top-50 important neurons per row/layer,
+    // not the full intermediate-size array _nfShowHover needs, and a full-fidelity
+    // capture was already costed at 8.8GB-68GB/model and rejected — _nfShowHover(null)
+    // already draws nothing gracefully, which is the correct state here.
+    _pcsFetchToken(tokIdx).then(entry=>{
+      _hoverLoading='';
+      if(!entry||_hoverTok!==tokIdx||cL!==fetchLayer)return;
+      const pcScores=entry.data.subarray(fetchLayer*entry.fK,(fetchLayer+1)*entry.fK);
+      const hEntry={pcScores,neurons:null,K:entry.fK,inter:0,layer:fetchLayer};
+      _hoverCache.set(key,hEntry);
+      _renderHover(tokIdx,hEntry);
+    }).catch(()=>{_hoverLoading='';});
+    return;
+  }
   TokenStore.ensure({hoverTokens:[tokIdx],layer:fetchLayer}).then(()=>{
     _hoverLoading='';
     const entry=_hoverCache.get(`${tokIdx},${fetchLayer}`);
@@ -1821,11 +2159,11 @@ function _renderHover(tokIdx,entry){
 function _syncAllPins(paths){
   views.forEach((v,vi)=>{
     const mk=pinMarkers[vi];
-    if(pinnedToken<0){mk.visible=false;pinPaths[vi].visible=false;}
-    else{mk.visible=true;_positionMarker(mk,v,vi,pinnedToken);if(paths)_buildPathForVP(pinPaths[vi],v,vi,pinnedToken);}
+    if(pinnedToken>=0){mk.visible=true;_positionMarker(mk,v,vi,pinnedToken);if(paths)_buildPathForVP(pinPaths[vi],v,vi,pinnedToken);}
+    else{mk.visible=false;pinPaths[vi].visible=false;}
     const mb=pinMarkersB[vi];
-    if(pinnedTokenB<0){mb.visible=false;pinPathsB[vi].visible=false;}
-    else{mb.visible=true;_positionMarker(mb,v,vi,pinnedTokenB);if(paths)_buildPathForVP(pinPathsB[vi],v,vi,pinnedTokenB);}
+    if(pinnedTokenB>=0){mb.visible=true;_positionMarker(mb,v,vi,pinnedTokenB);if(paths)_buildPathForVP(pinPathsB[vi],v,vi,pinnedTokenB);}
+    else{mb.visible=false;pinPathsB[vi].visible=false;}
   });
   _updateDeltaPins();
   _updateBrowserPinPositions();
@@ -1851,63 +2189,95 @@ function _trajStats(idx){
   }
   const r={total:totalMove,maxDelta,maxL};_trajCache[idx]=r;return r;
 }
-function _tokInfo(idx){if(idx<0)return'—';const S=_getTokenSpectrumEntry(idx);
-  let m=`${scripts[idx]}  #${idx}`;if(tokenIds[idx]!==undefined)m+=`  id:${tokenIds[idx]}`;
-  m+=`  ${new TextEncoder().encode(texts[idx]||'').length}B`;
-  if(!S){_pcsFetchToken(idx).then(()=>{if(idx===pinnedToken||idx===pinnedTokenB)showPinDetail(pinnedToken);});return m;}
-  // Most extreme PCs (positive and negative)
-  const pcs=[];for(let p=0;p<Math.min(nK,20);p++)pcs.push({p,v:S[p]||0});
-  pcs.sort((a,b)=>Math.abs(b.v)-Math.abs(a.v));
-  m+='\n';pcs.slice(0,4).forEach(({p,v})=>m+=`PC${p}:${v>0?'+':''}${v.toFixed(1)} `);
+// The one-line identity + trajectory footer. The PC loadings that used to live here moved to the PC
+// lane (label · bar · value), so this no longer doubles them; the sample-rank #idx is an internal
+// handle, not identity, so it's gone too. One row: script · token id · bytes · traj · biggest jump.
+// Returns an ARRAY of parts, not a joined string — each part becomes its own nowrap chip
+// (_renderMetaChips), so a pair like "maxΔ L29(272)" can never split across a line break again.
+function _tokInfo(idx){if(idx<0)return['—'];const S=_getTokenSpectrumEntry(idx);
+  const parts=[scripts[idx]];
+  if(tokenIds[idx]!==undefined)parts.push(`id ${tokenIds[idx]}`);
+  parts.push(`${new TextEncoder().encode(texts[idx]||'').length}B`);
+  if(!S){_pcsFetchToken(idx).then(()=>{if(idx===pinnedToken||idx===pinnedTokenB)showPinDetail(pinnedToken);});return parts;}
   const ts=_trajStats(idx);
-  if(ts)m+=`\ntraj:${ts.total.toFixed(0)} maxΔ:L${ts.maxL}(${ts.maxDelta.toFixed(0)})`;
-  return m;}
+  if(ts)parts.push(`traj ${ts.total.toFixed(0)}`,`maxΔ L${ts.maxL}(${ts.maxDelta.toFixed(0)})`);
+  return parts;}
+// Renders _tokInfo's parts as chips: each part is a nowrap span, so one field never splits
+// mid-value at the line wrap. `idle` is the plain placeholder string shown before any pin.
+function _renderMetaChips(elId,idx,idle){
+  const el=document.getElementById(elId);if(!el)return;
+  el.textContent='';
+  if(idx<0){el.textContent=idle;return;}
+  // The middot is CSS (::before on .meta-part), not a separate flex item — a standalone separator
+  // span could end up alone at the end of a wrapped line (the crisis in the screenshot: "...6B ·"
+  // stranded, its value pushed to the next line). Bonded to the part that FOLLOWS it, the dot always
+  // wraps down together with its own value instead of straggling behind the previous one.
+  _tokInfo(idx).forEach(part=>{
+    const s=document.createElement('span');s.className='meta-part';s.textContent=part;el.appendChild(s);
+  });
+}
 
 // The panel's canvases carry labels too, and CSS cannot reach them — they were drawn at 5px, 6px
 // and 7px, which is smaller than anything the stylesheet ever did. One size, on the same scale as
 // --fs-xs. (These contexts are ctx.scale(2,2) for retina, so this is CSS px, not device px.)
 const PANEL_CANVAS_FONT='10px monospace';
-// PC distribution bar chart — shows where this token sits relative to all tokens
-function renderPCBar(idx,canvasId,rgb){
-  const cv=document.getElementById(canvasId);if(!cv)return;
-  const S=_getTokenSpectrumEntry(idx);
-  if(idx<0||!S){cv.style.display='none';if(idx>=0)_pcsFetchToken(idx).then(()=>renderPCBar(idx,canvasId,rgb));return;}
-  cv.style.display='block';
-  const w=cv.parentElement.clientWidth||260,h=50;
-  cv.width=w*2;cv.height=h*2;
-  const ctx=cv.getContext('2d');ctx.scale(2,2);ctx.clearRect(0,0,w,h);
-  const nShow=Math.min(nK,12);
-  const bw=w/nShow;
-  // Compute percentile of this token for each PC (sample 1000 tokens)
-  const sampleStep=Math.max(1,Math.floor(nN/1000));
-  for(let p=0;p<nShow;p++){
-    const v=S[p]||0;
-    // Find min/max from sample
-    let mn=Infinity,mx=-Infinity;
-    for(let i=0;i<nN;i+=sampleStep){const sv=_getScore(cL,i,p)||0;if(sv<mn)mn=sv;if(sv>mx)mx=sv;}
-    const range=mx-mn||1;
-    const pct=(v-mn)/range;// 0-1 percentile
-    const barH=(h-12)*Math.abs(pct-0.5)*2;// taller = more extreme
-    const isPos=v>0;
-    const midY=h/2;
-    // Bar: extends up if positive, down if negative
-    ctx.fillStyle=`rgba(${rgb},${0.3+Math.abs(pct-0.5)*1.4})`;
-    if(isPos)ctx.fillRect(p*bw+1,midY-barH,bw-2,barH);
-    else ctx.fillRect(p*bw+1,midY,bw-2,barH);
-    // Center line
-    ctx.fillStyle='rgba(255,255,255,0.1)';ctx.fillRect(p*bw,midY,bw,0.5);
-    // PC label
-    ctx.font=PANEL_CANVAS_FONT;ctx.fillStyle=`rgba(${rgb},0.75)`;
-    ctx.fillText(p.toString(),p*bw+1,h-1);
-    // Value
-    if(Math.abs(pct-0.5)>0.3){ctx.fillStyle=`rgba(${rgb},0.95)`;ctx.fillText(v.toFixed(1),p*bw+1,isPos?midY-barH-2:midY+barH+9);}
+// PC fingerprint as HTML rows — label · diverging track · signed value. No canvas: a bar you can
+// label without the number ever colliding with the mark. Sorted strongest-first; bar length is
+// |value| scaled to THIS token's own strongest component (arbitrary units — PC scales differ, so
+// this is a within-token fingerprint, not a cross-token percentile). Positive fills right of the
+// centre line, negative left, so sign reads from direction as well as from the printed value.
+function renderPCBars(idx,containerId,rgb){
+  const host=document.getElementById(containerId);if(!host)return;
+  const lane=document.getElementById(containerId==='taPcBars'?'pcLaneA':'pcLaneB');
+  let S=null;
+  if(idx>=0){
+    S=_getTokenSpectrumEntry(idx);
+    if(!S){if(lane)lane.style.display='none';host.textContent='';
+      _pcsFetchToken(idx).then(()=>renderPCBars(idx,containerId,rgb));return;}
+  }else{
+    if(lane)lane.style.display='none';host.textContent='';return;
   }
+  if(lane)lane.style.display='block';
+  const pcs=[];for(let p=0;p<Math.min(nK,20);p++)pcs.push({p,v:S[p]||0});
+  pcs.sort((a,b)=>Math.abs(b.v)-Math.abs(a.v));
+  const top=pcs.slice(0,6);
+  const maxAbs=Math.max(...top.map(o=>Math.abs(o.v)),1e-6);
+  host.textContent='';
+  top.forEach(({p,v})=>{
+    const frac=Math.min(1,Math.abs(v)/maxAbs),pos=v>=0;
+    const row=document.createElement('div');row.className='pc-row';
+    row.title=`PC${p} — click: X-axis of view 1 · right-click: view 2 · shift: 2nd axis`;
+    const lbl=document.createElement('div');lbl.className='pc-lbl';lbl.textContent='PC'+p;
+    const track=document.createElement('div');track.className='pc-track';
+    const fill=document.createElement('div');fill.className='pc-fill';
+    fill.style.background=`rgba(${rgb},${(0.35+frac*0.5).toFixed(3)})`;
+    fill.style.width=(frac*50).toFixed(2)+'%';
+    if(pos)fill.style.left='50%';else fill.style.right='50%';
+    track.appendChild(fill);
+    const val=document.createElement('div');val.className='pc-val';
+    val.style.color=`rgba(${rgb},0.85)`;
+    val.textContent=(v>=0?'+':'')+v.toFixed(1);
+    row.appendChild(lbl);row.appendChild(track);row.appendChild(val);
+    row.addEventListener('click',e=>{e.preventDefault();_applyPCSelection(p,false,e.shiftKey);});
+    row.addEventListener('contextmenu',e=>{e.preventDefault();_applyPCSelection(p,true,e.shiftKey);});
+    host.appendChild(row);
+  });
+}
+// Click a PC bar to drive the 3D projection — same convention as the PC widget (left=view 1,
+// right=view 2, shift=2nd axis). Mirrors that handler's exact refresh sequence; the bars themselves
+// carry no selection state to redraw (see the pc-bars comment above), so nothing here re-renders them.
+function _applyPCSelection(pc,rightSide,secondAxis){
+  if(pc<0||pc>=nK)return;
+  vpPairs[rightSide?2:0][secondAxis?1:0]=pc;
+  updateAllViewports();_rebuildWeightLines();_saveState();
+  _updatePCSDots();buildBrowser();_markDirty();
 }
 let _predsReqA=0,_predsReqB=0;
 function _fetchPredicts(tokIdx,containerId){
   const el=document.getElementById(containerId);if(!el)return;
   if(tokIdx<0||!model||!mode||cL>=_nRealLayers){el.textContent='';return;}
   const isA=containerId==='predsA';
+  const rgb=isA?'200,80,50':'60,100,180';// same accent as the depth curve + PC bars on this side
   const reqId=isA?++_predsReqA:++_predsReqB;
   el.textContent='predicts...';
   api(`token-predicts/${model}/${mode}?token=${tokIdx}&layer=${cL}&k=8`).then(r=>{
@@ -1915,36 +2285,85 @@ function _fetchPredicts(tokIdx,containerId){
     if(!r||r.error||!Array.isArray(r.top_k)){el.textContent='';return;}
     el.textContent='';
     const hdr=document.createElement('span');
-    hdr.style.cssText='color:#555;font-size:7px';
-    hdr.textContent='predicts: ';
+    hdr.className='preds-hdr';
+    hdr.textContent='predicts';
     el.appendChild(hdr);
     if(!r.top_k.length){
       const empty=document.createElement('span');
-      empty.style.cssText='color:#555;font-size:7px;font-style:italic';
+      empty.style.cssText='color:var(--ink-faint);font-style:italic';
       empty.textContent='no predictions';
       el.appendChild(empty);
       return;
     }
-    r.top_k.slice(0,6).forEach((p,i)=>{
-      if(i>0)el.appendChild(document.createTextNode(' '));
-      const span=document.createElement('span');
+    // One CHIP per prediction — the box is the boundary, so a comma / paren prediction can never be
+    // mistaken for a separator (the bug the middot version had). Three honest states, not two:
+    // 1) unresolved — no text anywhere (special/reserved id, or mri-vocab never run).
+    // 2) known text, but this run's small captured sample never included this exact token — there
+    //    is no geometry to pin TO. These used to render fully clickable and silently do nothing on
+    //    click ("predicts pills don't respond") — the real bug was attaching an affordance the data
+    //    can't back. Only case 3 gets the cursor/hover/click wiring at all now.
+    // 3) known text AND captured — genuinely pinnable, click=A / right-click=B.
+    const chips=document.createElement('div');chips.className='pred-chips';el.appendChild(chips);
+    // No visible scrollbar to grab, so the strip needs its own affordances: vertical wheel motion
+    // redirects to horizontal scroll, and pointer-drag pans it directly. setPointerCapture keeps
+    // pointermove/up firing on `chips` even once the cursor leaves it mid-drag — no window-level
+    // listeners needed, so nothing leaks when this whole container gets discarded on the next fetch.
+    chips.addEventListener('wheel',e=>{
+      if(chips.scrollWidth<=chips.clientWidth)return;
+      chips.scrollLeft+=Math.abs(e.deltaY)>Math.abs(e.deltaX)?e.deltaY:e.deltaX;
+      e.preventDefault();
+    },{passive:false});
+    let _dragX=0,_dragScroll=0,_dragMoved=0,_dragActive=false;
+    chips.addEventListener('pointerdown',e=>{
+      _dragActive=true;_dragX=e.clientX;_dragScroll=chips.scrollLeft;_dragMoved=0;
+      chips.setPointerCapture(e.pointerId);chips.style.cursor='grabbing';
+    });
+    chips.addEventListener('pointermove',e=>{
+      if(!_dragActive)return;
+      const dx=e.clientX-_dragX;
+      _dragMoved=Math.max(_dragMoved,Math.abs(dx));
+      chips.scrollLeft=_dragScroll-dx;
+    });
+    const _endDrag=()=>{_dragActive=false;chips.style.cursor='grab';};
+    chips.addEventListener('pointerup',_endDrag);
+    chips.addEventListener('pointercancel',_endDrag);
+    // A drag that moved more than a few px shouldn't ALSO fire the chip's own click (pin-this-token)
+    // underneath the pointer on release — capture phase runs before each chip's bubble-phase listener.
+    chips.addEventListener('click',e=>{if(_dragMoved>4)e.stopPropagation();},true);
+    r.top_k.slice(0,6).forEach(p=>{
       const pct=p.prob*100;
+      const chip=document.createElement('span');chip.className='pred-chip';
       if(p.unresolved||p.text==null){
-        // Honesty lane (thread 97d910ce): this id has no text in the vocab
-        // projection (special/reserved token, or mri-vocab never run). Show
-        // the id and SAY it is unresolved — never guess a string.
-        span.style.cssText='color:#555;font-style:italic;cursor:default';
-        span.textContent=`⟨id ${p.vocab_id}⟩`;
-        span.title=`unresolved token id ${p.vocab_id} — no text in the vocab projection (special/reserved, or run: heinrich mri-vocab)  prob=${pct.toFixed(1)}% logit=${p.logit.toFixed(0)}`;
+        // Honesty lane (thread 97d910ce): this id has no text in the vocab projection
+        // (special/reserved token, or mri-vocab never run). Show the id and SAY it is
+        // unresolved — never guess a string.
+        chip.classList.add('unresolved');
+        chip.textContent=`⟨id ${p.vocab_id}⟩`;
+        chip.title=`unresolved token id ${p.vocab_id} — no text in the vocab projection (special/reserved, or run: heinrich mri-vocab)  prob=${pct.toFixed(1)}% logit=${p.logit.toFixed(0)}`;
       }else{
-        span.style.cssText=`color:${pct>10?'#aaa':pct>1?'#777':'#444'};cursor:pointer`;
-        span.textContent=`${p.text}`;
-        span.title=`${p.text} prob=${(pct).toFixed(1)}% logit=${p.logit.toFixed(0)}`;
-        span.addEventListener('click',()=>{
-          if(p.mri_idx>=0){pinnedToken=p.mri_idx;updatePinMarkers();showPinDetail(pinnedToken);_onPinChange();_saveState();}
-        });
+        chip.textContent=p.text;
+        // pinnedToken/B address whatever population loadAll() chose as the base scope:
+        // vocab_row when vocab-native (the normal case — depth curve/PC bars/homing/3D
+        // marker all read the same vocab-row data, no more "sample vs vocab-only" split
+        // in what a pin unlocks), or the sample's own mri_idx in the rare fallback where
+        // this MRI never ran mri-vocab. Pick whichever address matches the active scope.
+        const addr=_cloudSource==='vocab'?p.vocab_row:p.mri_idx;
+        if(addr>=0){
+          chip.dataset.pick='1';
+          chip.title=`${p.text}  prob=${pct.toFixed(1)}%  logit=${p.logit.toFixed(0)}  —  click: pin as A · right-click: pin as B`;
+          chip.addEventListener('click',()=>_pinVocabRow(true,addr,p.text));
+          chip.addEventListener('contextmenu',e=>{e.preventDefault();_pinVocabRow(false,addr,p.text);});
+        }else{
+          chip.classList.add('unpinnable');
+          chip.title=`${p.text}  prob=${pct.toFixed(1)}%  logit=${p.logit.toFixed(0)}  —  not in this run's captured sample or vocab projection, so it can't be pinned`;
+        }
+        const track=document.createElement('span');track.className='pred-track';chip.appendChild(track);
+        const bar=document.createElement('span');bar.className='pred-bar';
+        bar.style.width=(Math.min(1,Math.max(0,p.prob))*100).toFixed(1)+'%';
+        bar.style.background=`rgba(${rgb},0.85)`;
+        chip.appendChild(bar);
       }
-      el.appendChild(span);
+      chips.appendChild(chip);
     });
   }).catch(()=>{el.textContent='';});
 }
@@ -2035,14 +2454,24 @@ function showPinDetail(idx){
   // fire the whole cascade twice.
   if(idx>=0&&!_pcsHoverCache.has(idx))_pcsFetchToken(idx).then(()=>{if(pinnedToken===idx)showPinDetail(idx);});
   if(pinnedTokenB>=0&&!_pcsHoverCache.has(pinnedTokenB))_pcsFetchToken(pinnedTokenB).then(()=>{if(pinnedTokenB>=0)showPinDetail(pinnedToken);});
-  document.getElementById('taName').textContent=idx>=0?(texts[idx]||'?'):'—';
-  document.getElementById('taName').style.color=idx>=0?(CLh[scripts[idx]]||'#aaa'):'#555';
-  document.getElementById('taMeta').textContent=idx>=0?_tokInfo(idx):'click a token to pin';
-  renderPCBar(idx,'pcBarA','200,80,50');
-  document.getElementById('tbName').textContent=pinnedTokenB>=0?(texts[pinnedTokenB]||'?'):'—';
-  document.getElementById('tbName').style.color=pinnedTokenB>=0?(CLh[scripts[pinnedTokenB]]||'#aaa'):'#555';
-  document.getElementById('tbMeta').textContent=pinnedTokenB>=0?_tokInfo(pinnedTokenB):'shift+click for comparison';
-  renderPCBar(pinnedTokenB,'pcBarB','60,100,180');
+  document.querySelector('#taName .tn-txt').textContent=idx>=0?(texts[idx]||'?'):'—';
+  // Fixed accent, not the script-cluster color (CLh) — that made "wetland" render blue even on
+  // Token A's orange-everything-else card, since "latin" happens to map to a blue cluster hue.
+  // One accent per side, used consistently: badge, name, depth curve, PC bars, predict bar.
+  document.getElementById('taName').style.color=idx>=0?'#FF6644':'#555';
+  _renderMetaChips('taMeta',idx,'click a token to pin');
+  renderPCBars(idx,'taPcBars','200,80,50');
+  document.querySelector('#tbName .tn-txt').textContent=pinnedTokenB>=0?(texts[pinnedTokenB]||'?'):'—';
+  document.getElementById('tbName').style.color=pinnedTokenB>=0?'#4477AA':'#555';
+  _renderMetaChips('tbMeta',pinnedTokenB,'shift+click for comparison');
+  renderPCBars(pinnedTokenB,'tbPcBars','60,100,180');
+  // One panel, two sides: mark the side with no pin so the grid can hand the full width to the
+  // populated side instead of stranding an empty column beside it (see the #tokAB :has rule).
+  document.getElementById('tokA').classList.toggle('unpinned',idx<0);
+  document.getElementById('tokB').classList.toggle('unpinned',pinnedTokenB<0);
+  // A pin should reveal the pair even if the Tokens panel was folded away.
+  if((idx>=0||pinnedTokenB>=0)&&_CARDS.tokens&&_CARDS.tokens.card.classList.contains('clps'))_setCardCollapsed(_CARDS.tokens,false,true);
+  if(_CARDS.tokens)_refreshCardSummary('tokens');
   _updateTokMiniSummary();
 }
 let _sepReqId=0;
@@ -2782,12 +3211,12 @@ function _colorFromProj(proj){
         for(let j=start;j<start+count;j++){lc[j*3]=_dirR[ti]*_d;lc[j*3+1]=_dirG[ti]*_d;lc[j*3+2]=_dirB[ti]*_d;}
       }v.trajGroup.geometry.attributes.color.needsUpdate=true;}}
   }
-  _dirColorActive=true;_markDirty();
+  _dirColorActive=true;_refreshRevealCloudColors();_markDirty();
 }
 async function _applyDirectionColors(){
   if(pinnedToken<0||pinnedTokenB<0||!model||!mode||!nN){
     if(_dirColorActive){
-      _dirColorActive=false;
+      _dirColorActive=false;_refreshRevealCloudColors();
       // Reset to script colors
       for(const v of views){
         _ensureColors(v);
@@ -2877,6 +3306,7 @@ function _applyFilter(){
     v.trajGroup.geometry.attributes.position.needsUpdate=true;
   }});
   _applyBrowserFilter();
+  _refreshRevealCloudColors();// script hide/isolate needs to take effect on the reveal cloud too
   _markDirty();
 }
 function _ensurePositionBuf(v){
@@ -2891,6 +3321,12 @@ function updateVP(vi,pcX,pcY,pcZ,layer){const v=views[vi];v.pcX=pcX;v.pcY=pcY;v.
   // Apply script filter — move hidden tokens off-screen
   if(_hiddenScripts.size){for(let i=0;i<nN;i++){if(_hiddenScripts.has(scripts[i])){pos[i*3]=9999;pos[i*3+1]=9999;pos[i*3+2]=9999;}}}
   v.geo.attributes.position.needsUpdate=true;if(!play)v.geo.computeBoundingSphere();
+  // The base cloud is the 2,000-sample's own renderer — retired as the default
+  // view once vocab is the source (the reveal cloud is the sole renderer then;
+  // its zoom-progressive binning is what keeps an overview zoom legible, which
+  // an unconditional 48k-150k-point cloud would not be). Data still populates
+  // above (position/needsUpdate) in case anything non-visual reads v.geo.
+  v.pts.visible=(_cloudSource!=='vocab');
   {const _p=vi===0?'A':vi===1?'Δ':'B';document.getElementById('ax'+vi).textContent=`${_p}: PC${pcX}×PC${pcY}`;}
   if(!v._fitted){v.cam.position.set(0,0,2.5);v.ctl.target.set(0,0,0);v.ctl.update();v._fitted=true;}}
 function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
@@ -3054,9 +3490,17 @@ function updateAllViewports(){
       for(let i=NC;i<NV;i++)updateTrajMarker(i);
       if(pinnedToken>=0||pinnedTokenB>=0)_syncAllPins(true);
       buildBrowser();_updateOverlayMarkers();
+      // Re-fire: on a cold pair-change (_canRenderNow was false below), _rebuildClouds()
+      // only just now set the traj views' pcX/pcY — the earlier call below would have binned
+      // the PREVIOUS pair. Cheap to repeat (bundle cache + gen guard) if it was already current.
+      _rebuildTrajDensity();
     });
     _lastPK=pk;
     _revOnLayer();// pair change: rebuild reveal grid for the new PCs (debounced)
+    // Depends only on the PC pair, not the current layer (it aggregates across ALL layers),
+    // so — unlike the point reveal — this never re-runs on a plain layer scrub (see the
+    // "PCs unchanged" branch below, which doesn't call it).
+    _rebuildTrajDensity();
     return;
   }
   // PCs unchanged — just update positions for current layer (layer scrub)
@@ -3144,7 +3588,7 @@ function buildBrowser(){
     const pos=new Float32Array(nCells*ptsPerCell*3);
     const col=new Float32Array(nCells*ptsPerCell*3);
     const origPos=new Float32Array(nCells*ptsPerCell*3);
-    const tokMap=new Uint16Array(nCells*ptsPerCell);
+    const tokMap=new Uint32Array(nCells*ptsPerCell);// Uint32 — vocab rows exceed 65,536 (qwen: 149,866)
     let idx=0;
     _brCells.forEach(c=>{
       const {pa,pb,cx,cy,rad}=c;
@@ -3477,6 +3921,27 @@ async function loadGateHeatmap(){
     for(let i=0;i<data.length;i++)raw[i]=f16(data[i]);
     _gateHeat=raw;_gateNL=_nRealLayers;
   }catch(e){_gateHeat=null;}
+}
+// Full-vocab depth curve (Phase 4 tier 1) — same tiny-whole-file-load pattern as the
+// sample's own gate heatmap (a few MB even at 150k rows, since it's a per-token
+// max-reduction, not raw neuron arrays), addressed by vocab_row instead of sample idx.
+let _vocabGateHeat=null,_vocabGateNL=0;
+async function loadVocabGateHeatmap(){
+  try{const resp=await _apiFetch(`/api/vocab-gate-heatmap/${model}/${mode}`);if(!resp.ok){_vocabGateHeat=null;return;}
+    const buf=await resp.arrayBuffer();
+    const dv=new DataView(buf);const hLen=dv.getUint16(8,true);
+    const off=10+hLen;
+    const data=new Uint16Array(buf,off);
+    const raw=new Float32Array(data.length);
+    for(let i=0;i<data.length;i++)raw[i]=f16(data[i]);
+    _vocabGateHeat=raw;_vocabGateNL=_nRealLayers;
+  }catch(e){_vocabGateHeat=null;}
+}
+function getVocabGateRow(row){
+  if(!_vocabGateHeat||row<0)return null;
+  const out=new Float32Array(_vocabGateNL);
+  for(let l=0;l<_vocabGateNL;l++)out[l]=_vocabGateHeat[row*_vocabGateNL+l];
+  return out;
 }
 // Local gate lookup — instant, no HTTP
 function getGateRow(tokIdx){
@@ -4675,10 +5140,26 @@ function _rebuildInternals(vi,pair,needsRebuild){
 // --- Neuron activation charts (2D canvas) ---
 function renderNeuronChart(tok,canvasId,rgb){
   const cv=document.getElementById(canvasId);if(!cv)return;
-  if(tok<0||!_gateHeat){cv.style.display='none';return;}
-  const row=getGateRow(tok);if(!row){cv.style.display='none';return;}
-  cv.style.display='block';
-  const w=cv.parentElement.clientWidth||200,h=40;
+  const A=canvasId==='neuronA';
+  const lane=document.getElementById(A?'depthLaneA':'depthLaneB');
+  const note=document.getElementById(A?'taDepthNote':'tbDepthNote');
+  const axis=document.getElementById(A?'taDepthAxis':'tbDepthAxis');
+  // `tok` (pinnedToken/B) is a vocab-row index once the base population itself is
+  // vocab-scale (_cloudSource==='vocab') — the SAMPLE-scoped _gateHeat array would
+  // silently read out of bounds for any row past the old 2,000-sample range, so this
+  // must read the full-vocab gate heatmap instead, not a "virtual pin" special case.
+  const row=_cloudSource==='vocab'
+    ?(tok>=0&&_vocabGateHeat?getVocabGateRow(tok):null)
+    :(tok>=0&&_gateHeat?getGateRow(tok):null);
+  // note now lives outside .depth-lane (moved up under the name, ahead of predicts), so hiding the
+  // lane no longer hides it for free — it needs its own toggle.
+  if(!row){if(lane)lane.style.display='none';if(note)note.style.display='none';return;}
+  if(lane)lane.style.display='block';
+  if(note)note.style.display='flex';
+  // Cap the backing store at 460 too: the CSS max-width caps the DISPLAY, but if we measure while
+  // the lane is momentarily full-width (or hidden — clientWidth 0 falls to the parent's full width)
+  // the bitmap would stretch. min() makes the cap hold whatever clientWidth reports.
+  const w=Math.min(460,cv.clientWidth||cv.parentElement.clientWidth||260),h=40;
   cv.width=w*2;cv.height=h*2;// 2x for retina
   const ctx=cv.getContext('2d');ctx.scale(2,2);ctx.clearRect(0,0,w,h);
   const mx=Math.max(...row)||1;const bw=w/_nRealLayers;
@@ -4697,10 +5178,9 @@ function renderNeuronChart(tok,canvasId,rgb){
   let peakL=0;for(let l=1;l<_nRealLayers;l++)if(row[l]>row[peakL])peakL=l;
   const px=peakL*bw+bw/2,py=h-(row[peakL]/mx)*(h-2);
   ctx.beginPath();ctx.arc(px,py,2,0,Math.PI*2);ctx.fillStyle=`rgb(${rgb})`;ctx.fill();
-  // Label
-  ctx.font=PANEL_CANVAS_FONT;ctx.fillStyle=`rgba(${rgb},0.85)`;
-  ctx.fillText(`peak L${peakL}`,2,9);
-  ctx.textAlign='right';ctx.fillText(`${(row[cL]||0).toFixed(1)}`,w-2,9);ctx.textAlign='left';
+  // Every label is HTML now (caption + axis), NEVER drawn on the canvas — no more legend-vs-mark fight.
+  if(note)note.innerHTML=`<span><b class="stat-lbl">peak</b> L${peakL}</span><span><b class="stat-lbl">now</b> ${(row[clClamped]||0).toFixed(1)} <b class="stat-lbl">@L${clClamped}</b></span>`;
+  if(axis)axis.innerHTML=`<span>L0</span><span>L${_nRealLayers>>1}</span><span>L${_nRealLayers-1}</span>`;
 }
 // --- Attention heatmap (template mode) ---
 let _attnData=null,_attnToken=-1;
@@ -5336,6 +5816,37 @@ function _pcsHitTest(e){
 }
 
 // Unified per-token PCA fetch — shared by pin and hover
+// Vocab-scale analog of TokenStore's "full" tier (all-layers, full-K PCA vector) —
+// pinnedToken/B are vocab-row-addressed once the base population is vocab-scale, so
+// the full-fetch underneath them must read /api/vocab-token-bundle/ (O(1) seeks into
+// vocab_scores.bin) instead of the sample-scoped /api/token-bundle/, or any row past
+// the old 2,000-sample range would silently miss. Populates the SAME _pcsHoverCache
+// shape TokenStore._ingest does, so every existing consumer (_getTokenSpectrumEntry /
+// renderPCBars, _pcsLoadFull / the spectrum view) needs no changes downstream.
+// NOTE: TokenStore's "hover" tier (the lightweight mouse-hover PC+neuron preview) is
+// NOT covered here — it still targets the sample-scoped endpoint. Acknowledged gap:
+// hovering a vocab-only point currently shows no hover preview (fails empty, not
+// wrong-data) until that tier gets its own vocab-scale route.
+async function _fetchVocabTokenFullBatch(rows){
+  const need=[...new Set(rows)].filter(r=>r>=0&&!_pcsHoverCache.has(r));
+  if(!need.length)return;
+  try{
+    const buf=await(await _apiFetch(`/api/vocab-token-bundle/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?rows=${need.join(',')}`)).arrayBuffer();
+    if(buf.byteLength<20)return;
+    const dv=new DataView(buf);
+    const nRows=dv.getUint32(8,true),nL=dv.getUint32(12,true),fK=dv.getUint32(16,true);
+    if(!nRows||!nL||!fK)return;
+    let off=20;
+    const rowIds=[];for(let i=0;i<nRows;i++)rowIds.push(dv.getUint32(off+i*4,true));
+    off+=nRows*4;
+    const perRow=nL*fK;
+    for(let ri=0;ri<nRows;ri++){
+      const data=new Float32Array(buf,off+ri*perRow*4,perRow).slice();
+      if(_pcsHoverCache.size>64){const first=_pcsHoverCache.keys().next().value;_pcsHoverCache.delete(first);}
+      _pcsHoverCache.set(rowIds[ri],{nL,fK,data});
+    }
+  }catch(e){}
+}
 async function _pcsFetchToken(tokIdx){
   if(tokIdx<0||!model)return null;
   const cached=_pcsHoverCache.get(tokIdx);
@@ -5344,7 +5855,8 @@ async function _pcsFetchToken(tokIdx){
   if(pending)return pending;
   const gen=_pcsFetchGen;
   const p=(async()=>{
-    await TokenStore.ensure({fullTokens:[tokIdx],layer:cL});
+    if(_cloudSource==='vocab')await _fetchVocabTokenFullBatch([tokIdx]);
+    else await TokenStore.ensure({fullTokens:[tokIdx],layer:cL});
     const entry=_pcsHoverCache.get(tokIdx)||null;
     if(gen!==_pcsFetchGen)return null;
     return entry;
@@ -5835,7 +6347,7 @@ async function _onPinChange(){
       const pWeights = (tokA>=0&&tokB>=0)
         ? _loadDirectionWeightData(tokA,tokB)
         : Promise.resolve().then(()=>{_wlDirData=null;_wlDirKey='';});
-      const pTokens  = TokenStore.ensure({fullTokens:[tokA,tokB],layer:cL}).then(()=>{
+      const pTokens  = (_cloudSource==='vocab'?_fetchVocabTokenFullBatch([tokA,tokB]):TokenStore.ensure({fullTokens:[tokA,tokB],layer:cL})).then(()=>{
         const aEntry=tokA>=0?_pcsHoverCache.get(tokA):null;
         const bEntry=tokB>=0?_pcsHoverCache.get(tokB):null;
         _pcsFullA=aEntry?aEntry.data:null;
@@ -5989,10 +6501,36 @@ async function loadAll(){
   // and the references would otherwise keep the old data alive until next pin.
   if(!isSameModel){_wlDirData=null;_wlDirKey='';_wlBuiltKey='';}
 
-  // Phase 2: use serve metadata instead of hydrating all_scores.bin.
-  scripts=d0.scripts;texts=d0.texts;nN=d0.n_tokens;
-  nK=serveResult.full_k||d0.n_components;tokenIds=d0.token_ids||[];
-  document.getElementById('ntok').textContent=nN+' tok / '+nK+' PC';
+  // Vocab caches are per-model too — reset alongside the PCA caches above.
+  _vocabTexts=null;_vocabTextsKey='';_vocabTextsPending=null;
+  _vocabScripts=null;_vocabScriptsKey='';_vocabScriptsPending=null;
+  _vocabIds=null;_vocabIdsKey='';_vocabIdsPending=null;
+  _vocabNRows=0;_vocabMetaCache=null;_vocabMetaKey='';
+
+  // Phase 2: full vocabulary is the base data source, not the 2,000-token
+  // sample. Eager-fetch text/script/id/meta — cheap (512KB-1.5MB total per
+  // model, measured) — the same load-time-eager treatment the sample used to
+  // get exclusively. Falls back to the sample (with a visible banner) only
+  // for an MRI that never ran `heinrich mri-vocab`.
+  _setLoad('loading full vocabulary...');
+  const [vTexts,vScripts,vIds,vMeta]=await Promise.all([
+    _ensureVocabTexts(),_ensureVocabScripts(),_ensureVocabIds(),_ensureVocabMeta()
+  ]);
+  const hasVocab=!!(vTexts&&vMeta&&vMeta.n_rows);
+  _showVocabFallbackBanner(!hasVocab);
+  if(hasVocab){
+    texts=vTexts;
+    scripts=(vScripts&&vScripts.length===vTexts.length)?vScripts:vTexts.map(()=>'other');
+    nN=vMeta.n_rows;_vocabNRows=nN;
+    tokenIds=vIds?Array.from(vIds):[];
+    _cloudSource='vocab';_vocabRevealEnabled=true;
+  }else{
+    scripts=d0.scripts;texts=d0.texts;nN=d0.n_tokens;tokenIds=d0.token_ids||[];
+    _cloudSource='sample';
+  }
+  if(typeof _updateVocabBtn==='function')_updateVocabBtn();
+  nK=serveResult.full_k||d0.n_components;
+  document.getElementById('ntok').textContent=nN+' tok / '+nK+' PC'+(hasVocab?'':' (sample only)');
   document.getElementById('st').textContent='Preparing...';
   _setLoad(`loading ${nN} tokens x ${nK} PCs...`);
   allL=[];// legacy blob path disabled; serve/index path is primary now
@@ -6103,6 +6641,7 @@ async function loadAll(){
   await _yieldFrame();
   _setLoad('loading gate heatmap...');
   try{loadGateHeatmap();}catch(e){console.error('gate:',e);}
+  try{loadVocabGateHeatmap();}catch(e){console.error('vocab gate:',e);}
   await _yieldFrame();
   _setLoad('building internals...');
   try{buildLeftViewports();}catch(e){console.error('left:',e);}
@@ -6137,9 +6676,13 @@ async function init(){const models=await api('models');const sel=document.getEle
   const _tsResults=document.getElementById('tsresults');
   _tsResults.addEventListener('click',e=>{
     const vr=e.target.closest('[data-vr]');
-    if(vr){if(e.shiftKey||_isRightClick(e))_setVocabTarget2(parseInt(vr.dataset.vr),vr.dataset.vt||'');else _setVocabTarget(parseInt(vr.dataset.vr),vr.dataset.vt||'');return;}
+    if(vr){const row=parseInt(vr.dataset.vr),txt=vr.dataset.vt||'';
+      // Vocab-only hit: still sets the homing gold-target (unchanged), AND pins into the
+      // main inspector (PC bars/depth-curve/neuron chart/3D marker) via the same
+      // _pinVocabRow path predict-chips use — search shouldn't be a second-class way in.
+      if(e.shiftKey||_isRightClick(e)){_setVocabTarget2(row,txt);_pinVocabRow(false,row,txt);}else{_setVocabTarget(row,txt);_pinVocabRow(true,row,txt);}return;}
     const d=e.target.closest('[data-ti]');if(!d)return;const i=parseInt(d.dataset.ti);if(e.shiftKey||_isRightClick(e)){pinnedTokenB=i;}else{pinnedToken=i;}updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();});
-  _tsResults.addEventListener('contextmenu',e=>{e.preventDefault();const vr=e.target.closest('[data-vr]');if(vr){_setVocabTarget2(parseInt(vr.dataset.vr),vr.dataset.vt||'');return;}const d=e.target.closest('[data-ti]');if(!d)return;pinnedTokenB=parseInt(d.dataset.ti);updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();});
+  _tsResults.addEventListener('contextmenu',e=>{e.preventDefault();const vr=e.target.closest('[data-vr]');if(vr){const row=parseInt(vr.dataset.vr),txt=vr.dataset.vt||'';_setVocabTarget2(row,txt);_pinVocabRow(false,row,txt);return;}const d=e.target.closest('[data-ti]');if(!d)return;pinnedTokenB=parseInt(d.dataset.ti);updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();});
   document.getElementById('tsearch').addEventListener('input',e=>{
     clearTimeout(_searchTimer);
     _searchTimer=setTimeout(()=>{
@@ -6167,11 +6710,24 @@ async function init(){const models=await api('models');const sel=document.getEle
           }
           d.dataset.ti=i;
           frag.appendChild(d);count++;
+          // Vocab-native: `i` already IS the vocab row, so this loop alone can feed
+          // the cloud-spotlight overlay below — no need for the second loop's
+          // separate vocab-hit tracking.
+          if(_cloudSource==='vocab')_ovPairs.push({row:i,text:texts[i]});
         }
+      }
+      if(_cloudSource==='vocab'){
+        // Search doubles as a cloud spotlight: matched rows populate the overlay
+        // (unless the explicit overlay input is driving it) — same behavior the
+        // sample-fallback path below gets from its own (separate) vocab loop.
+        if(!_ovInputActive())_setOverlay(_ovPairs);
       }
       // Full-vocab matches: tokens NOT in the sampled cloud but addressable via
       // the frozen-frame projection. Click sets them as the gold homing TARGET.
-      if(count<20&&_vocabTexts){
+      // Dead weight once texts[] IS the vocab list (_cloudSource==='vocab', handled
+      // above) — the first loop already covers every match then, since sampleSet
+      // would exclude nothing. Only runs in the rare sample-fallback case.
+      else if(count<20&&_vocabTexts){
         const sampleSet=new Set(texts);let vcount=0;
         for(let r=0;r<_vocabTexts.length&&count+vcount<20;r++){
           const vt=_vocabTexts[r];
@@ -6632,9 +7188,17 @@ leftViews.forEach(v=>v.ctl.addEventListener('change',_onCamMove));
 rightViews.forEach(v=>v.ctl.addEventListener('change',_onCamMove));
 // Cloud viewports: zoom/orbit change drives the progressive vocab reveal.
 for(let _vi=0;_vi<NC;_vi++){const _cvi=_vi;views[_vi].ctl.addEventListener('change',()=>_revOnZoom(_cvi));}
-function _updateVocabBtn(){const b=document.getElementById('vocabToggle');if(b){b.textContent='vocab reveal: '+(_vocabRevealEnabled?'on':'off');b.style.color=_vocabRevealEnabled?'#8899AA':'#555';}}
+function _updateVocabBtn(){const b=document.getElementById('vocabToggle');if(!b)return;
+  // Once the base sample cloud is retired (_cloudSource==='vocab'), the reveal
+  // cloud is the ONLY renderer — there's nothing meaningful to fall back to, so
+  // it can't be switched off (a bare, unlabeled scene is worse than a chip that
+  // can't be clicked). The sample-fallback case keeps the old on/off toggle.
+  if(_cloudSource==='vocab'){b.textContent='vocab reveal: always on';b.style.color='#556677';b.style.cursor='default';return;}
+  b.textContent='vocab reveal: '+(_vocabRevealEnabled?'on':'off');b.style.color=_vocabRevealEnabled?'#8899AA':'#555';b.style.cursor='pointer';}
 (function(){const b=document.getElementById('vocabToggle');if(!b)return;
-  b.addEventListener('click',()=>{_vocabRevealEnabled=!_vocabRevealEnabled;_updateVocabBtn();
+  b.addEventListener('click',()=>{
+    if(_cloudSource==='vocab')return;// no-op — see _updateVocabBtn
+    _vocabRevealEnabled=!_vocabRevealEnabled;_updateVocabBtn();
     if(!_vocabRevealEnabled){for(let vi=0;vi<NC;vi++)_revClear(vi);}else{_revOnLayer();}});
   _updateVocabBtn();})();
 (function anim(){requestAnimationFrame(anim);
@@ -6963,8 +7527,13 @@ const _CARDS={};
 function _cardSummaryText(key){
   const trim=s=>String(s==null?'':s).replace(/\s+/g,' ').trim();
   try{switch(key){
-    case 'tokA':{if(pinnedToken<0)return 'no pin';const t=trim(texts[pinnedToken])||'∅';return `${t} · ${scripts[pinnedToken]||'?'} #${pinnedToken}`;}
-    case 'tokB':{if(pinnedTokenB<0)return 'no pin';const t=trim(texts[pinnedTokenB])||'∅';return `${t} · ${scripts[pinnedTokenB]||'?'} #${pinnedTokenB}`;}
+    case 'tokens':{
+      const a=pinnedToken>=0?(trim(texts[pinnedToken])||'∅'):null,b=pinnedTokenB>=0?(trim(texts[pinnedTokenB])||'∅'):null;
+      if(a&&b)return `A ${a} · B ${b}`;
+      if(a)return `A ${a}`;
+      if(b)return `B ${b}`;
+      return 'click a token to pin';
+    }
     case 'sep':{if(pinnedToken<0||pinnedTokenB<0)return 'pin A + B';const d=trim(document.getElementById('sepDist')?.textContent);return d?('sep '+d):'A vs B · analyze';}
     case 'attn':return pinnedToken>=0?`#${pinnedToken} · L${cL}`:'no pin';
     case 'homing':{const h=trim(document.getElementById('homingText')?.textContent);return h||'no live run';}
@@ -6988,7 +7557,37 @@ function _setCardCollapsed(c,collapsed,persist){
   else if(was&&typeof _onCardOpen==='function')_onCardOpen(c.key);// unfolded: wake what it needs
   if(persist){try{localStorage.setItem('heinrich.card.'+c.key,collapsed?'1':'0');}catch(e){}}
 }
-function _toggleCard(c){_setCardCollapsed(c,!c.card.classList.contains('clps'),true);}
+// LINKED PAIRS: the bench is a reflow grid and CSS grid locks a row to its TALLEST card — so a
+// collapsed card beside an expanded one floats over a canyon (Discover under a tall Direction). A
+// grid row is kept all-open or all-shut. _cardRowMates returns the OTHER visible cards sharing c's
+// row (its pair at 2-up, its two neighbours at 3-up): the grid fills row-major, so a row is the
+// floor(i/cols) block. Below the 2-column breakpoint every card is its own row, so there are none.
+function _cardRowMates(c){
+  const work=document.getElementById('tokWork');
+  if(!work||!c||!work.contains(c.card))return [];
+  const mates=[];
+  if(_frMO)_frMO.disconnect();
+  const cols=_benchCols(work);
+  if(cols>=2){
+    const vis=[...work.children].filter(el=>el.classList.contains('panel-card')&&getComputedStyle(el).display!=='none');
+    const i=vis.indexOf(c.card);
+    if(i>=0){
+      const byEl=new Map(Object.values(_CARDS).map(x=>[x.card,x]));
+      const r=Math.floor(i/cols);
+      for(let j=r*cols;j<Math.min(vis.length,r*cols+cols);j++)
+        if(j!==i){const m=byEl.get(vis[j]);if(m)mates.push(m);}
+    }
+  }
+  _fillTrailingRow();// re-applies the trailing span _benchCols cleared, and reconnects the observer
+  return mates;
+}
+// Clicking a card folds its whole row with it — you never leave one card tall beside a stub.
+function _toggleCard(c){
+  const collapsed=!c.card.classList.contains('clps');
+  _setCardCollapsed(c,collapsed,true);
+  for(const m of _cardRowMates(c))
+    if(m.card.classList.contains('clps')!==collapsed)_setCardCollapsed(m,collapsed,true);
+}
 function _setTabDot(){/* no tab strip to dot */}
 function _flashCard(c){const h=c.headerEl;if(!h)return;h.classList.remove('card-flash');void h.offsetWidth;h.classList.add('card-flash');setTimeout(()=>h.classList.remove('card-flash'),950);}
 // The hook: call when a card's content changes. Every card is mounted now, so the flash lands
@@ -7004,8 +7603,7 @@ function _initCollapsibles(){
     // No tabs any more — every card is on one bench, and `tab:null` means "always mounted".
     // Order IS the argument: the pair, then what else is here, then the A−B axis, then the
     // running model. Only the pair and the analysis start OPEN; the rest cost one line each.
-    {key:'tokA',id:'tokA',tab:null,collapsed:false},
-    {key:'tokB',id:'tokB',tab:null,collapsed:false},
+    {key:'tokens',id:'tokensPanel',tab:null,collapsed:false},
     {key:'discover',id:'discoverCard',tab:null,collapsed:true},
     {key:'attn',id:'attnPanel',tab:null,collapsed:true},
     {key:'sep',id:'sepPanel',tab:null,collapsed:false},
@@ -7042,8 +7640,8 @@ _initCollapsibles();
 function _redrawPanelCanvases(){
   renderNeuronChart(pinnedToken,'neuronA','200,80,50');
   renderNeuronChart(pinnedTokenB,'neuronB','60,100,180');
-  renderPCBar(pinnedToken,'pcBarA','200,80,50');
-  renderPCBar(pinnedTokenB,'pcBarB','60,100,180');
+  renderPCBars(pinnedToken,'taPcBars','200,80,50');
+  renderPCBars(pinnedTokenB,'tbPcBars','60,100,180');
   renderAttnChart();
   if(_homingCache)_homingDraw();
 }
@@ -7078,6 +7676,37 @@ function _fillTrailingRow(){
   }
   _frObserve();
 }
+// Honest column count. A stale trailing-span forces an implicit track, so a 1-column bench reports
+// two — the same feedback _fillTrailingRow guards. Clear spans first; the next fill re-applies them.
+// The caller owns the observer disconnect.
+function _benchCols(work){
+  for(const c of work.querySelectorAll(':scope > .panel-card'))c.style.removeProperty('grid-column');
+  return getComputedStyle(work).gridTemplateColumns.split(/\s+/).filter(Boolean).length;
+}
+// A row APPEARS mismatched when a card arrives already open (Direction on Analyze, Steer/Homing on
+// a live run) beside a shut row-mate. Reconcile by UNION — any open in the row opens the row — so
+// the linked pair is never left half-folded. Runs inside the observer's disconnect (it writes .clps,
+// which the bench observer watches) so it cannot re-trigger itself.
+function _syncRows(){
+  const work=document.getElementById('tokWork');if(!work)return;
+  if(_frMO)_frMO.disconnect();
+  try{
+    const cols=_benchCols(work);
+    if(cols<2)return;
+    const vis=[...work.children].filter(el=>el.classList.contains('panel-card')&&getComputedStyle(el).display!=='none');
+    const byEl=new Map(Object.values(_CARDS).map(c=>[c.card,c]));
+    for(let s=0;s<vis.length;s+=cols){
+      const grp=[];
+      for(let j=s;j<Math.min(vis.length,s+cols);j++){const m=byEl.get(vis[j]);if(m)grp.push(m);}
+      if(grp.length<2)continue;// a lone trailing card spans the row; it has no partner to match
+      if(grp.some(m=>!m.card.classList.contains('clps')))
+        for(const m of grp)if(m.card.classList.contains('clps'))_setCardCollapsed(m,false,false);
+    }
+  }finally{_frObserve();}
+}
+// One reflow: balance the rows, THEN close any ragged trailing row. Order matters — a union-open
+// can change which card is last, so pairs must settle before the trailing span is measured.
+function _reflowBench(){_syncRows();_fillTrailingRow();}
 (function(){
   const p=document.getElementById('tokpanel');
   if(!p||typeof ResizeObserver==='undefined')return;
@@ -7087,17 +7716,17 @@ function _fillTrailingRow(){
     if(Math.abs(r.width-lw)<2&&Math.abs(r.height-lh)<2)return;// ignore sub-pixel churn
     lw=r.width;lh=r.height;
     if(raf)cancelAnimationFrame(raf);
-    raf=requestAnimationFrame(()=>{raf=0;_redrawPanelCanvases();_fillTrailingRow();});// coalesce a drag-resize
+    raf=requestAnimationFrame(()=>{raf=0;_redrawPanelCanvases();_reflowBench();});// coalesce a drag-resize
   }).observe(p);
   // Cards also APPEAR (steer and homing arrive with a live run) and fold. Watch the bench itself
   // rather than trying to find every call site that flips a display.
   let mraf=0;
   _frMO=new MutationObserver(()=>{
     if(mraf)return;
-    mraf=requestAnimationFrame(()=>{mraf=0;_fillTrailingRow();});
+    mraf=requestAnimationFrame(()=>{mraf=0;_reflowBench();});
   });
   _frObserve();
-  _fillTrailingRow();
+  _reflowBench();
 })();
 // === Capability manifest (the inverted contract) ===
 // The backend DECLARES what it can do; the SPA composes from that — instead of
@@ -7754,6 +8383,29 @@ async function _fetchTokenVec(mdl,mde,token){
     return {nL,fK,data:new Float32Array(buf,8,nL*fK)};
   }catch(e){return null;}
 }
+// Same wire format as /api/token-pca (by design — see companion.py's vocab_token_row
+// docstring), addressed by full-vocab row instead of sample index. This is the exact,
+// full-K geometry for ANY of the ~49k-150k vocab tokens, not just the 2,000-sample.
+async function _fetchVocabTokenVec(mdl,mde,row){
+  try{
+    const buf=await (await _apiFetch(`/api/vocab-token/${encodeURIComponent(mdl)}/${encodeURIComponent(mde)}?row=${row}`)).arrayBuffer();
+    if(buf.byteLength<8)return null;
+    const dv=new DataView(buf);const nL=dv.getUint32(0,true),fK=dv.getUint32(4,true);
+    if(!nL||!fK||buf.byteLength<8+nL*fK*4)return null;
+    return {nL,fK,data:new Float32Array(buf,8,nL*fK)};
+  }catch(e){return null;}
+}
+// Pin a full-vocab row to slot A or B. Now that the base population itself is
+// vocab-scale (Phase 1: texts/scripts/nN/_pcFull all address vocab rows), `row`
+// IS a valid pinnedToken/B value directly — no separate slot/state, no separate
+// fetch. Every existing pinnedToken consumer (name/meta, PC bars, 3D marker+path,
+// depth curve) already works for any vocab row via the same generic machinery a
+// sample-derived pin used, once _pcsFetchToken/TokenStore's "full" tier is
+// vocab-scale too (see _fetchVocabTokenFullBatch).
+function _pinVocabRow(isA,row,text){
+  if(isA)pinnedToken=row;else pinnedTokenB=row;
+  updatePinMarkers();showPinDetail(pinnedToken);_onPinChange();_saveState();
+}
 // Browser-compute of /api/direction-depth (501 in the serverless deploy) for a
 // cross-model comparison: per-layer magnitude of the a−b direction from the two
 // tokens' full PC vectors (two small reads). Magnitude is the meaningful
@@ -8150,7 +8802,7 @@ window.__heinrich = {
   overlayPoint:(i=0,vi=0)=>{const e=_overlayEntries[i];if(!e)return null;const v=views[vi];const vec=_overlayVec(e,cL);const c=(v&&vec)?_liveCoordCloud(v,cL,vec):null;return {row:e.row,text:e.text,layer:cL,x:c?c[0]:null,y:c?c[1]:null,z:c?c[2]:null};},
   // --- Part A: zoom-progressive full-vocab reveal ---
   get vocabReveal(){let shown=0,zoom=0,active=false;for(let vi=0;vi<NC;vi++){const r=views[vi]._rev;const dist=views[vi].cam.position.distanceTo(views[vi].ctl.target)||1;zoom=Math.max(zoom,2.5/dist);if(r){shown+=r.shown||0;if(r.active)active=true;}}return {enabled:_vocabRevealEnabled,active,shown,total:_vocabNRows||48660,zoom};},
-  setVocabReveal:(b)=>{_vocabRevealEnabled=!!b;if(typeof _updateVocabBtn==='function')_updateVocabBtn();if(!_vocabRevealEnabled){for(let vi=0;vi<NC;vi++)_revClear(vi);}else{_revOnLayer();}return _vocabRevealEnabled;},
+  setVocabReveal:(b)=>{if(_cloudSource==='vocab')return _vocabRevealEnabled;_vocabRevealEnabled=!!b;if(typeof _updateVocabBtn==='function')_updateVocabBtn();if(!_vocabRevealEnabled){for(let vi=0;vi<NC;vi++)_revClear(vi);}else{_revOnLayer();}return _vocabRevealEnabled;},
   zoomCloud:(vi=0,factor=2)=>{const v=views[vi];if(!v)return null;v.cam.position.multiplyScalar(1/(factor||1));if(v.ctl)v.ctl.update();_revOnZoom(vi);_markDirty();const dist=v.cam.position.distanceTo(v.ctl.target)||1;return {vi,dist,zoom:2.5/dist};},
   revealPointAt:(vi=0,i=0)=>{const pts=revealPts[vi];if(!pts)return null;const pos=pts.geometry.attributes.position.array;const rev=views[vi]._rev;return {x:pos[i*3],y:pos[i*3+1],z:pos[i*3+2],row:rev&&rev.shownRows&&i<rev.shown?rev.shownRows[i]:-1,shown:rev?rev.shown:0,zoom:rev?rev.zoom:0};},
   revBuild:(vi=0)=>_revBuildGrid(vi).then(r=>{if(r){_revFill(vi);_updateOverlayTag();}return r?{shown:r.shown,nRows:r.nRows}:null;}),

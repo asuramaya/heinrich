@@ -589,6 +589,10 @@ _full_vocab_text_cache: dict[str, dict] = {}
 _full_vocab_text_lock = threading.Lock()
 _full_vocab_text_pending: dict[str, threading.Event] = {}
 
+_full_vocab_row_cache: dict[str, dict] = {}
+_full_vocab_row_lock = threading.Lock()
+_full_vocab_row_pending: dict[str, threading.Event] = {}
+
 
 def _get_vocab_map(mri_path: str) -> tuple:
     """Return (texts, vocab_to_mri_index) for the MRI, cached.
@@ -659,6 +663,41 @@ def _get_full_vocab_text_map(mri_path: str) -> dict:
         return entry
     finally:
         _cache_finish_fill(_full_vocab_text_lock, _full_vocab_text_pending, mri_path)
+
+
+def _get_full_vocab_row_map(mri_path: str) -> dict:
+    """Return {token_id: vocab_row} for the FULL captured vocabulary, cached.
+
+    The inverse of `_get_full_vocab_text_map` — same `vocab_ids.npy` input,
+    keyed the other direction. `vocab_row` addresses `vocab_scores.bin`
+    (via `vocab_token_row`) for exact full-K per-layer geometry: unlike
+    `mri_idx` (the 2,000-token sample, near-0% hit rate for real predictions —
+    the sample is stratified, not top-k, so a model's actual top guesses
+    rarely land in it), essentially every predicted token that resolves to
+    text at all also has a vocab_row, since the full-vocab projection covers
+    the whole tokenizer. Returns an empty dict if never built (heinrich mri-vocab).
+    """
+    while True:
+        with _full_vocab_row_lock:
+            cached = _full_vocab_row_cache.get(mri_path)
+            if cached is not None:
+                return cached
+        if _cache_claim_fill(_full_vocab_row_lock, _full_vocab_row_pending, mri_path):
+            break
+    try:
+        ids_path = Path(mri_path) / "decomp" / "vocab_ids.npy"
+        entry: dict[int, int] = {}
+        if ids_path.exists():
+            ids = np.load(str(ids_path))
+            entry = {int(v): r for r, v in enumerate(ids)}
+        with _full_vocab_row_lock:
+            cached = _full_vocab_row_cache.get(mri_path)
+            if cached is not None:
+                return cached
+            _full_vocab_row_cache[mri_path] = entry
+        return entry
+    finally:
+        _cache_finish_fill(_full_vocab_row_lock, _full_vocab_row_pending, mri_path)
 
 
 def _get_weight_gram(path: Path, side: str) -> np.ndarray | None:
@@ -1346,6 +1385,7 @@ def _token_predicts(mri_path: str, token_idx: int, layer: int, top_k: int = 20) 
     # dict per call was eating ~1s on warm repeats.
     texts, vocab_to_mri = _get_vocab_map(mri_path)
     full_text = _get_full_vocab_text_map(mri_path)
+    full_row = _get_full_vocab_row_map(mri_path)
 
     predictions = []
     for vi in top_indices:
@@ -1364,6 +1404,10 @@ def _token_predicts(mri_path: str, token_idx: int, layer: int, top_k: int = 20) 
         predictions.append({
             "vocab_id": vi,
             "mri_idx": mri_idx,
+            # vocab_row addresses the full-vocab projection (vocab_scores.bin) —
+            # the real pin target for the ~96%+ of predictions the 2,000-sample
+            # (mri_idx) never covers. -1 only if mri-vocab was never run.
+            "vocab_row": full_row.get(vi, -1),
             "text": text,
             "unresolved": unresolved,
             "logit": float(logits[vi]),
@@ -3818,6 +3862,117 @@ def _cloud_bundle(mri_path: str, full_pcs: list[int], medium_pcs: list[int], ste
     return header + full_ids_bytes + medium_ids_bytes + full_slabs.tobytes() + med_slabs.tobytes()
 
 
+_VOCAB_PC_BUNDLE_MAGIC = b"VPCB"
+
+
+def _read_vocab_pc_slabs(mri_path: str, pcs: list[int], step: int | None = None) -> tuple[int, int, np.ndarray] | dict:
+    """Read multiple full-vocab PC columns (all layers) from vocab_pc16.bin.
+
+    vocab_pc16.bin is LAYER-major ([n_layers, n_pcs, n_rows]) — the opposite
+    layout from pc_scores.bin's PC-major slabs, so "all layers for one PC" is
+    n_layers separate seeks, not one contiguous read (same per-seek cost
+    vocab_pc_column already pays). Returns (n_layers, n_rows_or_sample, slabs)
+    where slabs is float16 [n_pcs, n_layers, n_rows_or_sample] — strided by
+    `step` (post-read slice; the seeks stay contiguous per-row) when given.
+    """
+    pc_ids = _dedupe_ints(pcs)
+    vp = Path(mri_path) / "decomp" / "vocab_pc16.bin"
+    if not vp.exists():
+        return {"error": "No vocab_pc16.bin — run: heinrich mri-vocab --pc16-only"}
+    with open(vp, "rb") as f:
+        magic, n_layers, n_pcs_file, n_rows = struct.unpack("<4sIII", f.read(16))
+        if magic != b"VP16":
+            return {"error": f"Bad vocab_pc16.bin magic: {magic!r}"}
+        if not pc_ids:
+            n_sample = (n_rows + step - 1) // step if step and step > 1 else n_rows
+            return n_layers, n_sample, np.zeros((0, n_layers, n_sample), dtype=np.float16)
+        for pc in pc_ids:
+            if pc < 0 or pc >= n_pcs_file:
+                return {"error": f"PC {pc} out of range (max {n_pcs_file - 1})"}
+        stride = n_rows * 2
+        n_out = (n_rows + step - 1) // step if step and step > 1 else n_rows
+        out = np.zeros((len(pc_ids), n_layers, n_out), dtype=np.float16)
+        for pi, pc in enumerate(pc_ids):
+            for layer in range(n_layers):
+                f.seek(16 + (layer * n_pcs_file + pc) * stride)
+                row = np.frombuffer(f.read(stride), dtype=np.float16)
+                out[pi, layer] = row[::step] if step and step > 1 else row
+    return n_layers, n_out, out
+
+
+def _vocab_pc_bundle(mri_path: str, full_pcs: list[int], medium_pcs: list[int] | None = None,
+                      step: int = 10) -> bytes | dict:
+    """Bundle multiple full-vocab PC columns (all layers) into one response —
+    the full-vocab analog of _cloud_bundle, same two-tier shape: a full-
+    resolution tier (every row — feeds CloudStore's base cloud and the
+    aggregate trajectory-density view) and a strided medium tier (every
+    `step`-th row — feeds the browser's cheaper neighbor view), so the medium
+    tier doesn't stay silently sample-scoped once the full tier is vocab-native.
+
+    Layout: [4s magic][7I version, n_full, n_med, n_layers, n_rows, n_sample, step]
+            [uint32 * n_full pc ids][uint32 * n_med pc ids]
+            [float16 * n_full * n_layers * n_rows][float16 * n_med * n_layers * n_sample]
+    """
+    medium_pcs = medium_pcs or []
+    full_ids = _dedupe_ints(full_pcs)
+    medium_ids = [pc for pc in _dedupe_ints(medium_pcs) if pc not in set(full_ids)]
+    if not full_ids and not medium_ids:
+        return {"error": "No PCs requested"}
+
+    full_result = _read_vocab_pc_slabs(mri_path, full_ids)
+    if isinstance(full_result, dict):
+        return full_result
+    n_layers, n_rows, full_slabs = full_result
+
+    med_result = _read_vocab_pc_slabs(mri_path, medium_ids, step=step)
+    if isinstance(med_result, dict):
+        return med_result
+    med_layers, n_sample, med_slabs = med_result
+    if medium_ids and med_layers != n_layers:
+        return {"error": "Vocab PC bundle layer mismatch"}
+
+    header = struct.pack("<4sIIIIIII", _VOCAB_PC_BUNDLE_MAGIC, _BUNDLE_VERSION,
+                         len(full_ids), len(medium_ids), n_layers, n_rows, n_sample, step)
+    full_ids_bytes = struct.pack(f"<{len(full_ids)}I", *full_ids) if full_ids else b''
+    medium_ids_bytes = struct.pack(f"<{len(medium_ids)}I", *medium_ids) if medium_ids else b''
+    return header + full_ids_bytes + medium_ids_bytes + full_slabs.tobytes() + med_slabs.tobytes()
+
+
+_VOCAB_TOKEN_BUNDLE_MAGIC = b"VTKB"
+
+
+def _vocab_token_bundle(mri_path: str, rows: list[int]) -> bytes | dict:
+    """Multiple full-K vocab-row vectors (all layers) in one response — the
+    multi-row analog of vocab_token_row (companion_serve.py), so a pinned-pair
+    fetch (A+B) stays one round trip instead of two now that pins are
+    vocab-row addressed.
+
+    Layout: [4s magic][4I version, n_rows, n_layers, k][uint32 * n_rows row ids]
+            [float32 * n_rows * n_layers * k], in request order.
+    """
+    row_ids = _dedupe_ints(rows)
+    if not row_ids:
+        return {"error": "No rows requested"}
+    vp = Path(mri_path) / "decomp" / "vocab_scores.bin"
+    if not vp.exists():
+        return {"error": "No full-vocab projection — run: heinrich mri-vocab"}
+    with open(vp, "rb") as f:
+        magic, n_rows_file, n_layers, k = struct.unpack("<4sIII", f.read(16))
+        if magic != b"VSCR":
+            return {"error": f"Bad vocab_scores.bin magic: {magic!r}"}
+        stride = n_layers * k * 2
+        data = np.zeros((len(row_ids), n_layers, k), dtype=np.float32)
+        for ri, row in enumerate(row_ids):
+            if row < 0 or row >= n_rows_file:
+                return {"error": f"vocab row {row} out of range (max {n_rows_file - 1})"}
+            f.seek(16 + row * stride)
+            data[ri] = np.frombuffer(f.read(stride), dtype=np.float16).reshape(n_layers, k).astype(np.float32)
+    header = struct.pack("<4sIIII", _VOCAB_TOKEN_BUNDLE_MAGIC, _BUNDLE_VERSION,
+                         len(row_ids), n_layers, k)
+    ids_bytes = struct.pack(f"<{len(row_ids)}I", *row_ids)
+    return header + ids_bytes + data.tobytes()
+
+
 def _read_token_index_rows(mri_path: str, tokens: list[int]) -> tuple[int, int, np.ndarray] | dict:
     """Read multiple token-major full PCA rows in one pass.
 
@@ -4570,6 +4725,18 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                     self._send_file(hp)
                 else:
                     self._send_json({"error": "No gate heatmap"})
+        elif path.startswith('/api/vocab-gate-heatmap/'):
+            # Full-vocab depth-curve summary (Phase 4 tier 1) — tiny (a few MB even
+            # at 150k rows, since it's a per-token max-reduction), so served whole,
+            # same as the sample's own gate-heatmap.npy.
+            parts = path.split('/')
+            if len(parts) >= 5:
+                model, mode = parts[3], parts[4]
+                hp = Path(self._mri_path(model, mode)) / "decomp" / "vocab_gate_heatmap.npy"
+                if hp.exists():
+                    self._send_file(hp)
+                else:
+                    self._send_json({"error": "No vocab gate heatmap — run: heinrich mri-vocab --gate-summary"})
         elif path.startswith('/api/cloud-bundle/'):
             parts = path.split('/')
             if len(parts) >= 5:
@@ -4875,6 +5042,37 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                     self._send_bytes(result)
             else:
                 self._send_json({"error": "Usage: /api/vocab-pc-column/<model>/<mode>?layer=L&pc=P"})
+        elif path.startswith('/api/vocab-pc-bundle/'):
+            # /api/vocab-pc-bundle/<model>/<mode>?full=X,Y&medium=A,B&step=N —
+            # all layers for a full-resolution PC set (CloudStore's base cloud,
+            # the aggregate trajectory-density view) plus a strided medium PC
+            # set (the browser's cheaper neighbor view), bundled in one response.
+            parts = path.split('/')
+            if len(parts) >= 5:
+                full_pcs = [int(p) for p in qs.get('full', [''])[0].split(',') if p]
+                medium_pcs = [int(p) for p in qs.get('medium', [''])[0].split(',') if p]
+                step = int(qs.get('step', ['10'])[0])
+                result = _vocab_pc_bundle(self._mri_path(parts[3], parts[4]), full_pcs, medium_pcs, step=step)
+                if isinstance(result, dict):
+                    self._send_json(result)
+                else:
+                    self._send_bytes(result)
+            else:
+                self._send_json({"error": "Usage: /api/vocab-pc-bundle/<model>/<mode>?full=...&medium=...&step=N"})
+        elif path.startswith('/api/vocab-token-bundle/'):
+            # /api/vocab-token-bundle/<model>/<mode>?rows=A,B — multiple
+            # full-K vocab-row vectors in one response (the pinned-pair
+            # fetch's one-round-trip path).
+            parts = path.split('/')
+            if len(parts) >= 5:
+                rows = [int(r) for r in qs.get('rows', [''])[0].split(',') if r]
+                result = _vocab_token_bundle(self._mri_path(parts[3], parts[4]), rows)
+                if isinstance(result, dict):
+                    self._send_json(result)
+                else:
+                    self._send_bytes(result)
+            else:
+                self._send_json({"error": "Usage: /api/vocab-token-bundle/<model>/<mode>?rows=A,B"})
         elif path.startswith('/api/vocab-tokens/'):
             # /api/vocab-tokens/<model>/<mode> — full-vocab text list (row-ordered)
             parts = path.split('/')
@@ -4886,6 +5084,31 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                     self._send_json({"error": "No full-vocab projection — run: heinrich mri-vocab"})
             else:
                 self._send_json({"error": "Usage: /api/vocab-tokens/<model>/<mode>"})
+        elif path.startswith('/api/vocab-scripts/'):
+            # /api/vocab-scripts/<model>/<mode> — full-vocab script classification
+            # (row-ordered, same shape as vocab_tokens.json). See build_vocab_scripts.
+            parts = path.split('/')
+            if len(parts) >= 5:
+                vs = Path(self._mri_path(parts[3], parts[4])) / 'decomp' / 'vocab_scripts.json'
+                if vs.exists():
+                    self._send_bytes(vs.read_bytes(), content_type='application/json')
+                else:
+                    self._send_json({"error": "No full-vocab scripts — run: heinrich mri-vocab --scripts-only"})
+            else:
+                self._send_json({"error": "Usage: /api/vocab-scripts/<model>/<mode>"})
+        elif path.startswith('/api/vocab-ids/'):
+            # /api/vocab-ids/<model>/<mode> — full-vocab token ids (row-ordered),
+            # served as the raw vocab_ids.npy file (same whole-file convention as
+            # /api/vocab-gate-heatmap/ — client parses the npy header itself).
+            parts = path.split('/')
+            if len(parts) >= 5:
+                vi = Path(self._mri_path(parts[3], parts[4])) / 'decomp' / 'vocab_ids.npy'
+                if vi.exists():
+                    self._send_file(vi)
+                else:
+                    self._send_json({"error": "No full-vocab projection — run: heinrich mri-vocab"})
+            else:
+                self._send_json({"error": "Usage: /api/vocab-ids/<model>/<mode>"})
         elif path.startswith('/api/direction-bootstrap/'):
             # /api/direction-bootstrap/<model>/<mode>?a=N&b=N&layer=L&n_boot=100
             parts = path.split('/')
