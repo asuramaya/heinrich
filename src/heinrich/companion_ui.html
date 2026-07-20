@@ -741,9 +741,16 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
   #liveResult .lent{color:#888;margin-left:6px}
   #liveResult .lt{color:#aaa;display:inline-block;margin-right:4px;font-family:monospace;background:#1a1a1a;padding:0 3px;border-radius:2px}
   #liveResult .lp{color:#666;font-size:6px}
+  /* Loading overlay: a static word with no motion reads as a hang, not a wait —
+     see the "loading looks like a crash" fix. */
+  #loading{position:fixed;top:0;left:0;right:0;bottom:0;background:#0a0a0a;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;z-index:100;color:#777;font-size:13px;font-family:inherit}
+  #loadSpin{width:28px;height:28px;border-radius:50%;border:2px solid #2a2a2a;border-top-color:#667;animation:ldspin 0.9s linear infinite}
+  @keyframes ldspin{to{transform:rotate(360deg)}}
+  #loadOverlayMsg{min-height:1.2em}
+  #loadOverlayTime{font-size:11px;color:#444;min-height:1em}
 </style>
 <div id="detail"><div class="tok" id="tt"></div><div class="meta" id="tm"></div></div>
-<div id="loading" style="position:fixed;top:0;left:0;right:0;bottom:0;background:#0a0a0a;display:flex;align-items:center;justify-content:center;z-index:100;color:#555;font-size:13px;font-family:inherit">Loading...</div>
+<div id="loading"><div id="loadSpin"></div><div id="loadOverlayMsg">Loading...</div><div id="loadOverlayTime"></div></div>
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
 <script type="module">
 import*as THREE from'three';
@@ -3043,6 +3050,15 @@ views.forEach((v,vi)=>{
   v.sc.add(_al([0,-1.2,0],[0,1.2,0],0x336633));// Y green
   v.sc.add(_al([0,0,-1.2],[0,0,1.2],0x333366));// Z blue
 });
+// dist such that a radius `r` (world units) stays inside the frustum on
+// whichever axis (horizontal or vertical) is tighter for the camera's current
+// aspect — a fit that only ever considered vertical FOV clips on narrow/tall
+// containers and wastes width on wide ones. Shared by Flowers and PC Spectrum.
+function _fitDistanceForRadius(cam,r,margin=1.4){
+  const halfV=cam.fov*Math.PI/360;
+  const halfH=Math.atan(Math.tan(halfV)*cam.aspect);
+  return r*margin/Math.tan(Math.min(halfV,halfH));
+}
 // Camera snap
 // --- Agent camera drive: position/orbit any viewport's camera remotely.
 // spec: {vp: index|'all'|[..], pos:[x,y,z]} OR {vp, theta, phi, dist, target}
@@ -3865,6 +3881,16 @@ for(let i=0;i<3;i++){
   leftViews.push({el,sc,cam,ctl,built:false});
 }
 leftViews.forEach(v=>ro.observe(v.el));
+// Aspect can change (panel resize, mobile rotation, maximize) with no PC-pair
+// change at all — re-fit distance only (cheap: no geometry rebuild) so a
+// Flower doesn't sit clipped/under-filled until the next pair click.
+const _roFlower=new ResizeObserver(entries=>{
+  entries.forEach(entry=>{
+    const lv=leftViews.find(v=>v.el===entry.target);if(!lv||lv._maxR==null)return;
+    _fitFlowerCamera(lv);_markDirty();
+  });
+});
+leftViews.forEach(v=>_roFlower.observe(v.el));
 
 // Right column: weights, neurons, attention
 const rightViews=[];
@@ -4700,7 +4726,7 @@ async function _loadDirectionWeightData(a,b){
 
 function buildWeightLandscape(){
   _wlBuiltKey='';
-  leftViews.forEach(lv=>{lv._wlLines=null;lv._varLines=null;lv._layerDots=null;lv._gateLineA=null;lv._gateLineB=null;lv._attnLines=null;lv._grid=null;lv._camSet=false;});
+  leftViews.forEach(lv=>{lv._wlLines=null;lv._varLines=null;lv._layerDots=null;lv._gateLineA=null;lv._gateLineB=null;lv._attnLines=null;lv._grid=null;});
   _loadWeightData().then(async ()=>{
     // If pins are live when weight data arrives, fetch concept-direction
     // alignment too so the very first flower render uses DIR mode.
@@ -4776,6 +4802,20 @@ function _computeCorrelations(pcA,pcB,nMat){
     corrs.push(da>0&&dt>0?num/Math.sqrt(da*dt):0);
   }
   return corrs;
+}
+// Position a Flower viewport's camera to fit its current data extent
+// (lv._maxR/lv._zSpan, set whenever the PC pair changes) — aspect-aware, so
+// this can be re-run on resize too without recomputing the extent.
+function _fitFlowerCamera(lv){
+  if(!lv||lv._maxR==null)return;
+  // Don't trust lv.cam.aspect to already be current — it's normally kept
+  // fresh by the render loop's per-frame _renderRegion call, which hasn't
+  // necessarily run yet (e.g. the very first fit, right after a model loads
+  // in a backgrounded tab, races ahead of the first paint). Read the
+  // element's real box directly so the fit is correct on its own.
+  lv.cam.aspect=lv.el.clientWidth/(lv.el.clientHeight||1);lv.cam.updateProjectionMatrix();
+  const _fitD=lv._zSpan*0.5+_fitDistanceForRadius(lv.cam,lv._maxR);
+  lv.cam.position.set(0,0,Math.max(lv._zSpan*0.8,_fitD));lv.ctl.target.set(0,0,0);lv.ctl.update();
 }
 function _rebuildInternals(vi,pair,needsRebuild){
   const lv=leftViews[vi];if(!lv)return;
@@ -4979,13 +5019,16 @@ function _rebuildInternals(vi,pair,needsRebuild){
   // Label
   const lbl=document.getElementById('lv'+vi+'i');
   if(lbl)lbl.textContent=vi===0?`A: PC${pcA}\u00d7PC${pcB}`:vi===1?`\u0394: PC${pcA}\u00d7PC${pcB}`:`B: PC${pcA}\u00d7PC${pcB}`;
-  if(!lv._camSet){
+  if(needsRebuild){
     // Content-aware framing: fit the radial star with ~40% margin, accounting
-    // for petals tilting toward the camera (z reaches +zSpan/2). Was a fixed
-    // zSpan*0.8 that let long petals (|align|→√2) overflow with no margin.
+    // for petals tilting toward the camera (z reaches +zSpan/2). Re-fits on
+    // every PC-pair change (a new pair can have a very different alignment
+    // magnitude) — not just once per model load — same "re-anchor on the
+    // triggering event" rule the PC-pair browser already uses.
     let _maxR=0.5;for(let mi=0;mi<nMat;mi++)for(let l=0;l<_nRealLayers;l++)_maxR=Math.max(_maxR,_petalLen(l,mi));
-    const _fitD=zSpan*0.5+_maxR*1.4/Math.tan(25*Math.PI/180);
-    lv.cam.position.set(0,0,Math.max(zSpan*0.8,_fitD));lv.ctl.target.set(0,0,0);lv.ctl.update();lv._camSet=true;}
+    lv._maxR=_maxR;lv._zSpan=zSpan;
+    _fitFlowerCamera(lv);
+  }
   lv._wlLines=true;
 
   lv._pcA=pcA;lv._pcB=pcB;
@@ -5100,12 +5143,11 @@ function _rebuildInternals(vi,pair,needsRebuild){
   }
   lv._wlIsolated=-1;
   lv._savedCam=null;// clear stale focus camera from old PCs
-  // Reset camera to default flower view for new PCs — content-aware distance so
-  // long petals (|align|→√2) stay framed with margin instead of overflowing.
-  {let _mR=0.5;for(let mi=0;mi<nMat;mi++)for(let l=0;l<_nRealLayers;l++)_mR=Math.max(_mR,_petalLen(l,mi));
-   lv.cam.position.set(0,0,Math.max(zSpan*0.8, zSpan*0.5+_mR*1.4/Math.tan(25*Math.PI/180)));}
   lv.cam.up.set(0,1,0);
-  lv.ctl.target.set(0,0,0);lv.ctl.update();lv._camSet=true;
+  // Camera position/target for the new PCs is fit once, aspect-aware, by
+  // _fitFlowerCamera(lv) below (single source of truth — this used to also
+  // set the position here with a vertical-FOV-only formula, duplicating and
+  // immediately being overwritten by the fit further down).
   // Clear focus label
   const _fl=lv.el?.querySelector('.wl-focus-label');if(_fl)_fl.textContent='';
   _clearCorrCache();
@@ -6094,6 +6136,56 @@ function _buildPCSSpectrum(){
   _markDirty();
 }
 
+// Per-token Y scale: same convention everywhere the Spectrum touches a
+// token's full per-layer×PC vector (dots, and the follow/gestalt fit below).
+function _pcsTokScale(fd){if(!fd)return 0;let mx=0.001;for(let i=0;i<fd.length;i++)if(Math.abs(fd[i])>mx)mx=Math.abs(fd[i]);return 1.2/mx;}
+let _pcsPrevFit=0,_pcsChase=null;// {pos,target} — set on layer change, consumed by the render-loop chase
+// PC Spectrum "follow": reframe to the gestalt of whichever layer is now
+// current. X-extent is fixed (laid out evenly by PC count); Y-extent varies
+// per layer since each token's scale is normalized by its OWN global max, so
+// a layer far from that token's peak genuinely looks flatter and deserves a
+// closer fit. Anchored exactly like _updateBrowserLayer: rescale/translate
+// relative to wherever the user last left the camera, never reset the orbit
+// angle they chose — the same "anchor on the triggering event, free-roam
+// otherwise" rule the PC-pair browser already uses for its own Z-follow.
+function _pcsUpdateFollow(){
+  if(!_pcsCam||!_pcsCtl||!_pcsNK)return;
+  const zSpan=3.0;
+  const nL_pcs=_pcsFullNL||_nRealLayers;
+  const _clL=cL>=_nRealLayers?(cL===_nRealLayers?0:_nRealLayers-1):cL;
+  const newZ=_layerZ[_clL]!==undefined?_layerZ[_clL]*zSpan/2:(_clL/(nL_pcs-1))*zSpan-zSpan/2;
+  const fK=_pcsFullK||_pcsNK;
+  let yHalf=0;
+  [[pinnedToken,_pcsFullA],[pinnedTokenB,_pcsFullB]].forEach(([tok,fullData])=>{
+    if(tok<0||!fullData)return;
+    const scale=_pcsTokScale(fullData);if(!scale)return;
+    for(let pc=0;pc<_pcsNK;pc++){const v=Math.abs((fullData[cL*fK+pc]||0)*scale);if(v>yHalf)yHalf=v;}
+  });
+  const newFit=_fitDistanceForRadius(_pcsCam,Math.max(1.2,yHalf));
+  if(!_pcsPrevFit)_pcsPrevFit=newFit;
+  const distRatio=newFit/_pcsPrevFit;
+  _pcsPrevFit=newFit;
+  const newTarget=new THREE.Vector3(0,0,newZ);
+  const offset=_pcsCam.position.clone().sub(_pcsCtl.target).multiplyScalar(distRatio);
+  _pcsChase={pos:newTarget.clone().add(offset),target:newTarget};
+}
+// True while the chase hasn't converged — folded into the render loop's own
+// "is anything moving" check (same treatment as OrbitControls damping) so a
+// manual layer-slider drag animates smoothly and playback never falls behind.
+function _pcsChaseActive(){
+  if(!_pcsChase||!_pcsCam||!_pcsCtl)return false;
+  return _pcsCam.position.distanceTo(_pcsChase.pos)>0.002||_pcsCtl.target.distanceTo(_pcsChase.target)>0.002;
+}
+function _pcsChaseStep(){
+  if(!_pcsChase||!_pcsCam||!_pcsCtl)return;
+  _pcsCam.position.lerp(_pcsChase.pos,0.15);
+  _pcsCtl.target.lerp(_pcsChase.target,0.15);
+}
+// The Spectrum is also reachable maximized (_animMaximized) and on mobile
+// (_animMobile) — both resolve views generically via _resolveViewByName and
+// never touch _pcsCam directly, so the chase needs its own hook wherever a
+// resolved view might BE the Spectrum, not just the main multi-viewport loop.
+function _pcsChaseInView(R){if(R&&R.tag==='pcs')_pcsChaseStep();}
 function _updatePCSDots(){
   if(!_pcsNK)return;
   const xSpan=2.4, zSpan=3.0;
@@ -6102,9 +6194,7 @@ function _updatePCSDots(){
   // Use model-order Z, scaled to spectrum's zSpan
   const z=_layerZ[_clL]!==undefined?_layerZ[_clL]*zSpan/2:(_clL/(nL_pcs-1))*zSpan-zSpan/2;
   const fK=_pcsFullK||_pcsNK;
-  // Per-token scales: compute same way as _buildPCSSpectrum
-  function _tkScale(fd){if(!fd)return 0;let mx=0.001;for(let i=0;i<fd.length;i++)if(Math.abs(fd[i])>mx)mx=Math.abs(fd[i]);return 1.2/mx;}
-  [[_pcsDotsA,pinnedToken,0xFF6644,_pcsFullA,_tkScale(_pcsFullA)],[_pcsDotsB,pinnedTokenB,0x4477AA,_pcsFullB,_tkScale(_pcsFullB)]].forEach(([dots,tok,colHex,fullData,scale])=>{
+  [[_pcsDotsA,pinnedToken,0xFF6644,_pcsFullA,_pcsTokScale(_pcsFullA)],[_pcsDotsB,pinnedTokenB,0x4477AA,_pcsFullB,_pcsTokScale(_pcsFullB)]].forEach(([dots,tok,colHex,fullData,scale])=>{
     if(!dots||tok<0||!scale)return;
     const pos=dots.geometry.attributes.position.array;
     const col=dots.geometry.attributes.color.array;
@@ -6419,6 +6509,7 @@ function setLayer(l,light){cL=l;updateAllViewports();updateHUD();
   _updateTargetMarkers();// vocab target follows too
   try{_homingDraw();}catch(e){}// move the current-layer marker on the homing curve
   _updateBrowserLayer();_updateBrowserSelBoxes();
+  try{_pcsUpdateFollow();}catch(e){}// Spectrum camera follows the layer, gestalt-fit (see _pcsUpdateFollow)
   if(!light)_updateBrowserOverlay();
   updateLeftViewports();
   if(pinnedToken>=0||pinnedTokenB>=0){_syncAllPins(!play);if(!play)showPinDetail(pinnedToken);}
@@ -6462,7 +6553,20 @@ function _loadState(){
 
 // --- Load pipeline: parallel fetches, progressive rendering ---
 let _prevModel='',_prevMode='';
-function _yieldFrame(){return new Promise(r=>requestAnimationFrame(r));}
+// Yield without hogging the main thread during Phase-4 background loading —
+// this doesn't need paint-sync (nothing animates here), it needs "run this
+// soon but don't block interaction meanwhile". requestAnimationFrame was the
+// wrong primitive for that: Chrome fully suspends rAF callbacks for a
+// backgrounded/hidden tab (not merely throttled — zero callbacks), so a user
+// tabbing away mid-load stalls background population indefinitely.
+// requestIdleCallback's `timeout` guarantees the callback fires within that
+// window even hidden; setTimeout is the fallback for browsers without it.
+function _yieldFrame(){
+  return new Promise(r=>{
+    if(typeof requestIdleCallback==='function')requestIdleCallback(()=>r(),{timeout:200});
+    else setTimeout(r,0);
+  });
+}
 
 // Gate for loadAll()'s hasVocab check: vTexts/vMeta alone aren't enough to promise
 // vocab-native mode will actually work — a backend can serve full-vocab TEXT/META
@@ -6492,7 +6596,19 @@ async function loadAll(){
   const _ld=document.getElementById('loading');if(_ld)_ld.style.display='flex';
   document.getElementById('st').textContent='Loading...';
   const _ls=document.getElementById('loadStatus');
-  function _setLoad(msg){if(_ls)_ls.textContent=msg;}
+  const _lom=document.getElementById('loadOverlayMsg');
+  const _lot=document.getElementById('loadOverlayTime');
+  function _setLoad(msg){if(_ls)_ls.textContent=msg;if(_lom)_lom.textContent=msg;}
+  // A static "Loading..." with no proof of life reads as a hang on a slow
+  // range-read. Past 2s, tick an elapsed-time line — cheap, no byte-progress
+  // instrumentation needed, and it never triggers on the fast-load path.
+  const _loadT0=performance.now();
+  if(_lot)_lot.textContent='';
+  const _loadTimer=setInterval(()=>{
+    if(!_lot)return;
+    const s=Math.round((performance.now()-_loadT0)/1000);
+    _lot.textContent=s>=2?`still working — ${s}s`:'';
+  },500);
   _setLoad('fetching metadata + serve index...');
   try{
   // Phase 1: fetch metadata, serve manifest, and token/script labels.
@@ -6509,6 +6625,7 @@ async function loadAll(){
   _pcsFetchGen++;_cloudFetchGen++;_dirFals=null;_pcsHoverCache.clear();_pcsHoverPending.clear();_hoverCache.clear();_pcFull.clear();_pcMedium.clear();_pcFullPending.clear();_pcMediumPending.clear();_nfCache.clear();
   CloudStore.pending.clear();TokenStore.pending.clear();
   _pcsFullA=null;_pcsFullB=null;_pcsFullK=0;_pcsFullNL=0;_pcsScale=0;_pcsNK=0;
+  _pcsPrevFit=0;_pcsChase=null;// new model — don't compare its fit against the old model's
   _pcsLoadingA=-1;_pcsLoadingB=-1;_pcsHoverTok=-1;_hoverTok=-1;_hoverLoading='';
   // Drop direction colors across model/mode switch — they were fit to the old model.
   // Bump the request id so in-flight projection responses from the old model are
@@ -6656,7 +6773,7 @@ async function loadAll(){
   // direction-depth, direction-weights, and direction-colors populate.
   if(pinnedToken>=0&&pinnedTokenB>=0)_onPinChange();
   }catch(e){document.getElementById('st').textContent='Error: '+e.message;console.error(e);}
-  finally{if(_ld)_ld.style.display='none';}
+  finally{clearInterval(_loadTimer);if(_ld)_ld.style.display='none';}
 
   // Phase 4: heavy builds in background (don't block interaction)
   await _yieldFrame();
@@ -7225,7 +7342,7 @@ function _updateVocabBtn(){const b=document.getElementById('vocabToggle');if(!b)
 (function anim(){requestAnimationFrame(anim);
   if(MOBILE){_animMobile();return;}// mobile renders only the focused lane (see end of file)
   if(_maxKey){_animMaximized();return;}// maximized: render only the focused viewport
-  const damping=views.some(v=>v.ctl.enableDamping&&v.ctl._needsUpdate)||brCtl._needsUpdate||leftViews.some(v=>v.ctl._needsUpdate)||rightViews.some(v=>v.ctl._needsUpdate);
+  const damping=views.some(v=>v.ctl.enableDamping&&v.ctl._needsUpdate)||brCtl._needsUpdate||leftViews.some(v=>v.ctl._needsUpdate)||rightViews.some(v=>v.ctl._needsUpdate)||_pcsChaseActive();
   // LOD (Part B.3): the full trajectory line groups (5000 merged segments × 3
   // viewports) cost ~75% of the frame. Previously we HID them while the camera
   // moved — but hiding erases information. Instead we DECIMATE: while the camera
@@ -7256,7 +7373,7 @@ function _updateVocabBtn(){const b=document.getElementById('vocabToggle');if(!b)
   _brPanels.forEach(p=>{p.ctl.update();_renderRegion(p.el,brSc,p.cam);});
   leftViews.forEach(v=>{if(v.built){v.ctl.update();_renderRegion(v.el,v.sc,v.cam);}});
   rightViews.forEach(v=>{v.ctl.update();_renderRegion(v.el,v.sc,v.cam);});
-  if(_pcsSc&&_pcsEl){_pcsCtl.update();_renderRegion(_pcsEl,_pcsSc,_pcsCam);}
+  if(_pcsSc&&_pcsEl){_pcsChaseStep();_pcsCtl.update();_renderRegion(_pcsEl,_pcsSc,_pcsCam);}
   // FPS counter
   _frameCount++;const now=performance.now();if(now-_fpsTime>1000){const fps=Math.round(_frameCount*1000/(now-_fpsTime));const el=document.getElementById('fpsDisplay');if(el)el.textContent=fps+'fps';_frameCount=0;_fpsTime=now;}
 })();
@@ -8618,10 +8735,10 @@ function _animMobile(){
   if(typeof P.vi==='number'&&P.vi>=NC){const v=views[P.vi];if(v&&v.trajGroup){const sm=performance.now()-_lastCamMove;const mv=damping||sm<90;let want;if(mv)want=false;else if(sm>300)want=true;else want=v.trajGroup.visible;if(want!==v.trajGroup.visible){v.trajGroup.visible=want;_needsRender=true;}}}
   const Q=_twoUp?_resolveViewByName(_pairTag()):null;
   const dampQ=!!(Q&&Q.ctl&&Q.ctl.enableDamping&&Q.ctl._needsUpdate);
-  if(!_needsRender&&!damping&&!dampQ&&!play)return;
+  if(!_needsRender&&!damping&&!dampQ&&!play&&!_pcsChaseActive())return;
   _needsRender=false;
   rdr.setScissorTest(false);rdr.setClearColor(0x151515);rdr.clear();rdr.setScissorTest(true);
-  const drawOne=R=>{if(!R||!R.el||!R.sc)return;if(R.ctl)R.ctl.update();
+  const drawOne=R=>{if(!R||!R.el||!R.sc)return;_pcsChaseInView(R);if(R.ctl)R.ctl.update();
     if(typeof R.vi==='number'){const v=views[R.vi];if(v){const d=v.cam.position.length();v.mtl.size=Math.min(0.15,Math.max(0.004,d*0.012));if(R.vi>=NC&&v.trajMarker)v.trajMarker.material.size=Math.min(0.1,Math.max(0.006,d*0.015));const ms=Math.min(0.2,Math.max(0.01,d*0.04));if(pinMarkers[R.vi]&&pinMarkers[R.vi].visible)pinMarkers[R.vi].material.size=ms;if(pinMarkersB[R.vi]&&pinMarkersB[R.vi].visible)pinMarkersB[R.vi].material.size=ms;if(highlightMarkers[R.vi]&&highlightMarkers[R.vi].visible)highlightMarkers[R.vi].material.size=ms*0.7;}}
     _renderRegion(R.el,R.sc,R.cam);};
   drawOne(P);if(Q)drawOne(Q);
@@ -8731,11 +8848,12 @@ function _toggleMaximize(vk){if(_maxKey===String(vk)&&!_maxRestoring)_setMaximiz
 function _animMaximized(){
   const R=_resolveViewByName(_maxKey);
   if(!R||!R.el||!R.sc){_needsRender=false;return;}
-  const damping=!!(R.ctl&&R.ctl.enableDamping&&R.ctl._needsUpdate);
+  const damping=!!(R.ctl&&R.ctl.enableDamping&&R.ctl._needsUpdate)||_pcsChaseActive();
   const animating=performance.now()<_maxAnimUntil;
   if(!_needsRender&&!damping&&!play&&!animating)return;
   _needsRender=false;
   rdr.setScissorTest(false);rdr.setClearColor(0x151515);rdr.clear();rdr.setScissorTest(true);
+  _pcsChaseInView(R);
   if(R.ctl)R.ctl.update();
   if(typeof R.vi==='number'&&views[R.vi]){
     const v=views[R.vi];const d=v.cam.position.length();
@@ -8831,6 +8949,7 @@ window.__heinrich = {
   get trajLOD(){const v=views[NC];return {decimated:!!_trajMoving,additive:_trajAdditive,budget:v?(v._trajBudget||0):0,topK:v?(v._trajTopK||0):0,total:_vocabNRows||48660};},
   // --- state readers ---
   get views(){return views;}, get leftViews(){return leftViews;}, get rightViews(){return rightViews;},
+  get pcsCam(){return(_pcsCam&&_pcsCtl)?{pos:[_pcsCam.position.x,_pcsCam.position.y,_pcsCam.position.z],target:[_pcsCtl.target.x,_pcsCtl.target.y,_pcsCtl.target.z],aspect:_pcsCam.aspect,fov:_pcsCam.fov,chasing:_pcsChaseActive(),nK:_pcsNK}:null;},
   get vpPairs(){return vpPairs;}, get dirDepth(){return _dirDepthData;},
   get pins(){return {a:pinnedToken,b:pinnedTokenB};}, get hovered(){return hoveredToken;}, get cap(){return CAP;},
   // --- viewport maximize (attention primitive) ---
