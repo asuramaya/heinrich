@@ -7371,7 +7371,31 @@ function _updateVocabBtn(){const b=document.getElementById('vocabToggle');if(!b)
     _vocabRevealEnabled=!_vocabRevealEnabled;_updateVocabBtn();
     if(!_vocabRevealEnabled){for(let vi=0;vi<NC;vi++)_revClear(vi);}else{_revOnLayer();}});
   _updateVocabBtn();})();
+// requestAnimationFrame (and ResizeObserver alongside it) simply stops firing
+// while suspended — a backgrounded tab, a cross-origin iframe embed scrolled
+// out of the parent page's viewport (Chrome throttles those independently of
+// tab visibility — see loading-and-camera-fit-design-pass memory), or an OS
+// sleep. None of that is directly observable from in here: a page can't ask
+// "is my iframe visible in the parent" across origins, and Phase 4's own
+// background work (now guaranteed to finish even while suspended, via
+// _yieldFrame's requestIdleCallback fix) can itself reflow the layout while
+// the ResizeObservers that would normally notice are also not firing. Rather
+// than chase every specific cause, treat an abnormally long gap between
+// consecutive rAF callbacks as "we just resumed from *something*" and
+// re-verify everything layout-dependent instead of trusting whatever ran
+// during the gap — one general recovery instead of N specific ones.
+let _lastAnimFrameT=performance.now();
+const _RESUME_GAP_MS=1000;// far above any normal single-frame cost, well below a real suspension gap
+function _onResumeFromSuspension(){
+  _resizeCanvas();
+  leftViews.forEach(lv=>{if(lv._maxR!=null)_fitFlowerCamera(lv);});
+  for(let vi=NC;vi<views.length;vi++){const v=views[vi];if(v._maxR!=null)_fitTrajCamera(v);}
+  _markDirty();
+}
 (function anim(){requestAnimationFrame(anim);
+  const _animNow=performance.now();
+  if(_animNow-_lastAnimFrameT>_RESUME_GAP_MS)_onResumeFromSuspension();
+  _lastAnimFrameT=_animNow;
   if(MOBILE){_animMobile();return;}// mobile renders only the focused lane (see end of file)
   if(_maxKey){_animMaximized();return;}// maximized: render only the focused viewport
   const damping=views.some(v=>v.ctl.enableDamping&&v.ctl._needsUpdate)||brCtl._needsUpdate||leftViews.some(v=>v.ctl._needsUpdate)||rightViews.some(v=>v.ctl._needsUpdate)||_pcsChaseActive();
