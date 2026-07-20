@@ -855,6 +855,16 @@ let brMeshes=[];
 function resizeAll(){_resizeCanvas();_markDirty();}
 addEventListener('resize',resizeAll);
 const ro=new ResizeObserver(()=>{_resizeCanvas();_markDirty();});views.forEach(v=>ro.observe(v.el));_brPanels.forEach(p=>ro.observe(p.el));requestAnimationFrame(resizeAll);
+// Trajectory viewports get their own aspect-aware re-fit on resize, same
+// reasoning as Flowers' _roFlower: a panel can change shape (narrow pane,
+// mobile rotation, maximize) with no PC-pair change to hang the re-fit on.
+const _roTraj=new ResizeObserver(entries=>{
+  entries.forEach(entry=>{
+    const v=views.find(vv=>vv.el===entry.target);if(!v||v._maxR==null)return;
+    _fitTrajCamera(v);_markDirty();
+  });
+});
+for(let vi=NC;vi<views.length;vi++)_roTraj.observe(views[vi].el);
 
 // Markers + paths
 const ray=new THREE.Raycaster();const ms=new THREE.Vector2();
@@ -3053,11 +3063,25 @@ views.forEach((v,vi)=>{
 // dist such that a radius `r` (world units) stays inside the frustum on
 // whichever axis (horizontal or vertical) is tighter for the camera's current
 // aspect — a fit that only ever considered vertical FOV clips on narrow/tall
-// containers and wastes width on wide ones. Shared by Flowers and PC Spectrum.
+// containers and wastes width on wide ones. Shared by Flowers, PC Spectrum,
+// and the trajectory viewports.
 function _fitDistanceForRadius(cam,r,margin=1.4){
   const halfV=cam.fov*Math.PI/360;
   const halfH=Math.atan(Math.tan(halfV)*cam.aspect);
   return r*margin/Math.tan(Math.min(halfV,halfH));
+}
+// A trajectory bundle read top-down looks like a grid (parallel per-layer
+// segments, no depth cue) — losing exactly the "flowing paths" character the
+// angled view (_snapOne's existing (1.5,0.5,3) default) already had. Keep
+// that direction, just scale its LENGTH to the real content + aspect instead
+// of a fixed magic distance, so the same angle stays legible at any size.
+const _TRAJ_DIR=new THREE.Vector3(1.5,0.5,3).normalize();
+function _fitTrajCamera(v){
+  if(!v||v._maxR==null)return;
+  v.cam.aspect=v.el.clientWidth/(v.el.clientHeight||1);v.cam.updateProjectionMatrix();
+  const fitD=Math.max(1.5,_fitDistanceForRadius(v.cam,v._maxR));
+  v.cam.position.copy(_TRAJ_DIR).multiplyScalar(fitD);
+  v.ctl.target.set(0,0,0);v.ctl.update();
 }
 // Camera snap
 // --- Agent camera drive: position/orbit any viewport's camera remotely.
@@ -3403,6 +3427,9 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
   // Track vertex ranges per sampled token for script filtering / direction coloring
   v._trajTokenMap=[];// [{ti, start, count}]
   let vi2=0,ci2=0;
+  // Real observed extent (post-clamp, so it matches what's actually drawn) —
+  // feeds _fitTrajCamera below, same role _maxR plays for Flowers.
+  let _trajR=0.5;
   for(let s=0;s<selected.length;s++){const ii=selected[s];
     const vStart=vi2;
     const hex=CL[scripts[ii]]||0xAAAAAA;
@@ -3410,9 +3437,13 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
     for(let si=0;si<nSegs;si++){
       const l0=_trajSeq[si],l1=_trajSeq[si+1];
       tPos[vi2*3]=_clampTraj(_getScore(l0,ii,pcX)/_tlMx[l0][0],_bx(l0));tPos[vi2*3+1]=_clampTraj(_getScore(l0,ii,pcY)/_tlMx[l0][1],_by(l0));tPos[vi2*3+2]=_z(l0);
-      tCol[vi2*3]=cr;tCol[vi2*3+1]=cg;tCol[vi2*3+2]=cb;vi2++;
+      tCol[vi2*3]=cr;tCol[vi2*3+1]=cg;tCol[vi2*3+2]=cb;
+      {const r=Math.hypot(tPos[vi2*3],tPos[vi2*3+1],tPos[vi2*3+2]);if(r>_trajR)_trajR=r;}
+      vi2++;
       tPos[vi2*3]=_clampTraj(_getScore(l1,ii,pcX)/_tlMx[l1][0],_bx(l1));tPos[vi2*3+1]=_clampTraj(_getScore(l1,ii,pcY)/_tlMx[l1][1],_by(l1));tPos[vi2*3+2]=_z(l1);
-      tCol[vi2*3]=cr;tCol[vi2*3+1]=cg;tCol[vi2*3+2]=cb;vi2++;
+      tCol[vi2*3]=cr;tCol[vi2*3+1]=cg;tCol[vi2*3+2]=cb;
+      {const r=Math.hypot(tPos[vi2*3],tPos[vi2*3+1],tPos[vi2*3+2]);if(r>_trajR)_trajR=r;}
+      vi2++;
     }
     for(let si=0;si<nSegsC;si++){
       const l0=coarseSeq[si],l1=coarseSeq[si+1];
@@ -3423,6 +3454,7 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
     }
     v._trajTokenMap.push({ti:ii,start:vStart,count:vi2-vStart});
   }
+  v._maxR=_trajR;_fitTrajCamera(v);
   const tGeo=new THREE.BufferGeometry();
   tGeo.setAttribute('position',new THREE.BufferAttribute(tPos,3));
   tGeo.setAttribute('color',new THREE.BufferAttribute(tCol,3));
