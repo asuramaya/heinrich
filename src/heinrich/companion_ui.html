@@ -7365,8 +7365,18 @@ async function _fetchDirDepth(){
     const NL=_pcFullNL||nL, NT=_pcFullNT||nN;
     // Pass 1 (local, no network): every layer's support set is cheap math off
     // ea/eb, already in memory.
+    // Per-layer cap: 256 was sized when the vocab store topped out at 16 PCs
+    // total, so it never actually bound anything. Against the real full-scope
+    // store a diffuse (low-rank-free) A-B pair can chase 0.99 coverage all the
+    // way to the cap on EVERY layer — 30 layers x 256 PCs x ~97KB/column is
+    // ~700MB for one chart, and it starves the SAME origin's other concurrent
+    // pin-change fetches (direction coloring, tokens, predicts) badly enough
+    // that they stall too, not just the depth profile itself. magnitude /
+    // pcs_50 / top_pcs stay exact regardless of the cap (computed off the full
+    // diff, not the fetched window) — only the projection curve's fidelity for
+    // a genuinely high-rank direction is what a lower cap trims.
     const supports=new Array(NL);
-    for(let l=0;l<NL;l++)supports[l]=_dirSupportAt(ea,eb,l,0.99,256);
+    for(let l=0;l<NL;l++)supports[l]=_dirSupportAt(ea,eb,l,0.99,64);
     // Pass 2: fetch each layer's support columns and project, N layers at a
     // time (not all NL at once — that's what OOM'd the server before; not one
     // at a time — that's today's stall on a full-scope store). Progress is
