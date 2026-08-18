@@ -269,6 +269,72 @@ def publish(mri_dir: str | Path, *, bucket: str | None = None,
     return plan
 
 
+def check(mri_dir: str | Path, *, bucket: str, account_id: str | None = None,
+          endpoint_url: str | None = None, access_key: str | None = None,
+          secret_key: str | None = None, with_hover: bool = False) -> dict:
+    """Audit what publish() WOULD ship against what the bucket actually holds.
+
+    The gap this exists to catch: _DECOMP_EXACT grows over time (the vocab-native
+    family was added after four models had already been published), so a bucket
+    can be a full generation behind the publisher with every upload "successful".
+    A HEAD per key — no bodies, no bandwidth. Reports, per key, one of:
+
+      ok        present at the right size
+      missing   not in the bucket at all       (publish will upload it)
+      size      present at a different size    (publish will re-upload it)
+      local     named by _DECOMP_EXACT but not on disk — nothing to publish;
+                the producer step that makes it was never run for this .mri
+
+    `local` is the one publish() itself can never fix, so it is reported
+    separately from the keys a re-publish would heal.
+    """
+    mri_dir = Path(mri_dir)
+    if not (mri_dir / "decomp" / "meta.json").exists():
+        raise FileNotFoundError(f"no decomp/ — run `heinrich mri-decompose --mri {mri_dir}` first")
+    from botocore.exceptions import ClientError
+
+    model, mode = _model_mode(mri_dir)
+    prefix = f"{model}/{mode}.mri"
+    client = _r2_client(account_id, endpoint_url, access_key, secret_key)
+
+    rows, missing, mismatched = [], [], []
+    for p, suffix in consumer_files(mri_dir, with_hover=with_hover):
+        key = f"{prefix}/{suffix}"
+        size = p.stat().st_size
+        try:
+            remote = client.head_object(Bucket=bucket, Key=key)["ContentLength"]
+        except ClientError:
+            rows.append({"key": suffix, "status": "missing", "local_bytes": size})
+            missing.append(suffix)
+            continue
+        if remote == size:
+            rows.append({"key": suffix, "status": "ok", "local_bytes": size})
+        else:
+            rows.append({"key": suffix, "status": "size", "local_bytes": size,
+                         "remote_bytes": remote})
+            mismatched.append(suffix)
+
+    # Named by the publisher but absent on disk: a producer gap, not an upload gap.
+    decomp = mri_dir / "decomp"
+    absent = sorted(n for n in _DECOMP_EXACT if not (decomp / n).exists())
+
+    # The manifest is served straight to the viewer's model picker: a model whose
+    # bytes are all present but whose entry is stale/absent is invisible anyway.
+    entry = manifest_entry(mri_dir)
+    try:
+        body = client.get_object(Bucket=bucket, Key="models.json")["Body"].read()
+        listed = [m for m in json.loads(body)
+                  if m.get("model") == model and m.get("mode") == mode]
+        manifest = "ok" if listed and listed[0] == entry else ("stale" if listed else "absent")
+    except Exception:
+        manifest = "absent"
+
+    return {"model": model, "mode": mode, "prefix": prefix, "target": f"r2://{bucket}",
+            "n_files": len(rows), "rows": rows, "missing": missing,
+            "mismatched": mismatched, "not_local": absent, "manifest": manifest,
+            "complete": not missing and not mismatched and manifest == "ok"}
+
+
 def _upsert(models: list, entry: dict) -> list:
     models = [m for m in models if not (m.get("model") == entry["model"] and m.get("mode") == entry["mode"])]
     models.append(entry)

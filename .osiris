@@ -12,3 +12,4 @@
 # So: heinrich runs Opus. Declared, not inherited. If that changes, change it here — and if you
 # find yourself running something this file does not name, say so in your first reply.
 model = "claude-opus-4-8"
+project = "heinrich"

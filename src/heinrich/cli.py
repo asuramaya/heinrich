@@ -369,6 +369,7 @@ def build_parser() -> argparse.ArgumentParser:
     p_publish.add_argument("--endpoint-url", default=None, help="Override S3 endpoint (else https://<account>.r2.cloudflarestorage.com)")
     p_publish.add_argument("--with-hover", action="store_true", help="Also upload mlp/ gate+up (enables token-hover neurons; large)")
     p_publish.add_argument("--dry-run", action="store_true", help="Report what would be published without uploading")
+    p_publish.add_argument("--check", action="store_true", help="Audit the bucket against what would be published (HEAD per key, no upload): which consumer artifacts are missing, wrong-sized, or were never produced locally")
 
     p_logitlens = sub.add_parser("profile-logit-lens", help="What would the model predict at each layer? Applies norm+lmhead to exit states")
     p_logitlens.add_argument("--mri", required=True, help=".mri directory")
@@ -3937,9 +3938,50 @@ def _cmd_mri_decompose(args: argparse.Namespace) -> None:
     _json_or(args, result, _fmt)
 
 
+def _cmd_publish_check(args: argparse.Namespace) -> None:
+    """Audit an already-published .mri against the bucket (no upload)."""
+    from .observatory import check
+
+    if not args.bucket:
+        print("Error: --check audits a bucket; pass --bucket")
+        return
+    try:
+        rep = check(args.mri, bucket=args.bucket, account_id=args.account_id,
+                    endpoint_url=args.endpoint_url, with_hover=bool(args.with_hover))
+    except (FileNotFoundError, ValueError) as e:
+        print(f"Error: {e}")
+        return
+    except ImportError:
+        print("Error: boto3 not installed. `pip install heinrich[publish]` (or boto3) for R2.")
+        return
+
+    if getattr(args, "json_output", False):
+        print(json.dumps(rep, indent=2))
+        return
+
+    mark = "OK" if rep["complete"] else "INCOMPLETE"
+    print(f"\n=== check {rep['model']}/{rep['mode']} vs {rep['target']} — {mark} ===")
+    print(f"  {rep['n_files']} consumer files  ·  manifest entry: {rep['manifest']}")
+    for suffix in rep["missing"]:
+        print(f"    MISSING   {suffix}")
+    for row in rep["rows"]:
+        if row["status"] == "size":
+            print(f"    SIZE      {row['key']}  local {row['local_bytes']} != remote {row['remote_bytes']}")
+    for name in rep["not_local"]:
+        print(f"    NOT BUILT {name}  (never produced for this .mri — publish cannot fix)")
+    if rep["complete"] and not rep["not_local"]:
+        print("  every consumer artifact present at the right size.")
+    elif rep["missing"] or rep["mismatched"] or rep["manifest"] != "ok":
+        print(f"  → re-run without --check to upload {len(rep['missing']) + len(rep['mismatched'])} file(s)")
+
+
 def _cmd_publish(args: argparse.Namespace) -> None:
     """Publish a decomposed .mri to R2 (or a local export dir) for the Observatory."""
     from .observatory import publish
+
+    if getattr(args, "check", False):
+        _cmd_publish_check(args)
+        return
 
     try:
         plan = publish(

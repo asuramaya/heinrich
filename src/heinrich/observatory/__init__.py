@@ -7,6 +7,6 @@ The viewer (web/) reads exactly what `publish` uploads; see
 """
 from __future__ import annotations
 
-from .publish import publish, write_sidecars, consumer_files, manifest_entry
+from .publish import publish, check, write_sidecars, consumer_files, manifest_entry
 
-__all__ = ["publish", "write_sidecars", "consumer_files", "manifest_entry"]
+__all__ = ["publish", "check", "write_sidecars", "consumer_files", "manifest_entry"]
