@@ -25,7 +25,21 @@ _DECOMP_EXACT = {
     "falsification.json", "token_predicts.bin",
     # full-vocab frozen-frame projection (mri-vocab) — every token addressable
     "vocab_scores.bin", "vocab_tokens.json", "vocab_meta.json", "vocab_ids.npy",
+    # vocab-NATIVE viewer (sample-scope-elimination, 2026-07): the layer-major
+    # PC16 store behind /api/vocab-pc-bundle|column|columns (the cloud, the
+    # trajectories, every single-layer analysis), per-token scripts (legend,
+    # colors) and the full-vocab gate heatmap. Without these the edge serves the
+    # model in sample-fallback mode — which is exactly what happened to qwen.
+    "vocab_pc16.bin", "vocab_scripts.json", "vocab_gate_heatmap.npy",
 }
+
+
+try:  # boto3 is an optional dependency (only the R2 path needs it)
+    from boto3.s3.transfer import TransferConfig as _TC
+    _TRANSFER_CONFIG = _TC(multipart_threshold=64 * 1024 * 1024, multipart_chunksize=64 * 1024 * 1024,
+                           max_concurrency=8, use_threads=True)
+except Exception:  # pragma: no cover
+    _TRANSFER_CONFIG = None
 
 
 def _model_mode(mri_dir: Path) -> tuple[str, str]:
@@ -233,9 +247,14 @@ def publish(mri_dir: str | Path, *, bucket: str | None = None,
                 continue
         except ClientError:
             pass
-        client.put_object(Bucket=bucket, Key=key,
-                          Body=p.read_bytes(), ContentType=_content_type(suffix),
-                          CacheControl="public, max-age=31536000, immutable")
+        # Managed transfer (multipart above 8MB, streamed from disk): put_object
+        # read the whole file into RAM and R2 refuses single-part objects over
+        # 5GB (EntityTooLarge) — vocab_pc16.bin / vocab_scores.bin at qwen scale
+        # are 6.6GB each.
+        client.upload_file(str(p), bucket, key,
+                           ExtraArgs={"ContentType": _content_type(suffix),
+                                      "CacheControl": "public, max-age=31536000, immutable"},
+                           Config=_TRANSFER_CONFIG)
         uploaded += 1
     _update_manifest_r2(client, bucket, manifest_entry(mri_dir))
     plan["target"] = f"r2://{bucket}"
