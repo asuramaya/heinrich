@@ -603,6 +603,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
       </div>
       </div>
       <div id="dirColorStatus" class="dcs" style="display:none">projecting direction&hellip;</div>
+      <div id="depthProgress" class="dcs" style="display:none"></div>
     </div>
     <!-- THE WORKBENCH. There is no tab strip any more, because there was nothing left to put in
          one: search became chrome, Discover folded under the pair, Notes went to the chat window
@@ -1351,8 +1352,15 @@ async function _updateOverlayTag(){
     }else if(_cloudSource==='vocab'){
       // The base cloud is retired at vocab scale — before the first reveal fill
       // lands there is genuinely nothing on screen yet, so say so rather than
-      // claiming a sample count that isn't being shown.
-      txt=nRows?`loading ${nRows.toLocaleString()} vocabulary points…`:`loading vocabulary…`;
+      // claiming a sample count that isn't being shown. Show real download
+      // progress when a bundle fetch is in flight (was a static string for
+      // however long the fetch took — no proof of life on a slow connection).
+      const base=nRows?`loading ${nRows.toLocaleString()} vocabulary points…`:`loading vocabulary…`;
+      if(_cloudLoadProgress){
+        const{loaded,total}=_cloudLoadProgress;
+        const mb=(loaded/1048576).toFixed(1);
+        txt=total?`${base} ${Math.min(99,Math.round(loaded/total*100))}% (${mb} MB)`:`${base} ${mb} MB received`;
+      }else txt=base;
     }else{
       txt=nRows?`${nSamp.toLocaleString()} of ${nRows.toLocaleString()} sampled`:`${nSamp.toLocaleString()} sampled`;
       dithered=true;
@@ -2091,6 +2099,34 @@ function _kthSmallest(a,k){
 // decides this once per model load and shows a banner when falling back).
 // Both wire formats are byte-identical past the magic (CLDB vs VPCB), so one
 // ingest path serves either source.
+// Live download progress for the vocab-pc-bundle fetch — before the first
+// reveal fill lands, the per-viewport tag has nothing real to report ("loading
+// N vocabulary points…" was a static string for the whole fetch, however long
+// it took), so this reads bytes as they arrive off the stream and lets the tag
+// show a real percentage (falls back to a raw byte count when the response
+// has no Content-Length, e.g. a chunked dev proxy).
+let _cloudLoadProgress=null;// {loaded,total} in bytes, or null when nothing is in flight
+async function _readWithProgress(resp){
+  const total=+resp.headers.get('content-length')||0;
+  if(!resp.body||!resp.body.getReader){_cloudLoadProgress=null;return resp.arrayBuffer();}
+  const reader=resp.body.getReader();
+  const chunks=[];let loaded=0,lastTag=0;
+  for(;;){
+    const{done,value}=await reader.read();
+    if(done)break;
+    chunks.push(value);loaded+=value.byteLength;
+    _cloudLoadProgress={loaded,total};
+    // Throttled: a multi-MB stream arrives in many small chunks — updating the
+    // tag (async, awaits vocab-meta, touches the DOM) on every one would be
+    // needless churn for a number the eye can't read that fast anyway.
+    const now=performance.now();
+    if(now-lastTag>150){lastTag=now;_updateOverlayTag();}
+  }
+  _updateOverlayTag();// final tick — the loop's throttle can skip the last few%
+  const buf=new Uint8Array(loaded);let off=0;
+  for(const c of chunks){buf.set(c,off);off+=c.byteLength;}
+  return buf.buffer;
+}
 let _cloudSource='vocab';
 const CloudStore={
   pending:new Map(),
@@ -2159,10 +2195,10 @@ const CloudStore={
       const base=_cloudSource==='vocab'?'vocab-pc-bundle':'cloud-bundle';
       const resp=await _apiFetch(`/api/${base}/${model}/${mode}?${q.toString()}`);
       if(!resp.ok)throw new Error(`${base} ${resp.status}`);
-      const buf=await resp.arrayBuffer();
+      const buf=await _readWithProgress(resp);
       if(gen!==_cloudFetchGen)return;
       this._ingest(buf);
-    })().finally(()=>this.pending.delete(key));
+    })().finally(()=>{this.pending.delete(key);_cloudLoadProgress=null;_updateOverlayTag();});
     this.pending.set(key,p);
     return p;
   },
@@ -4496,6 +4532,11 @@ function buildBrowser(force){
       const cA=_getScoreColumn(l,pa),cB=_getScoreColumn(l,pb);const okA=cA&&cA.length>=nN,okB=cB&&cB.length>=nN;
       for(let k=0;k<take;k++){const i=(k*fstep)|0;
         let vA=okA?cA[i]:_getScore(l,i,pa),vB=okB?cB[i]:_getScore(l,i,pb);if(vA!==vA)vA=0;if(vB!==vB)vB=0;
+        // Same sub-quantum dither as the main cloud/trajectory renderers (H11): these
+        // cell points come from the same float16 vocab_pc16.bin columns, so without it
+        // a zoomed-in browser panel shows the identical blocky/boxy lattice this fix
+        // already removed elsewhere — this panel was missed when it first landed.
+        if(okA)vA=_dq(vA,i,0);if(okB)vB=_dq(vB,i,1);
         const sx=Math.max(-rad,Math.min(rad,vA/mx*rad));
         const sy=Math.max(-rad,Math.min(rad,vB/mx*rad));
         pos[idx*3]=cx+sx;pos[idx*3+1]=cy-sy;pos[idx*3+2]=l*_ZSP;
@@ -7291,8 +7332,26 @@ async function _fetchDirBrief(){
   }catch(e){_dirBrief=null;}
   return _dirBrief;
 }
+// Bounded-concurrency map: run `fn` over `items` with at most `n` in flight at
+// once, results in input order. Plain sequential awaits (the original shape
+// here) were fine when the vocab store was truncated to 16 PCs — every
+// layer's 0.99-coverage support topped out at 16 columns and the whole depth
+// profile finished off cached data. Now that the store carries the FULL PC
+// range (up to 960), the same 0.99 coverage target genuinely needs 60-250+
+// columns some layers, each a real single-layer network fetch, and doing
+// that one layer at a time turned a 30-layer profile into a 30-request
+// serial chain. A small concurrency window keeps the win without going back
+// to the uncapped-parallel version that OOM'd the server (see the history
+// this function's own comments record).
+async function _mapPoolOrdered(items,n,fn){
+  const out=new Array(items.length);let next=0;
+  async function worker(){while(next<items.length){const i=next++;out[i]=await fn(items[i],i);}}
+  await Promise.all(Array.from({length:Math.min(n,items.length)},worker));
+  return out;
+}
 async function _fetchDirDepth(){
   if(pinnedToken<0||pinnedTokenB<0||!model||!mode){_dirDepthData=null;return null;}
+  const _dp=document.getElementById('depthProgress');
   try{
     // Browser-compute (was the server's /api/direction-depth numpy endpoint),
     // via the sliding window: build the A↔B direction at each layer from the two
@@ -7305,27 +7364,22 @@ async function _fetchDirDepth(){
     if(!ea||!eb){_dirDepthData=null;return null;}
     const NL=_pcFullNL||nL, NT=_pcFullNT||nN;
     // Pass 1 (local, no network): every layer's support set is cheap math off
-    // ea/eb, already in memory. Union them, then fetch the PC columns in
-    // small SEQUENTIAL chunks. Previously each layer called _ensurePCs on its
-    // own ≤256-PC support: consecutive supports overlap heavily but are not
-    // identical, so CloudStore's exact-key dedup never fired and up to NL
-    // overlapping, uncached, multi-GB requests went out concurrently —
-    // saturating the browser's per-origin pool AND repeatedly OOM-killing
-    // the companion server (26-29GB RSS observed). 64-PC chunks keep any one
-    // request's server-side slab under ~500MB at qwen scale (companion.py
-    // now also hard-caps at 128); sequential keeps peak memory at one chunk.
-    const supports=new Array(NL);const allPCs=new Set();
-    for(let l=0;l<NL;l++){const S=_dirSupportAt(ea,eb,l,0.99,256);supports[l]=S;for(const k of S.support)allPCs.add(k);}
-    // (no all-layer union fetch here any more: _projSupport below loads each layer's
-    // support as single-layer columns via _ensureLayerColumns — bounded memory, 1/nL
-    // the bytes; the union across layers used to leave hundreds of full columns
-    // resident in the browser.)
-    const layers=[];
-    for(let l=0;l<NL;l++){
-      const S=supports[l];
+    // ea/eb, already in memory.
+    const supports=new Array(NL);
+    for(let l=0;l<NL;l++)supports[l]=_dirSupportAt(ea,eb,l,0.99,256);
+    // Pass 2: fetch each layer's support columns and project, N layers at a
+    // time (not all NL at once — that's what OOM'd the server before; not one
+    // at a time — that's today's stall on a full-scope store). Progress is
+    // written to the same status line direction-coloring already uses, so a
+    // long profile is never silent.
+    let done=0;
+    const CONCUR=4;
+    if(_dp&&NL>CONCUR){_dp.style.display='block';_dp.textContent=`computing depth profile… 0/${NL} layers`;}
+    const layers=await _mapPoolOrdered(supports,CONCUR,async(S,l)=>{
       const mag=S.mag,inv=1/(mag+1e-8),tot=S.m2+1e-8;
       const dir=new Float32Array(nK);for(const k of S.support)dir[k]=S.diff[k]*inv;
       const proj=await _projSupport(l,dir,S.support,NT);
+      done++;if(_dp&&NL>CONCUR)_dp.textContent=`computing depth profile… ${done}/${NL} layers`;
       const proj_a=proj[a],proj_b=proj[b];
       const stp=Math.max(1,Math.floor(NT/500)),samp=[];
       for(let i=0;i<NT;i+=stp)samp.push(proj[i]);
@@ -7334,10 +7388,11 @@ async function _fetchDirDepth(){
       let cum=0,pcs_50=nK;
       for(let r=0;r<S.order.length;r++){const k=S.order[r];cum+=S.diff[k]*S.diff[k];if(cum/tot>=0.5){pcs_50=r+1;break;}}
       const top_pcs=S.order.slice(0,8).map(k=>({pc:k,share:S.diff[k]*S.diff[k]/tot}));
-      layers.push({layer:l,magnitude:mag,proj_a,proj_b,p10:pct(0.10),p50:pct(0.50),p90:pct(0.90),pcs_50,top_pcs});
-    }
+      return {layer:l,magnitude:mag,proj_a,proj_b,p10:pct(0.10),p50:pct(0.50),p90:pct(0.90),pcs_50,top_pcs};
+    });
     _dirDepthData={layers,n_layers:NL,client:true};
   }catch(e){console.error('dirDepth client:',e);_dirDepthData=null;}
+  finally{if(_dp)_dp.style.display='none';}
   return _dirDepthData;
 }
 let _pinChangeDebounce=null;
