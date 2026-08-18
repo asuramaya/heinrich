@@ -1462,15 +1462,29 @@ async function _fetchVocabColumn(layer,pc){
 // n_layers× the data they used (26× at qwen scale) — a 128-PC recolor was ~1GB
 // and a direction-depth pass left ~7GB of columns in the browser heap.
 const _vpclInflight=new Map();
+// Per-(layer,pc) in-flight tracker (NEW): direction coloring, the brief
+// badges, and the per-layer depth profile each independently compute "top
+// PCs at this layer" for the SAME pinned pair with slightly different
+// caps/coverage (128 vs 64, 0.99 vs 0.999) — their PC lists overlap heavily
+// but are rarely byte-identical, so the batch-level `_vpclInflight` key
+// above (exact joined-list match) never caught it: three near-simultaneous
+// callers each computed `need` against the same still-cold cache and fired
+// three separate multi-MB requests for mostly the same columns. This waits
+// on whichever request already claimed a given (layer,pc) instead of
+// re-fetching it.
+const _vpcColInflight=new Map();// 'layer|pc' -> Promise
 let _vpclUnavailable=false;// backend without /api/vocab-pc-columns (older Worker deploy) → fall back to all-layer bundles
 async function _fetchVocabColumns(layer,pcs){
   const need=[...new Set(pcs)].filter(pc=>pc>=0&&!_vpcGet(layer,pc));
   if(!need.length)return;
   const key=model+'|'+mode+'|'+layer+'|'+need.join(',');
   const inf=_vpclInflight.get(key);if(inf)return inf;
+  const waitOn=[],fresh=[];
+  for(const pc of need){const pk=layer+'|'+pc;const ip=_vpcColInflight.get(pk);if(ip)waitOn.push(ip);else fresh.push(pc);}
+  if(!fresh.length)return Promise.all(waitOn).then(()=>{});
   const p=(async()=>{
     try{
-      const resp=await _apiFetch(`/api/vocab-pc-columns/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?layer=${layer}&pcs=${need.join(',')}`);
+      const resp=await _apiFetch(`/api/vocab-pc-columns/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?layer=${layer}&pcs=${fresh.join(',')}`);
       if(!resp.ok){if(resp.status===404||resp.status===501)_vpclUnavailable=true;return;}
       const buf=await resp.arrayBuffer();if(buf.byteLength<16){_vpclUnavailable=true;return;}
       const dv=new DataView(buf);
@@ -1481,9 +1495,11 @@ async function _fetchVocabColumns(layer,pcs){
       for(let i=0;i<nPc;i++){const f32=new Float32Array(nRows);const o=i*nRows;for(let r=0;r<nRows;r++)f32[r]=f16(u16[o+r]);_vpcPut(layer,ids[i],f32);}
       if(nRows>_vocabNRows)_vocabNRows=nRows;
     }catch(e){}
-    finally{_vpclInflight.delete(key);}
+    finally{fresh.forEach(pc=>_vpcColInflight.delete(layer+'|'+pc));_vpclInflight.delete(key);}
   })();
-  _vpclInflight.set(key,p);return p;
+  fresh.forEach(pc=>_vpcColInflight.set(layer+'|'+pc,p));
+  _vpclInflight.set(key,p);
+  return Promise.all([p,...waitOn]).then(()=>{});
 }
 // Make `pcs` readable at `layer` via _getScoreColumn(layer,pc) — from _pcFull if a
 // viewport already holds the all-layer column, else the per-layer cache. At sample
