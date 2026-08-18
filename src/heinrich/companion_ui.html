@@ -821,9 +821,18 @@ function f16(h){return _F16_LUT[h];}
 // ONLY — every analysis (projections, distances, pins' numeric readouts) keeps
 // the stored values untouched.
 const _dqF32=new Float32Array(1),_dqU32=new Uint32Array(_dqF32.buffer);
-function _f16Quantum(v){_dqF32[0]=v;const e=((_dqU32[0]>>>23)&0xff)-127;return e<-14?2**-24:2**(e-10);}
+// f16 quantum by float32 exponent field: table over the 256 exponent values.
+const _F16Q_BY_EXP=(()=>{const t=new Float32Array(256);for(let b=0;b<256;b++){const e=b-127;t[b]=e<-14?2**-24:2**(e-10);}return t;})();
+function _f16Quantum(v){_dqF32[0]=v;return _F16Q_BY_EXP[(_dqU32[0]>>>23)&0xff];}
 function _ditherU(i,axis){let h=(Math.imul(i,2654435761)+Math.imul(axis+1,40503)+0x9e3779b9)>>>0;h^=h>>>13;h=Math.imul(h,0x5bd1e995)>>>0;h^=h>>>15;return (h>>>8)/16777216-0.5;}
 function _dq(rawV,i,axis){return rawV+_ditherU(i,axis)*_f16Quantum(rawV);}
+// Vectorized form for the precompute hot loops: per-token uniform offsets are
+// tabulated once per vocab (3 axes), and the quantum comes straight from the
+// column's own float32 bits (a Uint32 view over the same buffer — no per-value
+// store/load round trip). Same numbers as _dq, ~5x cheaper.
+let _dqTabN=0;const _dqTab=[null,null,null];
+function _dqTables(n){if(_dqTabN!==n){for(let a=0;a<3;a++){const t=new Float32Array(n);for(let i=0;i<n;i++)t[i]=_ditherU(i,a);_dqTab[a]=t;}_dqTabN=n;}return _dqTab;}
+function _u32View(col){return new Uint32Array(col.buffer,col.byteOffset,col.length);}
 
 const NV=6,NC=3,_DPR=Math.min(devicePixelRatio,1.5);// 0=cloudA,1=deltaCloud,2=cloudB,3=trajA,4=deltaTraj,5=trajB
 // --- Mobile focus mode: on a phone the 20-viewport cockpit collapses to one full-bleed
@@ -1426,8 +1435,9 @@ async function _revBuildGrid(vi){
   const G=REVEAL_GRID,C=REVEAL_CUBE,invc=G/(2*C);
   const grid=new Array(G*G*G);const coords=new Float32Array(nRows*3);
   const bin=(c)=>{const b=((c+C)*invc)|0;return b<0?0:(b>=G?G-1:b);};
+  const [dX,dY,dZ]=_dqTables(Math.max(nRows,nN)),uX=_u32View(cx),uY=_u32View(cy),uZ=_u32View(cz),Q=_F16Q_BY_EXP;
   for(let r=0;r<nRows;r++){
-    const x=_clampTraj(_dq(cx[r],r,0)/mxX,bX),y=_clampTraj(_dq(cy[r],r,1)/mxY,bY),z=_clampTraj(_dq(cz[r],r,2)/mxZ,bZ);// f16 sub-quantum dither, display only
+    const x=_clampTraj((cx[r]+dX[r]*Q[(uX[r]>>>23)&0xff])/mxX,bX),y=_clampTraj((cy[r]+dY[r]*Q[(uY[r]>>>23)&0xff])/mxY,bY),z=_clampTraj((cz[r]+dZ[r]*Q[(uZ[r]>>>23)&0xff])/mxZ,bZ);// f16 sub-quantum dither, display only
     coords[r*3]=x;coords[r*3+1]=y;coords[r*3+2]=z;
     const ci=bin(x)*G*G+bin(y)*G+bin(z);let cell=grid[ci];if(!cell){cell=[];grid[ci]=cell;}cell.push(r);
   }
@@ -2116,10 +2126,11 @@ function _precomputeCloud(vi){
     const buf=v._cloudBufs[l];
     if(colX&&colY&&colZ){
       const imxX=1/mxX,imxY=1/mxY,imxZ=1/mxZ;
-      for(let i=0;i<nN;i++){// f16 sub-quantum dither, display only (see _dq)
-        buf[i*3]=_clampTraj(_dq(colX[i],i,0)*imxX,bX);
-        buf[i*3+1]=_clampTraj(_dq(colY[i],i,1)*imxY,bY);
-        buf[i*3+2]=_clampTraj(_dq(colZ[i],i,2)*imxZ,bZ);
+      const [dX,dY,dZ]=_dqTables(nN),uX=_u32View(colX),uY=_u32View(colY),uZ=_u32View(colZ),Q=_F16Q_BY_EXP;
+      for(let i=0;i<nN;i++){// f16 sub-quantum dither, display only (see _dq / _dqTables)
+        buf[i*3]=_clampTraj((colX[i]+dX[i]*Q[(uX[i]>>>23)&0xff])*imxX,bX);
+        buf[i*3+1]=_clampTraj((colY[i]+dY[i]*Q[(uY[i]>>>23)&0xff])*imxY,bY);
+        buf[i*3+2]=_clampTraj((colZ[i]+dZ[i]*Q[(uZ[i]>>>23)&0xff])*imxZ,bZ);
       }
     }else{
       for(let i=0;i<nN;i++){
@@ -2151,7 +2162,8 @@ function _precomputeTraj(vi){
     v._trajClampBounds[l]=[bX,bY];
     if(colX&&colY){
       const imx=1/lm[0],imy=1/lm[1];
-      for(let i=0;i<nN;i++){buf[i*3]=_clampTraj(_dq(colX[i],i,0)*imx,bX);buf[i*3+1]=_clampTraj(_dq(colY[i],i,1)*imy,bY);buf[i*3+2]=z;}// f16 sub-quantum dither, display only
+      const [dX,dY]=_dqTables(nN),uX=_u32View(colX),uY=_u32View(colY),Q=_F16Q_BY_EXP;
+      for(let i=0;i<nN;i++){buf[i*3]=_clampTraj((colX[i]+dX[i]*Q[(uX[i]>>>23)&0xff])*imx,bX);buf[i*3+1]=_clampTraj((colY[i]+dY[i]*Q[(uY[i]>>>23)&0xff])*imy,bY);buf[i*3+2]=z;}// f16 sub-quantum dither, display only
     }else{
       for(let i=0;i<nN;i++){buf[i*3]=_clampTraj(_getScore(l,i,pcX)/lm[0],bX);buf[i*3+1]=_clampTraj(_getScore(l,i,pcY)/lm[1],bY);buf[i*3+2]=z;}
     }
@@ -3805,6 +3817,26 @@ let _brOverlay=[];
 let _brBuilt=false;
 let _brFollow=-1;
 let _brMxCache={};
+// Per-(PC,layer) |max| over the loaded column tier, memoized. Replaces two
+// per-cell scans: buildBrowser's stride-30 sample (an unstable normalization
+// that jittered per layer) and _updateBrowserOverlay's FULL nN scan per cell
+// per layer on cache miss — 242 cells × 26 layers × 150k tokens × 2 = ~1.9
+// BILLION _getScore calls, synchronous, on the main thread, and it fired
+// DURING LOAD (fresh loads auto-pin two tokens before the browser is built):
+// measured as one 8.8s long task = ~56% of a qwen load. Now: one pass over the
+// column (full tier via subarray, else the strided medium tier) per PC per
+// layer, ~0.3ms each, and every cell shares its two PCs' entries.
+const _brPcMaxCache=new Map();
+function _brPcMax(pc,l){
+  const k=pc*4096+l;const hit=_brPcMaxCache.get(k);if(hit!==undefined)return hit;
+  let m=0;const full=_pcFull.get(pc);
+  if(full){const c=full.subarray(l*_pcFullNT,(l+1)*_pcFullNT);for(let i=0;i<c.length;i++){const a=c[i]<0?-c[i]:c[i];if(a>m)m=a;}}
+  else{const med=_pcMedium.get(pc);
+    if(med){const c=med.data.subarray(l*med.nS,(l+1)*med.nS);for(let i=0;i<c.length;i++){const a=c[i]<0?-c[i]:c[i];if(a>m)m=a;}}
+    else{const step=Math.max(1,Math.floor(nN/_BR_PTS));for(let i=0;i<nN;i+=step){const a=Math.abs(_getScore(l,i,pc));if(a>m)m=a;}}}
+  _brPcMaxCache.set(k,m);return m;
+}
+function _brCellMx(pa,pb,l){const k=`${pa},${pb},${l}`;let mx=_brMxCache[k];if(mx)return mx;mx=Math.max(_brPcMax(pa,l),_brPcMax(pb,l))||1;_brMxCache[k]=mx;return mx;}
 let _brLayers=[];// [{pts, layer, origPos, tokMap}]
 let _brN=0;// PCs shown in prism window
 let _brWinStart=0;// first PC index in the window
@@ -3863,7 +3895,7 @@ function buildBrowser(){
   while(brSc.children.length){const c=brSc.children[0];brSc.remove(c);if(keep.has(c))continue;if(c.geometry)c.geometry.dispose();if(c.material){if(Array.isArray(c.material))c.material.forEach(m=>m.dispose());else c.material.dispose();}}
   // Re-add preserved objects
   keep.forEach(o=>brSc.add(o));
-  _brOverlay=[];_brMxCache={};_brLayers=[];_brSelBoxes=[];
+  _brOverlay=[];_brMxCache={};_brPcMaxCache.clear();_brLayers=[];_brSelBoxes=[];
   _brComputeCells();
   _brN=_brCells.length;
   _brWinStart=0;// not used in radial mode
@@ -3878,8 +3910,7 @@ function buildBrowser(){
     let idx=0;
     _brCells.forEach(c=>{
       const {pa,pb,cx,cy,rad}=c;
-      let mx=0;for(let i=0;i<nN;i+=step)mx=Math.max(mx,Math.abs(_getScore(l,i,pa)),Math.abs(_getScore(l,i,pb)));mx=mx||1;
-      _brMxCache[`${pa},${pb},${l}`]=mx;
+      const mx=_brCellMx(pa,pb,l);
       for(let i=0;i<nN;i+=step){
         const sx=Math.max(-rad,Math.min(rad,_getScore(l,i,pa)/mx*rad));
         const sy=Math.max(-rad,Math.min(rad,_getScore(l,i,pb)/mx*rad));
@@ -3991,8 +4022,7 @@ function _updateBrowserOverlay(){
       const isSelected=[vpPairs[0],vpPairs[2]].some(([sa,sb])=>(Math.min(sa,sb)===pa&&Math.max(sa,sb)===pb));
       const pts=[];
       for(let l=0;l<nL;l++){
-        let mx=_brMxCache[`${pa},${pb},${l}`];
-        if(!mx){mx=0;for(let i=0;i<nN;i++)mx=Math.max(mx,Math.abs(_getScore(l,i,pa)),Math.abs(_getScore(l,i,pb)));mx=mx||1;_brMxCache[`${pa},${pb},${l}`]=mx;}
+        const mx=_brCellMx(pa,pb,l);
         pts.push(new THREE.Vector3(
           cx+Math.max(-rad,Math.min(rad,_getScore(l,tok,pa)/mx*rad)),
           cy-Math.max(-rad,Math.min(rad,_getScore(l,tok,pb)/mx*rad)),
@@ -6909,7 +6939,7 @@ async function loadAll(){
   dm=dmResult;model=newModel;mode=newMode;
   nL=dm.n_layers;_nRealLayers=dm.n_real_layers||nL;_buildLayerSeq();
   // Clear all PCA caches on model switch
-  _vpclUnavailable=false;_pcsFetchGen++;_cloudFetchGen++;_dirFals=null;_pcsHoverCache.clear();_pcsHoverPending.clear();_hoverCache.clear();_pcFull.clear();_pcMedium.clear();_pcFullPending.clear();_pcMediumPending.clear();_nfCache.clear();
+  _vpclUnavailable=false;_brPcMaxCache.clear();_brMxCache={};_pcsFetchGen++;_cloudFetchGen++;_dirFals=null;_pcsHoverCache.clear();_pcsHoverPending.clear();_hoverCache.clear();_pcFull.clear();_pcMedium.clear();_pcFullPending.clear();_pcMediumPending.clear();_nfCache.clear();
   CloudStore.pending.clear();TokenStore.pending.clear();
   _pcsFullA=null;_pcsFullB=null;_pcsFullK=0;_pcsFullNL=0;_pcsScale=0;_pcsNK=0;
   _pcsPrevFit=0;_pcsChase=null;// new model — don't compare its fit against the old model's
