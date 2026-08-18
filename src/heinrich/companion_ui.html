@@ -286,7 +286,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .lvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .lvp .llbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
 /* lv-btn/lv-top/lv-bot removed — .cbtn handles all positioning (bottom-right) */
-.vp,.lvp,.rvp,.browse{position:relative;overflow:hidden;background:transparent;border:1px solid transparent;transition:border-color 0.15s}
+.vp,.lvp,.rvp,.browse{position:relative;overflow:hidden;background:transparent;border:1px solid transparent;transition:border-color 0.15s;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}/* long-press pins B on touch — must not race the OS selection callout on the corner labels */
 .cap-active{border-color:#444}
 .cap-recording{border-color:#ff4444;animation:rec-pulse 0.5s ease-in-out infinite alternate}
 @keyframes rec-pulse{from{border-color:#ff4444}to{border-color:#661111}}
@@ -489,7 +489,7 @@ body.mobile #tokpanel .drag-mid{display:none}   /* the ":: drag ::" hint — it 
 body.mobile #tokMin{display:none}                /* the grabber tap collapses/expands; minimize is redundant */
 /* one-time gesture hint (long-press is otherwise undiscoverable) */
 #mhint{display:none}
-body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(var(--mtop) + 10px);z-index:25;background:rgba(12,14,18,0.93);border:1px solid #2a3a2a;border-radius:10px;padding:10px 13px;color:#bcd;font-size:12px;line-height:1.5;text-align:center;backdrop-filter:blur(6px);transition:opacity .45s}
+body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(var(--mtop) + 10px);z-index:25;pointer-events:none;/* a hint, not a tap sink — first-run taps in this band used to dismiss it instead of pinning */background:rgba(12,14,18,0.93);border:1px solid #2a3a2a;border-radius:10px;padding:10px 13px;color:#bcd;font-size:12px;line-height:1.5;text-align:center;backdrop-filter:blur(6px);transition:opacity .45s}
 </style>
 </head>
 <body>
@@ -802,7 +802,28 @@ async function _fetchJSON(url,options={},timeoutMs=20000){
     clearTimeout(t);
   }
 }
-function f16(h){const s=(h>>15)&1,e=(h>>10)&0x1f,m=h&0x3ff;if(e===0)return m===0?0:(s?-1:1)*2**-14*(m/1024);if(e===31)return m?NaN:(s?-Infinity:Infinity);return(s?-1:1)*2**(e-15)*(1+m/1024);}
+function _f16Slow(h){const s=(h>>15)&1,e=(h>>10)&0x1f,m=h&0x3ff;if(e===0)return m===0?0:(s?-1:1)*2**-14*(m/1024);if(e===31)return m?NaN:(s?-Infinity:Infinity);return(s?-1:1)*2**(e-15)*(1+m/1024);}
+// Every f16 bit pattern decoded once into a 64K lookup table: a vocab-scale
+// bundle ingest decodes 10^8-10^9 values (nPCs*nLayers*nRows), and the
+// per-element bit-math + pow was pegging a core for tens of seconds. Bit-exact.
+const _F16_LUT=(()=>{const t=new Float32Array(65536);for(let h=0;h<65536;h++)t[h]=_f16Slow(h);return t;})();
+function f16(h){return _F16_LUT[h];}
+// --- Display-only sub-quantum dither for float16-stored PC scores ---
+// vocab_pc16.bin stores scores as float16 (10 mantissa bits): a value ~1000
+// (PC0 on smollm2 reaches ~1077) is rounded to a step of 1.0; ~80 to 0.0625.
+// Normalized by the per-layer scale that is ~1e-3 of the cloud's extent —
+// invisible at overview, but zoom into a 0.05-wide window and every point
+// snaps to one of ~50 columns; from an axis-aligned angle they line up as
+// STRIPES / a blocky lattice. The stored value is the rounded one; the true
+// value is uniformly likely anywhere inside its quantum. Drawing each point
+// at a deterministic (per token, per axis) uniform offset within that quantum
+// restores the true density and removes the false lattice. Display coords
+// ONLY — every analysis (projections, distances, pins' numeric readouts) keeps
+// the stored values untouched.
+const _dqF32=new Float32Array(1),_dqU32=new Uint32Array(_dqF32.buffer);
+function _f16Quantum(v){_dqF32[0]=v;const e=((_dqU32[0]>>>23)&0xff)-127;return e<-14?2**-24:2**(e-10);}
+function _ditherU(i,axis){let h=(Math.imul(i,2654435761)+Math.imul(axis+1,40503)+0x9e3779b9)>>>0;h^=h>>>13;h=Math.imul(h,0x5bd1e995)>>>0;h^=h>>>15;return (h>>>8)/16777216-0.5;}
+function _dq(rawV,i,axis){return rawV+_ditherU(i,axis)*_f16Quantum(rawV);}
 
 const NV=6,NC=3,_DPR=Math.min(devicePixelRatio,1.5);// 0=cloudA,1=deltaCloud,2=cloudB,3=trajA,4=deltaTraj,5=trajB
 // --- Mobile focus mode: on a phone the 20-viewport cockpit collapses to one full-bleed
@@ -836,7 +857,7 @@ function _renderRegion(el,sc,cam){
 }
 const views=[];
 let _lastVP=0;
-for(let v=0;v<NV;v++){const el=document.getElementById('vp'+v);const sc=new THREE.Scene();sc.background=new THREE.Color(v>=NC?0x080808:0x0a0a0a);const cam=new THREE.PerspectiveCamera(50,1,0.001,200);cam.position.set(0,0,2.5);const ctl=new OrbitControls(cam,el);ctl.enableDamping=true;ctl.dampingFactor=0.08;ctl.minDistance=0.005;ctl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};el.addEventListener('pointerenter',()=>{_lastVP=v;});const geo=new THREE.BufferGeometry();const mtl=new THREE.PointsMaterial({size:0.02,vertexColors:true,transparent:true,opacity:0.85,sizeAttenuation:true,depthWrite:false});const pts=new THREE.Points(geo,mtl);sc.add(pts);views.push({el,cv:el,sc,cam,ctl,geo,mtl,pts,pcX:0,pcY:1,pcZ:2,layer:0,trajGroup:null});}
+for(let v=0;v<NV;v++){const el=document.getElementById('vp'+v);const sc=new THREE.Scene();sc.background=new THREE.Color(v>=NC?0x080808:0x0a0a0a);const cam=new THREE.PerspectiveCamera(50,1,0.001,200);cam.position.set(0,0,2.5);const ctl=new OrbitControls(cam,el);ctl.enableDamping=true;ctl.dampingFactor=0.08;ctl.minDistance=0.005;ctl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};ctl.zoomToCursor=true;/* dolly toward the point under the cursor, not ctl.target — the only way to zoom INTO an off-center cluster without blind panning */el.addEventListener('pointerenter',()=>{_lastVP=v;});const geo=new THREE.BufferGeometry();const mtl=new THREE.PointsMaterial({size:0.02,vertexColors:true,transparent:true,opacity:0.85,sizeAttenuation:true,depthWrite:false});const pts=new THREE.Points(geo,mtl);sc.add(pts);views.push({el,cv:el,sc,cam,ctl,geo,mtl,pts,pcX:0,pcY:1,pcZ:2,layer:0,trajGroup:null});}
 function _resizeCanvas(){rdr.setSize(window.innerWidth,window.innerHeight);}
 
 // Dual browser panels — same scene, two cameras focused on different PC neighborhoods
@@ -1181,6 +1202,7 @@ const _overlayTagEls=[];// per-cloud-viewport honesty tag (bottom-left)
 for(let _ovi=0;_ovi<NC;_ovi++){const host=document.getElementById('vp'+_ovi);if(host){const el=document.createElement('div');el.className='ovtag';el.style.cssText='position:absolute;bottom:3px;left:4px;font-size:8px;color:#9a8636;pointer-events:none;z-index:2;text-shadow:0 0 3px #000';host.appendChild(el);_overlayTagEls[_ovi]=el;}else _overlayTagEls[_ovi]=null;}
 // Trajectory honesty tag (Part B.4): real path counts, per traj viewport (NC..NV).
 let _trajAdditive=true;// additive blending on the merged trajectory LineSegments
+let _trajBudgetCap=5000;// max paths per traj viewport — see buildTraj; live via __heinrich.trajBudget
 const _trajTagEls=[];
 for(let _tvi=NC;_tvi<NV;_tvi++){const host=document.getElementById('vp'+_tvi);if(host){const el=document.createElement('div');el.className='ovtag';el.style.cssText='position:absolute;bottom:3px;left:4px;font-size:8px;color:#7a8a99;pointer-events:none;z-index:2;text-shadow:0 0 3px #000';host.appendChild(el);_trajTagEls[_tvi]=el;}else _trajTagEls[_tvi]=null;}
 async function _setTrajTag(vi,shown,topK){const el=_trajTagEls[vi];if(!el)return;
@@ -1280,18 +1302,7 @@ async function _updateOverlayTag(){
     el.textContent=txt;
   }
 }
-// Raycast the gold overlay points in a cloud viewport -> _overlayEntries index.
-function _overlayRayHit(vi,e){
-  if(vi>=NC)return -1;const pts=overlayCloudPts[vi];if(!pts||!pts.visible||!_overlayEntries.length)return -1;
-  const v=views[vi];const r=v.cv.getBoundingClientRect();
-  ms.x=((e.clientX-r.left)/r.width)*2-1;ms.y=-((e.clientY-r.top)/r.height)*2+1;
-  ray.setFromCamera(ms,v.cam);
-  const vpH=r.height||1;const fovRad=v.cam.fov*Math.PI/180;const pixelToWorld=2*Math.tan(fovRad/2)/vpH;const d=v.cam.position.length()||1;
-  ray.params.Points.threshold=7*pixelToWorld*d;
-  const h=ray.intersectObject(pts);if(!h.length)return -1;
-  h.sort((a,b)=>a.distanceToRay-b.distanceToRay);
-  return h[0].index<_overlayEntries.length?h[0].index:-1;
-}
+// (gold-overlay raycast folded into _pickAt — see Interaction section)
 // ============================================================================
 // Part A — zoom-progressive full-vocabulary cloud reveal.
 // The published cloud renders a ~2K sample. When the reader zooms a cloud
@@ -1316,18 +1327,30 @@ const REVEAL_CAP=160000;           // per-viewport preallocated point capacity
 const REVEAL_ZOOM_ON=1.5;          // zoomFactor (2.5/dist) past which reveal activates
 const REVEAL_GRID=32;              // grid cells per axis over the normalized cube
 const REVEAL_CUBE=1.75;            // half-extent of the binned cube (normalized coords)
-const VPC_CACHE_MAX=64;            // LRU bound on decoded columns
+// LRU bound on decoded per-(layer,pc) columns, in BYTES. This cache now backs
+// every single-layer analysis (coloring, depth, brief, baseline) via
+// _ensureLayerColumns, so it must hold a few hundred columns at 150k rows
+// (~600KB each) — but a phone cannot: budget by device class.
+const VPC_CACHE_BYTES=(typeof matchMedia==='function'&&matchMedia('(pointer:coarse)').matches)?128*1048576:768*1048576;
+let _vpcBytes=0;
 const _vpcCache=new Map();         // key model|mode|layer|pc -> Float32Array(nRows), LRU
 const _vpcInflight=new Map();      // key -> Promise (dedupe concurrent fetches)
 let _vocabNRows=0;                 // full-vocab row count (from vocab-meta)
 // Per-token script coloring (matches the sample cloud's own CL palette) — this
 // is the sole cloud renderer once vocab is the source, so it needs the same
 // per-token color identity the retired base cloud used to carry.
-const revealPts=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(REVEAL_CAP*3),3));g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(REVEAL_CAP*3),3));g.setDrawRange(0,0);const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.02,vertexColors:true,transparent:true,opacity:0.5,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=-1;p.visible=false;p.frustumCulled=false;v.sc.add(p);return p;});
+const revealPts=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(REVEAL_CAP*3),3).setUsage(THREE.DynamicDrawUsage));g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(REVEAL_CAP*3),3).setUsage(THREE.DynamicDrawUsage));g.setDrawRange(0,0);g.boundingSphere=new THREE.Sphere(new THREE.Vector3(0,0,0),4);const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.02,vertexColors:true,transparent:true,opacity:0.5,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=-1;p.visible=false;p.frustumCulled=false;v.sc.add(p);return p;});
 function _vpcGet(layer,pc){const k=model+'|'+mode+'|'+layer+'|'+pc;const v=_vpcCache.get(k);if(v){_vpcCache.delete(k);_vpcCache.set(k,v);}return v;}
-function _vpcPut(layer,pc,arr){const k=model+'|'+mode+'|'+layer+'|'+pc;if(_vpcCache.has(k))_vpcCache.delete(k);_vpcCache.set(k,arr);while(_vpcCache.size>VPC_CACHE_MAX){const fk=_vpcCache.keys().next().value;_vpcCache.delete(fk);}}
+function _vpcPut(layer,pc,arr){const k=model+'|'+mode+'|'+layer+'|'+pc;const old=_vpcCache.get(k);if(old){_vpcCache.delete(k);_vpcBytes-=old.byteLength;}_vpcCache.set(k,arr);_vpcBytes+=arr.byteLength;while(_vpcBytes>VPC_CACHE_BYTES&&_vpcCache.size>1){const fk=_vpcCache.keys().next().value;_vpcBytes-=_vpcCache.get(fk).byteLength;_vpcCache.delete(fk);}}
 // One ~97KB float16 read per (layer,pc); decoded to Float32 once, then cached.
 async function _fetchVocabColumn(layer,pc){
+  // In-memory first: CloudStore already holds the full all-layer, all-row
+  // column for every PC a viewport pair uses (_pcFull, from vocab-pc-bundle),
+  // so at vocab scope this is a zero-copy subarray, not a network round trip.
+  // Before this, every layer step re-fetched the same bytes it already had
+  // (3 columns × 3 viewports per step) — which, with the 180ms debounce, is
+  // why the cloud could never keep up with 100ms/layer playback.
+  if(_cloudSource==='vocab'&&_pcFull.has(pc)&&_pcFullNT>0){const c=_getScoreColumn(layer,pc);if(c&&c.length===_pcFullNT){if(_pcFullNT>_vocabNRows)_vocabNRows=_pcFullNT;return c;}}
   const cached=_vpcGet(layer,pc);if(cached)return cached;
   const k=model+'|'+mode+'|'+layer+'|'+pc;
   const inf=_vpcInflight.get(k);if(inf)return inf;
@@ -1348,6 +1371,45 @@ async function _fetchVocabColumn(layer,pc){
   })();
   _vpcInflight.set(k,p);return p;
 }
+// MANY columns for ONE layer in one request (/api/vocab-pc-columns, ≤256 PCs
+// each, VPCL wire) → the per-layer LRU. Single-layer analyses call
+// _ensureLayerColumns instead of _ensurePCs: the all-layer bundle handed them
+// n_layers× the data they used (26× at qwen scale) — a 128-PC recolor was ~1GB
+// and a direction-depth pass left ~7GB of columns in the browser heap.
+const _vpclInflight=new Map();
+let _vpclUnavailable=false;// backend without /api/vocab-pc-columns (older Worker deploy) → fall back to all-layer bundles
+async function _fetchVocabColumns(layer,pcs){
+  const need=[...new Set(pcs)].filter(pc=>pc>=0&&!_vpcGet(layer,pc));
+  if(!need.length)return;
+  const key=model+'|'+mode+'|'+layer+'|'+need.join(',');
+  const inf=_vpclInflight.get(key);if(inf)return inf;
+  const p=(async()=>{
+    try{
+      const resp=await _apiFetch(`/api/vocab-pc-columns/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?layer=${layer}&pcs=${need.join(',')}`);
+      if(!resp.ok){if(resp.status===404||resp.status===501)_vpclUnavailable=true;return;}
+      const buf=await resp.arrayBuffer();if(buf.byteLength<16){_vpclUnavailable=true;return;}
+      const dv=new DataView(buf);
+      if(String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3))!=='VPCL'){_vpclUnavailable=true;return;}
+      const nPc=dv.getUint32(8,true),nRows=dv.getUint32(12,true);
+      if(!nPc||!nRows||buf.byteLength<16+nPc*4+nPc*nRows*2)return;
+      const ids=new Uint32Array(buf,16,nPc);const u16=new Uint16Array(buf,16+nPc*4,nPc*nRows);
+      for(let i=0;i<nPc;i++){const f32=new Float32Array(nRows);const o=i*nRows;for(let r=0;r<nRows;r++)f32[r]=f16(u16[o+r]);_vpcPut(layer,ids[i],f32);}
+      if(nRows>_vocabNRows)_vocabNRows=nRows;
+    }catch(e){}
+    finally{_vpclInflight.delete(key);}
+  })();
+  _vpclInflight.set(key,p);return p;
+}
+// Make `pcs` readable at `layer` via _getScoreColumn(layer,pc) — from _pcFull if a
+// viewport already holds the all-layer column, else the per-layer cache. At sample
+// scope (no vocab_pc16.bin) it degrades to the all-layer ensure.
+async function _ensureLayerColumns(layer,pcs){
+  if(_cloudSource!=='vocab'||_vpclUnavailable){await _ensurePCs(pcs);return;}
+  const need=[...new Set(pcs)].filter(pc=>pc>=0&&!_pcFull.has(pc)&&!_vpcGet(layer,pc));
+  for(let i=0;i<need.length;i+=256)await _fetchVocabColumns(layer,need.slice(i,i+256));
+  // Backend lacked the route (flag set inside the fetch): complete via bundles this once.
+  if(_vpclUnavailable){const still=need.filter(pc=>!_vpcGet(layer,pc));if(still.length)await _ensurePCs(still);}
+}
 // Build (or reuse) the per-viewport spatial grid for the current (layer,pcTriple).
 // Coordinates use the SAME normalization the sample cloud used at this layer.
 async function _revBuildGrid(vi){
@@ -1365,43 +1427,64 @@ async function _revBuildGrid(vi){
   const grid=new Array(G*G*G);const coords=new Float32Array(nRows*3);
   const bin=(c)=>{const b=((c+C)*invc)|0;return b<0?0:(b>=G?G-1:b);};
   for(let r=0;r<nRows;r++){
-    const x=_clampTraj(cx[r]/mxX,bX),y=_clampTraj(cy[r]/mxY,bY),z=_clampTraj(cz[r]/mxZ,bZ);
+    const x=_clampTraj(_dq(cx[r],r,0)/mxX,bX),y=_clampTraj(_dq(cy[r],r,1)/mxY,bY),z=_clampTraj(_dq(cz[r],r,2)/mxZ,bZ);// f16 sub-quantum dither, display only
     coords[r*3]=x;coords[r*3+1]=y;coords[r*3+2]=z;
     const ci=bin(x)*G*G+bin(y)*G+bin(z);let cell=grid[ci];if(!cell){cell=[];grid[ci]=cell;}cell.push(r);
   }
-  v._rev=Object.assign(v._rev||{},{grid,gridKey:key,coords,nRows,shown:0,zoom:0,active:false,shownRows:new Int32Array(REVEAL_CAP)});
+  v._rev=Object.assign(v._rev||{},{grid,gridKey:key,coords,nRows,shown:0,zoom:0,active:false,_lastFull:false,shownRows:(v._rev&&v._rev.shownRows)||new Int32Array(REVEAL_CAP)});// _lastFull reset: a new grid must never hit the full-fill memo
   return v._rev;
 }
-const _revFrustum=new THREE.Frustum(),_revPV=new THREE.Matrix4(),_revCC=new THREE.Vector3();
-// Density-budget fill: in-frustum cells, nearest-to-camera first, up to N/cell
-// (N grows with zoom), until the buffer or the cell list is exhausted.
+const _revFrustum=new THREE.Frustum(),_revPV=new THREE.Matrix4(),_revSphere=new THREE.Sphere();
+// Fill = everything inside the frustum, up to the buffer.
+// Old rule: test each cell's CENTER against the frustum, then take at most
+// perCell = clamp(round(zoom²·2),1,40) rows per cell, first-N by token id.
+// Measured (smollm2, view 0): coverage of ON-SCREEN tokens actually drawn was
+// 10% at zoom 1, 53% at zoom 5, then FLAT ~52-55% out to zoom 42 — half of what
+// the user was looking at never rendered and never became clickable, no matter
+// how far they zoomed. Two causes, ~half each: cells whose center fell outside
+// the frustum were dropped whole (a cell is 0.109 wide; one cell fills the view
+// at distance 0.117), and perCell saturated at 40 by zoom 4.5 (1% of the dolly
+// range) while the 160k buffer sat ~1% used. New rule: a cell counts if its
+// bounding SPHERE meets the frustum; the in-frustum population is drawn in
+// full when it fits the buffer (every loaded vocab does: ≤150k), else sampled
+// UNIFORMLY by stride (a faithful density, not the first-N ids → no cell-shaped
+// clumps). Hidden-script rows are skipped BEFORE counting, so isolating a
+// script can no longer empty a cell. Zoom-progressive detail is now simply
+// "what is in view", at every scale.
 function _revFill(vi){
   const v=views[vi],pts=revealPts[vi],rev=v._rev;
   if(!rev||!rev.grid){pts.visible=false;return;}
   const cam=v.cam;cam.updateMatrixWorld();cam.updateProjectionMatrix();
   _revPV.multiplyMatrices(cam.projectionMatrix,cam.matrixWorldInverse);_revFrustum.setFromProjectionMatrix(_revPV);
-  const G=REVEAL_GRID,C=REVEAL_CUBE,cw=2*C/G;
-  const dist=cam.position.distanceTo(v.ctl.target)||1;const zoom=2.5/dist;rev.zoom=zoom;
-  const perCell=Math.max(1,Math.min(40,Math.round(zoom*zoom*2)));// budget per cell scales with zoom
-  const cp=cam.position,grid=rev.grid,cells=[];
+  const G=REVEAL_GRID,C=REVEAL_CUBE,cw=2*C/G,cellR=cw*0.8660254;// half-diagonal of a cell
+  const dist=_viewDist(v);const zoom=2.5/dist;rev.zoom=zoom;
+  const grid=rev.grid;
+  const cells=rev._cells||(rev._cells=[]);cells.length=0;let inView=0,nonEmpty=0;
   for(let gx=0;gx<G;gx++){const cxw=-C+(gx+0.5)*cw;
     for(let gy=0;gy<G;gy++){const cyw=-C+(gy+0.5)*cw;
-      for(let gz=0;gz<G;gz++){const idx=gx*G*G+gy*G+gz;const arr=grid[idx];if(!arr||!arr.length)continue;
-        const czw=-C+(gz+0.5)*cw;_revCC.set(cxw,cyw,czw);
-        if(!_revFrustum.containsPoint(_revCC))continue;
-        const dx=cxw-cp.x,dy=cyw-cp.y,dz=czw-cp.z;cells.push({d:dx*dx+dy*dy+dz*dz,arr});
-      }}}
-  cells.sort((a,b)=>a.d-b.d);
+      for(let gz=0;gz<G;gz++){const arr=grid[gx*G*G+gy*G+gz];if(!arr||!arr.length)continue;nonEmpty++;
+        _revSphere.center.set(cxw,cyw,-C+(gz+0.5)*cw);_revSphere.radius=cellR;
+        if(!_revFrustum.intersectsSphere(_revSphere))continue;
+        cells.push(arr);inView+=arr.length;}}}
+  const hideScripts=_hiddenScripts.size>0;
+  // Memo: if every non-empty cell is in view and fits the buffer, the fill is
+  // identical to the last full fill — skip the O(N) rewrite (orbiting at
+  // overview used to refill + re-upload three viewports on every change).
+  const full=inView<=REVEAL_CAP&&cells.length===nonEmpty;
+  const colorKey=(_dirColorActive&&_dirProjLast?'d':'s')+(hideScripts?[..._hiddenScripts].sort().join(','):'');
+  if(full&&rev._lastFull&&rev._lastFullKey===colorKey&&rev.active&&pts.visible){return;}
+  rev._lastFull=full;rev._lastFullKey=colorKey;
   const pos=pts.geometry.attributes.position.array,col=pts.geometry.attributes.color.array;
-  const coords=rev.coords,sr=rev.shownRows;const hideScripts=_hiddenScripts.size>0;let w=0;
-  for(let ci=0;ci<cells.length&&w<REVEAL_CAP;ci++){const arr=cells[ci].arr;const take=Math.min(perCell,arr.length);
-    for(let j=0;j<take&&w<REVEAL_CAP;j++){const r=arr[j];
+  const coords=rev.coords,sr=rev.shownRows;
+  const frac=inView>REVEAL_CAP?REVEAL_CAP/inView:1;
+  let w=0;
+  for(let ci=0;ci<cells.length&&w<REVEAL_CAP;ci++){const arr=cells[ci];const n=arr.length;
+    const take=frac>=1?n:Math.max(1,Math.round(n*frac));const stride=take>=n?1:n/take;
+    for(let k=0;k<take&&w<REVEAL_CAP;k++){const r=arr[stride===1?k:(k*stride)|0];
       if(hideScripts&&_hiddenScripts.has(scripts[r]))continue;
       pos[w*3]=coords[r*3];pos[w*3+1]=coords[r*3+1];pos[w*3+2]=coords[r*3+2];
       // Direction-projection coloring (A vs B, once both are pinned) takes priority
-      // over script coloring — same red/blue gradient _colorFromProj uses for the
-      // (retired) base cloud and the still-visible trajectory markers/lines, just
-      // read per-row here instead of precomputed for all nN at once.
+      // over script coloring — same red/blue gradient _colorFromProj uses.
       if(_dirColorActive&&_dirProjLast){
         const t=Math.max(-1,Math.min(1,(_dirProjLast[r]-_dirProjMid)/_dirProjSpan)),at=Math.abs(t);
         if(t>0){col[w*3]=0.25+0.75*at;col[w*3+1]=0.25*(1-at);col[w*3+2]=0.15*(1-at);}
@@ -1410,9 +1493,14 @@ function _revFill(vi){
         const hex=CL[scripts[r]]||0xAAAAAA;col[w*3]=((hex>>16)&0xFF)/255;col[w*3+1]=((hex>>8)&0xFF)/255;col[w*3+2]=(hex&0xFF)/255;
       }
       sr[w]=r;w++;}}
-  rev.shown=w;rev.active=true;
-  pts.geometry.setDrawRange(0,w);pts.geometry.attributes.position.needsUpdate=true;pts.geometry.attributes.color.needsUpdate=true;
-  pts.geometry.computeBoundingSphere&&pts.geometry.computeBoundingSphere();
+  rev.shown=w;rev.active=true;rev.inView=inView;
+  pts.geometry.setDrawRange(0,w);
+  // Upload only the slots written (was: flag the whole 160k-slot buffers dirty +
+  // recompute a bounding sphere over all of them, every refill — a fixed ~3.8MB
+  // re-upload regardless of how few points were placed).
+  const pa=pts.geometry.attributes.position,ca=pts.geometry.attributes.color;
+  pa.clearUpdateRanges();pa.addUpdateRange(0,w*3);pa.needsUpdate=true;
+  ca.clearUpdateRanges();ca.addUpdateRange(0,w*3);ca.needsUpdate=true;
   pts.visible=w>0;_needsRender=true;
 }
 function _revClear(vi){const v=views[vi],pts=revealPts[vi];pts.visible=false;pts.geometry.setDrawRange(0,0);if(v._rev){v._rev.active=false;v._rev.shown=0;}_needsRender=true;_updateOverlayTag();}
@@ -1536,8 +1624,19 @@ let _trajDensityGen=0;
 // Driven from updateAllViewports on PC-pair change (a one-time cost per change, not a
 // per-frame cost) — async and self-superseding, so a rapid second pair-change just drops
 // the first's stale in-flight work instead of racing it.
+// OFF by default. Rendering occupied cells of a 32³ grid as points is a
+// regular cubic LATTICE, and a lattice seen in perspective is radial spokes
+// + straight rows ("dot matrix" / "starburst"): it draws uniform dots at
+// EVERY layer with no focused layer, and it sits under the real trajectories
+// (renderOrder -2) and drowns them. When vocab became the default scope,
+// _vocabRevealEnabled was locked on and this aggregate went from optional
+// extra to mandatory — that is the regression from the old traj look
+// (thin overlapping direction-colored lines = density; trajMarker's
+// current-layer cloud = the focused layer). Kept behind its own switch for
+// anyone who wants a full-vocab density aggregate on top.
+let _trajDensityEnabled=false;
 async function _rebuildTrajDensity(){
-  if(!_vocabRevealEnabled)return;
+  if(!_vocabRevealEnabled||!_trajDensityEnabled){for(let vi=NC;vi<NV;vi++)if(trajDensityPts[vi])trajDensityPts[vi].visible=false;return;}
   const gen=++_trajDensityGen;
   for(let vi=NC;vi<NV;vi++){
     const v=views[vi];
@@ -1558,53 +1657,67 @@ const _revTimers=[];
 // keeps the original bonus-only behavior. _revFill's own perCell budget
 // (scales with zoom, floor of 1) is what keeps the overview sparse instead.
 function _revZoomOn(){return _cloudSource==='vocab'?0:REVEAL_ZOOM_ON;}
-// Debounced fill on zoom/orbit change for one cloud viewport.
-function _revScheduleFill(vi,delay=150){
+// Fill on zoom/orbit change for one cloud viewport — LATEST-WINS COALESCING,
+// not a debounce. The old 150ms debounce reset on every OrbitControls 'change'
+// (which fires per frame during a drag AND through the damping settle), so the
+// reveal froze at the pre-motion frustum for the whole gesture and popped
+// afterwards. Now: if idle, fill on the next macrotask (lets this frame paint
+// first); if a fill is running, mark dirty and run once more when it ends.
+// Intermediate camera states are skipped, never queued. The full-view memo in
+// _revFill makes the overview case free; zoomed-in fills are small.
+const _revFillBusy=[],_revFillDirty=[];
+function _revScheduleFill(vi,delay=0){
+  if(_revFillBusy[vi]){_revFillDirty[vi]=true;return;}
+  _revFillBusy[vi]=true;
+  const run=async()=>{
+    try{
+      do{
+        _revFillDirty[vi]=false;
+        if(!_vocabRevealEnabled){_revClear(vi);break;}
+        const v=views[vi];
+        if(2.5/_viewDist(v)<_revZoomOn()){_revClear(vi);break;}
+        const rev=await _revBuildGrid(vi);if(!rev)break;
+        _revFill(vi);_updateOverlayTag();
+        if(_revFillDirty[vi])await new Promise(r=>setTimeout(r,0));// yield: paint + input between fills
+      }while(_revFillDirty[vi]);
+    }finally{_revFillBusy[vi]=false;}
+  };
   if(_revTimers[vi])clearTimeout(_revTimers[vi]);
-  _revTimers[vi]=setTimeout(async()=>{
-    _revTimers[vi]=null;
-    if(!_vocabRevealEnabled){_revClear(vi);return;}
-    const v=views[vi];const dist=v.cam.position.distanceTo(v.ctl.target)||1;
-    if(2.5/dist<_revZoomOn()){_revClear(vi);return;}
-    const rev=await _revBuildGrid(vi);if(!rev)return;
-    _revFill(vi);_updateOverlayTag();
-  },delay);
+  _revTimers[vi]=setTimeout(()=>{_revTimers[vi]=null;run();},delay);
 }
 // Camera 'change' handler per cloud viewport: activate above the zoom threshold,
-// clear below it. Rotation also refills (frustum changed) — debounced.
+// clear below it. Rotation also refills (frustum changed).
 function _revOnZoom(vi){
   if(!_vocabRevealEnabled)return;
-  const v=views[vi];const dist=v.cam.position.distanceTo(v.ctl.target)||1;const zoom=2.5/dist;
+  const v=views[vi];const zoom=2.5/_viewDist(v);
   if(zoom<_revZoomOn()){if(v._rev&&v._rev.active)_revClear(vi);return;}
-  _revScheduleFill(vi,150);
+  _revScheduleFill(vi,0);
 }
-let _revLayerTimer=null;
-// Layer scrub / pair change: refetch columns for the new layer, rebuild grid,
-// refill. Debounced (mirrors _updateSeparation's 180ms) so arrow-key playback
-// doesn't flood the column endpoint.
-function _revOnLayer(){
-  if(_revLayerTimer)clearTimeout(_revLayerTimer);
-  _revLayerTimer=setTimeout(async()=>{
-    _revLayerTimer=null;if(!_vocabRevealEnabled)return;
-    for(let vi=0;vi<NC;vi++){const v=views[vi];const dist=v.cam.position.distanceTo(v.ctl.target)||1;
-      if(2.5/dist<_revZoomOn()){_revClear(vi);continue;}
-      const rev=await _revBuildGrid(vi);if(!rev)continue;_revFill(vi);}
-    _updateOverlayTag();
-  },180);
+let _revLayerBusy=false,_revLayerDirty=false;
+// Layer scrub / pair change: rebuild grid + refill for the new layer.
+// LATEST-WINS COALESCING, not a debounce: the old 180ms debounce (there to
+// spare the column endpoint) meant 100ms/layer playback kept resetting the
+// timer and the cloud never updated until play stopped. Columns now come
+// from memory (see _fetchVocabColumn), so the only cost is CPU: run at once
+// when idle; if a build is in flight, note that a newer layer arrived and
+// run once more when it finishes. Intermediate layers are skipped, never
+// queued — the cloud tracks playback at whatever rate this device sustains.
+async function _revOnLayer(){
+  if(_revLayerBusy){_revLayerDirty=true;return;}
+  _revLayerBusy=true;
+  try{
+    do{
+      _revLayerDirty=false;
+      if(!_vocabRevealEnabled)break;
+      for(let vi=0;vi<NC;vi++){const v=views[vi];const dist=v.cam.position.distanceTo(v.ctl.target)||1;
+        if(2.5/dist<_revZoomOn()){_revClear(vi);continue;}
+        const rev=await _revBuildGrid(vi);if(!rev)continue;_revFill(vi);}
+      _updateOverlayTag();
+      if(_revLayerDirty)await new Promise(r=>setTimeout(r,0));// yield a tick so paint + input get through
+    }while(_revLayerDirty);
+  }finally{_revLayerBusy=false;}
 }
-// Raycast the pale reveal points -> buffer index (row = rev.shownRows[index]).
-function _revRayHit(vi,e){
-  if(vi>=NC)return -1;const pts=revealPts[vi];const rev=views[vi]._rev;
-  if(!pts||!pts.visible||!rev||!rev.shown)return -1;
-  const v=views[vi];const r=v.cv.getBoundingClientRect();
-  ms.x=((e.clientX-r.left)/r.width)*2-1;ms.y=-((e.clientY-r.top)/r.height)*2+1;ray.setFromCamera(ms,v.cam);
-  const vpH=r.height||1;const fovRad=v.cam.fov*Math.PI/180;const pixelToWorld=2*Math.tan(fovRad/2)/vpH;const d=v.cam.position.length()||1;
-  ray.params.Points.threshold=6*pixelToWorld*d;
-  const h=ray.intersectObject(pts);if(!h.length)return -1;
-  h.sort((a,b)=>a.distanceToRay-b.distanceToRay);
-  const bi=h[0].index;return bi<rev.shown?bi:-1;
-}
-function _revRowAt(vi,bi){const rev=views[vi]._rev;return (rev&&rev.shownRows&&bi>=0&&bi<rev.shown)?rev.shownRows[bi]:-1;}
+// (reveal-point raycast folded into _pickAt — see Interaction section)
 // --- Homing: per-layer distance from the live trajectory to the pinned token(s) ---
 // The study's core measurement. Live scores (residual @ L{l}_components) and the
 // frozen token's scores (token-pca, same components) share the basis, so raw L2
@@ -1773,6 +1886,9 @@ function _getScore(l,i,pc){
 function _getScoreColumn(l,pc){
   const full=_pcFull.get(pc);
   if(full)return full.subarray(l*_pcFullNT,l*_pcFullNT+_pcFullNT);// zero-copy view
+  // Per-layer column cache (vocab-pc-columns) — what single-layer analyses load
+  // instead of all-layer bundles. Same values, same row order, 1/n_layers the memory.
+  if(_cloudSource==='vocab'){const c=_vpcGet(l,pc);if(c&&c.length===nN)return c;}
   if(pc<_blobScoreK&&allL[l]){
     // Build column from blob — allL[l] is Array of Float32Array subarrays
     const col=new Float32Array(nN);const row=allL[l];
@@ -1914,8 +2030,22 @@ const CloudStore={
       _pcMedium.set(medIds[pi],{step,nS:nSample,data:f32});
     }
   },
+  // Largest full-tier PC set in ONE request. A full column is nLayers×nRows×2B
+  // (~7.8MB at qwen scale); uncapped requests of hundreds of PCs — direction
+  // coloring at 0.99 coverage, _fetchDirDepth's per-layer unions, the random
+  // baseline's "all PCs" — were multi-GB, saturated the connection pool and
+  // repeatedly OOM-killed the companion server (companion.py now refuses >128).
+  // Chunking HERE, at the single choke point, covers every caller: sequential
+  // (peak server memory = one chunk), and each chunk lands in _pcFull as it
+  // arrives so callers can start using early PCs.
+  CHUNK:64,
   async ensure({fullPcs=[],mediumPcs=[],step=10}={}){
-    const needFull=[...new Set(fullPcs)].filter(pc=>pc>=0&&!_pcFull.has(pc));
+    const needFull0=[...new Set(fullPcs)].filter(pc=>pc>=0&&!_pcFull.has(pc));
+    if(needFull0.length>this.CHUNK){
+      for(let i=0;i<needFull0.length;i+=this.CHUNK){await this.ensure({fullPcs:needFull0.slice(i,i+this.CHUNK),mediumPcs:i===0?mediumPcs:[],step});}
+      return;
+    }
+    const needFull=needFull0;
     const fullSet=new Set([...fullPcs,...needFull]);
     const needMedium=[...new Set(mediumPcs)].filter(pc=>pc>=0&&!_pcFull.has(pc)&&!_pcMedium.has(pc)&&!fullSet.has(pc));
     if(!needFull.length&&!needMedium.length)return;
@@ -1986,10 +2116,10 @@ function _precomputeCloud(vi){
     const buf=v._cloudBufs[l];
     if(colX&&colY&&colZ){
       const imxX=1/mxX,imxY=1/mxY,imxZ=1/mxZ;
-      for(let i=0;i<nN;i++){
-        buf[i*3]=_clampTraj(colX[i]*imxX,bX);
-        buf[i*3+1]=_clampTraj(colY[i]*imxY,bY);
-        buf[i*3+2]=_clampTraj(colZ[i]*imxZ,bZ);
+      for(let i=0;i<nN;i++){// f16 sub-quantum dither, display only (see _dq)
+        buf[i*3]=_clampTraj(_dq(colX[i],i,0)*imxX,bX);
+        buf[i*3+1]=_clampTraj(_dq(colY[i],i,1)*imxY,bY);
+        buf[i*3+2]=_clampTraj(_dq(colZ[i],i,2)*imxZ,bZ);
       }
     }else{
       for(let i=0;i<nN;i++){
@@ -2001,7 +2131,11 @@ function _precomputeCloud(vi){
   }
   // Normalization changed (model/mode/pair switch) — force the vocab-reveal grid
   // to rebuild against the fresh per-axis scales next time it fills.
-  const _rv=views[vi]&&views[vi]._rev;if(_rv){_rv.gridKey='';_rv.grid=null;}
+  const _rv=views[vi]&&views[vi]._rev;if(_rv){_rv.gridKey='';_rv.grid=null;
+    // ...and stop DRAWING/PICKING the old rows meanwhile: until the refill lands
+    // the buffer still holds the previous pair's/model's points, and shownRows
+    // would map a click onto the wrong token (labelled from the new vocab).
+    if(vi<NC)_revClear(vi);}
 }
 function _precomputeTraj(vi){
   const v=views[vi];const{pcX,pcY}=v;const tlMx=v._trajLayerMx;
@@ -2017,7 +2151,7 @@ function _precomputeTraj(vi){
     v._trajClampBounds[l]=[bX,bY];
     if(colX&&colY){
       const imx=1/lm[0],imy=1/lm[1];
-      for(let i=0;i<nN;i++){buf[i*3]=_clampTraj(colX[i]*imx,bX);buf[i*3+1]=_clampTraj(colY[i]*imy,bY);buf[i*3+2]=z;}
+      for(let i=0;i<nN;i++){buf[i*3]=_clampTraj(_dq(colX[i],i,0)*imx,bX);buf[i*3+1]=_clampTraj(_dq(colY[i],i,1)*imy,bY);buf[i*3+2]=z;}// f16 sub-quantum dither, display only
     }else{
       for(let i=0;i<nN;i++){buf[i*3]=_clampTraj(_getScore(l,i,pcX)/lm[0],bX);buf[i*3+1]=_clampTraj(_getScore(l,i,pcY)/lm[1],bY);buf[i*3+2]=z;}
     }
@@ -2050,7 +2184,7 @@ function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
   line.geometry.setDrawRange(0,w/3);
   line.geometry.attributes.position.needsUpdate=true;line.visible=w>0;}
 let _lastDimState=-1;
-function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC){v.mtl.opacity=dim?0.35:0.85;if(revealPts[vi])revealPts[vi].material.opacity=dim?0.2:0.5;}if(vi>=NC&&v.trajGroup){const baseOp=dim?0.08:0.15;v.trajGroup.children.forEach(c=>{if(c.material)c.material.opacity=baseOp;});if(v.trajMarker)v.trajMarker.material.opacity=dim?0.35:0.9;}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible){m.material.opacity=0.95;m.material.size=dim?0.08:0.06;}});}
+function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC){v.mtl.opacity=dim?0.35:0.85;if(revealPts[vi])revealPts[vi].material.opacity=dim?0.2:0.5;}if(vi>=NC&&v.trajGroup){const baseOp=dim?0.08:0.15;v.trajGroup.children.forEach(c=>{if(c.material)c.material.opacity=baseOp;});if(v.trajMarker)v.trajMarker.material.opacity=(dim?0.35:0.9)*_trajMarkerOpScale();}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible)m.material.opacity=0.95;});}// size is owned by _applyViewSizes (per frame); a size set here was dead
 let _hoverTimer=0,_hoverTok=-1,_hoverLoading='';
 // Unified hover cache: token,layer → {pcScores: Float32Array[K], neurons: Float32Array[inter]}
 const _hoverCache=new Map();
@@ -2586,7 +2720,7 @@ async function _dirSupport(a,b,layer,coverage=0.99,cap=4096){
 // Project all tokens onto a (mostly-zero) PC-space direction, loading only its
 // support columns. dir[k] non-zero only for k in support.
 async function _projSupport(layer,dir,support,NT){
-  await _ensurePCs(support);
+  await _ensureLayerColumns(layer,support);
   const p=new Float32Array(NT);
   for(let s=0;s<support.length;s++){const k=support[s],dk=dir[k];if(!dk)continue;const c=_getScoreColumn(layer,k);if(!c)continue;for(let i=0;i<NT;i++)p[i]+=dk*c[i];}
   return p;
@@ -2594,12 +2728,20 @@ async function _projSupport(layer,dir,support,NT){
 // 50-pair random bimodality baseline. Precompute-first (the only all-PC op);
 // fall back to an in-browser scan only when absent (small models / virtual
 // layers) where loading every PC is cheap anyway.
+// FALLBACK IS CAPPED. When the precomputed baseline is absent (it is a 404 for
+// every model loaded today), this used to load EVERY PC column — 896 × ~7.8MB
+// ≈ 7GB at qwen scale — on the pin-change critical path (via _dirBriefJS), on
+// the very first pin: the ~90s pin changes, the 9.5GB renderer, the server
+// OOMs. Now: the top-64 PCs (columns are variance-ordered, so this is the
+// dominant subspace), and the result is labelled as such by _randBaselineK.
+let _randBaselineK=0;
 async function _randBaseline(layer,NT){
   const F=await _loadFalsification();
   const pre=F.random_baseline&&F.random_baseline[layer];
-  if(pre&&pre.length)return pre;
-  await _ensurePCs(Array.from({length:nK},(_,k)=>k));
-  const cols=new Array(nK);for(let k=0;k<nK;k++)cols[k]=_getScoreColumn(layer,k);
+  if(pre&&pre.length){_randBaselineK=nK;return pre;}
+  const K=Math.min(nK,64);_randBaselineK=K;
+  await _ensureLayerColumns(layer,Array.from({length:K},(_,k)=>k));
+  const cols=new Array(nK);for(let k=0;k<K;k++)cols[k]=_getScoreColumn(layer,k);
   const rb=[];for(let m=0;m<50;m++){const ia=((m*2654435761)>>>0)%NT,ib=((m*40503+98765)>>>0)%NT;if(ia===ib)continue;rb.push(_bimoJS(_projCols(cols,_pairDir(cols,ia,ib),NT)));}
   return rb;
 }
@@ -2648,7 +2790,9 @@ async function _dirQuality(a,b,layer){
 // one layer — a subset of _dirQuality. functional_* need lmhead → null.
 async function _dirBriefJS(a,b,layer){
   const NT=_pcFullNT||nN;
-  const S=await _dirSupport(a,b,layer,0.999);
+  // Runs on EVERY pin change, awaited on the critical path — cap the support
+  // (was 0.999 coverage, uncapped → hundreds of full PC columns for a diffuse pair).
+  const S=await _dirSupport(a,b,layer,0.999,128);
   if(!S)return {layer,K:nK,N:NT,magnitude:0,bimodality:1,random_baseline_percentile:50,functional_hit_rate:null,functional_warning:null};
   const inv=1/(S.mag+1e-8),dir=new Float32Array(nK);for(const k of S.support)dir[k]=S.diff[k]*inv;
   const bm=_bimoJS(await _projSupport(layer,dir,S.support,NT));
@@ -2668,7 +2812,7 @@ async function _dirDiscoverJS(layer,n_top){
   const preTop=F.top_pcs&&F.top_pcs[layer];
   if(preTop&&preTop.length){
     const top=preTop.slice(0,n_top);
-    await _ensurePCs(top.map(e=>e.pc));
+    await _ensureLayerColumns(layer,top.map(e=>e.pc));
     const rb=(F.random_baseline&&F.random_baseline[layer])||[];
     const discovered=top.map(({pc,bimodality,variance_share})=>{
       const c=_getScoreColumn(layer,pc)||new Float32Array(NT);
@@ -2679,8 +2823,9 @@ async function _dirDiscoverJS(layer,n_top){
     });
     return {discovered,layer,n_top,outliers_excluded:null,n_population:NT,source:'precompute'};
   }
-  // Fallback: in-browser all-PC scan (no precompute — small models / virtual layers).
-  await _ensurePCs(Array.from({length:nK},(_,k)=>k));
+  // Fallback: in-browser all-PC scan at THIS layer (no precompute). Single-layer
+  // columns (~540MB at qwen scale, chunked), not all-layer bundles (~7GB).
+  await _ensureLayerColumns(layer,Array.from({length:nK},(_,k)=>k));
   const cols=new Array(nK);for(let k=0;k<nK;k++)cols[k]=_getScoreColumn(layer,k);
   const std=new Float32Array(nK);
   for(let k=0;k<nK;k++){const c=cols[k];if(!c){continue;}let m=0;for(let i=0;i<NT;i++)m+=c[i];m/=NT;let v=0;for(let i=0;i<NT;i++){const d=c[i]-m;v+=d*d;}std[k]=Math.sqrt(v/NT);}
@@ -2984,26 +3129,77 @@ function _navToSepPCs(px,py){
   _markDirty();_saveState();
 }
 
-// Interaction — pixel-accurate raycasting
-function _rayHit(vi,e){const v=views[vi];const r=v.cv.getBoundingClientRect();
+// ---- Interaction — ONE screen-space pick over what is actually DRAWN ----
+// Replaces three separate raycasts (_rayHit on the base cloud, _revRayHit on
+// the reveal, _overlayRayHit) that each used a world-space threshold scaled by
+// |cam.position| (distance to the ORIGIN) and sorted by world distance-to-ray.
+// Both were wrong the moment the user panned or zoomed, and _rayHit tested the
+// INVISIBLE base cloud (Raycaster ignores .visible; v.pts still holds all nN
+// positions at vocab scope) BEFORE the drawn reveal — so hover named tokens
+// that weren't under the cursor and the reveal branch was unreachable.
+// Here: only visible objects; the true SCREEN-PIXEL distance of every
+// candidate hit (distanceToRay / (worldPerPixelAt1 * hitDistance)); nearest in
+// pixels wins, tie-broken toward the camera; radius is 6px for a mouse, 16px
+// for a coarse pointer (thumb). Trajectory viewports pick their per-token
+// current-layer marker cloud (trajMarker), which was never raycast before —
+// any click there used to fall through to "clear both pins".
+const IS_MAC=/Mac|iPhone|iPad/.test(navigator.platform||'');
+let _lastPointerType='mouse';
+function _pickRadiusPx(e){return (e&&e.pointerType==='touch')||_lastPointerType==='touch'?16:6;}
+function _viewDist(v){return v.cam.position.distanceTo(v.ctl.target)||1;}
+function _isRightClick(e){return e.button===2||(IS_MAC&&e.button===0&&e.ctrlKey);}
+// Returns {kind:'overlay',idx,ent} | {kind:'token',idx} | null.
+function _pickAt(vi,e,radiusPx){
+  const v=views[vi];if(!v||!nN)return null;
+  const r=v.cv.getBoundingClientRect();if(!r.width||!r.height)return null;
   ms.x=((e.clientX-r.left)/r.width)*2-1;ms.y=-((e.clientY-r.top)/r.height)*2+1;
   ray.setFromCamera(ms,v.cam);
-  // Match threshold to actual rendered point size:
-  // sizeAttenuation scales world-unit size by 1/distance in perspective.
-  // We want ~6px pick radius regardless of zoom.
-  const vpH=r.height||1;const fovRad=v.cam.fov*Math.PI/180;
-  const pixelToWorld=2*Math.tan(fovRad/2)/vpH;// world units per pixel at distance 1
-  const d=v.cam.position.length()||1;
-  const pickRadiusPx=6;// pixels of pick tolerance
-  ray.params.Points.threshold=pickRadiusPx*pixelToWorld*d;
-  if(!v.pts.geometry.attributes.position)return -1;
-  const h=ray.intersectObject(v.pts);
-  if(h.length>1){
-    // Multiple hits — pick the one closest to the ray (not closest to camera)
-    h.sort((a,b)=>a.distanceToRay-b.distanceToRay);
+  const wpp1=2*Math.tan(v.cam.fov*Math.PI/360)/r.height;// world units per pixel at distance 1
+  const cands=[];
+  if(vi<NC){
+    if(overlayCloudPts[vi]&&overlayCloudPts[vi].visible&&_overlayEntries.length)cands.push({obj:overlayCloudPts[vi],kind:'overlay',pri:0});
+    const rev=v._rev;
+    if(revealPts[vi]&&revealPts[vi].visible&&rev&&rev.shown&&rev.nRows===nN)cands.push({obj:revealPts[vi],kind:'reveal',pri:1});
+    if(v.pts&&v.pts.visible&&v.geo.attributes.position&&v.geo.attributes.position.count>=nN)cands.push({obj:v.pts,kind:'sample',pri:1});
+  }else{
+    if(v.trajMarker&&v.trajMarker.visible&&v.trajMarker.geometry.attributes.position.count>=nN)cands.push({obj:v.trajMarker,kind:'traj',pri:1});
   }
-  if(h.length>0)return h[0].index%nN;
-  return -1;}
+  if(!cands.length)return null;
+  // One generous world threshold for the intersect (radius at the far side of
+  // the cloud from the camera); the exact per-hit pixel test happens below.
+  const dT=_viewDist(v);
+  ray.params.Points.threshold=radiusPx*wpp1*(dT+4);
+  let best=null;
+  for(const c of cands){
+    const hits=ray.intersectObject(c.obj,false);
+    for(const h of hits){
+      const px=h.distanceToRay/(wpp1*Math.max(1e-6,h.distance));
+      // Rendered sprite radius in px — a fat point is pickable across its whole face.
+      const sizeW=c.obj.material.size||0,spritePx=c.obj.material.sizeAttenuation?sizeW/(wpp1*Math.max(1e-6,h.distance))*0.5:sizeW*0.5;
+      if(px>Math.max(radiusPx,spritePx))continue;
+      if(c.kind==='overlay'){const ent=_overlayEntries[h.index];if(!ent)continue;const p=c.obj.geometry.attributes.position.array;if(Math.abs(p[h.index*3])>5000)continue;}
+      // Score: pixel distance, then priority (overlay first), then nearer camera.
+      const score=px+(c.pri*0.5);
+      if(!best||score<best.score-0.75||(Math.abs(score-best.score)<=0.75&&h.distance<best.h.distance)){best={c,h,px,score};}
+    }
+  }
+  if(!best)return null;
+  const {c,h}=best;
+  if(c.kind==='overlay')return {kind:'overlay',idx:h.index,ent:_overlayEntries[h.index]};
+  if(c.kind==='reveal'){const row=v._rev.shownRows[h.index];return row>=0&&row<nN?{kind:'token',idx:row}:null;}
+  if(c.kind==='sample')return {kind:'token',idx:h.index%nN};
+  if(c.kind==='traj')return {kind:'token',idx:h.index};
+  return null;
+}
+// Legacy shim (remote/agent bridge, older call sites): token index or -1.
+function _rayHit(vi,e){const p=_pickAt(vi,e,_pickRadiusPx(e));return p&&p.kind==='token'?p.idx:-1;}
+function _placeTooltip(el,e){
+  let _px=e.clientX+15,_py=e.clientY-10;
+  if(_px+220>window.innerWidth)_px=e.clientX-225;
+  if(_px<5)_px=5;// narrow screens: the left-flip used to go negative and clip the text
+  const h=el.offsetHeight||120;if(_py+h>window.innerHeight)_py=window.innerHeight-h-5;if(_py<5)_py=5;
+  el.style.left=_px+'px';el.style.top=_py+'px';el.style.transform='none';el.style.display='block';
+}
 // Hover raycasts are O(N) over the cloud (intersectObject tests every point).
 // Coalesce to one per animation frame so a 150K-vocab cloud doesn't run a full
 // intersect on every mousemove (100+/s → ≤60/s, only the latest cursor position).
@@ -3011,26 +3207,18 @@ let _hoverPending=null,_hoverRAF=0;
 function _processHover(){
   _hoverRAF=0;const pend=_hoverPending;_hoverPending=null;
   if(!pend||!nN)return;
-  const {vi,e}=pend;
-  // Overlay points sit on top (renderOrder 11) — pick them first.
-  const ov=_overlayRayHit(vi,e);
-  if(ov>=0){const ent=_overlayEntries[ov];const td2=document.getElementById('detail');highlightToken(-1);
+  const {vi,e}=pend;const td=document.getElementById('detail');
+  const p=_pickAt(vi,e,_pickRadiusPx(e));
+  if(p&&p.kind==='overlay'){const ent=p.ent;highlightToken(-1);
     const ttEl=document.getElementById('tt');ttEl.textContent=ent.text||'?';ttEl.style.color='#FFD700';
-    document.getElementById('tm').textContent=`vocab row ${ent.row} · overlay (click=T1, shift=T2)`;
-    let _px=e.clientX+15,_py=e.clientY-10;if(_px+220>window.innerWidth)_px=e.clientX-225;if(_py+120>window.innerHeight)_py=window.innerHeight-125;if(_py<5)_py=5;
-    td2.style.left=_px+'px';td2.style.top=_py+'px';td2.style.transform='none';td2.style.display='block';return;}
-  const i=_rayHit(vi,e);const td=document.getElementById('detail');
-  if(i>=0){highlightToken(i);document.getElementById('tt').textContent=texts[i]||'?';document.getElementById('tt').style.color=CLh[scripts[i]]||'#aaa';document.getElementById('tm').textContent=_popupText(i,vi);let _px=e.clientX+15,_py=e.clientY-10;if(_px+220>window.innerWidth)_px=e.clientX-225;if(_py+120>window.innerHeight)_py=window.innerHeight-125;if(_py<5)_py=5;td.style.left=_px+'px';td.style.top=_py+'px';td.style.transform='none';td.style.display='block';return;}
-  // Revealed full-vocab points sit below the sample — pick them last.
-  const rb=_revRayHit(vi,e);
-  if(rb>=0){const row=_revRowAt(vi,rb);const txt=(_vocabTexts&&_vocabTexts[row])||('vocab row '+row);highlightToken(-1);
-    const ttEl=document.getElementById('tt');ttEl.textContent=txt;ttEl.style.color='#8899AA';
-    document.getElementById('tm').textContent=`vocab row ${row} · reveal (click=T1, shift=T2)`;
-    let _px=e.clientX+15,_py=e.clientY-10;if(_px+220>window.innerWidth)_px=e.clientX-225;if(_py+120>window.innerHeight)_py=window.innerHeight-125;if(_py<5)_py=5;
-    td.style.left=_px+'px';td.style.top=_py+'px';td.style.transform='none';td.style.display='block';return;}
+    document.getElementById('tm').textContent=`vocab row ${ent.row} · overlay (click=T1, right-click=T2)`;
+    _placeTooltip(td,e);return;}
+  if(p&&p.kind==='token'){const i=p.idx;highlightToken(i);
+    document.getElementById('tt').textContent=texts[i]||(_vocabTexts&&_vocabTexts[i])||'?';document.getElementById('tt').style.color=CLh[scripts[i]]||'#aaa';
+    document.getElementById('tm').textContent=_popupText(i,vi);
+    _placeTooltip(td,e);return;}
   highlightToken(-1);td.style.display='none';
 }
-function _isRightClick(e){return e.button===2||(e.button===0&&e.ctrlKey);} // ctrl+click=right on Mac
 function _popupText(i,vi){
   const tok=texts[i]||'';const bytes=new TextEncoder().encode(tok).length;
   let m=`${scripts[i]}  #${i}`;
@@ -3159,6 +3347,10 @@ function _snapPCS(axis){
 // Stop pointerdown propagation so OrbitControls doesn't steal button clicks
 document.querySelectorAll('.cbtn').forEach(grp=>{
   grp.addEventListener('pointerdown',e=>e.stopPropagation());
+  // pointerup too: it bubbled to the viewport's tap handler with a stale
+  // pointerdown position, so tapping X/Y/Z/R on touch (where .cbtn is always
+  // visible) could read as an empty-space tap and clear both pins.
+  grp.addEventListener('pointerup',e=>e.stopPropagation());
 });
 document.querySelectorAll('.cbtn').forEach(grp=>{
   grp.addEventListener('click',e=>{
@@ -3174,35 +3366,45 @@ document.querySelectorAll('.cbtn').forEach(grp=>{
     else{_snapOne(vi,a);}
   });
 });
-// Interaction: left=TokenA, right=TokenB
+// Interaction: left = pin Token A, right (or long-press on touch) = pin Token B.
+// Gold overlay (search) points set the homing targets T1/T2 instead.
+function _pinTokenA(i){pinnedToken=i;loadAttnData(i);updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();}
+function _pinTokenB(i){pinnedTokenB=i;updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();}
+function _clearPins(){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();}
 function setupInteraction(vi){const v=views[vi];
   v.cv.addEventListener('contextmenu',e=>e.preventDefault(),true);// capture phase — fires before OrbitControls
-  v.cv.addEventListener('mousemove',e=>{if(!nN)return;_hoverPending={vi,e};if(!_hoverRAF)_hoverRAF=requestAnimationFrame(_processHover);});
+  // Hover is a MOUSE affordance. Touch taps emit a synthetic mousemove (and never
+  // a mouseleave), which used to open the tooltip under the thumb and leave it stuck.
+  v.cv.addEventListener('mousemove',e=>{if(!nN||_lastPointerType==='touch')return;_hoverPending={vi,e};if(!_hoverRAF)_hoverRAF=requestAnimationFrame(_processHover);});
   v.cv.addEventListener('mouseleave',()=>{_hoverPending=null;highlightToken(-1);document.getElementById('detail').style.display='none';});
-  let _dx=0,_dy=0,_lpTimer=0,_lpFired=false;
+  let _dx=0,_dy=0,_moved=false,_lpTimer=0,_lpFired=false,_downBtn=0;
   const _clearLP=()=>{if(_lpTimer){clearTimeout(_lpTimer);_lpTimer=0;}};
-  const _pinB=i=>{pinnedTokenB=i;updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();};
-  v.cv.addEventListener('pointerdown',e=>{_dx=e.clientX;_dy=e.clientY;_lpFired=false;_clearLP();
+  v.cv.addEventListener('pointerdown',e=>{
+    _lastPointerType=e.pointerType||'mouse';
+    // Second finger of a pinch is not a tap; its down/up must not touch tap state.
+    if(!e.isPrimary){_clearLP();_moved=true;return;}
+    _dx=e.clientX;_dy=e.clientY;_moved=false;_lpFired=false;_downBtn=e.button;_clearLP();
     // Touch has no right-click. Long-press (≈480ms, no drag) pins Token B — the mobile
     // equivalent. Haptic tick on fire; the move/cancel/up handlers below abort it.
-    if(e.pointerType==='touch'){_lpTimer=setTimeout(()=>{_lpTimer=0;if(!nN)return;
-      const i=_rayHit(vi,{clientX:_dx,clientY:_dy});
-      if(i>=0){_lpFired=true;if(navigator.vibrate)navigator.vibrate(18);_pinB(i);}},480);}
+    if(e.pointerType==='touch'){_lpTimer=setTimeout(()=>{_lpTimer=0;if(!nN||_moved)return;
+      const p=_pickAt(vi,{clientX:_dx,clientY:_dy,pointerType:'touch'},16);
+      if(p&&p.kind==='token'){_lpFired=true;if(navigator.vibrate)navigator.vibrate(18);_pinTokenB(p.idx);}
+      else if(p&&p.kind==='overlay'){_lpFired=true;if(navigator.vibrate)navigator.vibrate(18);_setVocabTarget2(p.ent.row,p.ent.text);}},480);}
   });
-  v.cv.addEventListener('pointermove',e=>{if(_lpTimer&&Math.abs(e.clientX-_dx)+Math.abs(e.clientY-_dy)>8)_clearLP();},{passive:true});
-  v.cv.addEventListener('pointercancel',_clearLP);
+  // Path-length drag detection: an out-and-back orbit that ENDS near where it started
+  // is not a tap (the old endpoint-only test made it one → ray miss → both pins cleared).
+  v.cv.addEventListener('pointermove',e=>{_lastPointerType=e.pointerType||'mouse';if(!e.isPrimary)return;if(!_moved&&Math.abs(e.clientX-_dx)+Math.abs(e.clientY-_dy)>(e.pointerType==='touch'?10:5)){_moved=true;_clearLP();}},{passive:true});
+  v.cv.addEventListener('pointercancel',()=>{_clearLP();_moved=true;});
   v.cv.addEventListener('pointerup',e=>{_clearLP();
+    if(!e.isPrimary)return;
     if(_lpFired){_lpFired=false;return;}// long-press already pinned B; the lift is not a tap
-    if(!nN||Math.abs(e.clientX-_dx)+Math.abs(e.clientY-_dy)>5)return;
-    // Overlay points take priority: click sets the gold target T1, shift/right sets T2.
-    const ov=_overlayRayHit(vi,e);
-    if(ov>=0){const ent=_overlayEntries[ov];if(_isRightClick(e))_setVocabTarget2(ent.row,ent.text);else _setVocabTarget(ent.row,ent.text);return;}
-    const i=_rayHit(vi,e);
-    if(i>=0){if(_isRightClick(e)){pinnedTokenB=i;}else{pinnedToken=i;loadAttnData(i);}updatePinMarkers();showPinDetail(pinnedToken);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();return;}
-    // No sample hit: a revealed full-vocab point? click targets it (T1 / T2), same as the overlay.
-    const rb=_revRayHit(vi,e);
-    if(rb>=0){const row=_revRowAt(vi,rb);const txt=(_vocabTexts&&_vocabTexts[row])||'';if(_isRightClick(e))_setVocabTarget2(row,txt);else _setVocabTarget(row,txt);return;}
-    if(!_isRightClick(e)){pinnedToken=-1;pinnedTokenB=-1;updatePinMarkers();highlightToken(-1);showPinDetail(-1);_updateBrowserOverlay();updateLeftViewports();_onPinChange();_saveState();}});}
+    if(!nN||_moved)return;
+    if(_downBtn===1||e.button===1)return;// middle button = pan, never pin/clear
+    const right=_isRightClick(e)||_downBtn===2;
+    const p=_pickAt(vi,e,_pickRadiusPx(e));
+    if(p&&p.kind==='overlay'){if(right)_setVocabTarget2(p.ent.row,p.ent.text);else _setVocabTarget(p.ent.row,p.ent.text);return;}
+    if(p&&p.kind==='token'){if(right)_pinTokenB(p.idx);else _pinTokenA(p.idx);return;}
+    if(!right)_clearPins();});}
 views.forEach((_,i)=>setupInteraction(i));
 
 // Viewport updates
@@ -3289,10 +3491,19 @@ async function _applyDirectionColors(){
     // a−b direction from the two tokens' TOKS vectors, then project every token
     // over only its support PCs (the omitted PCs hold <0.1% of ‖a−b‖²). Scales
     // to full hidden size without loading every PC column.
-    const S=await _dirSupport(_a,_b,_layer);
+    // Support CAPPED at 128 PCs for coloring. Uncapped (0.99 coverage, cap 4096)
+    // a diffuse A↔B direction pulled most of the model's PCs — each a full
+    // all-layer column (~7.8MB at qwen scale) — i.e. gigabytes per recolor and
+    // "very very long" waits (and, since companion.py now refuses >128 PCs per
+    // request, a silent failure). The color is a percentile-normalized
+    // projection: the dominant PCs carry it; the achieved share of ‖A−B‖² is
+    // reported in the status line, never implied to be 100%.
+    const S=await _dirSupport(_a,_b,_layer,0.99,128);
     if(_dirColorReqId!==reqId||!S)return;
     const inv=1/(S.mag+1e-8),dir=new Float32Array(nK);for(const k of S.support)dir[k]=S.diff[k]*inv;
-    await _ensurePCs(S.support);
+    let _cov=0;for(const k of S.support)_cov+=S.diff[k]*S.diff[k];_cov=S.m2>0?_cov/S.m2:1;
+    if(_dcs)_dcs.textContent=`projecting direction… ${S.support.length} PCs (${(_cov*100).toFixed(1)}% of ‖A−B‖²)`;
+    await _ensureLayerColumns(_layer,S.support);
     if(_dirColorReqId!==reqId)return;
     const proj=new Float32Array(nN);
     for(let s=0;s<S.support.length;s++){const k=S.support[s],dk=dir[k];if(!dk)continue;const c=_getScoreColumn(_layer,k);if(!c)continue;for(let i=0;i<nN;i++)proj[i]+=dk*c[i];}
@@ -3360,7 +3571,11 @@ function updateVP(vi,pcX,pcY,pcZ,layer){const v=views[vi];v.pcX=pcX;v.pcY=pcY;v.
   if(v._cloudBufs&&v._cloudBufs[layer]){pos.set(v._cloudBufs[layer]);}
   // Apply script filter — move hidden tokens off-screen
   if(_hiddenScripts.size){for(let i=0;i<nN;i++){if(_hiddenScripts.has(scripts[i])){pos[i*3]=9999;pos[i*3+1]=9999;pos[i*3+2]=9999;}}}
-  v.geo.attributes.position.needsUpdate=true;if(!play)v.geo.computeBoundingSphere();
+  v.geo.attributes.position.needsUpdate=true;
+  // Fixed, generous bounding sphere: Points.raycast early-outs on it, and the old
+  // play-gated recompute left a stale sphere during playback (moved tokens became
+  // unhoverable). Positions are clamped to ~±1.75, so r=4 always contains them.
+  if(!v.geo.boundingSphere)v.geo.boundingSphere=new THREE.Sphere(new THREE.Vector3(0,0,0),4);
   // The base cloud is the 2,000-sample's own renderer — retired as the default
   // view once vocab is the source (the reveal cloud is the sole renderer then;
   // its zoom-progressive binning is what keeps an overview zoom legible, which
@@ -3369,6 +3584,11 @@ function updateVP(vi,pcX,pcY,pcZ,layer){const v=views[vi];v.pcX=pcX;v.pcY=pcY;v.
   v.pts.visible=(_cloudSource!=='vocab');
   {const _p=vi===0?'A':vi===1?'Δ':'B';document.getElementById('ax'+vi).textContent=`${_p}: PC${pcX}×PC${pcY}`;}
   if(!v._fitted){v.cam.position.set(0,0,2.5);v.ctl.target.set(0,0,0);v.ctl.update();v._fitted=true;}}
+// trajMarker draws one square per token at the current layer. Its 0.9 opacity was
+// tuned for the 2,000-token sample; at 48k-150k it is an opaque slab that hides the
+// trajectories under it. Scale by sqrt so squares stay individually visible where
+// sparse while dense regions read as a soft mass (floor 0.25).
+function _trajMarkerOpScale(){return Math.max(0.25,Math.min(1,Math.sqrt(2000/(nN||2000))));}
 function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
   // Dispose old
   if(v.trajGroup){v.sc.remove(v.trajGroup);v.trajGroup.geometry?.dispose();v.trajGroup.material?.dispose();v.trajGroup=null;}
@@ -3396,7 +3616,12 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
   // total displacement DETERMINISTICALLY, then fill the rest of the budget with
   // a deterministic stratified pass across token-id space (uniform coverage).
   // Outlier paths shouldn't lose the lottery.
-  const budget=Math.min(nN,5000);
+  // Path budget is a live knob (__heinrich.trajBudget), not a constant: the
+  // 5000 was an April perf guess, pre-vocab. R2 egress is free, so the only
+  // real constraint is the CLIENT's GPU/CPU/memory — a desktop and a phone
+  // get different answers, and the right number is measured (fps while
+  // orbiting), not assumed. Default stays 5000 until measured.
+  const budget=Math.min(nN,_trajBudgetCap);
   const disp=new Float32Array(nN);
   for(let i=0;i<nN;i++){let s=0,px=0,py=0,first=true;
     for(let si=0;si<_trajSeq.length;si++){const l=_trajSeq[si];
@@ -3468,14 +3693,20 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
   // where the most paths pass, fading to dark at the sparse edges — with outlier
   // paths still legible as faint lines. Chosen over NormalBlending, which produces
   // a flat uniform haze where concentration is invisible (kept as escape hatch).
-  v.trajGroup=new THREE.LineSegments(tGeo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:_trajAdditive?0.008:0.15,depthWrite:false,blending:_trajAdditive?THREE.AdditiveBlending:THREE.NormalBlending}));
+  // Keep total ink constant as the path budget changes: 0.008/0.15 were
+  // tuned at 5000 paths (the operator-approved look). More paths → thinner
+  // each. FLOOR at ~1/255 (0.004): below that an 8-bit framebuffer quantizes
+  // each additive line's contribution to zero and the whole sheet vanishes.
+  const _trajOpScale=Math.min(1,5000/Math.max(1,selected.length));
+  const _opFine=Math.max(0.004,(_trajAdditive?0.008:0.15)*_trajOpScale),_opCoarse=Math.max(0.006,(_trajAdditive?0.025:0.2)*_trajOpScale);
+  v.trajGroup=new THREE.LineSegments(tGeo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:_opFine,depthWrite:false,blending:_trajAdditive?THREE.AdditiveBlending:THREE.NormalBlending}));
   v.trajGroup.frustumCulled=false;v.sc.add(v.trajGroup);
   const cGeo=new THREE.BufferGeometry();
   cGeo.setAttribute('position',new THREE.BufferAttribute(cPos,3));
   cGeo.setAttribute('color',new THREE.BufferAttribute(cCol,3));
   cGeo.setDrawRange(0,ci2);
   // Coarse has ~4× fewer segments, so it carries ~3× the alpha to match brightness.
-  v.trajGroupCoarse=new THREE.LineSegments(cGeo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:_trajAdditive?0.025:0.2,depthWrite:false,blending:_trajAdditive?THREE.AdditiveBlending:THREE.NormalBlending}));
+  v.trajGroupCoarse=new THREE.LineSegments(cGeo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:_opCoarse,depthWrite:false,blending:_trajAdditive?THREE.AdditiveBlending:THREE.NormalBlending}));
   v.trajGroupCoarse.frustumCulled=false;v.trajGroupCoarse.visible=false;v.sc.add(v.trajGroupCoarse);
   _setTrajTag(vi,selected.length,topK);
   // Trajectory marker dots (all tokens, updated per layer)
@@ -3484,7 +3715,8 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
   for(let i=0;i<nN;i++){const hex=CL[scripts[i]]||0xAAAAAA;_tc[i*3]=((hex>>16)&0xFF)/255;_tc[i*3+1]=((hex>>8)&0xFF)/255;_tc[i*3+2]=(hex&0xFF)/255;}
   pg.setAttribute('position',new THREE.BufferAttribute(_tp,3));
   pg.setAttribute('color',new THREE.BufferAttribute(_tc,3));
-  v.trajMarker=new THREE.Points(pg,new THREE.PointsMaterial({size:0.018,vertexColors:true,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false}));
+  v.trajMarker=new THREE.Points(pg,new THREE.PointsMaterial({size:0.018,vertexColors:true,transparent:true,opacity:0.9*_trajMarkerOpScale(),sizeAttenuation:true,depthWrite:false}));
+  pg.boundingSphere=new THREE.Sphere(new THREE.Vector3(0,0,0),4);// picked by _pickAt; positions move per layer, so never let a lazily-computed sphere go stale
   v.sc.add(v.trajMarker);updateTrajMarker(vi);
   {const _p=(vi-NC)===0?'A':(vi-NC)===1?'Δ':'B';document.getElementById('ax'+vi).textContent=`${_p}→ PC${pcX}×PC${pcY}`;}
 }
@@ -3542,6 +3774,12 @@ function updateAllViewports(){
       // only just now set the traj views' pcX/pcY — the earlier call below would have binned
       // the PREVIOUS pair. Cheap to repeat (bundle cache + gen guard) if it was already current.
       _rebuildTrajDensity();
+      // Same for the reveal cloud: the synchronous _revOnLayer() below ran before this
+      // rebuild produced the per-layer normalization the grid needs (first load, or any
+      // pair whose PC columns weren't cached yet) and found nothing to bin. It used to
+      // win that race by accident — its column fetches went over the network and took
+      // longer than the rebuild; now they come from memory. Refill once data is here.
+      _revOnLayer();
     });
     _lastPK=pk;
     _revOnLayer();// pair change: rebuild reveal grid for the new PCs (debounced)
@@ -6388,8 +6626,9 @@ function _updateBriefBadges(lv){
   if(typeof p==='number'){
     const pc=p<10?'#4f4':p<30?'#cc4':'#f44';
     const pbg=p<10?'#0a1a0a':p<30?'#1a1a0a':'#1a0a0a';
+    const _kNote=(_randBaselineK&&_randBaselineK<nK)?` Baseline directions span the top-${_randBaselineK} PCs only (no precomputed baseline for this model; loading all ${nK} would be gigabytes).`:'';
     frag.appendChild(mkBadge(`${p.toFixed(0)}%rand`,pc,pbg,
-      'Percentile among 50 random token-pair directions. Lower = rarer.'));
+      'Percentile among 50 random token-pair directions. Lower = rarer.'+_kNote));
   }
   if(insertAfter){
     // Find the A↔B subtitle and insert after it
@@ -6419,9 +6658,25 @@ async function _fetchDirDepth(){
     const[ea,eb]=await Promise.all([_pcsFetchToken(a),_pcsFetchToken(b)]);
     if(!ea||!eb){_dirDepthData=null;return null;}
     const NL=_pcFullNL||nL, NT=_pcFullNT||nN;
+    // Pass 1 (local, no network): every layer's support set is cheap math off
+    // ea/eb, already in memory. Union them, then fetch the PC columns in
+    // small SEQUENTIAL chunks. Previously each layer called _ensurePCs on its
+    // own ≤256-PC support: consecutive supports overlap heavily but are not
+    // identical, so CloudStore's exact-key dedup never fired and up to NL
+    // overlapping, uncached, multi-GB requests went out concurrently —
+    // saturating the browser's per-origin pool AND repeatedly OOM-killing
+    // the companion server (26-29GB RSS observed). 64-PC chunks keep any one
+    // request's server-side slab under ~500MB at qwen scale (companion.py
+    // now also hard-caps at 128); sequential keeps peak memory at one chunk.
+    const supports=new Array(NL);const allPCs=new Set();
+    for(let l=0;l<NL;l++){const S=_dirSupportAt(ea,eb,l,0.99,256);supports[l]=S;for(const k of S.support)allPCs.add(k);}
+    // (no all-layer union fetch here any more: _projSupport below loads each layer's
+    // support as single-layer columns via _ensureLayerColumns — bounded memory, 1/nL
+    // the bytes; the union across layers used to leave hundreds of full columns
+    // resident in the browser.)
     const layers=[];
     for(let l=0;l<NL;l++){
-      const S=_dirSupportAt(ea,eb,l,0.99,256);
+      const S=supports[l];
       const mag=S.mag,inv=1/(mag+1e-8),tot=S.m2+1e-8;
       const dir=new Float32Array(nK);for(const k of S.support)dir[k]=S.diff[k]*inv;
       const proj=await _projSupport(l,dir,S.support,NT);
@@ -6654,7 +6909,7 @@ async function loadAll(){
   dm=dmResult;model=newModel;mode=newMode;
   nL=dm.n_layers;_nRealLayers=dm.n_real_layers||nL;_buildLayerSeq();
   // Clear all PCA caches on model switch
-  _pcsFetchGen++;_cloudFetchGen++;_dirFals=null;_pcsHoverCache.clear();_pcsHoverPending.clear();_hoverCache.clear();_pcFull.clear();_pcMedium.clear();_pcFullPending.clear();_pcMediumPending.clear();_nfCache.clear();
+  _vpclUnavailable=false;_pcsFetchGen++;_cloudFetchGen++;_dirFals=null;_pcsHoverCache.clear();_pcsHoverPending.clear();_hoverCache.clear();_pcFull.clear();_pcMedium.clear();_pcFullPending.clear();_pcMediumPending.clear();_nfCache.clear();
   CloudStore.pending.clear();TokenStore.pending.clear();
   _pcsFullA=null;_pcsFullB=null;_pcsFullK=0;_pcsFullNL=0;_pcsScale=0;_pcsNK=0;
   _pcsPrevFit=0;_pcsChase=null;// new model — don't compare its fit against the old model's
@@ -7392,6 +7647,39 @@ function _onResumeFromSuspension(){
   for(let vi=NC;vi<views.length;vi++){const v=views[vi];if(v._maxR!=null)_fitTrajCamera(v);}
   _markDirty();
 }
+// Per-frame size scaling for one of the six main viewports — ONE definition
+// for the desktop grid, the maximized lane and the mobile lane (they had three
+// diverging copies). Sizes key on the distance to ctl.TARGET, not to the origin:
+// after a pan the camera can be far from the origin yet 0.05 from the tokens it
+// is looking at, and the old |cam.position| gave overview-sized points filling
+// the screen (or specks). Reveal points, previously a fixed 0.02 world size
+// (attenuated → giant translucent squares when zoomed in), now track the same
+// distance. Highlight marker tracks the point size instead of an independent
+// formula that made it cover the neighbours.
+// Move a viewport's orbit centre onto a token (its current-layer position in that
+// viewport's own frame), keeping the camera's distance and direction.
+const _focusTmp=new THREE.Vector3();
+function _focusToken(vi,idx){
+  const v=views[vi];if(!v||idx<0)return;
+  const src=vi<NC?(v._cloudBufs&&v._cloudBufs[cL]):(v._trajBufs&&v._trajBufs[cL]);
+  if(!src||idx*3+2>=src.length)return;
+  _focusTmp.set(src[idx*3],src[idx*3+1],src[idx*3+2]);
+  if(Math.abs(_focusTmp.x)>5000)return;// hidden-script sentinel
+  const off=v.cam.position.clone().sub(v.ctl.target);
+  v.ctl.target.copy(_focusTmp);v.cam.position.copy(_focusTmp).add(off);v.ctl.update();
+  if(vi<NC)_revOnZoom(vi);
+  _markDirty();
+}
+function _applyViewSizes(vi){
+  const v=views[vi];const d=_viewDist(v);
+  const ps=Math.min(0.15,Math.max(0.0004,d*0.012));v.mtl.size=ps;
+  if(vi<NC&&revealPts[vi])revealPts[vi].material.size=Math.min(0.1,Math.max(0.0003,d*0.008));
+  if(vi>=NC&&v.trajMarker)v.trajMarker.material.size=Math.min(0.1,Math.max(0.0003,d*0.008));// same px size as the cloud points (~5px); the old 0.015 was 10px squares × 48k tokens = a solid blocky mass
+  const ms=Math.min(0.2,Math.max(0.002,d*0.04));
+  if(pinMarkers[vi].visible)pinMarkers[vi].material.size=ms;
+  if(pinMarkersB[vi].visible)pinMarkersB[vi].material.size=ms;
+  if(highlightMarkers[vi].visible)highlightMarkers[vi].material.size=Math.max(ps*1.8,ms*0.35);
+}
 (function anim(){requestAnimationFrame(anim);
   const _animNow=performance.now();
   if(_animNow-_lastAnimFrameT>_RESUME_GAP_MS)_onResumeFromSuspension();
@@ -7418,14 +7706,7 @@ function _onResumeFromSuspension(){
   _needsRender=false;
   // Single renderer: clear once, render each region with scissor
   rdr.setScissorTest(false);rdr.setClearColor(0x151515);rdr.clear();rdr.setScissorTest(true);
-  views.forEach((v,vi)=>{v.ctl.update();const d=v.cam.position.length();const ps=Math.min(0.15,Math.max(0.004,d*0.012));v.mtl.size=ps;
-    if(vi>=NC&&v.trajMarker)v.trajMarker.material.size=Math.min(0.1,Math.max(0.006,d*0.015));
-    // Scale pin/hover markers with zoom
-    const ms=Math.min(0.2,Math.max(0.01,d*0.04));
-    if(pinMarkers[vi].visible)pinMarkers[vi].material.size=ms;
-    if(pinMarkersB[vi].visible)pinMarkersB[vi].material.size=ms;
-    if(highlightMarkers[vi].visible)highlightMarkers[vi].material.size=ms*0.7;
-    _renderRegion(v.el,v.sc,v.cam);});
+  views.forEach((v,vi)=>{v.ctl.update();_applyViewSizes(vi);_renderRegion(v.el,v.sc,v.cam);});
   _brPanels.forEach(p=>{p.ctl.update();_renderRegion(p.el,brSc,p.cam);});
   leftViews.forEach(v=>{if(v.built){v.ctl.update();_renderRegion(v.el,v.sc,v.cam);}});
   rightViews.forEach(v=>{v.ctl.update();_renderRegion(v.el,v.sc,v.cam);});
@@ -8795,7 +9076,7 @@ function _animMobile(){
   _needsRender=false;
   rdr.setScissorTest(false);rdr.setClearColor(0x151515);rdr.clear();rdr.setScissorTest(true);
   const drawOne=R=>{if(!R||!R.el||!R.sc)return;_pcsChaseInView(R);if(R.ctl)R.ctl.update();
-    if(typeof R.vi==='number'){const v=views[R.vi];if(v){const d=v.cam.position.length();v.mtl.size=Math.min(0.15,Math.max(0.004,d*0.012));if(R.vi>=NC&&v.trajMarker)v.trajMarker.material.size=Math.min(0.1,Math.max(0.006,d*0.015));const ms=Math.min(0.2,Math.max(0.01,d*0.04));if(pinMarkers[R.vi]&&pinMarkers[R.vi].visible)pinMarkers[R.vi].material.size=ms;if(pinMarkersB[R.vi]&&pinMarkersB[R.vi].visible)pinMarkersB[R.vi].material.size=ms;if(highlightMarkers[R.vi]&&highlightMarkers[R.vi].visible)highlightMarkers[R.vi].material.size=ms*0.7;}}
+    if(typeof R.vi==='number'&&views[R.vi])_applyViewSizes(R.vi);
     _renderRegion(R.el,R.sc,R.cam);};
   drawOne(P);if(Q)drawOne(Q);
   _frameCount++;const now=performance.now();if(now-_fpsTime>1000){const fps=Math.round(_frameCount*1000/(now-_fpsTime));const el=document.getElementById('fpsDisplay');if(el)el.textContent=fps+'fps';_frameCount=0;_fpsTime=now;}
@@ -8912,15 +9193,9 @@ function _animMaximized(){
   _pcsChaseInView(R);
   if(R.ctl)R.ctl.update();
   if(typeof R.vi==='number'&&views[R.vi]){
-    const v=views[R.vi];const d=v.cam.position.length();
-    v.mtl.size=Math.min(0.15,Math.max(0.004,d*0.012));
-    if(R.vi>=NC){if(v.trajMarker)v.trajMarker.material.size=Math.min(0.1,Math.max(0.006,d*0.015));
-      if(v.trajGroup&&!v.trajGroup.visible)v.trajGroup.visible=true;// focus lane always full-res
+    const v=views[R.vi];_applyViewSizes(R.vi);
+    if(R.vi>=NC){if(v.trajGroup&&!v.trajGroup.visible)v.trajGroup.visible=true;// focus lane always full-res
       if(v.trajGroupCoarse&&v.trajGroupCoarse.visible)v.trajGroupCoarse.visible=false;}
-    const ms=Math.min(0.2,Math.max(0.01,d*0.04));
-    if(pinMarkers[R.vi]&&pinMarkers[R.vi].visible)pinMarkers[R.vi].material.size=ms;
-    if(pinMarkersB[R.vi]&&pinMarkersB[R.vi].visible)pinMarkersB[R.vi].material.size=ms;
-    if(highlightMarkers[R.vi]&&highlightMarkers[R.vi].visible)highlightMarkers[R.vi].material.size=ms*0.7;
   }
   _renderRegion(R.el,R.sc,R.cam);
   if(animating)_needsRender=true;// keep rendering through the FLIP transition
@@ -8944,7 +9219,13 @@ function _wireMaximizeDblclick(){
     host.addEventListener('dblclick',e=>{
       if(MOBILE)return;
       if(e.target.closest('.cbtn'))return;// dblclick on the controls is not a maximize gesture
-      if(typeof hoveredToken==='number'&&hoveredToken>=0)return;// hovering a token — leave click-to-pin alone
+      // Double-click ON a token = focus it: OrbitControls dollies toward ctl.target,
+      // so retarget the orbit centre onto that token (keeping the current distance)
+      // and every subsequent wheel/pinch zooms INTO it. Empty space = maximize.
+      const vi=/^\d+$/.test(vk)?+vk:-1;
+      if(vi>=0&&views[vi]){const p=_pickAt(vi,e,_pickRadiusPx(e));
+        if(p&&p.kind==='token'){e.preventDefault();_focusToken(vi,p.idx);return;}}
+      if(typeof hoveredToken==='number'&&hoveredToken>=0)return;
       e.preventDefault();_toggleMaximize(vk);
     });
   });
@@ -8998,11 +9279,21 @@ window.__heinrich = {
   // --- Part A: zoom-progressive full-vocab reveal ---
   get vocabReveal(){let shown=0,zoom=0,active=false;for(let vi=0;vi<NC;vi++){const r=views[vi]._rev;const dist=views[vi].cam.position.distanceTo(views[vi].ctl.target)||1;zoom=Math.max(zoom,2.5/dist);if(r){shown+=r.shown||0;if(r.active)active=true;}}return {enabled:_vocabRevealEnabled,active,shown,total:_vocabNRows||48660,zoom};},
   setVocabReveal:(b)=>{if(_cloudSource==='vocab')return _vocabRevealEnabled;_vocabRevealEnabled=!!b;if(typeof _updateVocabBtn==='function')_updateVocabBtn();if(!_vocabRevealEnabled){for(let vi=0;vi<NC;vi++)_revClear(vi);}else{_revOnLayer();}return _vocabRevealEnabled;},
-  zoomCloud:(vi=0,factor=2)=>{const v=views[vi];if(!v)return null;v.cam.position.multiplyScalar(1/(factor||1));if(v.ctl)v.ctl.update();_revOnZoom(vi);_markDirty();const dist=v.cam.position.distanceTo(v.ctl.target)||1;return {vi,dist,zoom:2.5/dist};},
+  zoomCloud:(vi=0,factor=2)=>{const v=views[vi];if(!v)return null;/* dolly toward ctl.TARGET (was: scale position toward the ORIGIN — after a pan that flies sideways off the region) */const t=v.ctl.target;v.cam.position.sub(t).multiplyScalar(1/(factor||1)).add(t);if(v.ctl)v.ctl.update();_revOnZoom(vi);_markDirty();const dist=v.cam.position.distanceTo(v.ctl.target)||1;return {vi,dist,zoom:2.5/dist};},
   revealPointAt:(vi=0,i=0)=>{const pts=revealPts[vi];if(!pts)return null;const pos=pts.geometry.attributes.position.array;const rev=views[vi]._rev;return {x:pos[i*3],y:pos[i*3+1],z:pos[i*3+2],row:rev&&rev.shownRows&&i<rev.shown?rev.shownRows[i]:-1,shown:rev?rev.shown:0,zoom:rev?rev.zoom:0};},
   revBuild:(vi=0)=>_revBuildGrid(vi).then(r=>{if(r){_revFill(vi);_updateOverlayTag();}return r?{shown:r.shown,nRows:r.nRows}:null;}),
   // --- Part B: trajectory LOD ---
   get trajLOD(){const v=views[NC];return {decimated:!!_trajMoving,additive:_trajAdditive,budget:v?(v._trajBudget||0):0,topK:v?(v._trajTopK||0):0,total:_vocabNRows||48660};},
+  // Live path-budget knob for measuring what THIS device can afford: set it,
+  // all traj viewports rebuild, returns {budget, paths, buildMs, fps} — read
+  // fps again after orbiting for a few seconds (the #fpsDisplay readout).
+  get trajBudget(){return _trajBudgetCap;},
+  set trajBudget(n){n=Math.max(100,n|0);_trajBudgetCap=n;const t0=performance.now();for(let vi=NC;vi<views.length;vi++){const v=views[vi];buildTraj(vi,v.pcX,v.pcY);}_markDirty();const v=views[NC];console.log(`trajBudget=${n} → ${v._trajBudget} paths/viewport, rebuilt in ${Math.round(performance.now()-t0)}ms; opacity ${v.trajGroup?.material.opacity.toFixed(4)}; watch #fpsDisplay while orbiting`);},
+  get fps(){return document.getElementById('fpsDisplay')?.textContent||null;},
+  // Picking + focus, for agents/tests: pickAt(vi, clientX, clientY[, radiusPx]) → {kind,idx}|null
+  pickAt:(vi,x,y,r)=>_pickAt(vi,{clientX:x,clientY:y},r||6),
+  focusToken:(vi,idx)=>{_focusToken(vi,idx);return __heinrich.getCam(vi);},
+  get revealStats(){return views.slice(0,NC).map((v,vi)=>({vi,shown:v._rev?.shown||0,inView:v._rev?.inView||0,zoom:+(2.5/_viewDist(v)).toFixed(2)}));},
   // --- state readers ---
   get views(){return views;}, get leftViews(){return leftViews;}, get rightViews(){return rightViews;},
   get pcsCam(){return(_pcsCam&&_pcsCtl)?{pos:[_pcsCam.position.x,_pcsCam.position.y,_pcsCam.position.z],target:[_pcsCtl.target.x,_pcsCtl.target.y,_pcsCtl.target.z],aspect:_pcsCam.aspect,fov:_pcsCam.fov,chasing:_pcsChaseActive(),nK:_pcsNK}:null;},

@@ -313,3 +313,67 @@ def vocab_pc_column(mri_path: str, layer: int, pc: int) -> bytes | dict:
         f.seek(16 + (layer * n_pcs + pc) * n_rows * 2)
         data = f.read(n_rows * 2)
     return struct.pack("<III", layer, pc, n_rows) + data
+
+
+_VPCL_MAGIC = b"VPCL"
+_VOCAB_PC_COLUMNS_MAX = 256
+
+
+def vocab_pc_columns(mri_path: str, layer: int, pcs: list[int]) -> bytes | dict:
+    """MANY (layer, pc) columns for ONE layer, all vocab rows, in one response.
+
+    The single-layer analog of the all-layer vocab-pc-bundle. Every per-layer
+    analysis in the viewer (direction coloring, direction depth, the pin
+    brief, the random baseline) needs a set of PC columns AT ONE LAYER — the
+    all-layer bundle handed them n_layers x the data (26x at qwen scale: a
+    128-PC recolor was ~1GB, a direction-depth pass held ~7GB in the browser).
+    vocab_pc16.bin is layer-major ([n_layers, n_pcs, n_rows]), so for a fixed
+    layer the requested PCs are consecutive slabs — cheap, mostly-contiguous
+    reads. Capped at 256 PCs (~77MB at 150k rows) so no request can balloon.
+
+    Wire: <4s magic><III layer, n_pcs, n_rows> + uint32[n_pcs] pc ids
+          + float16[n_pcs * n_rows]  (pc-major, matching the id order)
+    """
+    pc_ids: list[int] = []
+    seen: set[int] = set()
+    for pc in pcs:
+        if pc not in seen:
+            seen.add(pc)
+            pc_ids.append(pc)
+    if not pc_ids:
+        return {"error": "No PCs requested"}
+    if len(pc_ids) > _VOCAB_PC_COLUMNS_MAX:
+        return {"error": f"Too many PCs in one request ({len(pc_ids)} > {_VOCAB_PC_COLUMNS_MAX}) — chunk the request"}
+    vp = Path(mri_path) / "decomp" / "vocab_pc16.bin"
+    if not vp.exists():
+        return {"error": "No vocab_pc16.bin — run: heinrich mri-vocab --pc16-only"}
+    with open(vp, "rb") as f:
+        magic, n_layers, n_pcs, n_rows = struct.unpack("<4sIII", f.read(16))
+        if magic != _VP16_MAGIC:
+            return {"error": f"Bad vocab_pc16.bin magic: {magic!r}"}
+        if not (0 <= layer < n_layers):
+            return {"error": f"layer {layer} out of range ({n_layers} layers)"}
+        for pc in pc_ids:
+            if not (0 <= pc < n_pcs):
+                return {"error": f"pc {pc} out of range ({n_pcs} pcs)"}
+        stride = n_rows * 2
+        base = 16 + layer * n_pcs * stride
+        parts = []
+        # Read runs of consecutive PCs in one go where the ids allow it.
+        order = sorted(pc_ids)
+        chunks: dict[int, bytes] = {}
+        i = 0
+        while i < len(order):
+            j = i
+            while j + 1 < len(order) and order[j + 1] == order[j] + 1:
+                j += 1
+            f.seek(base + order[i] * stride)
+            blob = f.read((j - i + 1) * stride)
+            for k in range(i, j + 1):
+                chunks[order[k]] = blob[(k - i) * stride:(k - i + 1) * stride]
+            i = j + 1
+        for pc in pc_ids:
+            parts.append(chunks[pc])
+    header = struct.pack("<4sIII", _VPCL_MAGIC, layer, len(pc_ids), n_rows)
+    ids = struct.pack(f"<{len(pc_ids)}I", *pc_ids)
+    return header + ids + b"".join(parts)

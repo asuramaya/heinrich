@@ -28,7 +28,7 @@ import numpy as np
 
 from .companion_serve import (load_serve_meta, resolve_pc_index, resolve_token_index,
                               vocab_resolve, vocab_token_row, vocab_meta,
-                              vocab_pc_column)
+                              vocab_pc_column, vocab_pc_columns)
 
 
 _CLOUD_BUNDLE_MAGIC = b"CLDB"
@@ -3918,6 +3918,16 @@ def _vocab_pc_bundle(mri_path: str, full_pcs: list[int], medium_pcs: list[int] |
     medium_ids = [pc for pc in _dedupe_ints(medium_pcs) if pc not in set(full_ids)]
     if not full_ids and not medium_ids:
         return {"error": "No PCs requested"}
+    # Hard cap, independent of any client-side chunking: a full-tier slab is
+    # n_layers*n_rows*2 bytes PER pc, doubled again by .tobytes() below — at
+    # vocab scale (~150k rows) an uncapped request has repeatedly OOM-killed
+    # this process (confirmed 26-29GB RSS from a single oversized request).
+    # 128 PCs bounds one request to roughly a GB even at the largest loaded
+    # vocab, comfortably above every legitimate caller (weight-alignment's
+    # largest observed request was ~130 PCs) and far below what crashes it.
+    _MAX_FULL_PCS = 128
+    if len(full_ids) > _MAX_FULL_PCS:
+        return {"error": f"Too many full-tier PCs in one request ({len(full_ids)} > {_MAX_FULL_PCS}) — chunk the request"}
 
     full_result = _read_vocab_pc_slabs(mri_path, full_ids)
     if isinstance(full_result, dict):
@@ -5028,6 +5038,21 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 self._send_json(vocab_meta(self._mri_path(parts[3], parts[4])))
             else:
                 self._send_json({"error": "Usage: /api/vocab-meta/<model>/<mode>"})
+        elif path.startswith('/api/vocab-pc-columns/'):
+            # /api/vocab-pc-columns/<model>/<mode>?layer=L&pcs=A,B,C — MANY columns
+            # for ONE layer (single-layer analyses: coloring, depth, brief, baseline).
+            # <4s VPCL><III layer,n_pcs,n_rows> + u32[n_pcs] ids + f16[n_pcs*n_rows]
+            parts = path.split('/')
+            if len(parts) >= 5:
+                pcs = [int(p) for p in qs.get('pcs', [''])[0].split(',') if p]
+                result = vocab_pc_columns(self._mri_path(parts[3], parts[4]),
+                                          int(qs.get('layer', ['0'])[0]), pcs)
+                if isinstance(result, dict):
+                    self._send_json(result)
+                else:
+                    self._send_bytes(result)
+            else:
+                self._send_json({"error": "Usage: /api/vocab-pc-columns/<model>/<mode>?layer=L&pcs=A,B"})
         elif path.startswith('/api/vocab-pc-column/'):
             # /api/vocab-pc-column/<model>/<mode>?layer=L&pc=P — one display
             # column for ALL vocab rows (<III layer,pc,n_rows> + f16[n_rows])

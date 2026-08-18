@@ -311,6 +311,41 @@ async function vocabPcColumn(env, prefix, layer, pc) {
   return octet([head, col]);
 }
 
+// /api/vocab-pc-columns?layer=L&pcs=A,B,C → MANY columns for ONE layer (≤256).
+// Wire (VPCL): <4s magic><III layer,n_pcs,n_rows> + u32[n_pcs] ids + f16[n_pcs*n_rows]
+// Mirrors companion_serve.vocab_pc_columns exactly. Single-layer analyses in the
+// viewer (direction coloring/depth, pin brief, random baseline) use this instead
+// of the all-layer bundle — 1/n_layers the bytes. For a fixed layer the PCs are
+// consecutive slabs, so runs of consecutive ids collapse into one range read.
+const VOCAB_PC_COLUMNS_MAX = 256;
+async function vocabPcColumns(env, prefix, layer, pcs) {
+  const ids = []; const seen = new Set();
+  for (const pc of pcs) if (Number.isFinite(pc) && !seen.has(pc)) { seen.add(pc); ids.push(pc); }
+  if (!ids.length) return jsonResponse({ error: "No PCs requested" }, 400);
+  if (ids.length > VOCAB_PC_COLUMNS_MAX) return jsonResponse({ error: `Too many PCs in one request (${ids.length} > ${VOCAB_PC_COLUMNS_MAX}) — chunk the request` }, 400);
+  const key = `${prefix}/decomp/vocab_pc16.bin`;
+  const h = await r2range(env, key, 0, 16);
+  if (!h) return jsonResponse({ error: "no vocab_pc16" }, 404);
+  const dv = new DataView(h);
+  const nLayers = dv.getUint32(4, true), nPcs = dv.getUint32(8, true), nRows = dv.getUint32(12, true);
+  if (layer < 0 || layer >= nLayers) return jsonResponse({ error: `layer ${layer} out of range` }, 400);
+  for (const pc of ids) if (pc < 0 || pc >= nPcs) return jsonResponse({ error: `pc ${pc} out of range` }, 400);
+  const stride = nRows * 2, base = 16 + layer * nPcs * stride;
+  const order = [...ids].sort((a, b) => a - b);
+  const chunks = new Map();
+  for (let i = 0; i < order.length;) {
+    let j = i; while (j + 1 < order.length && order[j + 1] === order[j] + 1) j++;
+    const blob = await r2range(env, key, base + order[i] * stride, (j - i + 1) * stride);
+    for (let k = i; k <= j; k++) chunks.set(order[k], blob.slice((k - i) * stride, (k - i + 1) * stride));
+    i = j + 1;
+  }
+  const head = new ArrayBuffer(16 + ids.length * 4); const hv = new DataView(head);
+  hv.setUint8(0, 0x56); hv.setUint8(1, 0x50); hv.setUint8(2, 0x43); hv.setUint8(3, 0x4C); // "VPCL"
+  hv.setUint32(4, layer, true); hv.setUint32(8, ids.length, true); hv.setUint32(12, nRows, true);
+  ids.forEach((pc, i) => hv.setUint32(16 + i * 4, pc, true));
+  return octet([head, ...ids.map(pc => chunks.get(pc))]);
+}
+
 // vocab_pc16.bin (VP16) is LAYER-major ([layers x pcs x rows]) — the opposite
 // layout from pc_scores.bin's PC-major slabs, so "all layers for one PC" is
 // n_layers separate range reads, not one contiguous read (mirrors the per-seek
@@ -576,6 +611,7 @@ export default {
         if (ep === "pc-column") return await pcColumn(env, prefix, parseInt(q("pc", "0")), parseInt(q("layer", "0")));
         if (ep === "token-pca") return await tokenPca(env, prefix, parseInt(q("token", "0")));
         if (ep === "vocab-token") return await vocabToken(env, prefix, parseInt(q("row", "-1")));
+        if (ep === "vocab-pc-columns") return await vocabPcColumns(env, prefix, parseInt(q("layer", "0")), q("pcs", "").split(",").filter(Boolean).map(Number));
         if (ep === "vocab-pc-column") return await vocabPcColumn(env, prefix, parseInt(q("layer", "0")), parseInt(q("pc", "0")));
         if (ep === "vocab-meta") {
           const vm = await r2json(env, `${prefix}/decomp/vocab_meta.json`);
