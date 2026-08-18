@@ -6,16 +6,68 @@
 // The Worker never runs a model and never parses numpy .npz — token metadata
 // is precomputed to tokens.json at capture time.
 //
-// MVP endpoint coverage (the SPA boot path → first cloud render):
-//   GET /api/models
-//   GET /api/decomp-meta/<model>/<mode>
-//   GET /api/serve-meta/<model>/<mode>
-//   GET /api/decomp/<model>/<mode>?layer=N
-//   GET /api/cloud-bundle/<model>/<mode>?full=..&medium=..&step=N
-// Anything else under /api → 501 (lazy/interactive endpoints, wired next).
+// Endpoint coverage (all GET; <m>/<M> = /<model>/<mode>):
+//   catalogue / capability:  /api/models  /api/capabilities
+//   live-loop stubs (static: no backend, instant answers so the SPA stops
+//     polling):  /api/poll  /api/navigate  /api/chat-poll  /api/chat-drain
+//                /api/live-status  /api/signals
+//   decomposition:  /api/decomp-meta/<m>/<M>  /api/serve-meta/<m>/<M>
+//                   /api/decomp/<m>/<M>?layer=N
+//   sample cloud (pc_scores.bin / token_scores.bin, byte-range):
+//     /api/cloud-bundle?full=..&medium=..&step=N  /api/pc-full?pc=N
+//     /api/pc-column?pc=N&layer=L  /api/token-bundle?full=..&hover=..&layer=L
+//     /api/token-pca?token=N  /api/token-layer?token=N&layer=L
+//     /api/token-hover?token=N&layer=L  /api/token-bio?token=N
+//     /api/token-predicts?token=N&layer=L&k=K  /api/token-resolve?text=..
+//     /api/neuron-field?token=N  /api/token-neurons?token=N  /api/token-attn (stub)
+//     /api/gate-heatmap  /api/delta-scores  /api/norms  /api/baselines
+//     /api/weight-align?layer=L  /api/weight-align-all  /api/falsification
+//   full-vocab (vocab_pc16.bin / vocab_scores.bin, byte-range):
+//     /api/vocab-pc-bundle?full=..&medium=..&step=N   (all layers, ≤128 full PCs)
+//     /api/vocab-pc-columns?layer=L&pcs=A,B,C          (one layer, ≤256 PCs)
+//     /api/vocab-pc-column?layer=L&pc=P  /api/vocab-token?row=R
+//     /api/vocab-token-bundle?rows=A,B  /api/vocab-meta  /api/vocab-tokens
+//     /api/vocab-scripts  /api/vocab-ids  /api/vocab-gate-heatmap
+// Anything else under /api → 501.
+//
+// Caching: every artifact response is a pure function of immutable R2 objects
+// keyed by <model>/<mode>, so 200s carry `Cache-Control: immutable`; the
+// catalogue (/api/models), capabilities and the live-loop stubs are no-cache,
+// as are error responses (see cacheHeaderFor).
 
 const JSON_HEADERS = { "content-type": "application/json" };
 const IMMUTABLE = "public, max-age=31536000, immutable";
+const NO_CACHE = "no-cache";
+// Endpoints answered from mutable / deploy-time state, never from a
+// content-addressed artifact — must not be cached by the browser.
+const LIVE_EPS = new Set(["models", "capabilities", "poll", "navigate",
+  "chat-poll", "chat-drain", "live-status", "signals"]);
+
+// Run `fn` over `items` with at most `limit` promises in flight; results land
+// in input order. R2 range reads are independent, so the per-(pc,layer) reads
+// behind a bundle go out ~8 at a time instead of one round trip after another.
+async function mapPool(items, limit, fn) {
+  const out = new Array(items.length);
+  let next = 0;
+  const lane = async () => {
+    for (;;) {
+      const i = next++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  };
+  await Promise.all(Array.from({ length: Math.max(1, Math.min(limit, items.length)) }, lane));
+  return out;
+}
+const R2_POOL = 8;
+
+// Cache policy in one place: live/catalogue endpoints and any non-200 are
+// no-cache; everything else is an immutable artifact read.
+function cacheHeaderFor(ep, res) {
+  if (res.headers.has("cache-control")) return res;
+  res.headers.set("cache-control", (!LIVE_EPS.has(ep) && res.status === 200) ? IMMUTABLE : NO_CACHE);
+  return res;
+}
 
 function mriPrefix(model, mode) {
   return `${model}/${mode}.mri`;
@@ -194,10 +246,7 @@ async function cloudBundle(env, prefix, fullPcs, medPcs, step) {
   for (const id of fullIds) { idv.setUint32(off, id, true); off += 4; }
   for (const id of medIds) { idv.setUint32(off, id, true); off += 4; }
 
-  const parts = [head, idBytes, ...fullSlabs, ...medSlabs];
-  return new Response(new Blob(parts), {
-    headers: { "content-type": "application/octet-stream" },
-  });
+  return octet([head, idBytes, ...fullSlabs, ...medSlabs]);
 }
 
 // ---- Phase-1 data endpoints: pure R2 reads + precomputed JSON ----
@@ -210,8 +259,12 @@ async function serveRaw(env, key) {
   });
 }
 
+// Binary artifact response. Every caller assembles bytes from immutable R2
+// objects keyed by <model>/<mode>, so the result is safe to cache forever.
 function octet(parts) {
-  return new Response(new Blob(parts), { headers: { "content-type": "application/octet-stream" } });
+  return new Response(new Blob(parts), {
+    headers: { "content-type": "application/octet-stream", "cache-control": IMMUTABLE },
+  });
 }
 
 // pc_scores.bin (PCSC): header <4sIII magic,n_layers,n_tok,full_k ; payload [K x layers x tok] f16
@@ -332,13 +385,17 @@ async function vocabPcColumns(env, prefix, layer, pcs) {
   for (const pc of ids) if (pc < 0 || pc >= nPcs) return jsonResponse({ error: `pc ${pc} out of range` }, 400);
   const stride = nRows * 2, base = 16 + layer * nPcs * stride;
   const order = [...ids].sort((a, b) => a - b);
-  const chunks = new Map();
+  const runs = []; // [startIndex, endIndex] into `order`, consecutive ids
   for (let i = 0; i < order.length;) {
     let j = i; while (j + 1 < order.length && order[j + 1] === order[j] + 1) j++;
-    const blob = await r2range(env, key, base + order[i] * stride, (j - i + 1) * stride);
-    for (let k = i; k <= j; k++) chunks.set(order[k], blob.slice((k - i) * stride, (k - i + 1) * stride));
+    runs.push([i, j]);
     i = j + 1;
   }
+  const chunks = new Map();
+  await mapPool(runs, R2_POOL, async ([i, j]) => {
+    const blob = await r2range(env, key, base + order[i] * stride, (j - i + 1) * stride);
+    for (let k = i; k <= j; k++) chunks.set(order[k], blob.slice((k - i) * stride, (k - i + 1) * stride));
+  });
   const head = new ArrayBuffer(16 + ids.length * 4); const hv = new DataView(head);
   hv.setUint8(0, 0x56); hv.setUint8(1, 0x50); hv.setUint8(2, 0x43); hv.setUint8(3, 0x4C); // "VPCL"
   hv.setUint32(4, layer, true); hv.setUint32(8, ids.length, true); hv.setUint32(12, nRows, true);
@@ -351,25 +408,27 @@ async function vocabPcColumns(env, prefix, layer, pcs) {
 // n_layers separate range reads, not one contiguous read (mirrors the per-seek
 // cost vocabPcColumn already pays; this batches several PCs behind one request
 // instead of one HTTP round trip per (layer,pc), matching companion.py's
-// _read_vocab_pc_slabs exactly).
+// _vocab_pc_bundle_stream exactly). The (pc, layer) reads are independent, so
+// they run R2_POOL at a time; each writes straight into its own slot of `out`
+// (offset = job index * nOut*2), so output order is fixed regardless of which
+// read lands first.
 async function vocabPcSlabs(env, prefix, pcIds, nLayers, nPcsFile, nRows, step) {
   const stride = nRows * 2;
   const nOut = step > 1 ? Math.ceil(nRows / step) : nRows;
   const out = new Uint8Array(pcIds.length * nLayers * nOut * 2);
-  let oOff = 0;
-  for (const pc of pcIds) {
-    for (let layer = 0; layer < nLayers; layer++) {
-      const rowBuf = await r2range(env, `${prefix}/decomp/vocab_pc16.bin`, 16 + (layer * nPcsFile + pc) * stride, stride);
-      const row = new Uint8Array(rowBuf);
-      if (step > 1) {
-        let s = 0;
-        for (let t = 0; t < nRows; t += step) { out[oOff + s] = row[t * 2]; out[oOff + s + 1] = row[t * 2 + 1]; s += 2; }
-      } else {
-        out.set(row, oOff);
-      }
-      oOff += nOut * 2;
+  const jobs = [];
+  for (const pc of pcIds) for (let layer = 0; layer < nLayers; layer++) jobs.push([pc, layer]);
+  await mapPool(jobs, R2_POOL, async ([pc, layer], idx) => {
+    const oOff = idx * nOut * 2;
+    const rowBuf = await r2range(env, `${prefix}/decomp/vocab_pc16.bin`, 16 + (layer * nPcsFile + pc) * stride, stride);
+    const row = new Uint8Array(rowBuf);
+    if (step > 1) {
+      let s = 0;
+      for (let t = 0; t < nRows; t += step) { out[oOff + s] = row[t * 2]; out[oOff + s + 1] = row[t * 2 + 1]; s += 2; }
+    } else {
+      out.set(row, oOff);
     }
-  }
+  });
   return { nOut, bytes: out };
 }
 
@@ -390,8 +449,7 @@ async function vocabPcBundle(env, prefix, fullPcs, medPcs, step) {
   const fullIds = [...new Set(fullPcs)].filter((p) => p >= 0 && p < nPcsFile);
   const fullSet = new Set(fullIds);
   const medIds = [...new Set(medPcs)].filter((p) => p >= 0 && p < nPcsFile && !fullSet.has(p));
-  if (!fullIds.length && !medIds.length) return jsonResponse({ error: "No PCs requested" }, 400);
-
+  // Empty request = the viewer's capability probe: header only (mirrors companion.py).
   const fullResult = await vocabPcSlabs(env, prefix, fullIds, nLayers, nPcsFile, nRows, 1);
   const medResult = await vocabPcSlabs(env, prefix, medIds, nLayers, nPcsFile, nRows, step);
   const nSample = medResult.nOut;
@@ -576,165 +634,170 @@ export default {
       return env.ASSETS.fetch(new Request(new URL(idx, url), request));
     }
 
+    const ep = path.split("/")[2]; // ['', 'api', '<ep>', '<model>', '<mode>']
     try {
-      if (path === "/api/models") {
-        const models = (await r2json(env, "models.json")) ?? [];
-        return jsonResponse(models);
-      }
-
-      const parts = path.split("/"); // ['', 'api', '<ep>', '<model>', '<mode>']
-      const ep = parts[2];
-      const model = parts[3];
-      const mode = parts[4];
-      const prefix = model && mode ? mriPrefix(model, mode) : null;
-
-      // Live/navigation endpoints have no backend in a static deploy. The SPA's
-      // long-poll loops expect the local companion to hold the request ~25s; a
-      // worker returns instantly, so without a signal they'd busy-loop the
-      // network. `static: true` tells the SPA to stop the loop after one probe.
-      // Capability manifest — the inverted contract. The edge is the minimal
-      // node: it serves the artifact and nothing live. The SPA composes from this.
-      if (ep === "capabilities") return jsonResponse({
-        backend: "worker", artifact: true, models: "r2",
-        live: false, steer: false, weights: false, mcp: false, write: false,
-      });
-      if (ep === "poll") return jsonResponse({ cmd: "none", static: true });
-      if (ep === "navigate") return jsonResponse({});
-      if (ep === "chat-poll") return jsonResponse({ reply: null, static: true });
-      if (ep === "chat-drain") return jsonResponse({ messages: [] });
-      if (ep === "live-status") return jsonResponse({ loaded: false, static: true, status: "static deployment — no live backend" });
-      if (ep === "signals") return jsonResponse([]);
-
-      const q = (k, d) => url.searchParams.get(k) ?? d;
-      if (prefix) {
-        if (ep === "pc-full") return await pcFull(env, prefix, parseInt(q("pc", "0")));
-        if (ep === "pc-column") return await pcColumn(env, prefix, parseInt(q("pc", "0")), parseInt(q("layer", "0")));
-        if (ep === "token-pca") return await tokenPca(env, prefix, parseInt(q("token", "0")));
-        if (ep === "vocab-token") return await vocabToken(env, prefix, parseInt(q("row", "-1")));
-        if (ep === "vocab-pc-columns") return await vocabPcColumns(env, prefix, parseInt(q("layer", "0")), q("pcs", "").split(",").filter(Boolean).map(Number));
-        if (ep === "vocab-pc-column") return await vocabPcColumn(env, prefix, parseInt(q("layer", "0")), parseInt(q("pc", "0")));
-        if (ep === "vocab-meta") {
-          const vm = await r2json(env, `${prefix}/decomp/vocab_meta.json`);
-          return vm ? jsonResponse(vm) : jsonResponse({ error: "no full-vocab projection" }, 404);
-        }
-        if (ep === "vocab-tokens") {
-          const vt = await r2json(env, `${prefix}/decomp/vocab_tokens.json`);
-          return vt ? jsonResponse(vt) : jsonResponse({ error: "no full-vocab projection" }, 404);
-        }
-        if (ep === "vocab-scripts") {
-          const vs = await r2json(env, `${prefix}/decomp/vocab_scripts.json`);
-          return vs ? jsonResponse(vs) : jsonResponse({ error: "no full-vocab scripts" }, 404);
-        }
-        if (ep === "vocab-ids") return await serveRaw(env, `${prefix}/decomp/vocab_ids.npy`);
-        if (ep === "vocab-gate-heatmap") return await serveRaw(env, `${prefix}/decomp/vocab_gate_heatmap.npy`);
-        if (ep === "vocab-pc-bundle") {
-          const csv = (s) => (s ? s.split(",").filter(Boolean).map(Number) : []);
-          return await vocabPcBundle(env, prefix, csv(q("full")), csv(q("medium")), parseInt(q("step", "10")));
-        }
-        if (ep === "vocab-token-bundle") {
-          const csv = (s) => (s ? s.split(",").filter(Boolean).map(Number) : []);
-          return await vocabTokenBundle(env, prefix, csv(q("rows")));
-        }
-        if (ep === "token-layer") return await tokenLayer(env, prefix, parseInt(q("token", "0")), parseInt(q("layer", "0")));
-        if (ep === "token-hover") return await tokenHover(env, prefix, parseInt(q("token", "0")), parseInt(q("layer", "0")));
-        if (ep === "neuron-field") return await neuronField(env, prefix, parseInt(q("token", "0")));
-        if (ep === "token-bio") return await tokenBio(env, prefix, parseInt(q("token", "0")));
-        if (ep === "gate-heatmap") return await serveRaw(env, `${prefix}/decomp/gate_heatmap.npy`);
-        if (ep === "delta-scores") return await serveRaw(env, `${prefix}/decomp/delta_scores.bin`);
-        if (ep === "weight-align-all") {
-          const wa = await r2json(env, `${prefix}/decomp/weight_alignment.json`);
-          return wa ? jsonResponse(wa) : jsonResponse([], 200);
-        }
-        if (ep === "weight-align") {
-          const wa = await r2json(env, `${prefix}/decomp/weight_alignment.json`);
-          const L = parseInt(q("layer", "0"));
-          if (Array.isArray(wa)) { const hit = wa.find(x => x.layer === L) ?? wa[L] ?? {}; return jsonResponse(hit); }
-          return jsonResponse({});
-        }
-        if (ep === "token-bundle") {
-          const csv = (s) => (s ? s.split(",").filter(Boolean).map(Number) : []);
-          return await tokenBundle(env, prefix, csv(q("full")), csv(q("hover")), parseInt(q("layer", "0")));
-        }
-        if (ep === "token-neurons") return jsonResponse(await r2json(env, `${prefix}/decomp/neuron_importance.json`) ?? { token_idx: parseInt(q("token", "0")), layers: [] });
-        if (ep === "falsification") return jsonResponse(await r2json(env, `${prefix}/decomp/falsification.json`) ?? { random_baseline: [], top_pcs: [] });
-        if (ep === "token-predicts") {
-          // Captured-vocab logit lens, precomputed into token_predicts.bin (TPRD):
-          // [N, L, K] of (uint32 mri_idx, f16 prob, f16 logit), token-major.
-          // Range-read one (token,layer) slice, join mri_idx→text via tokens.json.
-          const key = `${prefix}/decomp/token_predicts.bin`;
-          const h = await r2range(env, key, 0, 16);
-          if (!h) return jsonResponse({ top_k: [] });
-          const hv = new DataView(h);
-          if (new TextDecoder().decode(new Uint8Array(h, 0, 4)) !== "TPRD") return jsonResponse({ top_k: [] });
-          const N = hv.getUint32(4, true), L = hv.getUint32(8, true), K = hv.getUint32(12, true);
-          const token = parseInt(q("token", "0")), layer = parseInt(q("layer", "0"));
-          const want = Math.min(parseInt(q("k", "8")) || 8, K);
-          if (token < 0 || token >= N || layer < 0 || layer >= L) return jsonResponse({ top_k: [] });
-          const stride = K * 8;
-          const slab = await r2range(env, key, 16 + (token * L + layer) * stride, stride);
-          if (!slab) return jsonResponse({ top_k: [] });
-          const dv = new DataView(slab);
-          const toks = await r2json(env, `${prefix}/decomp/tokens.json`);
-          const texts = (toks && toks.token_texts) || [];
-          const out = [];
-          for (let i = 0; i < want; i++) {
-            const mri_idx = dv.getUint32(i * 8, true);
-            const prob = dv.getFloat16(i * 8 + 4, true);
-            const logit = dv.getFloat16(i * 8 + 6, true);
-            if (!Number.isFinite(prob)) continue;
-            out.push({ text: texts[mri_idx] ?? `#${mri_idx}`, prob, logit, mri_idx });
-          }
-          return jsonResponse({ top_k: out });
-        }
-        if (ep === "token-resolve") {
-          // Cross-model compare resolves a token by text (tokenizers fragment
-          // differently, so raw index equality isn't the same concept). Pure
-          // lookup in the target model's tokens.json — no compute.
-          const toks = await r2json(env, `${prefix}/decomp/tokens.json`);
-          const txt = q("text", "");
-          const idx = toks && Array.isArray(toks.token_texts) ? toks.token_texts.indexOf(txt) : -1;
-          const out = { idx, text: txt };
-          if (idx < 0) {
-            // Not in the sampled cloud — the full-vocab projection may still
-            // know it (every tokenizer token is addressable there).
-            const vt = await r2json(env, `${prefix}/decomp/vocab_tokens.json`);
-            if (Array.isArray(vt)) {
-              const row = vt.indexOf(txt);
-              if (row >= 0) out.vocab_row = row;
-            }
-          }
-          return jsonResponse(out);
-        }
-        if (ep === "norms") return jsonResponse(await r2json(env, `${prefix}/norms.json`) ?? {});
-        if (ep === "baselines") return jsonResponse(await r2json(env, `${prefix}/baselines.json`) ?? {});
-        if (ep === "token-attn") return jsonResponse({ token_idx: parseInt(q("token", "0")), layers: [] });
-      }
-
-      if (ep === "decomp-meta" && prefix) {
-        const meta = await r2json(env, `${prefix}/decomp/meta.json`);
-        return meta ? jsonResponse(meta) : jsonResponse({ error: "no decomp meta" }, 404);
-      }
-
-      if (ep === "serve-meta" && prefix) {
-        return await serveMeta(env, prefix);
-      }
-
-      if (ep === "decomp" && prefix) {
-        const layer = parseInt(url.searchParams.get("layer") ?? "0", 10);
-        return await decompLayer(env, prefix, layer);
-      }
-
-      if (ep === "cloud-bundle" && prefix) {
-        const csv = (s) => (s ? s.split(",").filter(Boolean).map(Number) : []);
-        const full = csv(url.searchParams.get("full"));
-        const med = csv(url.searchParams.get("medium"));
-        const step = parseInt(url.searchParams.get("step") ?? "10", 10);
-        return await cloudBundle(env, prefix, full, med, step);
-      }
-
-      return jsonResponse({ error: `endpoint not yet wired: ${ep}` }, 501);
+      return cacheHeaderFor(ep, await routeApi(env, url, path));
     } catch (err) {
-      return jsonResponse({ error: String(err?.stack || err) }, 500);
+      return cacheHeaderFor(ep, jsonResponse({ error: String(err?.stack || err) }, 500));
     }
   },
 };
+
+async function routeApi(env, url, path) {
+  if (path === "/api/models") {
+    const models = (await r2json(env, "models.json")) ?? [];
+    return jsonResponse(models);
+  }
+
+  const parts = path.split("/"); // ['', 'api', '<ep>', '<model>', '<mode>']
+  const ep = parts[2];
+  const model = parts[3];
+  const mode = parts[4];
+  const prefix = model && mode ? mriPrefix(model, mode) : null;
+
+  // Live/navigation endpoints have no backend in a static deploy. The SPA's
+  // long-poll loops expect the local companion to hold the request ~25s; a
+  // worker returns instantly, so without a signal they'd busy-loop the
+  // network. `static: true` tells the SPA to stop the loop after one probe.
+  // Capability manifest — the inverted contract. The edge is the minimal
+  // node: it serves the artifact and nothing live. The SPA composes from this.
+  if (ep === "capabilities") return jsonResponse({
+    backend: "worker", artifact: true, models: "r2",
+    live: false, steer: false, weights: false, mcp: false, write: false,
+  });
+  if (ep === "poll") return jsonResponse({ cmd: "none", static: true });
+  if (ep === "navigate") return jsonResponse({});
+  if (ep === "chat-poll") return jsonResponse({ reply: null, static: true });
+  if (ep === "chat-drain") return jsonResponse({ messages: [] });
+  if (ep === "live-status") return jsonResponse({ loaded: false, static: true, status: "static deployment — no live backend" });
+  if (ep === "signals") return jsonResponse([]);
+
+  const q = (k, d) => url.searchParams.get(k) ?? d;
+  if (prefix) {
+    if (ep === "pc-full") return await pcFull(env, prefix, parseInt(q("pc", "0")));
+    if (ep === "pc-column") return await pcColumn(env, prefix, parseInt(q("pc", "0")), parseInt(q("layer", "0")));
+    if (ep === "token-pca") return await tokenPca(env, prefix, parseInt(q("token", "0")));
+    if (ep === "vocab-token") return await vocabToken(env, prefix, parseInt(q("row", "-1")));
+    if (ep === "vocab-pc-columns") return await vocabPcColumns(env, prefix, parseInt(q("layer", "0")), q("pcs", "").split(",").filter(Boolean).map(Number));
+    if (ep === "vocab-pc-column") return await vocabPcColumn(env, prefix, parseInt(q("layer", "0")), parseInt(q("pc", "0")));
+    if (ep === "vocab-meta") {
+      const vm = await r2json(env, `${prefix}/decomp/vocab_meta.json`);
+      return vm ? jsonResponse(vm) : jsonResponse({ error: "no full-vocab projection" }, 404);
+    }
+    if (ep === "vocab-tokens") {
+      const vt = await r2json(env, `${prefix}/decomp/vocab_tokens.json`);
+      return vt ? jsonResponse(vt) : jsonResponse({ error: "no full-vocab projection" }, 404);
+    }
+    if (ep === "vocab-scripts") {
+      const vs = await r2json(env, `${prefix}/decomp/vocab_scripts.json`);
+      return vs ? jsonResponse(vs) : jsonResponse({ error: "no full-vocab scripts" }, 404);
+    }
+    if (ep === "vocab-ids") return await serveRaw(env, `${prefix}/decomp/vocab_ids.npy`);
+    if (ep === "vocab-gate-heatmap") return await serveRaw(env, `${prefix}/decomp/vocab_gate_heatmap.npy`);
+    if (ep === "vocab-pc-bundle") {
+      const csv = (s) => (s ? s.split(",").filter(Boolean).map(Number) : []);
+      return await vocabPcBundle(env, prefix, csv(q("full")), csv(q("medium")), parseInt(q("step", "10")));
+    }
+    if (ep === "vocab-token-bundle") {
+      const csv = (s) => (s ? s.split(",").filter(Boolean).map(Number) : []);
+      return await vocabTokenBundle(env, prefix, csv(q("rows")));
+    }
+    if (ep === "token-layer") return await tokenLayer(env, prefix, parseInt(q("token", "0")), parseInt(q("layer", "0")));
+    if (ep === "token-hover") return await tokenHover(env, prefix, parseInt(q("token", "0")), parseInt(q("layer", "0")));
+    if (ep === "neuron-field") return await neuronField(env, prefix, parseInt(q("token", "0")));
+    if (ep === "token-bio") return await tokenBio(env, prefix, parseInt(q("token", "0")));
+    if (ep === "gate-heatmap") return await serveRaw(env, `${prefix}/decomp/gate_heatmap.npy`);
+    if (ep === "delta-scores") return await serveRaw(env, `${prefix}/decomp/delta_scores.bin`);
+    if (ep === "weight-align-all") {
+      const wa = await r2json(env, `${prefix}/decomp/weight_alignment.json`);
+      return wa ? jsonResponse(wa) : jsonResponse([], 200);
+    }
+    if (ep === "weight-align") {
+      const wa = await r2json(env, `${prefix}/decomp/weight_alignment.json`);
+      const L = parseInt(q("layer", "0"));
+      if (Array.isArray(wa)) { const hit = wa.find(x => x.layer === L) ?? wa[L] ?? {}; return jsonResponse(hit); }
+      return jsonResponse({});
+    }
+    if (ep === "token-bundle") {
+      const csv = (s) => (s ? s.split(",").filter(Boolean).map(Number) : []);
+      return await tokenBundle(env, prefix, csv(q("full")), csv(q("hover")), parseInt(q("layer", "0")));
+    }
+    if (ep === "token-neurons") return jsonResponse(await r2json(env, `${prefix}/decomp/neuron_importance.json`) ?? { token_idx: parseInt(q("token", "0")), layers: [] });
+    if (ep === "falsification") return jsonResponse(await r2json(env, `${prefix}/decomp/falsification.json`) ?? { random_baseline: [], top_pcs: [] });
+    if (ep === "token-predicts") {
+      // Captured-vocab logit lens, precomputed into token_predicts.bin (TPRD):
+      // [N, L, K] of (uint32 mri_idx, f16 prob, f16 logit), token-major.
+      // Range-read one (token,layer) slice, join mri_idx→text via tokens.json.
+      const key = `${prefix}/decomp/token_predicts.bin`;
+      const h = await r2range(env, key, 0, 16);
+      if (!h) return jsonResponse({ top_k: [] });
+      const hv = new DataView(h);
+      if (new TextDecoder().decode(new Uint8Array(h, 0, 4)) !== "TPRD") return jsonResponse({ top_k: [] });
+      const N = hv.getUint32(4, true), L = hv.getUint32(8, true), K = hv.getUint32(12, true);
+      const token = parseInt(q("token", "0")), layer = parseInt(q("layer", "0"));
+      const want = Math.min(parseInt(q("k", "8")) || 8, K);
+      if (token < 0 || token >= N || layer < 0 || layer >= L) return jsonResponse({ top_k: [] });
+      const stride = K * 8;
+      const slab = await r2range(env, key, 16 + (token * L + layer) * stride, stride);
+      if (!slab) return jsonResponse({ top_k: [] });
+      const dv = new DataView(slab);
+      const toks = await r2json(env, `${prefix}/decomp/tokens.json`);
+      const texts = (toks && toks.token_texts) || [];
+      const out = [];
+      for (let i = 0; i < want; i++) {
+        const mri_idx = dv.getUint32(i * 8, true);
+        const prob = dv.getFloat16(i * 8 + 4, true);
+        const logit = dv.getFloat16(i * 8 + 6, true);
+        if (!Number.isFinite(prob)) continue;
+        out.push({ text: texts[mri_idx] ?? `#${mri_idx}`, prob, logit, mri_idx });
+      }
+      return jsonResponse({ top_k: out });
+    }
+    if (ep === "token-resolve") {
+      // Cross-model compare resolves a token by text (tokenizers fragment
+      // differently, so raw index equality isn't the same concept). Pure
+      // lookup in the target model's tokens.json — no compute.
+      const toks = await r2json(env, `${prefix}/decomp/tokens.json`);
+      const txt = q("text", "");
+      const idx = toks && Array.isArray(toks.token_texts) ? toks.token_texts.indexOf(txt) : -1;
+      const out = { idx, text: txt };
+      if (idx < 0) {
+        // Not in the sampled cloud — the full-vocab projection may still
+        // know it (every tokenizer token is addressable there).
+        const vt = await r2json(env, `${prefix}/decomp/vocab_tokens.json`);
+        if (Array.isArray(vt)) {
+          const row = vt.indexOf(txt);
+          if (row >= 0) out.vocab_row = row;
+        }
+      }
+      return jsonResponse(out);
+    }
+    if (ep === "norms") return jsonResponse(await r2json(env, `${prefix}/norms.json`) ?? {});
+    if (ep === "baselines") return jsonResponse(await r2json(env, `${prefix}/baselines.json`) ?? {});
+    if (ep === "token-attn") return jsonResponse({ token_idx: parseInt(q("token", "0")), layers: [] });
+  }
+
+  if (ep === "decomp-meta" && prefix) {
+    const meta = await r2json(env, `${prefix}/decomp/meta.json`);
+    return meta ? jsonResponse(meta) : jsonResponse({ error: "no decomp meta" }, 404);
+  }
+
+  if (ep === "serve-meta" && prefix) {
+    return await serveMeta(env, prefix);
+  }
+
+  if (ep === "decomp" && prefix) {
+    const layer = parseInt(url.searchParams.get("layer") ?? "0", 10);
+    return await decompLayer(env, prefix, layer);
+  }
+
+  if (ep === "cloud-bundle" && prefix) {
+    const csv = (s) => (s ? s.split(",").filter(Boolean).map(Number) : []);
+    const full = csv(url.searchParams.get("full"));
+    const med = csv(url.searchParams.get("medium"));
+    const step = parseInt(url.searchParams.get("step") ?? "10", 10);
+    return await cloudBundle(env, prefix, full, med, step);
+  }
+
+  return jsonResponse({ error: `endpoint not yet wired: ${ep}` }, 501);
+}

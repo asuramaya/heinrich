@@ -12,7 +12,7 @@ import shutil
 import struct
 from functools import lru_cache
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterator
 
 import numpy as np
 
@@ -333,6 +333,27 @@ def vocab_pc_columns(mri_path: str, layer: int, pcs: list[int]) -> bytes | dict:
 
     Wire: <4s magic><III layer, n_pcs, n_rows> + uint32[n_pcs] pc ids
           + float16[n_pcs * n_rows]  (pc-major, matching the id order)
+
+    Whole-body convenience wrapper over vocab_pc_columns_stream (which the
+    HTTP handler uses so a 256-PC request never sits fully in RAM).
+    """
+    plan = vocab_pc_columns_stream(mri_path, layer, pcs)
+    if isinstance(plan, dict):
+        return plan
+    _total, chunks = plan
+    return b"".join(chunks)
+
+
+def vocab_pc_columns_stream(mri_path: str, layer: int, pcs: list[int]) -> tuple[int, Iterator[bytes]] | dict:
+    """Streaming form of vocab_pc_columns: validate everything up front, then
+    return (total_bytes, chunk iterator). The iterator yields the header
+    (+ id table) first, then one float16 slab per requested PC in request
+    order — read lazily, one seek per PC, so at most one slab is resident at
+    a time. Consecutive PC ids in the request are still sequential reads on
+    disk (layer-major file), so the page cache / readahead keeps the win of
+    the old run-coalescing without buffering the whole response.
+
+    Byte-identical to the pre-streaming wire format.
     """
     pc_ids: list[int] = []
     seen: set[int] = set()
@@ -349,31 +370,24 @@ def vocab_pc_columns(mri_path: str, layer: int, pcs: list[int]) -> bytes | dict:
         return {"error": "No vocab_pc16.bin — run: heinrich mri-vocab --pc16-only"}
     with open(vp, "rb") as f:
         magic, n_layers, n_pcs, n_rows = struct.unpack("<4sIII", f.read(16))
-        if magic != _VP16_MAGIC:
-            return {"error": f"Bad vocab_pc16.bin magic: {magic!r}"}
-        if not (0 <= layer < n_layers):
-            return {"error": f"layer {layer} out of range ({n_layers} layers)"}
-        for pc in pc_ids:
-            if not (0 <= pc < n_pcs):
-                return {"error": f"pc {pc} out of range ({n_pcs} pcs)"}
-        stride = n_rows * 2
-        base = 16 + layer * n_pcs * stride
-        parts = []
-        # Read runs of consecutive PCs in one go where the ids allow it.
-        order = sorted(pc_ids)
-        chunks: dict[int, bytes] = {}
-        i = 0
-        while i < len(order):
-            j = i
-            while j + 1 < len(order) and order[j + 1] == order[j] + 1:
-                j += 1
-            f.seek(base + order[i] * stride)
-            blob = f.read((j - i + 1) * stride)
-            for k in range(i, j + 1):
-                chunks[order[k]] = blob[(k - i) * stride:(k - i + 1) * stride]
-            i = j + 1
-        for pc in pc_ids:
-            parts.append(chunks[pc])
+    if magic != _VP16_MAGIC:
+        return {"error": f"Bad vocab_pc16.bin magic: {magic!r}"}
+    if not (0 <= layer < n_layers):
+        return {"error": f"layer {layer} out of range ({n_layers} layers)"}
+    for pc in pc_ids:
+        if not (0 <= pc < n_pcs):
+            return {"error": f"pc {pc} out of range ({n_pcs} pcs)"}
+    stride = n_rows * 2
+    base = 16 + layer * n_pcs * stride
     header = struct.pack("<4sIII", _VPCL_MAGIC, layer, len(pc_ids), n_rows)
     ids = struct.pack(f"<{len(pc_ids)}I", *pc_ids)
-    return header + ids + b"".join(parts)
+    total = len(header) + len(ids) + len(pc_ids) * stride
+
+    def _chunks() -> Iterator[bytes]:
+        yield header + ids
+        with open(vp, "rb") as fh:
+            for pc in pc_ids:
+                fh.seek(base + pc * stride)
+                yield fh.read(stride)
+
+    return total, _chunks()

@@ -29,8 +29,13 @@ R2 — the `.mri` artifact *is* the API between them.
 ```
 web/
   wrangler.jsonc      Workers Assets (SPA) + R2 binding (MRI → heinrich-mri)
-  worker/index.js     /api/* → R2 reads; everything else → public/index.html
-  public/index.html   the companion SPA (generated from src/heinrich/companion_ui.html)
+  worker/index.js     /api/* → R2 reads (full route list in its header comment: sample
+                      cloud + full-vocab family — vocab-pc-bundle, vocab-pc-columns,
+                      vocab-pc-column, vocab-token(-bundle), vocab-meta/tokens/scripts/ids);
+                      everything else → static assets with per-surface index fallback
+  public/index.html   the landing page (authored)
+  public/observatory/index.html
+                      the companion SPA (generated copy of src/heinrich/companion_ui.html)
   upload.sh           push .data/** into R2 (local sim or remote)
   .data/              MRI artifacts (gitignored) — synthetic or captured
 ARTIFACT_FORMAT.md    the producer↔consumer contract

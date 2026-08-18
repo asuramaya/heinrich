@@ -22,13 +22,13 @@ from collections import OrderedDict
 from http.server import HTTPServer, SimpleHTTPRequestHandler
 from pathlib import Path
 from urllib.parse import parse_qs, urlparse
-from typing import Any
+from typing import Any, Iterator
 
 import numpy as np
 
 from .companion_serve import (load_serve_meta, resolve_pc_index, resolve_token_index,
                               vocab_resolve, vocab_token_row, vocab_meta,
-                              vocab_pc_column, vocab_pc_columns)
+                              vocab_pc_column, vocab_pc_columns_stream)
 
 
 _CLOUD_BUNDLE_MAGIC = b"CLDB"
@@ -3865,41 +3865,6 @@ def _cloud_bundle(mri_path: str, full_pcs: list[int], medium_pcs: list[int], ste
 _VOCAB_PC_BUNDLE_MAGIC = b"VPCB"
 
 
-def _read_vocab_pc_slabs(mri_path: str, pcs: list[int], step: int | None = None) -> tuple[int, int, np.ndarray] | dict:
-    """Read multiple full-vocab PC columns (all layers) from vocab_pc16.bin.
-
-    vocab_pc16.bin is LAYER-major ([n_layers, n_pcs, n_rows]) — the opposite
-    layout from pc_scores.bin's PC-major slabs, so "all layers for one PC" is
-    n_layers separate seeks, not one contiguous read (same per-seek cost
-    vocab_pc_column already pays). Returns (n_layers, n_rows_or_sample, slabs)
-    where slabs is float16 [n_pcs, n_layers, n_rows_or_sample] — strided by
-    `step` (post-read slice; the seeks stay contiguous per-row) when given.
-    """
-    pc_ids = _dedupe_ints(pcs)
-    vp = Path(mri_path) / "decomp" / "vocab_pc16.bin"
-    if not vp.exists():
-        return {"error": "No vocab_pc16.bin — run: heinrich mri-vocab --pc16-only"}
-    with open(vp, "rb") as f:
-        magic, n_layers, n_pcs_file, n_rows = struct.unpack("<4sIII", f.read(16))
-        if magic != b"VP16":
-            return {"error": f"Bad vocab_pc16.bin magic: {magic!r}"}
-        if not pc_ids:
-            n_sample = (n_rows + step - 1) // step if step and step > 1 else n_rows
-            return n_layers, n_sample, np.zeros((0, n_layers, n_sample), dtype=np.float16)
-        for pc in pc_ids:
-            if pc < 0 or pc >= n_pcs_file:
-                return {"error": f"PC {pc} out of range (max {n_pcs_file - 1})"}
-        stride = n_rows * 2
-        n_out = (n_rows + step - 1) // step if step and step > 1 else n_rows
-        out = np.zeros((len(pc_ids), n_layers, n_out), dtype=np.float16)
-        for pi, pc in enumerate(pc_ids):
-            for layer in range(n_layers):
-                f.seek(16 + (layer * n_pcs_file + pc) * stride)
-                row = np.frombuffer(f.read(stride), dtype=np.float16)
-                out[pi, layer] = row[::step] if step and step > 1 else row
-    return n_layers, n_out, out
-
-
 def _vocab_pc_bundle(mri_path: str, full_pcs: list[int], medium_pcs: list[int] | None = None,
                       step: int = 10) -> bytes | dict:
     """Bundle multiple full-vocab PC columns (all layers) into one response —
@@ -3912,40 +3877,88 @@ def _vocab_pc_bundle(mri_path: str, full_pcs: list[int], medium_pcs: list[int] |
     Layout: [4s magic][7I version, n_full, n_med, n_layers, n_rows, n_sample, step]
             [uint32 * n_full pc ids][uint32 * n_med pc ids]
             [float16 * n_full * n_layers * n_rows][float16 * n_med * n_layers * n_sample]
+
+    Whole-body convenience wrapper over _vocab_pc_bundle_stream (which the
+    HTTP handler uses so a 128-PC bundle never sits fully in RAM).
+    """
+    plan = _vocab_pc_bundle_stream(mri_path, full_pcs, medium_pcs, step=step)
+    if isinstance(plan, dict):
+        return plan
+    _total, chunks = plan
+    return b"".join(chunks)
+
+
+_VOCAB_PC_BUNDLE_MAX_FULL_PCS = 128
+
+
+def _vocab_pc_bundle_stream(mri_path: str, full_pcs: list[int], medium_pcs: list[int] | None = None,
+                            step: int = 10) -> tuple[int, Iterator[bytes]] | dict:
+    """Streaming form of _vocab_pc_bundle: validate everything up front (file,
+    magic, every PC id, the cap), then return (total_bytes, chunk iterator).
+    The iterator yields the header + id tables first, then one float16 row
+    per (pc, layer) — full tier in (pc, layer) order, then the medium tier
+    strided by `step` — read lazily from vocab_pc16.bin so at most one row
+    (n_rows*2 bytes) is resident at a time instead of ~3 copies of the whole
+    response. Same bytes on the wire as before; only the buffering changed.
     """
     medium_pcs = medium_pcs or []
     full_ids = _dedupe_ints(full_pcs)
     medium_ids = [pc for pc in _dedupe_ints(medium_pcs) if pc not in set(full_ids)]
-    if not full_ids and not medium_ids:
-        return {"error": "No PCs requested"}
+    # An EMPTY request is the viewer's capability PROBE (loadAll's
+    # _probeVocabPcBundle): it only needs the 32-byte header (magic + shape) to
+    # decide vocab-native vs sample mode. It used to have to fetch a whole PC
+    # column (~9.6MB at qwen scale) on the critical path to read four bytes.
+    # Fall through: with zero ids the stream is just the header.
     # Hard cap, independent of any client-side chunking: a full-tier slab is
-    # n_layers*n_rows*2 bytes PER pc, doubled again by .tobytes() below — at
-    # vocab scale (~150k rows) an uncapped request has repeatedly OOM-killed
-    # this process (confirmed 26-29GB RSS from a single oversized request).
-    # 128 PCs bounds one request to roughly a GB even at the largest loaded
-    # vocab, comfortably above every legitimate caller (weight-alignment's
-    # largest observed request was ~130 PCs) and far below what crashes it.
-    _MAX_FULL_PCS = 128
-    if len(full_ids) > _MAX_FULL_PCS:
-        return {"error": f"Too many full-tier PCs in one request ({len(full_ids)} > {_MAX_FULL_PCS}) — chunk the request"}
+    # n_layers*n_rows*2 bytes PER pc — before streaming, an uncapped request
+    # at vocab scale (~150k rows) repeatedly OOM-killed this process
+    # (confirmed 26-29GB RSS from a single oversized request). Streaming
+    # removes the RAM hazard, but the cap stays as the request-size contract:
+    # 128 PCs is comfortably above every legitimate caller (weight-alignment's
+    # largest observed request was ~130 PCs).
+    if len(full_ids) > _VOCAB_PC_BUNDLE_MAX_FULL_PCS:
+        return {"error": f"Too many full-tier PCs in one request ({len(full_ids)} > {_VOCAB_PC_BUNDLE_MAX_FULL_PCS}) — chunk the request"}
 
-    full_result = _read_vocab_pc_slabs(mri_path, full_ids)
-    if isinstance(full_result, dict):
-        return full_result
-    n_layers, n_rows, full_slabs = full_result
+    vp = Path(mri_path) / "decomp" / "vocab_pc16.bin"
+    if not vp.exists():
+        return {"error": "No vocab_pc16.bin — run: heinrich mri-vocab --pc16-only"}
+    with open(vp, "rb") as f:
+        magic, n_layers, n_pcs_file, n_rows = struct.unpack("<4sIII", f.read(16))
+    if magic != b"VP16":
+        return {"error": f"Bad vocab_pc16.bin magic: {magic!r}"}
+    for pc in full_ids + medium_ids:
+        if pc < 0 or pc >= n_pcs_file:
+            return {"error": f"PC {pc} out of range (max {n_pcs_file - 1})"}
 
-    med_result = _read_vocab_pc_slabs(mri_path, medium_ids, step=step)
-    if isinstance(med_result, dict):
-        return med_result
-    med_layers, n_sample, med_slabs = med_result
-    if medium_ids and med_layers != n_layers:
-        return {"error": "Vocab PC bundle layer mismatch"}
+    strided = bool(step and step > 1)
+    n_sample = (n_rows + step - 1) // step if strided else n_rows
+    stride = n_rows * 2
 
     header = struct.pack("<4sIIIIIII", _VOCAB_PC_BUNDLE_MAGIC, _BUNDLE_VERSION,
                          len(full_ids), len(medium_ids), n_layers, n_rows, n_sample, step)
     full_ids_bytes = struct.pack(f"<{len(full_ids)}I", *full_ids) if full_ids else b''
     medium_ids_bytes = struct.pack(f"<{len(medium_ids)}I", *medium_ids) if medium_ids else b''
-    return header + full_ids_bytes + medium_ids_bytes + full_slabs.tobytes() + med_slabs.tobytes()
+    total = (len(header) + len(full_ids_bytes) + len(medium_ids_bytes)
+             + len(full_ids) * n_layers * stride
+             + len(medium_ids) * n_layers * n_sample * 2)
+
+    def _chunks() -> Iterator[bytes]:
+        yield header + full_ids_bytes + medium_ids_bytes
+        with open(vp, "rb") as fh:
+            for pc in full_ids:
+                for layer in range(n_layers):
+                    fh.seek(16 + (layer * n_pcs_file + pc) * stride)
+                    yield fh.read(stride)
+            for pc in medium_ids:
+                for layer in range(n_layers):
+                    fh.seek(16 + (layer * n_pcs_file + pc) * stride)
+                    row = fh.read(stride)
+                    if strided:
+                        yield np.frombuffer(row, dtype=np.float16)[::step].tobytes()
+                    else:
+                        yield row
+
+    return total, _chunks()
 
 
 _VOCAB_TOKEN_BUNDLE_MAGIC = b"VTKB"
@@ -4706,7 +4719,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 model, mode = parts[3], parts[4]
                 mri_path = self._mri_path(model, mode)
                 result = _load_decomp_meta(mri_path)
-                self._send_json(result)
+                self._send_json(result, immutable="error" not in result)
             else:
                 self._send_json({"error": "Usage: /api/decomp-meta/<model>/<mode>"})
         elif path.startswith('/api/serve-meta/'):
@@ -4714,7 +4727,8 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             if len(parts) >= 5:
                 model, mode = parts[3], parts[4]
                 mri_path = self._mri_path(model, mode)
-                self._send_json(load_serve_meta(mri_path))
+                result = load_serve_meta(mri_path)
+                self._send_json(result, immutable="error" not in result)
             else:
                 self._send_json({"error": "Usage: /api/serve-meta/<model>/<mode>"})
         elif path.startswith('/api/token-bio/'):
@@ -4732,7 +4746,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 model, mode = parts[3], parts[4]
                 hp = Path(self._mri_path(model, mode)) / "decomp" / "gate_heatmap.npy"
                 if hp.exists():
-                    self._send_file(hp)
+                    self._send_file(hp, immutable=True)
                 else:
                     self._send_json({"error": "No gate heatmap"})
         elif path.startswith('/api/vocab-gate-heatmap/'):
@@ -4744,7 +4758,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 model, mode = parts[3], parts[4]
                 hp = Path(self._mri_path(model, mode)) / "decomp" / "vocab_gate_heatmap.npy"
                 if hp.exists():
-                    self._send_file(hp)
+                    self._send_file(hp, immutable=True)
                 else:
                     self._send_json({"error": "No vocab gate heatmap — run: heinrich mri-vocab --gate-summary"})
         elif path.startswith('/api/cloud-bundle/'):
@@ -4759,7 +4773,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 if isinstance(result, dict):
                     self._send_json(result)
                 else:
-                    self._send_bytes(result)
+                    self._send_bytes(result, immutable=True)
             else:
                 self._send_json({"error": "Usage: /api/cloud-bundle/<model>/<mode>?full=...&medium=...&step=N"})
         elif path.startswith('/api/token-bundle/'):
@@ -4774,7 +4788,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 if isinstance(result, dict):
                     self._send_json(result)
                 else:
-                    self._send_bytes(result)
+                    self._send_bytes(result, immutable=True)
             else:
                 self._send_json({"error": "Usage: /api/token-bundle/<model>/<mode>?full=...&hover=...&layer=N"})
         elif path.startswith('/api/pc-full/'):
@@ -5028,14 +5042,15 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 if isinstance(result, dict):
                     self._send_json(result)
                 else:
-                    self._send_bytes(result)
+                    self._send_bytes(result, immutable=True)
             else:
                 self._send_json({"error": "Usage: /api/vocab-token/<model>/<mode>?row=R"})
         elif path.startswith('/api/vocab-meta/'):
             # /api/vocab-meta/<model>/<mode> — noise floor + frame falsification
             parts = path.split('/')
             if len(parts) >= 5:
-                self._send_json(vocab_meta(self._mri_path(parts[3], parts[4])))
+                result = vocab_meta(self._mri_path(parts[3], parts[4]))
+                self._send_json(result, immutable="error" not in result)
             else:
                 self._send_json({"error": "Usage: /api/vocab-meta/<model>/<mode>"})
         elif path.startswith('/api/vocab-pc-columns/'):
@@ -5045,12 +5060,13 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             parts = path.split('/')
             if len(parts) >= 5:
                 pcs = [int(p) for p in qs.get('pcs', [''])[0].split(',') if p]
-                result = vocab_pc_columns(self._mri_path(parts[3], parts[4]),
-                                          int(qs.get('layer', ['0'])[0]), pcs)
+                result = vocab_pc_columns_stream(self._mri_path(parts[3], parts[4]),
+                                                 int(qs.get('layer', ['0'])[0]), pcs)
                 if isinstance(result, dict):
                     self._send_json(result)
                 else:
-                    self._send_bytes(result)
+                    total, chunks = result
+                    self._send_stream(total, chunks, immutable=True)
             else:
                 self._send_json({"error": "Usage: /api/vocab-pc-columns/<model>/<mode>?layer=L&pcs=A,B"})
         elif path.startswith('/api/vocab-pc-column/'):
@@ -5064,7 +5080,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 if isinstance(result, dict):
                     self._send_json(result)
                 else:
-                    self._send_bytes(result)
+                    self._send_bytes(result, immutable=True)
             else:
                 self._send_json({"error": "Usage: /api/vocab-pc-column/<model>/<mode>?layer=L&pc=P"})
         elif path.startswith('/api/vocab-pc-bundle/'):
@@ -5077,11 +5093,12 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 full_pcs = [int(p) for p in qs.get('full', [''])[0].split(',') if p]
                 medium_pcs = [int(p) for p in qs.get('medium', [''])[0].split(',') if p]
                 step = int(qs.get('step', ['10'])[0])
-                result = _vocab_pc_bundle(self._mri_path(parts[3], parts[4]), full_pcs, medium_pcs, step=step)
+                result = _vocab_pc_bundle_stream(self._mri_path(parts[3], parts[4]), full_pcs, medium_pcs, step=step)
                 if isinstance(result, dict):
                     self._send_json(result)
                 else:
-                    self._send_bytes(result)
+                    total, chunks = result
+                    self._send_stream(total, chunks, immutable=True)
             else:
                 self._send_json({"error": "Usage: /api/vocab-pc-bundle/<model>/<mode>?full=...&medium=...&step=N"})
         elif path.startswith('/api/vocab-token-bundle/'):
@@ -5095,7 +5112,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                 if isinstance(result, dict):
                     self._send_json(result)
                 else:
-                    self._send_bytes(result)
+                    self._send_bytes(result, immutable=True)
             else:
                 self._send_json({"error": "Usage: /api/vocab-token-bundle/<model>/<mode>?rows=A,B"})
         elif path.startswith('/api/vocab-tokens/'):
@@ -5104,7 +5121,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             if len(parts) >= 5:
                 vt = Path(self._mri_path(parts[3], parts[4])) / 'decomp' / 'vocab_tokens.json'
                 if vt.exists():
-                    self._send_bytes(vt.read_bytes(), content_type='application/json')
+                    self._send_bytes(vt.read_bytes(), content_type='application/json', immutable=True)
                 else:
                     self._send_json({"error": "No full-vocab projection — run: heinrich mri-vocab"})
             else:
@@ -5116,7 +5133,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             if len(parts) >= 5:
                 vs = Path(self._mri_path(parts[3], parts[4])) / 'decomp' / 'vocab_scripts.json'
                 if vs.exists():
-                    self._send_bytes(vs.read_bytes(), content_type='application/json')
+                    self._send_bytes(vs.read_bytes(), content_type='application/json', immutable=True)
                 else:
                     self._send_json({"error": "No full-vocab scripts — run: heinrich mri-vocab --scripts-only"})
             else:
@@ -5129,7 +5146,7 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             if len(parts) >= 5:
                 vi = Path(self._mri_path(parts[3], parts[4])) / 'decomp' / 'vocab_ids.npy'
                 if vi.exists():
-                    self._send_file(vi)
+                    self._send_file(vi, immutable=True)
                 else:
                     self._send_json({"error": "No full-vocab projection — run: heinrich mri-vocab"})
             else:
@@ -5633,14 +5650,23 @@ class CompanionHandler(SimpleHTTPRequestHandler):
         else:
             self.send_error(404)
 
-    def _send_json(self, data: Any):
+    # Immutable-by-construction artifact routes: the response is a pure
+    # function of files under the model's .mri dir (plus the query), keyed by
+    # <model>/<mode> in the URL. Regenerating an MRI is a new content dir /
+    # new URL, so browsers may cache these for a year without revalidation.
+    # Everything computed from mutable state (models list, capabilities,
+    # poll/live-*, chat, sessions) stays no-cache.
+    _CACHE_IMMUTABLE = 'public, max-age=31536000, immutable'
+    _CACHE_NONE = 'no-cache'
+
+    def _send_json(self, data: Any, immutable: bool = False):
         body = json.dumps(data, default=str).encode()
         try:
             self.send_response(200)
             self.send_header('Content-Type', 'application/json')
             self.send_header('Content-Length', len(body))
             self._cors()
-            self.send_header('Cache-Control', 'no-cache')
+            self.send_header('Cache-Control', self._CACHE_IMMUTABLE if immutable else self._CACHE_NONE)
             self.end_headers()
             self.wfile.write(body)
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
@@ -5649,13 +5675,14 @@ class CompanionHandler(SimpleHTTPRequestHandler):
             # let it bubble up and crash the request thread.
             pass
 
-    def _send_bytes(self, data: bytes, content_type: str = 'application/octet-stream'):
+    def _send_bytes(self, data: bytes, content_type: str = 'application/octet-stream',
+                    immutable: bool = False):
         try:
             self.send_response(200)
             self.send_header('Content-Type', content_type)
             self.send_header('Content-Length', len(data))
             self._cors()
-            self.send_header('Cache-Control', 'no-cache')
+            self.send_header('Cache-Control', self._CACHE_IMMUTABLE if immutable else self._CACHE_NONE)
             self.end_headers()
             # Chunk writes to avoid broken pipe on large responses
             offset = 0
@@ -5666,14 +5693,33 @@ class CompanionHandler(SimpleHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
             pass
 
-    def _send_file(self, path: Path):
+    def _send_stream(self, total: int, chunks: Iterator[bytes],
+                     content_type: str = 'application/octet-stream', immutable: bool = False):
+        """Send a body whose length is known up front but whose bytes are
+        produced lazily (the vocab-pc-bundle / vocab-pc-columns slab
+        streams): headers + Content-Length first, then each chunk straight to
+        the socket as it is read, so the whole response never sits in RAM.
+        Clients see an ordinary fixed-length response."""
+        try:
+            self.send_response(200)
+            self.send_header('Content-Type', content_type)
+            self.send_header('Content-Length', total)
+            self._cors()
+            self.send_header('Cache-Control', self._CACHE_IMMUTABLE if immutable else self._CACHE_NONE)
+            self.end_headers()
+            for chunk in chunks:
+                self.wfile.write(chunk)
+        except (BrokenPipeError, ConnectionResetError, ConnectionAbortedError):
+            pass
+
+    def _send_file(self, path: Path, immutable: bool = False):
         """Stream a binary file without loading it all into memory."""
         size = path.stat().st_size
         self.send_response(200)
         self.send_header('Content-Type', 'application/octet-stream')
         self.send_header('Content-Length', size)
         self._cors()
-        self.send_header('Cache-Control', 'public, max-age=3600')
+        self.send_header('Cache-Control', self._CACHE_IMMUTABLE if immutable else 'public, max-age=3600')
         self.end_headers()
         with open(path, 'rb') as f:
             while chunk := f.read(65536):
