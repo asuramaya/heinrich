@@ -286,7 +286,7 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
 .lvp{flex:1;position:relative;overflow:hidden;background:transparent}
 .lvp .llbl{position:absolute;top:3px;left:4px;font-size:9px;color:#555;pointer-events:none;z-index:2}
 /* lv-btn/lv-top/lv-bot removed — .cbtn handles all positioning (bottom-right) */
-.vp,.lvp,.rvp,.browse{position:relative;overflow:hidden;background:transparent;border:1px solid transparent;transition:border-color 0.15s;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}/* long-press pins B on touch — must not race the OS selection callout on the corner labels */
+.vp,.lvp,.rvp,.browse{position:relative;overflow:hidden;background:transparent;border:1px solid transparent;transition:border-color 0.15s;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none;touch-action:none}/* touch-action:none — OrbitControls owns the gesture; without it Safari's pull-to-refresh / page pan fights every orbit *//* long-press pins B on touch — must not race the OS selection callout on the corner labels */
 .cap-active{border-color:#444}
 .cap-recording{border-color:#ff4444;animation:rec-pulse 0.5s ease-in-out infinite alternate}
 @keyframes rec-pulse{from{border-color:#ff4444}to{border-color:#661111}}
@@ -423,7 +423,7 @@ body.mobile #main{display:none}                       /* the whole desktop grid 
 /* transparent: the shared #glCanvas (z-index:0) renders the lanes *behind* this;
    an opaque background here would paint over the cloud (the viewports are windows) */
 body.mobile #mstage{display:flex;flex-direction:column;gap:1px;position:fixed;left:0;top:var(--mtop);right:0;bottom:var(--peek);z-index:1;background:transparent;pointer-events:none}
-body.mobile #mstage>*{pointer-events:auto}
+body.mobile #mstage>*{pointer-events:auto;touch-action:none}
 /* the focused pane(s) are reparented in here — override their grid placement */
 body.mobile #mstage>*{flex:1 1 0;min-height:0;position:relative!important;left:auto!important;top:auto!important;right:auto!important;bottom:auto!important;width:auto!important;height:auto!important;grid-column:auto!important;grid-row:auto!important;visibility:visible!important;border:none}
 /* top carousel switcher */
@@ -616,15 +616,15 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
          Everything folds. A card you are not using costs one line. -->
     <div id="tokWork">
       <div id="discoverCard" class="panel-card">
-        <div class="pane-head"><div class="pane-title">Discover Features</div><div class="pane-note">layer-local PCA candidates</div></div>
+        <div class="pane-head"><div class="pane-title">Discover Features</div><div class="pane-note">global PCs ranked by bimodality at this layer</div></div>
         <div class="search-row" style="margin-bottom:0">
-          <button id="discoverBtn" title="Find the layer with the strongest A/B separation across PCs">Discover</button>
+          <button id="discoverBtn" title="Rank this layer's PCs by how bimodally the population splits along each">Discover</button>
           <div class="compact-note" style="flex:1">find candidate opposing token clusters for the current layer</div>
         </div>
-        <div id="discoverResults" class="p-list" style="max-height:300px" data-rest="Discover runs a layer-local PCA and proposes token clusters that sit at opposite ends of a component — candidate pairs to pin, when you do not already know what you are looking for."></div>
+        <div id="discoverResults" class="p-list" style="max-height:300px" data-rest="Discover ranks the existing global PCs by how bimodally the population splits along each at the current layer (no new PCA, no layer search) and lists the tokens at either end — candidate pairs to pin, when you do not already know what you are looking for."></div>
       </div>
       <div id="attnPanel" class="panel-card" style="display:none"><div class="pane-head"><div class="pane-title">Attention</div><div class="pane-note">Token A · current layer</div></div><canvas id="attnChart" height="50" style="width:100%;height:50px"></canvas></div>
-      <div id="sepPanel" class="panel-card" style="display:none" title="Run exact direction analysis for the pinned pair"><div class="pane-head"><div><div class="pane-title">Direction Analysis</div><div class="pane-note" id="sepNote">exact, on demand</div></div><button id="sepRun" class="mini-btn" type="button">Analyze</button></div><div class="p-note">Max separation PCs <span id="sepDist" style="color:#aaa"></span></div><div id="sepList" class="p-out"></div></div>
+      <div id="sepPanel" class="panel-card" style="display:none" title="Direction analysis (support-window approximation; magnitude &amp; concentration exact)"><div class="pane-head"><div><div class="pane-title">Direction Analysis</div><div class="pane-note" id="sepNote">on demand · support-window approx.</div></div><button id="sepRun" class="mini-btn" type="button">Analyze</button></div><div class="p-note">Max separation PCs <span id="sepDist" style="color:#aaa"></span></div><div id="sepList" class="p-out"></div></div>
       <div id="steerPanel" class="panel-card" style="display:none">
           <div class="pane-head"><div class="pane-title">Steer</div><div class="pane-note">inject A&minus;B into the live forward</div></div>
           <div class="live-status-row" style="margin-bottom:5px">
@@ -932,7 +932,7 @@ const walkTrailLines=views.map(v=>{const l=new THREE.LineSegments(new THREE.Buff
 // Position marker from PRECOMPUTED buffers (not filtered geometry) — always correct
 function _positionMarker(mk,v,vi,idx){const pos=mk.geometry.attributes.position.array;
   // Read from precomputed source, not the filtered geometry
-  const src=vi<NC?(v._cloudBufs&&v._cloudBufs[cL]):(v._trajBufs&&v._trajBufs[cL]);
+  const src=vi<NC?_cloudBufAt(vi,cL):_trajBufAt(vi,cL);
   if(src&&idx*3+2<src.length){pos[0]=src[idx*3];pos[1]=src[idx*3+1];pos[2]=src[idx*3+2];}
   else{const cpos=v.geo.attributes.position?.array;
     if(cpos&&cpos.length>0&&idx*3+2<cpos.length){pos[0]=cpos[idx*3];pos[1]=cpos[idx*3+1];pos[2]=cpos[idx*3+2];}
@@ -940,7 +940,7 @@ function _positionMarker(mk,v,vi,idx){const pos=mk.geometry.attributes.position.
   mk.geometry.attributes.position.needsUpdate=true;}
 // --- Live inhabitant rendering (uses the SAME cached per-axis scales as the frozen cloud) ---
 function _liveVec(l){const s=_liveScores&&_liveScores[String(l)];return s&&s[0]?s[0]:null;}
-function _liveCoordCloud(v,l,vec){const mx=v._layerMx&&v._layerMx[l],b=v._clampBounds&&v._clampBounds[l];if(!mx||!b||!vec)return null;
+function _liveCoordCloud(v,l,vec){_cloudNormLayer(v,l);const mx=v._layerMx&&v._layerMx[l],b=v._clampBounds&&v._clampBounds[l];if(!mx||!b||!vec)return null;
   const rx=(vec[v.pcX]||0)/(mx[0]||1),ry=(vec[v.pcY]||0)/(mx[1]||1),rz=(vec[v.pcZ]||0)/(mx[2]||1);
   const out=[_clampTraj(rx,b[0]),_clampTraj(ry,b[1]),_clampTraj(rz,b[2])];
   out.clamped=(out[0]!==rx)||(out[1]!==ry)||(out[2]!==rz);return out;}
@@ -1128,6 +1128,18 @@ function _clearVocabTarget(save=true){_vocabTarget=null;targetCloudMarkers.forEa
 function _clearVocabTarget2(save=true){_vocabTarget2=null;targetCloudMarkers2.forEach(m=>m.visible=false);targetTrajLines2.forEach(l=>l.visible=false);_homingCache=null;
   const r2=document.getElementById('homingTargetT2');if(r2)r2.style.display='none';_maybeHideTargetPanel();
   if(save)_saveState();try{_homingUpdate();}catch(e){}_needsRender=true;}
+// Lowercase index over a text list (texts[] / _vocabTexts), built ONCE per array
+// (WeakMap keyed on the array — both lists are replaced, never mutated, on model
+// load): `lower[r]` for substring/regex scans, `exact` Map text→first row (D4/D5).
+// Was: `.toLowerCase()` on every one of 150k tokens per keystroke.
+const _lowerIdxCache=new WeakMap();
+function _lowerIndex(arr){
+  if(!arr)return null;let ix=_lowerIdxCache.get(arr);
+  if(ix&&ix.lower.length===arr.length)return ix;
+  const lower=new Array(arr.length),exact=new Map();
+  for(let r=0;r<arr.length;r++){const t=arr[r];lower[r]=(t==null?'':String(t)).toLowerCase();if(t!=null&&!exact.has(t))exact.set(t,r);}
+  ix={lower,exact};_lowerIdxCache.set(arr,ix);return ix;
+}
 async function _ensureVocabTexts(){
   const key=model+'|'+mode;
   if(_vocabTextsKey===key&&_vocabTexts)return _vocabTexts;
@@ -1211,12 +1223,21 @@ const _overlayTagEls=[];// per-cloud-viewport honesty tag (bottom-left)
 for(let _ovi=0;_ovi<NC;_ovi++){const host=document.getElementById('vp'+_ovi);if(host){const el=document.createElement('div');el.className='ovtag';el.style.cssText='position:absolute;bottom:3px;left:4px;font-size:8px;color:#9a8636;pointer-events:none;z-index:2;text-shadow:0 0 3px #000';host.appendChild(el);_overlayTagEls[_ovi]=el;}else _overlayTagEls[_ovi]=null;}
 // Trajectory honesty tag (Part B.4): real path counts, per traj viewport (NC..NV).
 let _trajAdditive=true;// additive blending on the merged trajectory LineSegments
-let _trajBudgetCap=5000;// max paths per traj viewport — see buildTraj; live via __heinrich.trajBudget
+let _trajBudgetCap=5000;// budget of the PRE-GRID fixed sheet (buildTraj first fill); the live device ceiling is _trajDeviceCap (__heinrich.trajBudget) — see the path-LOD block
 const _trajTagEls=[];
 for(let _tvi=NC;_tvi<NV;_tvi++){const host=document.getElementById('vp'+_tvi);if(host){const el=document.createElement('div');el.className='ovtag';el.style.cssText='position:absolute;bottom:3px;left:4px;font-size:8px;color:#7a8a99;pointer-events:none;z-index:2;text-shadow:0 0 3px #000';host.appendChild(el);_trajTagEls[_tvi]=el;}else _trajTagEls[_tvi]=null;}
-async function _setTrajTag(vi,shown,topK){const el=_trajTagEls[vi];if(!el)return;
+// info: a number = legacy top-K (the pre-grid fixed-budget sheet), or
+// {inView,total,alphaFloor} from the path LOD (_trajFill).
+async function _setTrajTag(vi,shown,info){const el=_trajTagEls[vi];if(!el)return;
   let total=_vocabNRows;if(!total){const vm=await _ensureVocabMeta();total=(vm&&(vm.n_rows||vm.n_tokens||vm.vocab_size))||shown;if(total)_vocabNRows=total;}
-  el.textContent=`${shown.toLocaleString()} of ${(total||shown).toLocaleString()} paths (top-${topK} by displacement + stratified)`;}
+  const v=views[vi];const ax=v?`PC${v.pcX}/PC${v.pcY}`:'viewport-PC';
+  if(info&&typeof info==='object'){const inView=info.inView|0,tot=info.total||total||inView;const f=n=>n.toLocaleString();
+    let t;if(shown>=inView)t=inView>=tot?`all ${f(shown)} paths`:`all ${f(shown)} paths in view (of ${f(tot)})`;
+    else t=`${f(shown)} of ${f(inView)} paths in view — uniform 1-in-${(inView/Math.max(1,shown)).toFixed(1)} sample`+(info.alphaFloor?' · alpha-floor stride':'');
+    if(info.alphaClamped)t+=' · alpha floored';
+    el.textContent=t;return;}
+  const topK=info|0;
+  el.textContent=(total&&shown>=total)?`all ${shown.toLocaleString()} paths`:`${shown.toLocaleString()} of ${(total||shown).toLocaleString()} paths — top-${topK} by ${ax} displacement + stride sample`;}
 function _overlayCacheGet(row){return _overlayRowCache.get(model+'|'+mode+'|'+row);}
 function _overlayCachePut(row,vec){const k=model+'|'+mode+'|'+row;if(_overlayRowCache.has(k))_overlayRowCache.delete(k);_overlayRowCache.set(k,vec);
   while(_overlayRowCache.size>OVERLAY_ROW_CACHE_MAX){const fk=_overlayRowCache.keys().next().value;_overlayRowCache.delete(fk);}}
@@ -1237,37 +1258,58 @@ async function _overlayFetchRows(pairs,seq){
   return out.filter(Boolean);
 }
 // Set the overlay to a list of {row,text}. Deduped, capped, last-writer-wins.
+// `pairs.total`/`pairs.ranked` (set by the resolvers) let the tag say "first 200
+// of N (ranked)" instead of implying 200 was everything (D13).
+let _overlayMatchTotal=0,_overlayRanked=false;
 async function _setOverlay(pairs){
   const seq=++_overlaySeq;
   const seen=new Set(),uniq=[];
   for(const p of (pairs||[])){if(!p||p.row==null||seen.has(p.row))continue;seen.add(p.row);uniq.push({row:p.row,text:p.text||''});if(uniq.length>=OVERLAY_MAX)break;}
+  _overlayMatchTotal=Math.max((pairs&&pairs.total)|0,(pairs||[]).length,uniq.length);_overlayRanked=!!(pairs&&pairs.ranked);
   if(!uniq.length){_overlayEntries=[];_updateOverlayMarkers();_updateOverlayTag();return 0;}
   const entries=await _overlayFetchRows(uniq,seq);
   if(seq!==_overlaySeq)return _overlayEntries.length;// a newer set already landed
   _overlayEntries=entries;_updateOverlayMarkers();_updateOverlayTag();
   return entries.length;
 }
-function _clearOverlay(){_overlaySeq++;_overlayEntries=[];_updateOverlayMarkers();_updateOverlayTag();}
-// Resolve an array of texts to vocab rows (exact match first, then substring).
+function _clearOverlay(){_overlaySeq++;_overlayEntries=[];_overlayMatchTotal=0;_overlayRanked=false;_updateOverlayMarkers();_updateOverlayTag();}
+// Rank a match: 0 = exact (whole token), 1 = prefix, 2 = substring; then shorter token first.
+function _ovRankOf(text,at,mlen){return (at===0&&mlen===text.length)?0:at===0?1:2;}
+// Rank matches (exact > prefix > substring, shorter first, then row) and cap at OVERLAY_MAX,
+// tagging the array with the pre-cap total (D13 — was: first 200 in row order).
+function _ovRankCap(matches){// matches: [{row,text,rank}]
+  const total=matches.length;
+  matches.sort((a,b)=>a.rank-b.rank||a.text.length-b.text.length||a.row-b.row);
+  const out=matches.length>OVERLAY_MAX?matches.slice(0,OVERLAY_MAX):matches;
+  const pairs=out.map(m=>({row:m.row,text:m.text}));pairs.total=total;pairs.ranked=true;return pairs;
+}
+// Resolve an array of texts to vocab rows: one row per word — the exact match if
+// there is one, else the best-ranked case-insensitive hit (prefix before substring,
+// shorter token first). Uses the per-model lowercase index (D5): was two scans of
+// _vocabTexts per word with .toLowerCase() on every token.
 async function _resolveOverlayTexts(arr){
   const vt=await _ensureVocabTexts();if(!vt)return [];
-  const pairs=[],seen=new Set();
+  const ix=_lowerIndex(vt),lower=ix.lower;
+  const matches=[],seen=new Set();
   for(const w of (arr||[])){if(w==null)continue;
-    let found=-1;
-    for(let r=0;r<vt.length;r++){if(vt[r]===w){found=r;break;}}
-    if(found<0){const wl=String(w).trim().toLowerCase();if(wl)for(let r=0;r<vt.length;r++){if((vt[r]||'').toLowerCase().includes(wl)){found=r;break;}}}
-    if(found>=0&&!seen.has(found)){seen.add(found);pairs.push({row:found,text:vt[found]});}
-    if(pairs.length>=OVERLAY_MAX)break;}
-  return pairs;
+    let found=ix.exact.has(w)?ix.exact.get(w):-1,rank=0;
+    if(found<0){const wl=String(w).trim().toLowerCase();if(wl){let bestR=9,bestLen=Infinity;
+      for(let r=0;r<lower.length;r++){const at=lower[r].indexOf(wl);if(at<0)continue;const rk=_ovRankOf(lower[r],at,wl.length);
+        if(rk<bestR||(rk===bestR&&lower[r].length<bestLen)){bestR=rk;bestLen=lower[r].length;found=r;if(rk===0)break;}}
+      rank=bestR;}}
+    if(found>=0&&!seen.has(found)){seen.add(found);matches.push({row:found,text:vt[found],rank});}}
+  return _ovRankCap(matches);
 }
 // Parse the overlay-input spec: /regex/flags OR comma-separated texts.
 async function _resolveOverlayQuery(spec){
   spec=(spec||'').trim();if(!spec)return [];
   const rx=spec.match(/^\/(.*)\/([a-z]*)$/);
   if(rx){const vt=await _ensureVocabTexts();if(!vt)return [];
-    let re;try{re=new RegExp(rx[1],rx[2]||'');}catch(e){return [];}
-    const pairs=[];for(let r=0;r<vt.length&&pairs.length<OVERLAY_MAX;r++){if(vt[r]&&re.test(vt[r]))pairs.push({row:r,text:vt[r]});}
-    return pairs;}
+    let re;try{re=new RegExp(rx[1],(rx[2]||'').replace(/[gy]/g,''));}catch(e){return [];}// no sticky/global: exec must start at 0 for every token
+    // Full scan (all matches, for an honest total), then rank exact > prefix > substring,
+    // shorter first, and cap — instead of the first 200 hits in row order.
+    const matches=[];for(let r=0;r<vt.length;r++){const t=vt[r];if(!t)continue;const m=re.exec(t);if(m)matches.push({row:r,text:t,rank:_ovRankOf(t,m.index,m[0].length)});}
+    return _ovRankCap(matches);}
   return _resolveOverlayTexts(spec.split(',').map(s=>s).filter(s=>s.length));
 }
 function _ovInputActive(){const el=document.getElementById('ovinput');return !!(el&&el.value.trim());}
@@ -1296,9 +1338,16 @@ async function _updateOverlayTag(){
   // Per-viewport tag: when the zoom-reveal is active in that viewport, state the
   // real fraction of the FULL vocabulary now shown; otherwise the sample baseline.
   for(let vi=0;vi<NC;vi++){const el=_overlayTagEls[vi];if(!el)continue;
-    const rev=views[vi]._rev;let txt;
+    const rev=views[vi]._rev;let txt,dithered=false;
     if(rev&&rev.active&&rev.shown>0&&nRows){
-      txt=`showing ${rev.shown.toLocaleString()} of ${nRows.toLocaleString()} — zoom to reveal more`;
+      // Honest count: the reveal draws EVERY row inside the frustum (rev.inView) unless
+      // that exceeds the buffer cap, in which case _revFill takes a uniform 1-in-k
+      // stride (rev.frac). Zooming IN shrinks the in-view set — it never "reveals more".
+      const frac=rev.frac==null?1:rev.frac;
+      txt=`${rev.shown.toLocaleString()} of ${nRows.toLocaleString()} in view`;
+      if(frac<1)txt+=` — uniform 1-in-${Math.max(2,Math.round(1/frac))} sample (buffer cap)`;
+      if(rev.hidden>0)txt+=` · ${rev.hidden.toLocaleString()} hidden by script filter`;
+      dithered=true;
     }else if(_cloudSource==='vocab'){
       // The base cloud is retired at vocab scale — before the first reveal fill
       // lands there is genuinely nothing on screen yet, so say so rather than
@@ -1306,9 +1355,15 @@ async function _updateOverlayTag(){
       txt=nRows?`loading ${nRows.toLocaleString()} vocabulary points…`:`loading vocabulary…`;
     }else{
       txt=nRows?`${nSamp.toLocaleString()} of ${nRows.toLocaleString()} sampled`:`${nSamp.toLocaleString()} sampled`;
+      dithered=true;
     }
-    if(nOv>0)txt+=` · overlay: ${nOv} vocab`;
+    if(nOv>0)txt+=_overlayMatchTotal>nOv?` · overlay: first ${nOv} of ${_overlayMatchTotal.toLocaleString()} vocab${_overlayRanked?' (ranked: exact > prefix > substring, shorter first)':''}`:` · overlay: ${nOv} vocab`;
+    // H11: point coordinates get a sub-quantum dither on the way to the GPU (_dq /
+    // _dqTables) so float16-quantised columns don't render as a lattice — say so.
+    if(dithered)txt+=` · f16-dithered`;
     el.textContent=txt;
+    el.title=dithered?'positions dithered within the float16 quantum (display only — the stored coordinates are unchanged)':'';
+    el.style.pointerEvents=dithered?'auto':'none';// the title needs hover; the tag is a one-line 8px strip
   }
 }
 // (gold-overlay raycast folded into _pickAt — see Interaction section)
@@ -1332,7 +1387,7 @@ let _vocabRevealEnabled=true;      // master toggle ([vocab] button, default ON)
 // tokenizer runs ~149,866 rows — a silent, pointless cap on how much of ITS vocabulary
 // could ever be revealed. This is a preallocated Float32Array size, not a forced fill:
 // smaller-vocab models just carry unused headroom (a few MB, once, per viewport).
-const REVEAL_CAP=160000;           // per-viewport preallocated point capacity
+const REVEAL_CAP=(typeof matchMedia==='function'&&matchMedia('(pointer:coarse)').matches)?40000:160000;// per-viewport preallocated point capacity (mobile budget: 40k — _revFill's frac/stride logic samples uniformly above the cap)
 const REVEAL_ZOOM_ON=1.5;          // zoomFactor (2.5/dist) past which reveal activates
 const REVEAL_GRID=32;              // grid cells per axis over the normalized cube
 const REVEAL_CUBE=1.75;            // half-extent of the binned cube (normalized coords)
@@ -1340,7 +1395,7 @@ const REVEAL_CUBE=1.75;            // half-extent of the binned cube (normalized
 // every single-layer analysis (coloring, depth, brief, baseline) via
 // _ensureLayerColumns, so it must hold a few hundred columns at 150k rows
 // (~600KB each) — but a phone cannot: budget by device class.
-const VPC_CACHE_BYTES=(typeof matchMedia==='function'&&matchMedia('(pointer:coarse)').matches)?128*1048576:768*1048576;
+const VPC_CACHE_BYTES=(typeof matchMedia==='function'&&matchMedia('(pointer:coarse)').matches)?24*1048576:768*1048576;// coarse: 24MB — _pcFull serves the viewport PCs; this only backs single-layer analyses
 let _vpcBytes=0;
 const _vpcCache=new Map();         // key model|mode|layer|pc -> Float32Array(nRows), LRU
 const _vpcInflight=new Map();      // key -> Promise (dedupe concurrent fetches)
@@ -1348,10 +1403,18 @@ let _vocabNRows=0;                 // full-vocab row count (from vocab-meta)
 // Per-token script coloring (matches the sample cloud's own CL palette) — this
 // is the sole cloud renderer once vocab is the source, so it needs the same
 // per-token color identity the retired base cloud used to carry.
-const revealPts=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(REVEAL_CAP*3),3).setUsage(THREE.DynamicDrawUsage));g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(REVEAL_CAP*3),3).setUsage(THREE.DynamicDrawUsage));g.setDrawRange(0,0);g.boundingSphere=new THREE.Sphere(new THREE.Vector3(0,0,0),4);const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.02,vertexColors:true,transparent:true,opacity:0.5,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=-1;p.visible=false;p.frustumCulled=false;v.sc.add(p);return p;});
+const revealPts=views.map((v,vi)=>{if(vi>=NC)return null;/* reveal cloud is a cloud-viewport object; traj views never used theirs (−11.5MB at the 160k cap) */const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(REVEAL_CAP*3),3).setUsage(THREE.DynamicDrawUsage));g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(REVEAL_CAP*3),3).setUsage(THREE.DynamicDrawUsage));g.setDrawRange(0,0);g.boundingSphere=new THREE.Sphere(new THREE.Vector3(0,0,0),4);const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.02,vertexColors:true,transparent:true,opacity:0.5/* re-scaled per fill by _revealOpApply (D6) */,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=-1;p.visible=false;p.frustumCulled=false;v.sc.add(p);return p;});
 function _vpcGet(layer,pc){const k=model+'|'+mode+'|'+layer+'|'+pc;const v=_vpcCache.get(k);if(v){_vpcCache.delete(k);_vpcCache.set(k,v);}return v;}
 function _vpcPut(layer,pc,arr){const k=model+'|'+mode+'|'+layer+'|'+pc;const old=_vpcCache.get(k);if(old){_vpcCache.delete(k);_vpcBytes-=old.byteLength;}_vpcCache.set(k,arr);_vpcBytes+=arr.byteLength;while(_vpcBytes>VPC_CACHE_BYTES&&_vpcCache.size>1){const fk=_vpcCache.keys().next().value;_vpcBytes-=_vpcCache.get(fk).byteLength;_vpcCache.delete(fk);}}
 // One ~97KB float16 read per (layer,pc); decoded to Float32 once, then cached.
+// CloudStore.pending is keyed `${model}:${mode}:${source}:${step}:${full}:${medium}`
+// (CloudStore._key); the second-to-last field is the comma-joined full-tier PC list.
+function _cloudBundleInFlightFor(pc){
+  for(const[k,p]of CloudStore.pending){const parts=k.split(':');if(parts.length<6)continue;
+    if(parts[0]!==model||parts[1]!==mode)continue;
+    const full=parts[parts.length-2];if(!full)continue;
+    for(const f of full.split(',')){if(+f===pc)return p;}}
+  return null;}
 async function _fetchVocabColumn(layer,pc){
   // In-memory first: CloudStore already holds the full all-layer, all-row
   // column for every PC a viewport pair uses (_pcFull, from vocab-pc-bundle),
@@ -1361,6 +1424,11 @@ async function _fetchVocabColumn(layer,pc){
   // why the cloud could never keep up with 100ms/layer playback.
   if(_cloudSource==='vocab'&&_pcFull.has(pc)&&_pcFullNT>0){const c=_getScoreColumn(layer,pc);if(c&&c.length===_pcFullNT){if(_pcFullNT>_vocabNRows)_vocabNRows=_pcFullNT;return c;}}
   const cached=_vpcGet(layer,pc);if(cached)return cached;
+  // A CloudStore bundle already in flight that will deliver this PC (its key's
+  // `full` list names it) — await it instead of racing a duplicate column request.
+  if(_cloudSource==='vocab'){const bp=_cloudBundleInFlightFor(pc);if(bp){try{await bp;}catch(e){}
+    if(_pcFull.has(pc)&&_pcFullNT>0){const c=_getScoreColumn(layer,pc);if(c&&c.length===_pcFullNT){if(_pcFullNT>_vocabNRows)_vocabNRows=_pcFullNT;return c;}}
+    const c2=_vpcGet(layer,pc);if(c2)return c2;}}
   const k=model+'|'+mode+'|'+layer+'|'+pc;
   const inf=_vpcInflight.get(k);if(inf)return inf;
   const p=(async()=>{
@@ -1426,21 +1494,34 @@ async function _revBuildGrid(vi){
   const key=layer+'|'+pcX+'|'+pcY+'|'+pcZ;
   if(v._rev&&v._rev.gridKey===key&&v._rev.grid)return v._rev;
   _ensureVocabTexts();// warm the text list so hover/click have labels ready
+  _cloudNormLayer(v,layer);// lazy per-layer normalization — build it if the idle queue hasn't reached this layer
   const lm=v._layerMx&&v._layerMx[layer],cb=v._clampBounds&&v._clampBounds[layer];
   if(!lm||!cb)return null;// sample normalization for this layer not built yet
   const cols=await Promise.all([_fetchVocabColumn(layer,pcX),_fetchVocabColumn(layer,pcY),_fetchVocabColumn(layer,pcZ)]);
   const cx=cols[0],cy=cols[1],cz=cols[2];if(!cx||!cy||!cz)return null;
   const mxX=lm[0]||1,mxY=lm[1]||1,mxZ=lm[2]||1,bX=cb[0],bY=cb[1],bZ=cb[2];
   const nRows=Math.min(cx.length,cy.length,cz.length);
-  const G=REVEAL_GRID,C=REVEAL_CUBE,invc=G/(2*C);
-  const grid=new Array(G*G*G);const coords=new Float32Array(nRows*3);
+  const G=REVEAL_GRID,C=REVEAL_CUBE,invc=G/(2*C),NCELL=G*G*G;
+  // CSR layout, reused across layers (D1): rows sorted by cell in `grid.rows`
+  // (Int32Array nRows), cell ci owns rows[start[ci]..start[ci+1]). Was a fresh
+  // Array(32768) of JS arrays + fresh coords per (layer,pcs) → ~50MB/s of garbage
+  // during playback at vocab scale. Buffers are reallocated only when nRows changes.
+  const prev=v._rev&&v._rev.grid;
+  const grid=(prev&&prev.rows.length===nRows)?prev:{rows:new Int32Array(nRows),start:new Uint32Array(NCELL+1),cellOf:new Int32Array(nRows)};
+  const coords=(v._rev&&v._rev.coords&&v._rev.coords.length===nRows*3)?v._rev.coords:new Float32Array(nRows*3);
   const bin=(c)=>{const b=((c+C)*invc)|0;return b<0?0:(b>=G?G-1:b);};
   const [dX,dY,dZ]=_dqTables(Math.max(nRows,nN)),uX=_u32View(cx),uY=_u32View(cy),uZ=_u32View(cz),Q=_F16Q_BY_EXP;
+  const start=grid.start,rows=grid.rows,cellOf=grid.cellOf;start.fill(0);
   for(let r=0;r<nRows;r++){
     const x=_clampTraj((cx[r]+dX[r]*Q[(uX[r]>>>23)&0xff])/mxX,bX),y=_clampTraj((cy[r]+dY[r]*Q[(uY[r]>>>23)&0xff])/mxY,bY),z=_clampTraj((cz[r]+dZ[r]*Q[(uZ[r]>>>23)&0xff])/mxZ,bZ);// f16 sub-quantum dither, display only
     coords[r*3]=x;coords[r*3+1]=y;coords[r*3+2]=z;
-    const ci=bin(x)*G*G+bin(y)*G+bin(z);let cell=grid[ci];if(!cell){cell=[];grid[ci]=cell;}cell.push(r);
+    const ci=bin(x)*G*G+bin(y)*G+bin(z);cellOf[r]=ci;start[ci+1]++;
   }
+  for(let ci=0;ci<NCELL;ci++)start[ci+1]+=start[ci];// prefix sum → cell offsets
+  // Counting-sort placement in ascending r keeps the SAME within-cell order the
+  // old push() loop produced (so stride sampling picks identical rows).
+  const fillPtr=grid._fill||(grid._fill=new Uint32Array(NCELL));fillPtr.set(start.subarray(0,NCELL));
+  for(let r=0;r<nRows;r++){rows[fillPtr[cellOf[r]]++]=r;}
   v._rev=Object.assign(v._rev||{},{grid,gridKey:key,coords,nRows,shown:0,zoom:0,active:false,_lastFull:false,shownRows:(v._rev&&v._rev.shownRows)||new Int32Array(REVEAL_CAP)});// _lastFull reset: a new grid must never hit the full-fill memo
   return v._rev;
 }
@@ -1462,36 +1543,37 @@ const _revFrustum=new THREE.Frustum(),_revPV=new THREE.Matrix4(),_revSphere=new 
 // script can no longer empty a cell. Zoom-progressive detail is now simply
 // "what is in view", at every scale.
 function _revFill(vi){
-  const v=views[vi],pts=revealPts[vi],rev=v._rev;
+  const v=views[vi],pts=revealPts[vi],rev=v._rev;if(!pts)return;
   if(!rev||!rev.grid){pts.visible=false;return;}
   const cam=v.cam;cam.updateMatrixWorld();cam.updateProjectionMatrix();
   _revPV.multiplyMatrices(cam.projectionMatrix,cam.matrixWorldInverse);_revFrustum.setFromProjectionMatrix(_revPV);
   const G=REVEAL_GRID,C=REVEAL_CUBE,cw=2*C/G,cellR=cw*0.8660254;// half-diagonal of a cell
   const dist=_viewDist(v);const zoom=2.5/dist;rev.zoom=zoom;
-  const grid=rev.grid;
-  const cells=rev._cells||(rev._cells=[]);cells.length=0;let inView=0,nonEmpty=0;
+  const grid=rev.grid,gStart=grid.start,gRows=grid.rows;
+  // In-view cells as (start,end) pairs into the CSR row list — reused Int32Array, no per-fill allocation.
+  const cells=rev._cells||(rev._cells=new Int32Array(G*G*G*2));let nCells=0,inView=0,nonEmpty=0;
   for(let gx=0;gx<G;gx++){const cxw=-C+(gx+0.5)*cw;
     for(let gy=0;gy<G;gy++){const cyw=-C+(gy+0.5)*cw;
-      for(let gz=0;gz<G;gz++){const arr=grid[gx*G*G+gy*G+gz];if(!arr||!arr.length)continue;nonEmpty++;
+      for(let gz=0;gz<G;gz++){const ci=gx*G*G+gy*G+gz,s=gStart[ci],e=gStart[ci+1];if(e===s)continue;nonEmpty++;
         _revSphere.center.set(cxw,cyw,-C+(gz+0.5)*cw);_revSphere.radius=cellR;
         if(!_revFrustum.intersectsSphere(_revSphere))continue;
-        cells.push(arr);inView+=arr.length;}}}
+        cells[nCells*2]=s;cells[nCells*2+1]=e;nCells++;inView+=e-s;}}}
   const hideScripts=_hiddenScripts.size>0;
   // Memo: if every non-empty cell is in view and fits the buffer, the fill is
   // identical to the last full fill — skip the O(N) rewrite (orbiting at
   // overview used to refill + re-upload three viewports on every change).
-  const full=inView<=REVEAL_CAP&&cells.length===nonEmpty;
+  const full=inView<=REVEAL_CAP&&nCells===nonEmpty;
   const colorKey=(_dirColorActive&&_dirProjLast?'d':'s')+(hideScripts?[..._hiddenScripts].sort().join(','):'');
   if(full&&rev._lastFull&&rev._lastFullKey===colorKey&&rev.active&&pts.visible){return;}
   rev._lastFull=full;rev._lastFullKey=colorKey;
   const pos=pts.geometry.attributes.position.array,col=pts.geometry.attributes.color.array;
   const coords=rev.coords,sr=rev.shownRows;
   const frac=inView>REVEAL_CAP?REVEAL_CAP/inView:1;
-  let w=0;
-  for(let ci=0;ci<cells.length&&w<REVEAL_CAP;ci++){const arr=cells[ci];const n=arr.length;
+  let w=0,hidden=0;// hidden = in-view rows skipped because their script is toggled off (legend)
+  for(let ci=0;ci<nCells&&w<REVEAL_CAP;ci++){const cs=cells[ci*2],n=cells[ci*2+1]-cs;
     const take=frac>=1?n:Math.max(1,Math.round(n*frac));const stride=take>=n?1:n/take;
-    for(let k=0;k<take&&w<REVEAL_CAP;k++){const r=arr[stride===1?k:(k*stride)|0];
-      if(hideScripts&&_hiddenScripts.has(scripts[r]))continue;
+    for(let k=0;k<take&&w<REVEAL_CAP;k++){const r=gRows[cs+(stride===1?k:(k*stride)|0)];
+      if(hideScripts&&_hiddenScripts.has(scripts[r])){hidden++;continue;}
       pos[w*3]=coords[r*3];pos[w*3+1]=coords[r*3+1];pos[w*3+2]=coords[r*3+2];
       // Direction-projection coloring (A vs B, once both are pinned) takes priority
       // over script coloring — same red/blue gradient _colorFromProj uses.
@@ -1503,7 +1585,7 @@ function _revFill(vi){
         const hex=CL[scripts[r]]||0xAAAAAA;col[w*3]=((hex>>16)&0xFF)/255;col[w*3+1]=((hex>>8)&0xFF)/255;col[w*3+2]=(hex&0xFF)/255;
       }
       sr[w]=r;w++;}}
-  rev.shown=w;rev.active=true;rev.inView=inView;
+  rev.shown=w;rev.active=true;rev.inView=inView;rev.frac=frac;rev.hidden=hidden;
   pts.geometry.setDrawRange(0,w);
   // Upload only the slots written (was: flag the whole 160k-slot buffers dirty +
   // recompute a bounding sphere over all of them, every refill — a fixed ~3.8MB
@@ -1511,9 +1593,9 @@ function _revFill(vi){
   const pa=pts.geometry.attributes.position,ca=pts.geometry.attributes.color;
   pa.clearUpdateRanges();pa.addUpdateRange(0,w*3);pa.needsUpdate=true;
   ca.clearUpdateRanges();ca.addUpdateRange(0,w*3);ca.needsUpdate=true;
-  pts.visible=w>0;_needsRender=true;
+  pts.visible=w>0;_revealOpApply(vi);_needsRender=true;
 }
-function _revClear(vi){const v=views[vi],pts=revealPts[vi];pts.visible=false;pts.geometry.setDrawRange(0,0);if(v._rev){v._rev.active=false;v._rev.shown=0;}_needsRender=true;_updateOverlayTag();}
+function _revClear(vi){const v=views[vi],pts=revealPts[vi];if(!pts)return;pts.visible=false;pts.geometry.setDrawRange(0,0);if(v._rev){v._rev.active=false;v._rev.shown=0;}_needsRender=true;_updateOverlayTag();}
 // Re-fill the reveal cloud after anything that changes what color each row should
 // show (script hide/isolate, direction-coloring on/off) — it's the sole cloud
 // renderer once vocab is the source, so these can't stay base-cloud-only effects.
@@ -1947,19 +2029,12 @@ function _robustColMax(col,percentile=99.5){
   let trueMax=0;
   for(let i=0;i<n;i++){const v=Math.abs(col[i]);if(v>trueMax)trueMax=v;}
   if(trueMax<1e-6)return 1;// all-zero column: return neutral 1 (no data)
-  // Pass 2: 99.5% of a random 2000-sample for percentile robustness.
-  const target=2000;
-  let sample;
-  if(n<=target){
-    sample=new Float32Array(n);
-    for(let i=0;i<n;i++)sample[i]=Math.abs(col[i]);
-  }else{
-    sample=new Float32Array(target);
-    for(let i=0;i<target;i++)sample[i]=Math.abs(col[(Math.random()*n)|0]);
-  }
-  sample.sort();
-  const idx=Math.min(sample.length-1,Math.floor(sample.length*percentile/100));
-  const pct=sample[idx]||0;
+  // Pass 2: percentile of |col| over a DETERMINISTIC stride sample of up to 20,000
+  // rows (was a random 2,000-sample: at 48k-150k rows the 99.5th pct jittered
+  // per layer, so the clamp bounds "breathed" during playback — D8). Quickselect,
+  // not a sort: ~300 calls per rebuild, and a 20k typed sort is ~1.4ms each.
+  const sample=_pctSample(col,1,Math.min(n,20000));
+  const pct=_kthSmallest(sample,Math.min(sample.length-1,Math.floor(sample.length*percentile/100)))||0;
   // Sparse-outlier case: percentile is ~0 because most samples are near zero.
   // Use trueMax directly, divided so the outlier maps to y~4 (inside the
   // clamp range, still visible, not overwhelming the [-1, 1] region).
@@ -1986,15 +2061,28 @@ function _clampTraj(v,b){const B=b||1.75;return v>B?B:(v<-B?-B:v);}
 function _clampBoundFor(col,scale){
   if(!col||!col.length||!scale)return 1.75;
   const n=col.length;
-  const target=1000;
-  const sample=new Float32Array(Math.min(target,n));
-  const step=n>target?((Math.random()*n)|0):0;
-  if(n<=target)for(let i=0;i<n;i++)sample[i]=Math.abs(col[i]/scale);
-  else for(let i=0;i<target;i++)sample[i]=Math.abs(col[(Math.random()*n)|0]/scale);
-  sample.sort();
-  const idx=Math.min(sample.length-1,Math.floor(sample.length*0.9995));
-  const pct=sample[idx]||1;
+  // Deterministic stride sample of up to 20,000 (was random 1,000 — a 99.95th pct
+  // from 1,000 draws is one value, re-rolled per call: bounds breathed) — D8.
+  const sample=_pctSample(col,1/scale,Math.min(n,20000));
+  const pct=_kthSmallest(sample,Math.min(sample.length-1,Math.floor(sample.length*0.9995)))||1;
   return Math.max(1.5,Math.min(3.0,pct*1.3));
+}
+// |col[i]|*mul over a deterministic stride of `target` rows (all rows when n<=target).
+function _pctSample(col,mul,target){
+  const n=col.length,m=Math.min(n,target),s=new Float32Array(m);
+  if(m===n){for(let i=0;i<n;i++){const v=Math.abs(col[i]*mul);s[i]=v===v?v:0;}}
+  else{const step=n/m;for(let k=0;k<m;k++){const v=Math.abs(col[(k*step)|0]*mul);s[k]=v===v?v:0;}}// NaN→0 (quickselect needs total order)
+  return s;
+}
+// In-place quickselect: value that would sit at sorted index k (O(n) expected).
+function _kthSmallest(a,k){
+  let lo=0,hi=a.length-1;if(hi<0)return 0;if(k<0)k=0;if(k>hi)k=hi;
+  while(lo<hi){
+    const p=a[(lo+hi)>>>1];let i=lo,j=hi;
+    while(i<=j){while(a[i]<p)i++;while(a[j]>p)j--;if(i<=j){const t=a[i];a[i]=a[j];a[j]=t;i++;j--;}}
+    if(k<=j)hi=j;else if(k>=i)lo=i;else break;
+  }
+  return a[k];
 }
 
 // Which endpoint backs the base PC-value cache (_pcFull/_pcFullNT/_pcMedium):
@@ -2094,17 +2182,60 @@ async function _ensurePCs(pcs){
   await CloudStore.ensure({fullPcs:[...new Set(pcs)]});
 }
 
-// --- Precomputed position buffers for real-time playback ---
-// At pair-change time, compute Float32Array(nN*3) for every layer × viewport.
-// Layer change becomes a .set() memcpy instead of O(N) math.
-function _precomputeCloud(vi){
-  const v=views[vi];const{pcX,pcY,pcZ}=v;
-  if(!v._cloudBufs||v._cloudBufs.length!==nL)v._cloudBufs=new Array(nL);
-  v._layerMx=new Array(nL);
-  for(let l=0;l<nL;l++){
-    // Bulk column access: one typed array per PC per layer (zero-copy from _pcFull)
-    const colX=_getScoreColumn(l,pcX),colY=_getScoreColumn(l,pcY),colZ=_getScoreColumn(l,pcZ);
-    // Robust percentile scale — extreme outliers don't dominate
+// --- Precomputed position buffers for real-time playback (LAZY per layer) ---
+// At pair-change time, ONLY the current layer (and cL±1) is computed synchronously;
+// the remaining Float32Array(nN*3) layers are filled one per idle callback. Every
+// consumer goes through _cloudBufAt/_trajBufAt, which compute a missing layer on
+// demand (synchronously), so a layer scrub ahead of the idle queue costs one layer's
+// math, never a stall on all nL. Eager was 6×nL×nN×12B (280-345MB at qwen scale)
+// on the load path. On coarse pointers only a ±4-layer window stays resident.
+const _COARSE_PTR=(typeof matchMedia==='function'&&matchMedia('(pointer:coarse)').matches);
+const _LAZY_WINDOW=_COARSE_PTR?4:Infinity;
+let _lazyGenCounter=0;// per-view generation: bumped by _precomputeCloud/_precomputeTraj; queued fills carry the gen they were queued under and are dropped when it no longer matches
+let _lazyQueue=[];// [{vi,l,kind,gen}] one layer per idle callback
+let _lazyScheduled=false;
+const _bufPool=[];// recycled Float32Array(nN*3) — pair changes would otherwise churn nL×6 buffers through the GC
+function _poolTake(n){while(_bufPool.length){const b=_bufPool.pop();if(b.length===n)return b;}return new Float32Array(n);}
+function _lazyRecycle(arr){if(!arr)return;for(let i=0;i<arr.length;i++){if(arr[i]&&_bufPool.length<64)_bufPool.push(arr[i]);arr[i]=null;}}
+function _lazyLayerOrder(){// nearest layers first, both directions from cL
+  const out=[];const c=Math.max(0,Math.min(nL-1,cL));
+  for(let d=0;d<nL;d++){if(c+d<nL)out.push(c+d);if(d>0&&c-d>=0)out.push(c-d);}
+  return out;}
+function _lazyEnqueue(vi,kind){
+  const v=views[vi];const gen=kind==='cloud'?v._cloudGen:v._trajGen;const bufs=kind==='cloud'?v._cloudBufs:v._trajBufs;if(!bufs)return;
+  _lazyQueue=_lazyQueue.filter(t=>!(t.vi===vi&&t.kind===kind));
+  const c=Math.max(0,Math.min(nL-1,cL));
+  for(const l of _lazyLayerOrder()){if(bufs[l])continue;if(Math.abs(l-c)>_LAZY_WINDOW)continue;_lazyQueue.push({vi,l,kind,gen});}
+  _lazyKick();}
+function _lazyKick(){
+  if(_lazyScheduled||!_lazyQueue.length)return;_lazyScheduled=true;
+  const run=(dl)=>{_lazyScheduled=false;
+    while(_lazyQueue.length){const t=_lazyQueue.shift();const v=views[t.vi];if(!v)continue;
+      if(t.kind==='cloud'){if(v._cloudGen!==t.gen||!v._cloudBufs||v._cloudBufs[t.l])continue;_precomputeCloudLayer(t.vi,t.l);}
+      else if(t.kind==='trajgrid'){const g=v._trajGrid;if(v._trajGen!==t.gen||!g||g.gen!==t.gen||g.layers[t.l]||!v._trajBufs)continue;_trajBuildGridLayer(t.vi,t.l);}
+      else{if(v._trajGen!==t.gen||!v._trajBufs||v._trajBufs[t.l])continue;_precomputeTrajLayer(t.vi,t.l);}
+      // one item per callback unless the idle deadline still has room (rIC gives ≤50ms;
+      // a timed-out callback reports 0 and stays at one item)
+      if(!(dl&&typeof dl.timeRemaining==='function'&&dl.timeRemaining()>6))break;}
+    if(_lazyQueue.length)_lazyKick();};
+  if(typeof requestIdleCallback==='function')requestIdleCallback(run,{timeout:1000});else setTimeout(run,16);}
+// Layer scrub hook: on coarse pointers free buffers outside the ±window (back to
+// the pool) and queue the in-window gaps; on desktop just tops up the queue.
+function _lazyOnLayer(){
+  const c=Math.max(0,Math.min(nL-1,cL));
+  for(let vi=0;vi<NV;vi++){const v=views[vi];const bufs=vi<NC?v._cloudBufs:v._trajBufs;if(!bufs)continue;
+    if(_LAZY_WINDOW<Infinity){for(let l=0;l<bufs.length;l++){if(bufs[l]&&Math.abs(l-c)>_LAZY_WINDOW){if(_bufPool.length<64)_bufPool.push(bufs[l]);bufs[l]=null;}}}
+    _lazyEnqueue(vi,vi<NC?'cloud':'traj');}
+}
+// Per-layer normalization for a cloud viewport (robust scale + clamp bound per axis).
+// Cheap relative to the buffer fill (subsampled sorts + one |max| scan), computed
+// with the layer, memoized in v._layerMx[l] / v._clampBounds[l]. Takes the VIEW
+// (not vi) so _liveCoordCloud can call it. Returns the three columns (or nulls).
+function _cloudNormLayer(v,l){
+  if(!v||!v._layerMx||l<0||l>=nL)return null;
+  const{pcX,pcY,pcZ}=v;
+  const colX=_getScoreColumn(l,pcX),colY=_getScoreColumn(l,pcY),colZ=_getScoreColumn(l,pcZ);
+  if(!(v._layerMx[l]&&v._clampBounds[l])){
     let mxX=1,mxY=1,mxZ=1;
     if(colX&&colY&&colZ){
       mxX=_robustColMax(colX);mxY=_robustColMax(colY);mxZ=_robustColMax(colZ);
@@ -2121,25 +2252,46 @@ function _precomputeCloud(vi){
     const bX=colX?_clampBoundFor(colX,mxX):1.75;
     const bY=colY?_clampBoundFor(colY,mxY):1.75;
     const bZ=colZ?_clampBoundFor(colZ,mxZ):1.75;
-    v._clampBounds=v._clampBounds||[];v._clampBounds[l]=[bX,bY,bZ];
-    if(!v._cloudBufs[l]||v._cloudBufs[l].length!==nN*3)v._cloudBufs[l]=new Float32Array(nN*3);
-    const buf=v._cloudBufs[l];
-    if(colX&&colY&&colZ){
-      const imxX=1/mxX,imxY=1/mxY,imxZ=1/mxZ;
-      const [dX,dY,dZ]=_dqTables(nN),uX=_u32View(colX),uY=_u32View(colY),uZ=_u32View(colZ),Q=_F16Q_BY_EXP;
-      for(let i=0;i<nN;i++){// f16 sub-quantum dither, display only (see _dq / _dqTables)
-        buf[i*3]=_clampTraj((colX[i]+dX[i]*Q[(uX[i]>>>23)&0xff])*imxX,bX);
-        buf[i*3+1]=_clampTraj((colY[i]+dY[i]*Q[(uY[i]>>>23)&0xff])*imxY,bY);
-        buf[i*3+2]=_clampTraj((colZ[i]+dZ[i]*Q[(uZ[i]>>>23)&0xff])*imxZ,bZ);
-      }
-    }else{
-      for(let i=0;i<nN;i++){
-        buf[i*3]=_clampTraj(_getScore(l,i,pcX)/mxX,bX);
-        buf[i*3+1]=_clampTraj(_getScore(l,i,pcY)/mxY,bY);
-        buf[i*3+2]=_clampTraj(_getScore(l,i,pcZ)/mxZ,bZ);
-      }
+    v._clampBounds[l]=[bX,bY,bZ];
+  }
+  return {colX,colY,colZ};
+}
+// Build (or return the existing) position buffer for ONE cloud layer. Idempotent.
+function _precomputeCloudLayer(vi,l){
+  const v=views[vi];if(!v||!v._cloudBufs||l<0||l>=nL)return null;
+  if(v._cloudBufs[l]&&v._cloudBufs[l].length===nN*3)return v._cloudBufs[l];
+  const{pcX,pcY,pcZ}=v;
+  const cols=_cloudNormLayer(v,l);if(!cols)return null;
+  const{colX,colY,colZ}=cols;const[mxX,mxY,mxZ]=v._layerMx[l];const[bX,bY,bZ]=v._clampBounds[l];
+  const buf=_poolTake(nN*3);
+  if(colX&&colY&&colZ){
+    const imxX=1/mxX,imxY=1/mxY,imxZ=1/mxZ;
+    const [dX,dY,dZ]=_dqTables(nN),uX=_u32View(colX),uY=_u32View(colY),uZ=_u32View(colZ),Q=_F16Q_BY_EXP;
+    for(let i=0;i<nN;i++){// f16 sub-quantum dither, display only (see _dq / _dqTables)
+      buf[i*3]=_clampTraj((colX[i]+dX[i]*Q[(uX[i]>>>23)&0xff])*imxX,bX);
+      buf[i*3+1]=_clampTraj((colY[i]+dY[i]*Q[(uY[i]>>>23)&0xff])*imxY,bY);
+      buf[i*3+2]=_clampTraj((colZ[i]+dZ[i]*Q[(uZ[i]>>>23)&0xff])*imxZ,bZ);
+    }
+  }else{
+    for(let i=0;i<nN;i++){
+      buf[i*3]=_clampTraj(_getScore(l,i,pcX)/mxX,bX);
+      buf[i*3+1]=_clampTraj(_getScore(l,i,pcY)/mxY,bY);
+      buf[i*3+2]=_clampTraj(_getScore(l,i,pcZ)/mxZ,bZ);
     }
   }
+  v._cloudBufs[l]=buf;return buf;
+}
+// The consumer entry points: current buffer for (viewport, layer), built on demand.
+function _cloudBufAt(vi,l){const v=views[vi];if(!v||!v._cloudBufs)return null;return v._cloudBufs[l]||_precomputeCloudLayer(vi,l);}
+function _trajBufAt(vi,l){const v=views[vi];if(!v||!v._trajBufs)return null;return v._trajBufs[l]||_precomputeTrajLayer(vi,l);}
+function _precomputeCloud(vi){
+  const v=views[vi];
+  v._cloudGen=++_lazyGenCounter;
+  _lazyRecycle(v._cloudBufs);
+  v._cloudBufs=new Array(nL);v._layerMx=new Array(nL);v._clampBounds=new Array(nL);v._laneStale=false;
+  const c=Math.max(0,Math.min(nL-1,cL));
+  for(const l of [c,c-1,c+1])if(l>=0&&l<nL)_precomputeCloudLayer(vi,l);
+  _lazyEnqueue(vi,'cloud');
   // Normalization changed (model/mode/pair switch) — force the vocab-reveal grid
   // to rebuild against the fresh per-axis scales next time it fills.
   const _rv=views[vi]&&views[vi]._rev;if(_rv){_rv.gridKey='';_rv.grid=null;
@@ -2148,26 +2300,40 @@ function _precomputeCloud(vi){
     // would map a click onto the wrong token (labelled from the new vocab).
     if(vi<NC)_revClear(vi);}
 }
-function _precomputeTraj(vi){
-  const v=views[vi];const{pcX,pcY}=v;const tlMx=v._trajLayerMx;
-  if(!v._trajBufs||v._trajBufs.length!==nL)v._trajBufs=new Array(nL);
-  v._trajClampBounds=v._trajClampBounds||[];
-  for(let l=0;l<nL;l++){
-    const z=_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1;const lm=tlMx?tlMx[l]:[1,1];
-    if(!v._trajBufs[l]||v._trajBufs[l].length!==nN*3)v._trajBufs[l]=new Float32Array(nN*3);
-    const buf=v._trajBufs[l];
-    const colX=_getScoreColumn(l,pcX),colY=_getScoreColumn(l,pcY);
-    const bX=colX?_clampBoundFor(colX,lm[0]):1.75;
-    const bY=colY?_clampBoundFor(colY,lm[1]):1.75;
-    v._trajClampBounds[l]=[bX,bY];
-    if(colX&&colY){
-      const imx=1/lm[0],imy=1/lm[1];
-      const [dX,dY]=_dqTables(nN),uX=_u32View(colX),uY=_u32View(colY),Q=_F16Q_BY_EXP;
-      for(let i=0;i<nN;i++){buf[i*3]=_clampTraj((colX[i]+dX[i]*Q[(uX[i]>>>23)&0xff])*imx,bX);buf[i*3+1]=_clampTraj((colY[i]+dY[i]*Q[(uY[i]>>>23)&0xff])*imy,bY);buf[i*3+2]=z;}// f16 sub-quantum dither, display only
-    }else{
-      for(let i=0;i<nN;i++){buf[i*3]=_clampTraj(_getScore(l,i,pcX)/lm[0],bX);buf[i*3+1]=_clampTraj(_getScore(l,i,pcY)/lm[1],bY);buf[i*3+2]=z;}
-    }
+// One trajectory layer: x/y from the pair's columns over buildTraj's per-layer
+// scale (v._trajLayerMx), z = the layer's depth. Clamp bounds are filled eagerly
+// by buildTraj (it needs them for every path vertex); computed here only if absent.
+function _precomputeTrajLayer(vi,l){
+  const v=views[vi];if(!v||!v._trajBufs||l<0||l>=nL)return null;
+  if(v._trajBufs[l]&&v._trajBufs[l].length===nN*3)return v._trajBufs[l];
+  const{pcX,pcY}=v;const tlMx=v._trajLayerMx;
+  const z=_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1;const lm=tlMx?tlMx[l]:[1,1];
+  const colX=_getScoreColumn(l,pcX),colY=_getScoreColumn(l,pcY);
+  if(!v._trajClampBounds)v._trajClampBounds=new Array(nL);
+  if(!v._trajClampBounds[l]){v._trajClampBounds[l]=[colX?_clampBoundFor(colX,lm[0]):1.75,colY?_clampBoundFor(colY,lm[1]):1.75];}
+  const[bX,bY]=v._trajClampBounds[l];
+  const buf=_poolTake(nN*3);
+  if(colX&&colY){
+    const imx=1/lm[0],imy=1/lm[1];
+    const [dX,dY]=_dqTables(nN),uX=_u32View(colX),uY=_u32View(colY),Q=_F16Q_BY_EXP;
+    for(let i=0;i<nN;i++){buf[i*3]=_clampTraj((colX[i]+dX[i]*Q[(uX[i]>>>23)&0xff])*imx,bX);buf[i*3+1]=_clampTraj((colY[i]+dY[i]*Q[(uY[i]>>>23)&0xff])*imy,bY);buf[i*3+2]=z;}// f16 sub-quantum dither, display only
+  }else{
+    for(let i=0;i<nN;i++){buf[i*3]=_clampTraj(_getScore(l,i,pcX)/lm[0],bX);buf[i*3+1]=_clampTraj(_getScore(l,i,pcY)/lm[1],bY);buf[i*3+2]=z;}
   }
+  v._trajBufs[l]=buf;return buf;
+}
+function _precomputeTraj(vi){
+  const v=views[vi];
+  v._trajGen=++_lazyGenCounter;
+  _lazyRecycle(v._trajBufs);
+  v._trajBufs=new Array(nL);v._laneStale=false;
+  if(!v._trajClampBounds||v._trajClampBounds.length!==nL)v._trajClampBounds=new Array(nL);
+  const c=Math.max(0,Math.min(nL-1,cL));
+  for(const l of [c,c-1,c+1])if(l>=0&&l<nL)_precomputeTrajLayer(vi,l);
+  _lazyEnqueue(vi,'traj');
+  // The path-LOD grid keys on these buffers: (re)build it, one layer per idle slot,
+  // under this generation (a stale grid would map cells onto the previous pair).
+  _trajGridReset(vi);
 }
 // Delta is now handled by viewports 1 (cloud) and 4 (trajectory) in the main pipeline
 function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
@@ -2185,7 +2351,7 @@ function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
   if(!buf||buf.length!==cap){line.geometry.dispose();const a=new Float32Array(cap);line.geometry=new THREE.BufferGeometry();line.geometry.setAttribute('position',new THREE.BufferAttribute(a,3));buf=a;}
   let w=0,px=0,py=0,pz=0,pOk=false;
   for(let si=0;si<n;si++){const l=seq[si];let x,y,z,ok;
-    if(vi<NC){const lm=v._layerMx?v._layerMx[l]:null;const mxX=lm?lm[0]:1,mxY=lm?lm[1]:1,mxZ=lm?lm[2]:1;const cb=v._clampBounds?v._clampBounds[l]:null;const bX=cb?cb[0]:1.75,bY=cb?cb[1]:1.75,bZ=cb?cb[2]:1.75;
+    if(vi<NC){_cloudNormLayer(v,l);const lm=v._layerMx?v._layerMx[l]:null;const mxX=lm?lm[0]:1,mxY=lm?lm[1]:1,mxZ=lm?lm[2]:1;const cb=v._clampBounds?v._clampBounds[l]:null;const bX=cb?cb[0]:1.75,bY=cb?cb[1]:1.75,bZ=cb?cb[2]:1.75;
       const rx=_getScore(l,idx,v.pcX)/mxX,ry=_getScore(l,idx,v.pcY)/mxY,rz=_getScore(l,idx,v.pcZ)/mxZ;
       x=_clampTraj(rx,bX);y=_clampTraj(ry,bY);z=_clampTraj(rz,bZ);ok=(x===rx)&&(y===ry)&&(z===rz);}
     else{const lm=(v._trajLayerMx?v._trajLayerMx[l]:null)||[1,1];const cb=v._trajClampBounds?v._trajClampBounds[l]:null;const bX=cb?cb[0]:1.75,bY=cb?cb[1]:1.75;
@@ -2196,7 +2362,21 @@ function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
   line.geometry.setDrawRange(0,w/3);
   line.geometry.attributes.position.needsUpdate=true;line.visible=w>0;}
 let _lastDimState=-1;
-function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC){v.mtl.opacity=dim?0.35:0.85;if(revealPts[vi])revealPts[vi].material.opacity=dim?0.2:0.5;}if(vi>=NC&&v.trajGroup){const baseOp=dim?0.08:0.15;v.trajGroup.children.forEach(c=>{if(c.material)c.material.opacity=baseOp;});if(v.trajMarker)v.trajMarker.material.opacity=(dim?0.35:0.9)*_trajMarkerOpScale();}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible)m.material.opacity=0.95;});}// size is owned by _applyViewSizes (per frame); a size set here was dead
+// Reveal-cloud alpha: 0.5 was tuned for the 2,000-token sample; at 48k-150k rows the
+// reveal draws every in-view row, so scale like the traj marker — sqrt(2000/shown), floor
+// 0.25 — keyed on the count actually DRAWN in that viewport (zoomed in → fewer → brighter).
+// _revFill re-applies it after every fill; _dimAll after every dim-state change (D6).
+// Floor 0.7: the operator approved the cloud's look at the full 0.5 alpha with 48k rows drawn — this scale only softens the very densest cases (150k), it must not override an approved look.
+function _revealOpScale(shown){const n=shown||nN||2000;return Math.max(0.7,Math.min(1,Math.sqrt(2000/n)));}
+function _revealOpApply(vi){const pts=revealPts[vi],rev=views[vi]._rev;if(!pts)return;pts.material.opacity=((_lastDimState>0&&(_lastDimState&1))?0.2:0.5)*_revealOpScale(rev?rev.shown:0);}
+// Trajectory sheet dim: multiply the build-time base opacities (v._trajOpFine/_trajOpCoarse,
+// budget-scaled in buildTraj) by the same 0.08/0.15 ratio the old code intended, and keep
+// the additive 8-bit floors (0.004/0.006) so a dimmed sheet never quantizes to nothing.
+// (Old _dimAll walked trajGroup.children — a LineSegments has none — so this was dead.)
+function _trajDimApply(v,dim){const f=dim?0.08/0.15:1;
+  if(v.trajGroup&&v._trajOpFine!==undefined)v.trajGroup.material.opacity=Math.max(0.004,v._trajOpFine*f);
+  if(v.trajGroupCoarse&&v._trajOpCoarse!==undefined)v.trajGroupCoarse.material.opacity=Math.max(0.006,v._trajOpCoarse*f);}
+function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC){v.mtl.opacity=dim?0.35:0.85;if(revealPts[vi])revealPts[vi].material.opacity=(dim?0.2:0.5)*_revealOpScale(v._rev?v._rev.shown:0);}if(vi>=NC&&v.trajGroup){_trajDimApply(v,dim);if(v.trajMarker)v.trajMarker.material.opacity=(dim?0.35:0.9)*_trajMarkerOpScale();}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible)m.material.opacity=0.95;});}// size is owned by _applyViewSizes (per frame); a size set here was dead
 let _hoverTimer=0,_hoverTok=-1,_hoverLoading='';
 // Unified hover cache: token,layer → {pcScores: Float32Array[K], neurons: Float32Array[inter]}
 const _hoverCache=new Map();
@@ -2272,6 +2452,19 @@ const TokenStore={
     return p;
   },
 };
+// Sample-scoped hover neurons for ONE sample index, without polluting _hoverCache
+// (which at vocab scope is keyed by vocab row — a sample-index key would collide).
+// Parses the token-bundle through TokenStore._ingest, then lifts the entry out.
+async function _fetchSampleHoverNeurons(si,layer){
+  const resp=await _apiFetch(`/api/token-bundle/${model}/${mode}?hover=${si}&layer=${layer}`);
+  if(!resp.ok)return null;
+  const buf=await resp.arrayBuffer();
+  const k=`${si},${layer}`;const prev=_hoverCache.get(k);
+  TokenStore._ingest(buf);
+  const e=_hoverCache.get(k);
+  if(prev)_hoverCache.set(k,prev);else _hoverCache.delete(k);
+  return e&&e.neurons&&e.neurons.length?e.neurons:null;
+}
 function highlightToken(idx){hoveredToken=idx;views.forEach((v,vi)=>{const mk=highlightMarkers[vi];if(idx<0){mk.visible=false;hoverPaths[vi].visible=false;return;}mk.visible=true;_positionMarker(mk,v,vi,idx);_buildPathForVP(hoverPaths[vi],v,vi,idx);});_dimAll(idx>=0);
   if(idx!==_hoverTok){_hoverTok=idx;clearTimeout(_hoverTimer);
     if(idx>=0){_updatePCSHover(idx);_hoverTimer=setTimeout(()=>_fetchHover(idx),30);}
@@ -2294,11 +2487,15 @@ function _fetchHover(tokIdx){
     // not the full intermediate-size array _nfShowHover needs, and a full-fidelity
     // capture was already costed at 8.8GB-68GB/model and rejected — _nfShowHover(null)
     // already draws nothing gracefully, which is the correct state here.
-    _pcsFetchToken(tokIdx).then(entry=>{
+    // …unless the hovered row is also in the 2,000-token sample (tokenizer-id match):
+    // then the sample-scoped hover tier CAN supply its neurons — fetch both.
+    const si=_sampleIdxOf(tokIdx);
+    const pNeur=si>=0?_fetchSampleHoverNeurons(si,fetchLayer):Promise.resolve(null);
+    Promise.all([_pcsFetchToken(tokIdx),pNeur.catch(()=>null)]).then(([entry,neurons])=>{
       _hoverLoading='';
       if(!entry||_hoverTok!==tokIdx||cL!==fetchLayer)return;
       const pcScores=entry.data.subarray(fetchLayer*entry.fK,(fetchLayer+1)*entry.fK);
-      const hEntry={pcScores,neurons:null,K:entry.fK,inter:0,layer:fetchLayer};
+      const hEntry={pcScores,neurons:neurons||null,K:entry.fK,inter:neurons?neurons.length:0,layer:fetchLayer};
       _hoverCache.set(key,hEntry);
       _renderHover(tokIdx,hEntry);
     }).catch(()=>{_hoverLoading='';});
@@ -2337,9 +2534,27 @@ function updatePinMarkers(){_syncAllPins(true);}
 function _updatePinPositions(){_syncAllPins(false);}
 let pinnedTokenB=-1;
 let tokenIds=[];
-let _trajCache={}; // {idx: {total, maxDelta, maxL}}
+// Vocab-row → sample-index bridge. Pins address VOCAB ROWS at vocab scope, but several
+// local numpy endpoints still address the 2,000-token SAMPLE (token-attn, neuron-field,
+// token-bundle?hover=, direction-nonlinear/-circuit, direction-steer). The sample is a
+// subset of the vocabulary keyed by tokenizer id: decomp?layer=0 carries the sample's
+// token_ids, /api/vocab-ids carries the rows'. Same id ⇒ same token ⇒ safe to send.
+// No id match ⇒ -1 and the caller must OMIT that feature — never send a guessed index.
+let _sampleTokIds=[];// the 2,000-token sample's tokenizer ids (from decomp?layer=0)
+let _sampleIdxByTokId=null;// lazily built Map tokenizer id → sample index
+function _sampleIdxOf(tok){
+  if(_cloudSource!=='vocab')return tok;// pins ARE sample indices at sample scope
+  if(tok==null||tok<0)return -1;
+  if(!_sampleIdxByTokId){_sampleIdxByTokId=new Map();for(let i=0;i<_sampleTokIds.length;i++){const id=+_sampleTokIds[i];if(!_sampleIdxByTokId.has(id))_sampleIdxByTokId.set(id,i);}}
+  const id=tokenIds[tok];if(id==null)return -1;
+  const si=_sampleIdxByTokId.get(+id);return si===undefined?-1:si;
+}
+// One-line reason for a disabled sample-scoped control at vocab scope.
+const _VOCAB_ONLY_NOTE='needs a token in the 2,000-token sample — this vocab-only token can\'t be sent to the local numpy endpoint';
+let _trajCache=new Map(); // idx → {total, maxDelta, maxL}; LRU-capped (D16 — was an unbounded object, one entry per hovered token)
+const _TRAJ_CACHE_MAX=2000;
 function _trajStats(idx){
-  if(_trajCache[idx])return _trajCache[idx];
+  const hit=_trajCache.get(idx);if(hit){_trajCache.delete(idx);_trajCache.set(idx,hit);return hit;}// refresh recency
   const entry=_pcsHoverCache.get(idx);
   if(!entry)return null;
   let totalMove=0,maxDelta=0,maxL=0;
@@ -2350,7 +2565,7 @@ function _trajStats(idx){
     let d=0;for(let p=0;p<Math.min(nK,6);p++)d+=((cur[p]||0)-(prev[p]||0))**2;
     d=Math.sqrt(d);totalMove+=d;if(d>maxDelta){maxDelta=d;maxL=l;}
   }
-  const r={total:totalMove,maxDelta,maxL};_trajCache[idx]=r;return r;
+  const r={total:totalMove,maxDelta,maxL};_trajCache.set(idx,r);if(_trajCache.size>_TRAJ_CACHE_MAX)_trajCache.delete(_trajCache.keys().next().value);return r;
 }
 // The one-line identity + trajectory footer. The PC loadings that used to live here moved to the PC
 // lane (label · bar · value), so this no longer doubles them; the sample-rank #idx is an internal
@@ -2363,7 +2578,7 @@ function _tokInfo(idx){if(idx<0)return['—'];const S=_getTokenSpectrumEntry(idx
   parts.push(`${new TextEncoder().encode(texts[idx]||'').length}B`);
   if(!S){_pcsFetchToken(idx).then(()=>{if(idx===pinnedToken||idx===pinnedTokenB)showPinDetail(pinnedToken);});return parts;}
   const ts=_trajStats(idx);
-  if(ts)parts.push(`traj ${ts.total.toFixed(0)}`,`maxΔ L${ts.maxL}(${ts.maxDelta.toFixed(0)})`);
+  if(ts)parts.push(`traj(${Math.min(nK,6)} PC) ${ts.total.toFixed(0)}`,`maxΔ L${ts.maxL}(${ts.maxDelta.toFixed(0)})`);
   return parts;}
 // Renders _tokInfo's parts as chips: each part is a nowrap span, so one field never splits
 // mid-value at the line wrap. `idle` is the plain placeholder string shown before any pin.
@@ -2551,7 +2766,7 @@ function _setSepPanelIdle(message,key){
     dist.textContent='';
     dist.dataset.pair='';
     list.textContent='';
-    note.textContent='exact, on demand';
+    note.textContent='on demand · support-window approx.';
     run.disabled=true;
     run.textContent='Analyze';
     return;
@@ -2563,7 +2778,7 @@ function _setSepPanelIdle(message,key){
   dist.textContent=message;
   dist.dataset.pair=key;
   list.textContent='';
-  note.textContent=`${_layerName(cL)} exact, on demand`;
+  note.textContent=`${_layerName(cL)} on demand · support-window approx.`;
   run.disabled=false;
   run.textContent='Analyze';
 }
@@ -2574,11 +2789,11 @@ function _setSepPanelBusy(key){
   if(!panel||!note||!run)return;
   panel.dataset.loading=key||'';
   panel.dataset.stale='';
-  note.textContent=`${_layerName(cL)} exact analysis`;
+  note.textContent=`${_layerName(cL)} analyzing (support window)…`;
   run.disabled=true;
   run.textContent='Analyzing...';
 }
-function _setSepPanelReady(key){
+function _setSepPanelReady(key,supportN){
   const panel=document.getElementById('sepPanel');
   const note=document.getElementById('sepNote');
   const run=document.getElementById('sepRun');
@@ -2588,7 +2803,11 @@ function _setSepPanelReady(key){
   panel.dataset.stale='';
   panel.dataset.analyzed=key||'';
   dist.dataset.pair=key||'';
-  note.textContent=`${_layerName(cL)} exact result`;
+  // H2: bimodality/percentile/top tokens are projected over a support WINDOW
+  // (_dirQuality: 99.9% of ‖A−B‖²; per-layer sweep _dirSupportAt(…,0.9,16) ≤16 PCs);
+  // only magnitude / pcs_50/80/95 / explained variance are exact.
+  note.textContent=`${_layerName(cL)} · window ≈${supportN||'?'} PCs (99.9% of ‖A−B‖²); layer sweep ≤16 PCs`;
+  note.title='Support-window approximation: bimodality, %rand and the token lists project onto the top PCs carrying 99.9% of ‖A−B‖²; the per-layer sweep uses ≤16 PCs (90%). Magnitude, PC concentration and explained variance are exact.';
   run.disabled=false;
   run.textContent='Refresh';
 }
@@ -2747,14 +2966,30 @@ async function _projSupport(layer,dir,support,NT){
 // OOMs. Now: the top-64 PCs (columns are variance-ordered, so this is the
 // dominant subspace), and the result is labelled as such by _randBaselineK.
 let _randBaselineK=0;
+// Population the browser-computed baseline is measured on: a fixed deterministic
+// stride subsample of ~5,000 tokens (0 = precomputed / full population). 50 pairs ×
+// 64 PCs × NT projections was ~0.7s on the pin-change path at qwen scale; the
+// bimodality of a random direction is a population statistic and 5k rows estimate
+// it as well as 150k do. Labelled wherever _randBaselineK is (the %rand badge).
+let _randBaselineN=0;
+const _RAND_BASELINE_TARGET=5000;
+// H7: the top-64-PC / subsample caveat, wherever a %rand percentile is printed.
+function _randBaselineSuffix(){
+  if(!(_randBaselineK&&_randBaselineK<nK))return '';
+  return ` (baseline over top-${_randBaselineK} PCs${_randBaselineN?`, ${_randBaselineN.toLocaleString()}-token subsample`:''})`;
+}
 async function _randBaseline(layer,NT){
   const F=await _loadFalsification();
   const pre=F.random_baseline&&F.random_baseline[layer];
-  if(pre&&pre.length){_randBaselineK=nK;return pre;}
+  if(pre&&pre.length){_randBaselineK=nK;_randBaselineN=0;return pre;}
   const K=Math.min(nK,64);_randBaselineK=K;
   await _ensureLayerColumns(layer,Array.from({length:K},(_,k)=>k));
-  const cols=new Array(nK);for(let k=0;k<K;k++)cols[k]=_getScoreColumn(layer,k);
-  const rb=[];for(let m=0;m<50;m++){const ia=((m*2654435761)>>>0)%NT,ib=((m*40503+98765)>>>0)%NT;if(ia===ib)continue;rb.push(_bimoJS(_projCols(cols,_pairDir(cols,ia,ib),NT)));}
+  const colsFull=new Array(nK);for(let k=0;k<K;k++)colsFull[k]=_getScoreColumn(layer,k);
+  // stride subsample (deterministic: rows 0, s, 2s, …) — the same rows every call
+  const stride=Math.max(1,Math.floor(NT/_RAND_BASELINE_TARGET)),NS=Math.ceil(NT/stride);_randBaselineN=stride>1?NS:0;
+  let cols=colsFull;
+  if(stride>1){cols=new Array(nK);for(let k=0;k<K;k++){const c=colsFull[k];if(!c)continue;const sub=new Float32Array(NS);for(let j=0,i=0;j<NS;j++,i+=stride)sub[j]=c[i];cols[k]=sub;}}
+  const rb=[];for(let m=0;m<50;m++){const ia=((m*2654435761)>>>0)%NS,ib=((m*40503+98765)>>>0)%NS;if(ia===ib)continue;rb.push(_bimoJS(_projCols(cols,_pairDir(cols,ia,ib),NS)));}
   return rb;
 }
 // Browser-compute of /api/direction-quality (501 in the serverless deploy).
@@ -2782,8 +3017,8 @@ async function _dirQuality(a,b,layer){
   // orthogonal, so this is exact from the support alone — no proj-variance scan.
   const lv=_layerVar[layer]||[];let explained_variance=0;for(const k of support)explained_variance+=dir[k]*dir[k]*(lv[k]||0);
   const rb=await _randBaseline(layer,NT);
-  const random_baseline_percentile=rb.length?rb.filter(r=>r>bim).length/rb.length*100:50;
-  // per-layer sweep: per-layer support window (top-32 — enough for the estimate)
+  const random_baseline_percentile=rb.length?rb.filter(r=>r>bim).length/rb.length*100:null;// null (omitted), never a fabricated 50
+  // per-layer sweep: per-layer support window (≤16 PCs / 90% coverage — enough for the estimate; labelled in sepNote)
   const layer_bimodalities=[];let best_layer=layer,bestBm=bim;
   for(let l=0;l<NL;l++){
     let lb;
@@ -2792,9 +3027,9 @@ async function _dirQuality(a,b,layer){
     layer_bimodalities.push({layer:l,bimodality:lb});if(lb<bestBm){bestBm=lb;best_layer=l;}
   }
   // most A-like / B-like tokens by projection (direction = a−b, high = A-like)
-  const _sidx=Array.from({length:NT},(_,i)=>i).sort((x,y)=>proj[x]-proj[y]);
+  const _ex=_extremeIdx(proj,10,NT);// O(n) top/bottom-k (was a full 150k boxed sort for 20 rows — D7)
   const _mk=i=>({idx:i,text:texts[i],script:scripts[i],proj:proj[i]});
-  const top_a=_sidx.slice(-10).reverse().map(_mk),top_b=_sidx.slice(0,10).map(_mk);
+  const top_a=_ex.hi.map(_mk),top_b=_ex.lo.map(_mk);
   const token_a={idx:a,text:texts[a],script:scripts[a]},token_b={idx:b,text:texts[b],script:scripts[b]};
   return {K:nK,magnitude:mag,concentration:{pcs_50:p50,pcs_80:p80,pcs_95:p95},top_pcs,bimodality:bim,explained_variance,random_baseline_percentile,layer_bimodalities,best_layer,top_a,top_b,token_a,token_b,functional_hit_rate:null,functional_warning:null,_support:support.length};
 }
@@ -2805,11 +3040,11 @@ async function _dirBriefJS(a,b,layer){
   // Runs on EVERY pin change, awaited on the critical path — cap the support
   // (was 0.999 coverage, uncapped → hundreds of full PC columns for a diffuse pair).
   const S=await _dirSupport(a,b,layer,0.999,128);
-  if(!S)return {layer,K:nK,N:NT,magnitude:0,bimodality:1,random_baseline_percentile:50,functional_hit_rate:null,functional_warning:null};
+  if(!S)return {layer,K:nK,N:NT,magnitude:0,bimodality:1,random_baseline_percentile:null,functional_hit_rate:null,functional_warning:null};
   const inv=1/(S.mag+1e-8),dir=new Float32Array(nK);for(const k of S.support)dir[k]=S.diff[k]*inv;
   const bm=_bimoJS(await _projSupport(layer,dir,S.support,NT));
   const rb=await _randBaseline(layer,NT);
-  const pctile=rb.length?rb.filter(r=>r>bm).length/rb.length*100:50;
+  const pctile=rb.length?rb.filter(r=>r>bm).length/rb.length*100:null;// null (badge omitted), never a fabricated 50
   return {layer,K:nK,N:NT,magnitude:S.mag,bimodality:bm,random_baseline_percentile:pctile,functional_hit_rate:null,functional_warning:null};
 }
 // Browser-compute of /api/direction-discover (501). Each PC's score column IS a
@@ -2828,10 +3063,10 @@ async function _dirDiscoverJS(layer,n_top){
     const rb=(F.random_baseline&&F.random_baseline[layer])||[];
     const discovered=top.map(({pc,bimodality,variance_share})=>{
       const c=_getScoreColumn(layer,pc)||new Float32Array(NT);
-      const ix=Array.from({length:NT},(_,i)=>i).sort((x,y)=>c[x]-c[y]);
+      const ex=_extremeIdx(c,5,NT);
       const mk=i=>({idx:i,text:texts[i],script:scripts[i],proj:c[i]});
-      const pctile=rb.length?rb.filter(r=>r>bimodality).length/rb.length*100:50;
-      return {pc,bimodality,variance_share,random_baseline_percentile:pctile,top_pos:ix.slice(-5).reverse().map(mk),top_neg:ix.slice(0,5).map(mk),functional_hit_rate:null,functional_warning:null};
+      const pctile=rb.length?rb.filter(r=>r>bimodality).length/rb.length*100:null;// null, not a fabricated 50, when no baseline shipped
+      return {pc,bimodality,variance_share,random_baseline_percentile:pctile,top_pos:ex.hi.map(mk),top_neg:ex.lo.map(mk),functional_hit_rate:null,functional_warning:null};
     });
     return {discovered,layer,n_top,outliers_excluded:null,n_population:NT,source:'precompute'};
   }
@@ -2851,12 +3086,26 @@ async function _dirDiscoverJS(layer,n_top){
   const randBms=[];for(let m=0;m<50&&keep.length>1;m++){const ia=keep[((m*2654435761)>>>0)%keep.length],ib=keep[((m*40503+98765)>>>0)%keep.length];if(ia===ib)continue;const p=_projCols(cols,_pairDir(cols,ia,ib),NT);const f=new Float32Array(keep.length);for(let j=0;j<keep.length;j++)f[j]=p[keep[j]];randBms.push(_bimoJS(f));}
   const lv=_layerVar[layer]||[];const totV=lv.length?lv.reduce((s,x)=>s+x,0)||1:1;
   const discovered=pcBm.slice(0,n_top).map(({pc,bm})=>{
-    const c=cols[pc];const ix=Array.from({length:NT},(_,i)=>i).sort((x,y)=>c[x]-c[y]);
+    const c=cols[pc];const ex=_extremeIdx(c,5,NT);
     const mk=i=>({idx:i,text:texts[i],script:scripts[i],proj:c[i]});
     const pctile=randBms.length?randBms.filter(r=>r>bm).length/randBms.length*100:50;
-    return {pc,bimodality:bm,variance_share:(lv[pc]||0)/totV,random_baseline_percentile:pctile,top_pos:ix.slice(-5).reverse().map(mk),top_neg:ix.slice(0,5).map(mk),functional_hit_rate:null,functional_warning:null};
+    return {pc,bimodality:bm,variance_share:(lv[pc]||0)/totV,random_baseline_percentile:pctile,top_pos:ex.hi.map(mk),top_neg:ex.lo.map(mk),functional_hit_rate:null,functional_warning:null};
   });
   return {discovered,layer,n_top,outliers_excluded:NT-keep.length,n_population:NT};
+}
+// O(n·k) top-k / bottom-k row indices of col[0..n) (k is 5-10 here). Orders match
+// what `Array.from(...).sort(asc)` + slice(-k).reverse() / slice(0,k) produced:
+// hi = descending value, ties → higher index first; lo = ascending, ties → lower index first.
+function _extremeIdx(col,k,n){
+  n=Math.min(n==null?col.length:n,col.length);k=Math.min(k,n);
+  const hi=[],lo=[];
+  for(let i=0;i<n;i++){const v=col[i];
+    // hi: keep k largest; new i (higher index) goes BEFORE equal values
+    if(hi.length<k||v>=col[hi[hi.length-1]]){let p=hi.length;while(p>0&&col[hi[p-1]]<=v)p--;hi.splice(p,0,i);if(hi.length>k)hi.length=k;}
+    // lo: keep k smallest; new i (higher index) goes AFTER equal values
+    if(lo.length<k||v<col[lo[lo.length-1]]){let p=lo.length;while(p>0&&col[lo[p-1]]>v)p--;lo.splice(p,0,i);if(lo.length>k)lo.length=k;}
+  }
+  return {hi,lo};
 }
 async function _updateSeparationNow(a,b){
   const panel=document.getElementById('sepPanel');
@@ -2883,7 +3132,7 @@ async function _updateSeparationNow(a,b){
     const bmLabel=bm<0.3?'BIMODAL':bm<0.6?'partial':bm<0.85?'weak':'UNIMODAL';
     const bmColor=bm<0.3?'#4f4':bm<0.6?'#cc4':bm<0.85?'#c84':'#c44';
     distEl.textContent=`${r.K}D  mag=${r.magnitude.toFixed(1)}`;
-    _setSepPanelReady(key);
+    _setSepPanelReady(key,r._support);
     // Feature quality summary
     const summary=document.createElement('div');
     summary.className='sep-metrics';
@@ -2898,7 +3147,7 @@ async function _updateSeparationNow(a,b){
     if(pctile!==undefined&&pctile!==null){
       const pctSpan=document.createElement('span');
       pctSpan.style.cssText='color:#888;font-size:8px;margin-left:4px';
-      pctSpan.textContent=`(top ${pctile.toFixed(0)}% vs random)`;
+      pctSpan.textContent=`(top ${pctile.toFixed(0)}% vs random${_randBaselineSuffix()})`;
       if(pctile<10)pctSpan.style.color='#4f4';// genuinely rare
       else if(pctile<30)pctSpan.style.color='#cc4';// borderline
       else pctSpan.style.color='#f44';// not rare — could be noise
@@ -2974,14 +3223,26 @@ async function _updateSeparationNow(a,b){
       funcOk.style.cssText='color:#4f4;font-size:7px;margin:2px 0';
       funcOk.textContent=`\u2713 functional: ${(r.functional_hit_rate*100).toFixed(0)}% of top tokens predict anchors`;
       list.appendChild(funcOk);
+    }else{
+      // H6: never checked ≠ checked & clean — the browser compute has no lmhead.
+      const funcNA=document.createElement('div');
+      funcNA.style.cssText='color:#777;font-size:7px;margin:2px 0';
+      funcNA.textContent='fn: n/a — functional check needs lmhead weights (not in the published artifact)';
+      list.appendChild(funcNA);
     }
     // Nonlinearity test (async, updates panel when done)
     const nlDiv=document.createElement('div');
     nlDiv.style.cssText='padding:2px 4px;margin:2px 0;font-size:8px;color:#555';
     nlDiv.textContent='testing linearity...';
     list.appendChild(nlDiv);
+    // direction-nonlinear / direction-steer / direction-circuit are SAMPLE-indexed
+    // local numpy endpoints. At vocab scope a/b are vocab rows — bridge by tokenizer id
+    // (_sampleIdxOf); if either pin isn't in the sample, OMIT (never send a raw row).
+    const sa=_sampleIdxOf(a),sb=_sampleIdxOf(b);const inSample=sa>=0&&sb>=0;
+    const notInSample=`${sa<0?'A':''}${sa<0&&sb<0?'+':''}${sb<0?'B':''} ${_VOCAB_ONLY_NOTE}`;
     if(!CAP.weights){nlDiv.textContent='linearity: run heinrich locally ▸ (full-space kNN)';nlDiv.style.cssText+=';cursor:pointer;color:#9c6';nlDiv.onclick=()=>_showUnlock('weights');}
-    else api(`direction-nonlinear/${model}/${mode}?a=${a}&b=${b}&layer=${cL}&n_sample=2000`).then(nl=>{
+    else if(!inSample){nlDiv.textContent='linearity: n/a — '+notInSample;nlDiv.title='sample-scoped endpoint (direction-nonlinear)';}
+    else api(`direction-nonlinear/${model}/${mode}?a=${sa}&b=${sb}&layer=${cL}&n_sample=2000`).then(nl=>{
       if(_sepReqId!==reqId)return;
       if(nl.error){nlDiv.textContent='linearity: '+nl.error;return;}
       const vColor=nl.verdict==='linear'?'#4f4':nl.verdict==='nonlinear'?'#f44':'#cc4';
@@ -3023,12 +3284,14 @@ async function _updateSeparationNow(a,b){
     steerBtn.textContent='Test causality (needs model)';
     const steerResult=document.createElement('div');
     steerResult.style.cssText='font-size:7px;color:#666;margin:2px 0;white-space:pre-wrap';
+    if(!inSample){steerBtn.disabled=true;steerBtn.style.opacity='0.5';steerBtn.style.cursor='default';steerBtn.title=notInSample;steerResult.textContent='n/a — '+notInSample;}
     steerBtn.addEventListener('click',async()=>{
+      if(!inSample)return;
       steerBtn.disabled=true;steerBtn.textContent='steering...';
       try{
         const sr=await _apiFetch('/api/direction-steer',{method:'POST',
           headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({model,mode,a,b,layer:cL,prompt:'Once upon a time',alpha:2.0,max_tokens:30})
+          body:JSON.stringify({model,mode,a:sa,b:sb,layer:cL,prompt:'Once upon a time',alpha:2.0,max_tokens:30})
         }).then(r=>r.json());
         if(sr.error){steerResult.textContent='error: '+sr.error;return;}
         const causalColor=sr.causal?'#4f4':sr.changed?'#cc4':'#c44';
@@ -3052,7 +3315,8 @@ async function _updateSeparationNow(a,b){
     circDiv.textContent='tracing circuit...';
     list.appendChild(circDiv);
     if(!CAP.weights){circDiv.textContent='circuit: run heinrich locally ▸ (needs raw weights)';circDiv.style.cssText+=';cursor:pointer;color:#9c6';circDiv.onclick=()=>_showUnlock('weights');}
-    else api(`direction-circuit/${model}/${mode}?a=${a}&b=${b}`).then(circ=>{
+    else if(!inSample){circDiv.textContent='circuit: n/a — '+notInSample;circDiv.title='sample-scoped endpoint (direction-circuit)';}
+    else api(`direction-circuit/${model}/${mode}?a=${sa}&b=${sb}`).then(circ=>{
       if(_sepReqId!==reqId)return;
       if(circ.error){circDiv.textContent='circuit: '+circ.error;return;}
       circDiv.textContent='';
@@ -3233,16 +3497,19 @@ function _processHover(){
 }
 function _popupText(i,vi){
   const tok=texts[i]||'';const bytes=new TextEncoder().encode(tok).length;
-  let m=`${scripts[i]}  #${i}`;
-  if(tokenIds[i]!==undefined)m+=`  id:${tokenIds[i]}`;
-  m+=`  ${bytes}B\n`;
+  // H9/H14: `i` is a vocab ROW at vocab scope (a sample index otherwise) — say which;
+  // and a cloud point pins A/B on click (the gold overlay's T1/T2 wording is its own).
+  let m=`${scripts[i]} · ${_cloudSource==='vocab'?`row ${i}`:`sample #${i}`}`;
+  if(tokenIds[i]!==undefined)m+=` · id ${tokenIds[i]}`;
+  m+=` · ${bytes}B · click=pin A · right-click=pin B\n`;
   // Top PCs by magnitude (always useful)
   const S=_getTokenSpectrumEntry(i);
   if(S){const pcs=[];for(let p=0;p<Math.min(nK,20);p++)pcs.push({p,v:S[p]||0});pcs.sort((a,b)=>Math.abs(b.v)-Math.abs(a.v));m+=pcs.slice(0,5).map(({p,v})=>`PC${p}:${v>0?'+':''}${v.toFixed(1)}`).join(' ')+'\n';}
   else _pcsFetchToken(i);
   // Trajectory stats (always, not just for traj viewports)
   const ts=_trajStats(i);
-  if(ts)m+=`traj:${ts.total.toFixed(0)} maxΔ:L${ts.maxL}(${ts.maxDelta.toFixed(0)})`;
+  const nTP=Math.min(nK,6);// _trajStats: L2 over the first min(nK,6) PCs, not full-K
+  if(ts)m+=`traj(${nTP} PC) ${ts.total.toFixed(0)} · maxΔ L${ts.maxL} (${ts.maxDelta.toFixed(0)})`;
   return m;}
 // Reference grids + axis lines
 views.forEach((v,vi)=>{
@@ -3453,32 +3720,30 @@ function _colorFromProj(proj){
   }
   for(const v of views){
     const col=v.geo.attributes.color?.array;
-    if(col){for(let i=0;i<nN;i++){col[i*3]=_dirR[i];col[i*3+1]=_dirG[i];col[i*3+2]=_dirB[i];}v.geo.attributes.color.needsUpdate=true;}
+    // At vocab scope the base cloud (v.pts) is hidden — the reveal cloud is the renderer
+    // (recolored via _refreshRevealCloudColors below); skip the 3×nN writes into it.
+    // The sample scope (and any view whose base points are shown) still gets them.
+    if(col&&!(_cloudSource==='vocab'&&v.pts&&v.pts.visible===false)){for(let i=0;i<nN;i++){col[i*3]=_dirR[i];col[i*3+1]=_dirG[i];col[i*3+2]=_dirB[i];}v.geo.attributes.color.needsUpdate=true;}
     if(v.trajMarker){const tc=v.trajMarker.geometry.attributes.color?.array;
       if(tc){for(let i=0;i<nN;i++){tc[i*3]=_dirR[i];tc[i*3+1]=_dirG[i];tc[i*3+2]=_dirB[i];}v.trajMarker.geometry.attributes.color.needsUpdate=true;}}
-    if(v.trajGroup&&v._trajTokenMap){const lc=v.trajGroup.geometry.attributes.color?.array;
-      // Dim the line colors hard. The points carry the full-saturation direction
-      // split; 5000 additively-blended lines at full red/blue blow out into an
-      // unreadable tangle, so the trajectory lines stay a faint directional haze.
-      const _d=0.3;
-      if(lc){for(const{ti,start,count}of v._trajTokenMap){
-        for(let j=start;j<start+count;j++){lc[j*3]=_dirR[ti]*_d;lc[j*3+1]=_dirG[ti]*_d;lc[j*3+2]=_dirB[ti]*_d;}
-      }v.trajGroup.geometry.attributes.color.needsUpdate=true;}}
+    // Trajectory pools (fine + coarse): the same gradient, dimmed hard — the points
+    // carry the full-saturation split; thousands of additively-blended lines at full
+    // red/blue blow out into an unreadable tangle, so the lines stay a faint
+    // directional haze (0.3·min(1,5000/shown), see _trajEmitColors — D17).
+    const vi=views.indexOf(v);if(vi>=NC&&v.trajGroup&&v._trajSel)_trajEmitColors(vi,true);
   }
   _dirColorActive=true;_refreshRevealCloudColors();_markDirty();
 }
 async function _applyDirectionColors(){
   if(pinnedToken<0||pinnedTokenB<0||!model||!mode||!nN){
     if(_dirColorActive){
-      _dirColorActive=false;_refreshRevealCloudColors();
+      _dirColorActive=false;_refreshRevealCloudColors();_hideDirColorStatus();
       // Reset to script colors
       for(const v of views){
         _ensureColors(v);
         if(v.trajMarker){const tc=v.trajMarker.geometry.attributes.color?.array;
           if(tc){for(let i=0;i<nN;i++){const hex=CL[scripts[i]]||0xAAAAAA;tc[i*3]=((hex>>16)&0xFF)/255;tc[i*3+1]=((hex>>8)&0xFF)/255;tc[i*3+2]=(hex&0xFF)/255;}v.trajMarker.geometry.attributes.color.needsUpdate=true;}}
-        if(v.trajGroup&&v._trajTokenMap){const lc=v.trajGroup.geometry.attributes.color?.array;
-          if(lc){for(const{ti,start,count}of v._trajTokenMap){const hex=CL[scripts[ti]]||0xAAAAAA;const r=((hex>>16)&0xFF)/255,g=((hex>>8)&0xFF)/255,b=(hex&0xFF)/255;
-            for(let j=start;j<start+count;j++){lc[j*3]=r;lc[j*3+1]=g;lc[j*3+2]=b;}}v.trajGroup.geometry.attributes.color.needsUpdate=true;}}
+        {const vi=views.indexOf(v);if(vi>=NC&&v.trajGroup&&v._trajSel)_trajEmitColors(vi,false);}// both pools back to script colors
       }
       _markDirty();
     }
@@ -3495,7 +3760,7 @@ async function _applyDirectionColors(){
   const ctrl=new AbortController();window._dirColorAbort=ctrl;
   const tid=setTimeout(()=>ctrl.abort(),20000);
   const _dcs=document.getElementById('dirColorStatus');
-  if(_dcs)_dcs.style.display='block';
+  if(_dcs){_dcs.style.display='block';_dcs.className='dcs';_dcs.textContent='projecting direction…';}
   try{
     // Browser-compute. Was /api/direction-project, a server numpy endpoint that
     // returns 501 in the serverless deploy — so cloud direction-coloring silently
@@ -3521,25 +3786,40 @@ async function _applyDirectionColors(){
     for(let s=0;s<S.support.length;s++){const k=S.support[s],dk=dir[k];if(!dk)continue;const c=_getScoreColumn(_layer,k);if(!c)continue;for(let i=0;i<nN;i++)proj[i]+=dk*c[i];}
     if(proj.length!==nN)return;
     _colorFromProj(proj);
-  }catch(e){/* silently fail — 50-PC coloring remains as fallback */}
+    // H7: the caveat stays on screen for as long as the coloring does — the
+    // support cap (128 PCs) and the achieved share of ‖A−B‖² are what is DRAWN.
+    _dirColorInfo={pcs:S.support.length,cov:_cov};
+    if(_dcs){_dcs.className='dcs ready';_dcs.textContent=`dir color · ${S.support.length} PC · ${(_cov*100).toFixed(0)}% ‖A−B‖²`;
+      _dcs.title=`Point colors = percentile-normalized projection onto the A−B direction over its top ${S.support.length} PCs (capped at 128), carrying ${(_cov*100).toFixed(1)}% of ‖A−B‖² at this layer; the omitted PCs are not in the color.`;}
+  }catch(e){
+    if(_dirColorReqId===reqId&&_dcs){_dcs.className='dcs';_dcs.textContent='direction color failed — script colors kept';_dcs.title=String(e&&e.message||e);}
+  }
   finally{
     clearTimeout(tid);
-    // Hide indicator only if this is still the latest request (avoid flicker on rapid pin changes)
-    if(_dirColorReqId===reqId&&_dcs)_dcs.style.display='none';
+    // Keep the indicator while coloring is active (it now carries the caveat); hide
+    // only when this request was superseded and nothing is colored.
+    if(_dirColorReqId===reqId&&_dcs&&!_dirColorActive)_dcs.style.display='none';
   }
 }
+let _dirColorInfo=null;// {pcs,cov} of the direction coloring currently drawn
+function _hideDirColorStatus(){_dirColorInfo=null;const d=document.getElementById('dirColorStatus');if(d){d.style.display='none';d.className='dcs';d.textContent='projecting direction…';d.title='';}}
 function _applyFilter(){
   if(!nN)return;
   views.forEach((v,vi)=>{
-    const pos=v.geo.attributes.position?.array;if(!pos)return;
-    const src=vi<NC?(v._cloudBufs&&v._cloudBufs[cL]):(v._trajBufs&&v._trajBufs[cL]);
+    const pos=v.geo.attributes.position?.array;
+    const src=vi<NC?_cloudBufAt(vi,cL):_trajBufAt(vi,cL);
     if(!src)return;
-    for(let i=0;i<nN;i++){
-      if(_hiddenScripts.has(scripts[i])){pos[i*3]=9999;pos[i*3+1]=9999;pos[i*3+2]=9999;}
-      else{pos[i*3]=src[i*3];pos[i*3+1]=src[i*3+1];pos[i*3+2]=src[i*3+2];}
+    // Base cloud (v.geo): at vocab scope it is hidden (v.pts.visible=false — the reveal
+    // cloud renders, and _revFill skips hidden-script rows itself), so skip the 3×nN
+    // rewrite + re-upload into invisible geometry (D2). Sample scope keeps it.
+    if(pos&&pos.length===nN*3&&!(_cloudSource==='vocab'&&v.pts.visible===false)){
+      for(let i=0;i<nN;i++){
+        if(_hiddenScripts.has(scripts[i])){pos[i*3]=9999;pos[i*3+1]=9999;pos[i*3+2]=9999;}
+        else{pos[i*3]=src[i*3];pos[i*3+1]=src[i*3+1];pos[i*3+2]=src[i*3+2];}
+      }
+      v.geo.attributes.position.needsUpdate=true;
     }
-    v.geo.attributes.position.needsUpdate=true;
-    if(vi>=NC&&v.trajMarker){
+    if(vi>=NC&&v.trajMarker&&v.trajMarker.geometry.attributes.position.array.length===src.length){
       const tp=v.trajMarker.geometry.attributes.position.array;
       for(let i=0;i<nN;i++){
         if(_hiddenScripts.has(scripts[i])){tp[i*3]=9999;tp[i*3+1]=9999;tp[i*3+2]=9999;}
@@ -3548,26 +3828,11 @@ function _applyFilter(){
       v.trajMarker.geometry.attributes.position.needsUpdate=true;
     }
   });
-  // Filter trajectory lines — move hidden tokens' vertices off-screen
-  views.forEach((v,vi)=>{if(vi>=NC&&v.trajGroup&&v._trajTokenMap){
-    const pos=v.trajGroup.geometry.attributes.position.array;
-    const src=v.trajGroup.geometry.userData?._origPos;
-    // Save original positions on first filter
-    if(!src){
-      v.trajGroup.geometry.userData=v.trajGroup.geometry.userData||{};
-      v.trajGroup.geometry.userData._origPos=new Float32Array(pos);
-    }
-    const orig=v.trajGroup.geometry.userData._origPos;
-    for(const{ti,start,count}of v._trajTokenMap){
-      const hide=_hiddenScripts.has(scripts[ti]);
-      for(let j=start;j<start+count;j++){
-        pos[j*3]=hide?9999:orig[j*3];
-        pos[j*3+1]=hide?9999:orig[j*3+1];
-        pos[j*3+2]=hide?9999:orig[j*3+2];
-      }
-    }
-    v.trajGroup.geometry.attributes.position.needsUpdate=true;
-  }});
+  // Filter trajectory lines — re-emit the current selection into BOTH pools (fine +
+  // coarse, else hidden scripts reappear during every orbit — D15): hidden tokens'
+  // vertices go to the off-screen sentinel, the others are rewritten from source
+  // (no _origPos clone of the pool any more). Same slots, same token map.
+  views.forEach((v,vi)=>{if(vi>=NC&&v.trajGroup&&v._trajSel){_trajEmitPositions(vi,true);const S=v._trajLod;if(S)S.lastKey='';}});
   _applyBrowserFilter();
   _refreshRevealCloudColors();// script hide/isolate needs to take effect on the reveal cloud too
   _markDirty();
@@ -3578,9 +3843,9 @@ function _ensurePositionBuf(v){
   return pos;
 }
 function updateVP(vi,pcX,pcY,pcZ,layer){const v=views[vi];v.pcX=pcX;v.pcY=pcY;v.pcZ=pcZ;v.layer=layer;
-  if(!(v._cloudBufs&&v._cloudBufs[layer]))return;
+  const _cb=_cloudBufAt(vi,layer);if(!_cb)return;
   const pos=_ensurePositionBuf(v);
-  if(v._cloudBufs&&v._cloudBufs[layer]){pos.set(v._cloudBufs[layer]);}
+  pos.set(_cb);
   // Apply script filter — move hidden tokens off-screen
   if(_hiddenScripts.size){for(let i=0;i<nN;i++){if(_hiddenScripts.has(scripts[i])){pos[i*3]=9999;pos[i*3+1]=9999;pos[i*3+2]=9999;}}}
   v.geo.attributes.position.needsUpdate=true;
@@ -3601,13 +3866,307 @@ function updateVP(vi,pcX,pcY,pcZ,layer){const v=views[vi];v.pcX=pcX;v.pcY=pcY;v.
 // trajectories under it. Scale by sqrt so squares stay individually visible where
 // sparse while dense regions read as a soft mass (floor 0.25).
 function _trajMarkerOpScale(){return Math.max(0.25,Math.min(1,Math.sqrt(2000/(nN||2000))));}
+// Path selection for buildTraj — its own (small, hot) function so V8 optimizes it
+// on the first load rather than inside the very large buildTraj body.
+// 2-PC (viewport-axes) L1 displacement per token across the layer sequence,
+// layer-outer over typed column views (no per-element _getScore Map lookups),
+// then top-K = 10% of the budget by displacement (O(n) partial selection: a
+// size-K min-heap keyed (disp asc, index desc), so the kept set and its emission
+// order equal a stable descending sort's first K), then a deterministic stride
+// pass across token-id space fills the rest. Same semantics as the old
+// Array.from(...).sort() — without the boxed 150k sort.
+function _trajSelect(pcX,pcY,tlMx,seq,budget){
+  const disp=new Float32Array(nN),px=new Float32Array(nN),py=new Float32Array(nN);
+  for(let si=0;si<seq.length;si++){const l=seq[si];
+    const cx=_getScoreColumn(l,pcX),cy=_getScoreColumn(l,pcY),imx=1/tlMx[l][0],imy=1/tlMx[l][1];
+    if(cx&&cy&&cx.length>=nN&&cy.length>=nN){
+      if(si===0){for(let i=0;i<nN;i++){let x=cx[i]*imx,y=cy[i]*imy;if(x!==x)x=0;if(y!==y)y=0;px[i]=x;py[i]=y;}}
+      else{for(let i=0;i<nN;i++){let x=cx[i]*imx,y=cy[i]*imy;if(x!==x)x=0;if(y!==y)y=0;disp[i]+=Math.abs(x-px[i])+Math.abs(y-py[i]);px[i]=x;py[i]=y;}}
+    }else{
+      for(let i=0;i<nN;i++){const x=_getScore(l,i,pcX)*imx,y=_getScore(l,i,pcY)*imy;if(si>0)disp[i]+=Math.abs(x-px[i])+Math.abs(y-py[i]);px[i]=x;py[i]=y;}
+    }
+  }
+  const topK=Math.max(1,Math.min(Math.round(budget*0.1),budget,nN));
+  const hi=new Int32Array(topK);let hn=0;
+  // worse(a,b): a ranks below b (smaller displacement, or equal and a later index)
+  for(let i=0;i<nN;i++){
+    if(hn<topK){let k=hn++;hi[k]=i;
+      while(k>0){const pnt=(k-1)>>1,a=hi[k],b=hi[pnt];if(disp[a]<disp[b]||(disp[a]===disp[b]&&a>b)){hi[k]=b;hi[pnt]=a;k=pnt;}else break;}}
+    else{const r=hi[0];if(disp[r]<disp[i]||(disp[r]===disp[i]&&r>i)){hi[0]=i;
+      let k=0;for(;;){const l2=2*k+1,r2=l2+1;let m=k;
+        if(l2<hn){const a=hi[l2],b=hi[m];if(disp[a]<disp[b]||(disp[a]===disp[b]&&a>b))m=l2;}
+        if(r2<hn){const a=hi[r2],b=hi[m];if(disp[a]<disp[b]||(disp[a]===disp[b]&&a>b))m=r2;}
+        if(m===k)break;const t=hi[k];hi[k]=hi[m];hi[m]=t;k=m;}}}
+  }
+  const order=Array.from(hi.subarray(0,hn)).sort((a,b)=>disp[b]-disp[a]||a-b);
+  const sel=new Set();for(let i=0;i<order.length;i++)sel.add(order[i]);
+  const remain=budget-sel.size;
+  if(remain>0){const stride=Math.max(1,Math.floor(nN/remain));
+    for(let i=0;i<nN&&sel.size<budget;i+=stride)sel.add(i);
+    for(let i=0;i<nN&&sel.size<budget;i++)sel.add(i);// top up any stride shortfall
+  }
+  return {selected:[...sel],topK};
+}
+// ============================================================================
+// Trajectory PATH LOD ("GTA map"). At overview the sheet is a faithful uniform
+// sample of ALL rows; as the camera zooms into a region, EVERY path passing
+// through the view is drawn full-length (up to a device ceiling — the only fixed
+// budget). No lattice / density cells are ever drawn: the look stays 1px
+// direction-colored hairlines whose overlap reads as density, plus the
+// trajMarker current-layer cloud and the pinned paths on top.
+//   grid   v._trajGrid: per-layer 2D CSR bins (G×G over each layer's clamp square
+//          ±_trajClampBounds[l]) built one layer per idle callback after
+//          _precomputeTraj (generation-guarded like the buffer queue). v._maxR
+//          is FROZEN from all rows' extents when the grid completes — the camera
+//          fit never chases the drawn set.
+//   pool   v.trajGroup / v.trajGroupCoarse: ONE preallocated LineSegments each
+//          (DynamicDrawUsage, grown in 2048-path steps up to the cap), drawn via
+//          setDrawRange + addUpdateRange. Property names are unchanged so every
+//          consumer (LOD swap, _dimAll, _applyFilter, _colorFromProj, ...) keeps
+//          working; v._trajTokenMap and v._trajCoarseVertsPerPath are regenerated
+//          atomically on every fill.
+//   fill   _trajFill: frustum from the traj camera (the _revFill pattern) →
+//          per-layer cell bounding-sphere tests → union of row ids in view. If it
+//          fits the cap, ALL of them are drawn; else a uniform sample by a fixed
+//          pseudo-random rank (temporally stable: zooming only adds/removes rows,
+//          never reshuffles). Selection is honest in the tag.
+//   alpha  the sheet keeps the 5000-path calibration ((add?0.008:0.15)·min(1,
+//          5000/shown), floor 0.004). When the ideal alpha would fall below the
+//          8-bit floor (shown > 10,000 at additive) we THIN shown by stride
+//          instead of clamping alpha, so brightness stays ∝ mass ("alpha-floor
+//          stride" in the tag) — a clamped alpha would over-ink dense regions.
+//   walls  wall-bounce: clamped endpoints are drawn as today (a path that hits the
+//          clamp square piles onto the wall); density at the edges is not
+//          silently changed by this LOD.
+//   hover  hover-on-path is out of scope; _pickAt keeps picking the trajMarker.
+const _TRAJ_GRID_G=32;
+const _TRAJ_ALPHA_FLOOR_ADD=10000;// additive: 0.008·5000/shown < 0.004 ⇔ shown > 10000
+let _trajDeviceCap=_COARSE_PTR?4000:60000;// device ceiling on paths drawn per traj viewport (live via __heinrich.trajBudget)
+// __heinrich.trajAlphaFloor: true = thin the drawn set so per-path alpha never has to
+// clamp at the 8-bit floor (brightness stays ∝ mass); false = draw every in-view path up
+// to the device cap, alpha floored at 0.004 (dense cores over-ink). DEFAULT false: the
+// operator tested all 48,660 paths at exactly that floored alpha and approved the look —
+// what is drawn is the operator's call, and the tag says which mode is active either way.
+let _trajAlphaFloorOn=false;
+function _trajCapEff(){return Math.max(1,Math.min(nN||1,_trajDeviceCap,(_trajAdditive&&_trajAlphaFloorOn)?_TRAJ_ALPHA_FLOOR_ADD:Infinity));}
+// Fixed pseudo-random permutation of row ids (xorshift Fisher-Yates) + its 1024-bucket
+// index — the thinning key. Shared by all traj viewports; rebuilt when nN changes.
+let _trajRankN=0,_trajRankB=null;
+function _trajRankBuckets(){
+  if(_trajRankB&&_trajRankN===nN)return _trajRankB;
+  const n=nN,perm=new Int32Array(n);for(let i=0;i<n;i++)perm[i]=i;
+  let s=0x9E3779B9|0;const rnd=()=>{s^=s<<13;s^=s>>>17;s^=s<<5;return (s>>>0)/4294967296;};
+  for(let i=n-1;i>0;i--){const j=(rnd()*(i+1))|0;const t=perm[i];perm[i]=perm[j];perm[j]=t;}
+  const B=new Uint16Array(n);for(let k=0;k<n;k++)B[perm[k]]=(k*1024/n)|0;// rank of row perm[k] is k
+  _trajRankB=B;_trajRankN=n;return B;}
+function _trajLodState(v){
+  let S=v._trajLod;
+  if(!S||S.n!==nN){S=v._trajLod={n:nN,mask:new Uint8Array(nN),list:new Int32Array(nN),sel:new Int32Array(0),hist:new Uint32Array(1024),cells:null,lx:null,ly:null,lastKey:'',lastFull:false,fills:0};}
+  return S;}
+function _trajSeqNow(){return _layerSeq.length?_layerSeq:[...Array(nL).keys()];}
+function _trajCoarseIdx(seq){const c=[];for(let si=0;si<seq.length;si+=4)c.push(si);if(c[c.length-1]!==seq.length-1)c.push(seq.length-1);return c;}
+// --- grid ---
+function _trajGridReset(vi){
+  const v=views[vi];if(!v||!v._trajLayerMx||!v._trajBufs)return;
+  const seq=_trajSeqNow();const old=v._trajGrid;
+  const pool=old?old.layers.filter(L=>L&&L.rows.length===nN).concat(old.pool||[]):[];
+  v._trajGrid={gen:v._trajGen,n:nN,ready:false,done:0,need:seq.length,layers:new Array(nL),pool,maxR:0,tmp:old&&old.tmp?old.tmp:new Uint32Array(_TRAJ_GRID_G*_TRAJ_GRID_G)};
+  _lazyQueue=_lazyQueue.filter(t=>!(t.vi===vi&&t.kind==='trajgrid'));
+  const c=Math.max(0,Math.min(nL-1,cL));const order=seq.slice().sort((a,b)=>Math.abs(a-c)-Math.abs(b-c));
+  for(const l of order)_lazyQueue.push({vi,l,kind:'trajgrid',gen:v._trajGen});
+  _lazyKick();}
+function _trajBuildGridLayer(vi,l){
+  const v=views[vi],g=v&&v._trajGrid;if(!g||g.gen!==v._trajGen||g.layers[l])return;
+  const buf=_trajBufAt(vi,l);if(!buf||buf.length!==nN*3)return;
+  const G=_TRAJ_GRID_G,cb=(v._trajClampBounds&&v._trajClampBounds[l])||[1.75,1.75],bX=cb[0],bY=cb[1],sx=G/(2*bX),sy=G/(2*bY);
+  let L=g.pool.pop();if(!L||L.rows.length!==nN)L={rows:new Int32Array(nN),start:new Uint32Array(G*G+1),cell:new Uint16Array(nN),bX:0,bY:0};
+  const rows=L.rows,start=L.start,cell=L.cell;start.fill(0);let r2max=0;
+  for(let i=0;i<nN;i++){const x=buf[i*3],y=buf[i*3+1];let cx=((x+bX)*sx)|0,cy=((y+bY)*sy)|0;if(cx<0)cx=0;else if(cx>=G)cx=G-1;if(cy<0)cy=0;else if(cy>=G)cy=G-1;
+    const c=cy*G+cx;cell[i]=c;start[c+1]++;const r2=x*x+y*y;if(r2>r2max)r2max=r2;}
+  for(let c=0;c<G*G;c++)start[c+1]+=start[c];
+  const fp=g.tmp;fp.set(start.subarray(0,G*G));
+  for(let i=0;i<nN;i++)rows[fp[cell[i]]++]=i;
+  let ne=0;for(let c=0;c<G*G;c++)if(start[c+1]!==start[c])ne++;
+  L.bX=bX;L.bY=bY;L.nonEmpty=ne;g.layers[l]=L;g.done++;
+  const z=_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1;g.maxR=Math.max(g.maxR,Math.sqrt(r2max+z*z));
+  // Coarse pointers keep only a ±window of layer buffers resident — give this one back.
+  if(_LAZY_WINDOW<Infinity&&Math.abs(l-Math.max(0,Math.min(nL-1,cL)))>_LAZY_WINDOW&&v._trajBufs&&v._trajBufs[l]===buf){if(_bufPool.length<64)_bufPool.push(buf);v._trajBufs[l]=null;}
+  if(g.done>=g.need){g.ready=true;v._maxR=Math.max(0.5,g.maxR);// frozen: all rows' extent, never the drawn set
+    const S=_trajLodState(v);S.lastKey='';S.lastFull=false;_trajScheduleFill(vi);}
+}
+// --- pool ---
+function _trajEnsurePool(v,nPaths,nSegs,nSegsC){
+  const blend=_trajAdditive?THREE.AdditiveBlending:THREE.NormalBlending;
+  if(!v.trajGroup){v.trajGroup=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.008,depthWrite:false,blending:blend}));v.trajGroup.frustumCulled=false;v.sc.add(v.trajGroup);}
+  if(!v.trajGroupCoarse){v.trajGroupCoarse=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.025,depthWrite:false,blending:blend}));v.trajGroupCoarse.frustumCulled=false;v.trajGroupCoarse.visible=false;v.sc.add(v.trajGroupCoarse);}
+  for(const o of [v.trajGroup,v.trajGroupCoarse]){if(o.material.blending!==blend){o.material.blending=blend;o.material.needsUpdate=true;}}
+  if((v._trajPoolCap|0)>=nPaths&&v._trajPoolSegs===nSegs&&v._trajPoolSegsC===nSegsC&&v.trajGroup.geometry.attributes.position)return;
+  const cap=Math.max(1,Math.min(nN||1,Math.max(nPaths,Math.ceil(nPaths/2048)*2048)));
+  const mk=(nv)=>{const g=new THREE.BufferGeometry();const pa=new THREE.BufferAttribute(new Float32Array(nv*3),3),ca=new THREE.BufferAttribute(new Float32Array(nv*3),3);pa.setUsage(THREE.DynamicDrawUsage);ca.setUsage(THREE.DynamicDrawUsage);g.setAttribute('position',pa);g.setAttribute('color',ca);g.setDrawRange(0,0);return g;};
+  v.trajGroup.geometry.dispose();v.trajGroup.geometry=mk(cap*nSegs*2);
+  v.trajGroupCoarse.geometry.dispose();v.trajGroupCoarse.geometry=mk(cap*nSegsC*2);
+  v._trajPoolCap=cap;v._trajPoolSegs=nSegs;v._trajPoolSegsC=nSegsC;
+}
+function _trajFreePool(vi){const v=views[vi];if(!v)return;for(const o of [v.trajGroup,v.trajGroupCoarse]){if(o){o.geometry.dispose();o.geometry=new THREE.BufferGeometry();}}v._trajPoolCap=0;}
+function _trajFlagAttr(a,nVerts){if(!a)return;if(typeof a.clearUpdateRanges==='function'){a.clearUpdateRanges();a.addUpdateRange(0,nVerts*3);}a.needsUpdate=true;}
+// Write the current selection's vertices (fine + coarse pools) from the per-layer
+// buffers (resident) or straight from the score columns (not yet resident — first
+// fill after a pair change, or a coarse pointer's out-of-window layers). Hidden
+// scripts go to the off-screen sentinel (9999) — same slots, same token map.
+// Returns the drawn extent (max |vertex|) for the pre-grid camera fit.
+function _trajEmitPositions(vi,fine=true){
+  const v=views[vi];const S=_trajLodState(v);const sel=v._trajSel,n=v._trajShown|0;if(!sel)return 0.5;
+  const seq=_trajSeqNow(),nLay=seq.length,nSegs=nLay-1;if(nSegs<1)return 0.5;
+  const cIdx=_trajCoarseIdx(seq),nSegsC=cIdx.length-1;
+  _trajEnsurePool(v,n,nSegs,nSegsC);
+  if(!S.lx||S.lx.length<nLay*n){S.lx=new Float32Array(nLay*Math.max(n,1024));S.ly=new Float32Array(S.lx.length);}
+  const lx=S.lx,ly=S.ly,zs=new Float32Array(nLay);
+  const tlMx=v._trajLayerMx,tCb=v._trajClampBounds;
+  for(let si=0;si<nLay;si++){const l=seq[si],off=si*n;zs[si]=_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1;
+    const buf=v._trajBufs&&v._trajBufs[l];
+    if(buf&&buf.length===nN*3){for(let p=0;p<n;p++){const r=sel[p]*3;lx[off+p]=buf[r];ly[off+p]=buf[r+1];}continue;}
+    const lm=(tlMx&&tlMx[l])||[1,1],cb=(tCb&&tCb[l])||[1.75,1.75],imx=1/lm[0],imy=1/lm[1],bX=cb[0],bY=cb[1];
+    const cx=_getScoreColumn(l,v.pcX),cy=_getScoreColumn(l,v.pcY);
+    if(cx&&cy&&cx.length>=nN&&cy.length>=nN){for(let p=0;p<n;p++){const r=sel[p];let x=cx[r]*imx,y=cy[r]*imy;if(x!==x)x=0;if(y!==y)y=0;lx[off+p]=x>bX?bX:(x<-bX?-bX:x);ly[off+p]=y>bY?bY:(y<-bY?-bY:y);}}
+    else{for(let p=0;p<n;p++){const r=sel[p];lx[off+p]=_clampTraj(_getScore(l,r,v.pcX)*imx,bX);ly[off+p]=_clampTraj(_getScore(l,r,v.pcY)*imy,bY);}}
+  }
+  const hide=_hiddenScripts.size>0;let maxR=0.5;
+  if(fine){const pos=v.trajGroup.geometry.attributes.position.array;const per=nSegs*2*3;
+    for(let p=0;p<n;p++){let o=p*per;
+      if(hide&&_hiddenScripts.has(scripts[sel[p]])){pos.fill(9999,o,o+per);continue;}
+      for(let si=0;si<nSegs;si++){const x0=lx[si*n+p],y0=ly[si*n+p],x1=lx[(si+1)*n+p],y1=ly[(si+1)*n+p];
+        pos[o]=x0;pos[o+1]=y0;pos[o+2]=zs[si];pos[o+3]=x1;pos[o+4]=y1;pos[o+5]=zs[si+1];o+=6;}}
+    v.trajGroup.geometry.setDrawRange(0,n*nSegs*2);_trajFlagAttr(v.trajGroup.geometry.attributes.position,n*nSegs*2);
+    v._trajFineStale=false;
+    // token map: same slot layout every fill → reuse the entries
+    let tm=v._trajTokenMap;if(!tm||tm.length!==n||(n&&tm[0].count!==nSegs*2)){tm=new Array(n);for(let p=0;p<n;p++)tm[p]={ti:sel[p],start:p*nSegs*2,count:nSegs*2};v._trajTokenMap=tm;}
+    else{for(let p=0;p<n;p++)tm[p].ti=sel[p];}
+  }else v._trajFineStale=true;
+  {const pos=v.trajGroupCoarse.geometry.attributes.position.array;const per=nSegsC*2*3;
+    for(let p=0;p<n;p++){let o=p*per;
+      if(hide&&_hiddenScripts.has(scripts[sel[p]])){pos.fill(9999,o,o+per);continue;}
+      for(let k=0;k<nSegsC;k++){const a=cIdx[k],b=cIdx[k+1];pos[o]=lx[a*n+p];pos[o+1]=ly[a*n+p];pos[o+2]=zs[a];pos[o+3]=lx[b*n+p];pos[o+4]=ly[b*n+p];pos[o+5]=zs[b];o+=6;}}
+    v.trajGroupCoarse.geometry.setDrawRange(0,n*nSegsC*2);_trajFlagAttr(v.trajGroupCoarse.geometry.attributes.position,n*nSegsC*2);
+    v._trajCoarseVertsPerPath=nSegsC*2;}
+  // extent of what was drawn (only needed before the grid freezes v._maxR)
+  if(v._trajGrid&&v._trajGrid.ready)return v._maxR||maxR;
+  for(let si=0;si<nLay;si++){const off=si*n,z2=zs[si]*zs[si];let m=0;for(let p=0;p<n;p++){const r2=lx[off+p]*lx[off+p]+ly[off+p]*ly[off+p];if(r2>m)m=r2;}const r=Math.sqrt(m+z2);if(r>maxR)maxR=r;}
+  return maxR;
+}
+// Colors for both pools: script color, or the A↔B direction gradient (same formula
+// as _colorFromProj/_revFill, dimmed by _d = 0.3·min(1,5000/shown) — the points
+// carry the saturated split; the additive haze must stay faint).
+function _trajEmitColors(vi,dir){
+  const v=views[vi];const sel=v._trajSel,n=v._trajShown|0;if(!sel||!v.trajGroup)return;
+  const nSegs=v._trajPoolSegs|0,nSegsC=v._trajPoolSegsC|0;if(!nSegs)return;
+  const fc=v.trajGroup.geometry.attributes.color.array,cc=v.trajGroupCoarse.geometry.attributes.color.array;
+  const useDir=!!(dir&&_dirProjLast&&_dirProjLast.length===nN);const _d=0.3*Math.min(1,5000/Math.max(1,n));
+  const perF=nSegs*2*3,perC=nSegsC*2*3;
+  for(let p=0;p<n;p++){const ti=sel[p];let r,g,b;
+    if(useDir){const t=Math.max(-1,Math.min(1,(_dirProjLast[ti]-_dirProjMid)/_dirProjSpan)),at=Math.abs(t);
+      if(t>0){r=(0.25+0.75*at)*_d;g=0.25*(1-at)*_d;b=0.15*(1-at)*_d;}else{r=0.15*(1-at)*_d;g=0.25*(1-at)*_d;b=(0.25+0.55*at)*_d;}}
+    else{const hex=CL[scripts[ti]]||0xAAAAAA;r=((hex>>16)&0xFF)/255;g=((hex>>8)&0xFF)/255;b=(hex&0xFF)/255;}
+    for(let o=p*perF,e=o+perF;o<e;o+=3){fc[o]=r;fc[o+1]=g;fc[o+2]=b;}
+    for(let o=p*perC,e=o+perC;o<e;o+=3){cc[o]=r;cc[o+1]=g;cc[o+2]=b;}}
+  _trajFlagAttr(v.trajGroup.geometry.attributes.color,n*nSegs*2);_trajFlagAttr(v.trajGroupCoarse.geometry.attributes.color,n*nSegsC*2);
+}
+// Opacity law (see header): 5000-path calibration, 8-bit floors, dim state applied.
+function _trajApplyOpacity(vi){const v=views[vi];const shown=Math.max(1,v._trajShown|0);const s=Math.min(1,5000/shown);
+  v._trajOpFine=Math.max(0.004,(_trajAdditive?0.008:0.15)*s);v._trajOpCoarse=Math.max(0.006,(_trajAdditive?0.025:0.2)*s);
+  _trajDimApply(v,(hoveredToken>=0)||pinnedToken>=0||pinnedTokenB>=0);}
+// --- fill: paths through the view ---
+const _trajFillBusy=[],_trajFillDirty=[],_trajSettleTimers=[];const _trajTmpV=new THREE.Vector3();
+function _trajFill(vi,fineWanted){
+  const v=views[vi];if(!v||!v.trajGroup||!v._trajLayerMx||!nN)return false;
+  const g=v._trajGrid;if(!g||!g.ready||g.n!==nN||v._laneStale)return false;// pre-grid (buildTraj's fixed-budget sheet stands), or a lane not rebuilt for this model yet
+  const S=_trajLodState(v);const seq=_trajSeqNow(),nLay=seq.length;if(nLay<2)return false;
+  const cam=v.cam;cam.updateMatrixWorld();cam.updateProjectionMatrix();
+  _revPV.multiplyMatrices(cam.projectionMatrix,cam.matrixWorldInverse);_revFrustum.setFromProjectionMatrix(_revPV);
+  // Coarse-only while the desktop 6-up loop shows the coarse LOD (camera in motion):
+  // the fine pool is refilled at settle (anim loop transition / settle timer).
+  const fine=fineWanted!==undefined?!!fineWanted:!(!_maxKey&&!MOBILE&&(performance.now()-_lastCamMove)<250);
+  const cap=_trajCapEff();
+  const hideKey=_hiddenScripts.size?[..._hiddenScripts].sort().join(','):'';
+  const dir=!!(_dirColorActive&&_dirProjLast);
+  const pe=_revPV.elements;let camKey='';for(let i=0;i<16;i++)camKey+=(pe[i]*1e5|0)+',';
+  const key=camKey+'|'+cap+'|'+hideKey+'|'+(dir?'d':'s')+'|'+(_trajAdditive?'a':'n')+'|'+g.gen;
+  if(key===S.lastKey&&(!fine||!v._trajFineStale))return true;
+  // Pass 1: in-view cells per layer (bounding sphere vs frustum; ε keeps a cell whose
+  // sphere grazes a plane). A layer whose whole clamp square misses the frustum is skipped.
+  // A cell wholly inside the frustum (every plane distance ≥ radius) contributes all its
+  // rows; a BOUNDARY cell (sphere meets a plane) gets an exact per-row vertex test in
+  // pass 2 — without it a 1/32-cell granularity over-counted "in view" ~1.8× at deep
+  // zoom and thinned paths that could all have been drawn.
+  const G=_TRAJ_GRID_G;const cells=S.cells||(S.cells=new Int32Array(nLay*G*G*3));let nCells=0,inView=0,nonEmptyAll=0,nCellsAll=0;
+  const planes=_revFrustum.planes;
+  for(let si=0;si<nLay;si++){const l=seq[si],L=g.layers[l];if(!L)continue;const z=_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1;
+    const bX=L.bX,bY=L.bY,cw=2*bX/G,ch=2*bY/G,cr=0.5*Math.hypot(cw,ch)+1e-3,st=L.start;
+    nonEmptyAll+=L.nonEmpty;
+    _revSphere.center.set(0,0,z);_revSphere.radius=Math.hypot(bX,bY)+1e-3;
+    if(!_revFrustum.intersectsSphere(_revSphere))continue;
+    for(let cy=0;cy<G;cy++){const yc=-bY+(cy+0.5)*ch;for(let cx=0;cx<G;cx++){const c=cy*G+cx,s=st[c],e=st[c+1];if(e===s)continue;
+      _revSphere.center.set(-bX+(cx+0.5)*cw,yc,z);let inside=true,out=false;
+      for(let k=0;k<6;k++){const d=planes[k].distanceToPoint(_revSphere.center);if(d<-cr){out=true;break;}if(d<cr)inside=false;}
+      if(out)continue;
+      cells[nCells*3]=(inside?0:0x40000000)|(si<<20)|s;cells[nCells*3+1]=e;cells[nCells*3+2]=l;nCells++;nCellsAll++;}}}
+  const full=nCellsAll===nonEmptyAll;
+  if(full&&S.lastFull&&S.lastFullKey===key.slice(camKey.length)&&(!fine||!v._trajFineStale))return true;// orbiting at overview: nothing changes
+  // Pass 2: union of rows through the in-view cells (mask + list, reused). Full view = every row.
+  const mask=S.mask,list=S.list;let n=0;
+  if(full){n=nN;for(let i=0;i<nN;i++)list[i]=i;}
+  else{const tlMx=v._trajLayerMx,tCb=v._trajClampBounds;let lastL=-1,colX=null,colY=null,imx=1,imy=1,bX=1.75,bY=1.75,z=0,buf=null;
+    for(let ci=0;ci<nCells;ci++){const w0=cells[ci*3],boundary=(w0&0x40000000)!==0,si=(w0>>>20)&0x3FF,s=w0&0xFFFFF,e=cells[ci*3+1],l=cells[ci*3+2],rows=g.layers[l].rows;
+      if(!boundary){for(let k=s;k<e;k++){const r=rows[k];if(!mask[r]){mask[r]=1;list[n++]=r;}}continue;}
+      if(l!==lastL){lastL=l;buf=v._trajBufs&&v._trajBufs[l];colX=buf?null:_getScoreColumn(l,v.pcX);colY=buf?null:_getScoreColumn(l,v.pcY);
+        const lm=(tlMx&&tlMx[l])||[1,1],cb=(tCb&&tCb[l])||[1.75,1.75];imx=1/lm[0];imy=1/lm[1];bX=cb[0];bY=cb[1];z=_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1;
+        if(!buf&&!(colX&&colY&&colX.length>=nN&&colY.length>=nN)){buf=_trajBufAt(vi,l);colX=colY=null;}}
+      for(let k=s;k<e;k++){const r=rows[k];if(mask[r])continue;let x,y;
+        if(buf){x=buf[r*3];y=buf[r*3+1];}else{x=colX[r]*imx;y=colY[r]*imy;if(x!==x)x=0;if(y!==y)y=0;x=x>bX?bX:(x<-bX?-bX:x);y=y>bY?bY:(y<-bY?-bY:y);}
+        _trajTmpV.set(x,y,z);if(_revFrustum.containsPoint(_trajTmpV)){mask[r]=1;list[n++]=r;}}}
+    for(let i=0;i<n;i++)mask[list[i]]=0;}
+  inView=n;
+  // Selection: all of them if they fit; else a uniform sample by fixed pseudo-random rank
+  // (bucketed: rows with rank-bucket < b* plus a prefix of bucket b*, exactly cap rows).
+  if(S.sel.length<Math.min(n,cap))S.sel=new Int32Array(Math.min(nN,Math.max(cap,n)));
+  const sel=S.sel;let w=0;
+  if(n<=cap){for(let i=0;i<n;i++)sel[i]=list[i];w=n;}
+  else{const RB=_trajRankBuckets(),hist=S.hist;hist.fill(0);for(let i=0;i<n;i++)hist[RB[list[i]]]++;
+    let acc=0,bStar=0;for(let b=0;b<1024;b++){if(acc+hist[b]>cap)break;acc+=hist[b];bStar=b+1;}
+    let rem=cap-acc;for(let i=0;i<n&&w<cap;i++){const r=list[i],b=RB[r];if(b<bStar)sel[w++]=r;else if(b===bStar&&rem>0){sel[w++]=r;rem--;}}}
+  v._trajSel=sel;v._trajShown=w;v._trajInView=inView;v._trajBudget=w;v._trajTopK=0;
+  v._trajMode=(w>=inView)?'all-in-view':'uniform-sample';v._trajAlphaFloor=(w<inView&&cap<Math.min(nN,_trajDeviceCap));
+  _trajEmitPositions(vi,fine);_trajEmitColors(vi,dir);_trajApplyOpacity(vi);
+  _setTrajTag(vi,w,{inView,total:nN,alphaFloor:v._trajAlphaFloor,alphaClamped:_trajAdditive&&w>0&&(0.008*Math.min(1,5000/w))<0.004});
+  S.lastKey=key;S.lastFull=full;S.lastFullKey=key.slice(camKey.length);S.fills++;
+  _needsRender=true;return true;
+}
+// Latest-wins coalescing (the _revScheduleFill pattern): fill on the next macrotask; a
+// change arriving mid-fill marks dirty and runs once more; intermediate cameras are skipped.
+function _trajScheduleFill(vi){
+  if(_trajFillBusy[vi]){_trajFillDirty[vi]=true;return;}
+  _trajFillBusy[vi]=true;
+  const run=()=>{_trajFillDirty[vi]=false;
+    try{_trajFill(vi);}catch(e){console.error('_trajFill',e);}
+    if(_trajFillDirty[vi])setTimeout(run,0);else _trajFillBusy[vi]=false;};
+  setTimeout(run,0);}
+function _trajOnZoom(vi){
+  const v=views[vi];if(!v||!v._trajGrid||!v._trajGrid.ready)return;
+  _trajScheduleFill(vi);
+  // settle: the coarse-only fills during motion leave the fine pool stale — refill it
+  // once the camera has been still (the anim-loop LOD transition also does this).
+  if(_trajSettleTimers[vi])clearTimeout(_trajSettleTimers[vi]);
+  _trajSettleTimers[vi]=setTimeout(()=>{_trajSettleTimers[vi]=0;if(views[vi]&&views[vi]._trajFineStale)_trajScheduleFill(vi);},280);}
+for(let _tvi=NC;_tvi<NV;_tvi++){const _cvi=_tvi;views[_tvi].ctl.addEventListener('change',()=>_trajOnZoom(_cvi));}
 function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
-  // Dispose old
-  if(v.trajGroup){v.sc.remove(v.trajGroup);v.trajGroup.geometry?.dispose();v.trajGroup.material?.dispose();v.trajGroup=null;}
-  if(v.trajGroupCoarse){v.sc.remove(v.trajGroupCoarse);v.trajGroupCoarse.geometry?.dispose();v.trajGroupCoarse.material?.dispose();v.trajGroupCoarse=null;}
+  // Dispose old marker (the line pools are reused — see _trajEnsurePool)
   if(v.trajMarker){v.trajMarker.geometry.dispose();v.trajMarker.material.dispose();v.sc.remove(v.trajMarker);}
   // Robust per-layer scale — outliers don't crush the cloud into near-zero
   const _tlMx=new Array(nL);
+  // Clamp bounds are computed HERE with the scales (not in _precomputeTraj, which
+  // now runs lazily per layer): every path vertex below needs its layer's bound,
+  // and reading them from the previous pair's _precomputeTraj (the old order) was
+  // a latent mismatch — bounds from pair N-1 clamping pair N's paths.
+  const _tCb=new Array(nL);
   for(let l=0;l<nL;l++){
     const cx=_getScoreColumn(l,pcX),cy=_getScoreColumn(l,pcY);
     let mxX=1,mxY=1;
@@ -3618,108 +4177,44 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
       mxX=_robustColMax(sx);mxY=_robustColMax(sy);
     }
     _tlMx[l]=[mxX,mxY];
+    _tCb[l]=[cx?_clampBoundFor(cx,mxX):1.75,cy?_clampBoundFor(cy,mxY):1.75];
   }
-  v._trajLayerMx=_tlMx;v._trajScaleXY=[1,1];v._trajScale=1;
-  const _trajSeq=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
-  const nSegs=_trajSeq.length-1;// segments per token
-  // --- Importance sampling (Part B.2) ---
-  // Flat random sampling can drop the very tokens that carry the signal — the
-  // outlier crystals with huge displacement. Instead: keep the top-K paths by
-  // total displacement DETERMINISTICALLY, then fill the rest of the budget with
-  // a deterministic stratified pass across token-id space (uniform coverage).
-  // Outlier paths shouldn't lose the lottery.
-  // Path budget is a live knob (__heinrich.trajBudget), not a constant: the
-  // 5000 was an April perf guess, pre-vocab. R2 egress is free, so the only
-  // real constraint is the CLIENT's GPU/CPU/memory — a desktop and a phone
-  // get different answers, and the right number is measured (fps while
-  // orbiting), not assumed. Default stays 5000 until measured.
-  const budget=Math.min(nN,_trajBudgetCap);
-  const disp=new Float32Array(nN);
-  for(let i=0;i<nN;i++){let s=0,px=0,py=0,first=true;
-    for(let si=0;si<_trajSeq.length;si++){const l=_trajSeq[si];
-      const x=_getScore(l,i,pcX)/_tlMx[l][0],y=_getScore(l,i,pcY)/_tlMx[l][1];
-      if(!first)s+=Math.abs(x-px)+Math.abs(y-py);px=x;py=y;first=false;}
-    disp[i]=s;}
-  const topK=Math.min(500,budget,nN);
-  const order=Array.from({length:nN},(_,i)=>i).sort((a,b)=>disp[b]-disp[a]);
-  const sel=new Set();for(let i=0;i<topK;i++)sel.add(order[i]);
-  const remain=budget-sel.size;
-  if(remain>0){const stride=Math.max(1,Math.floor(nN/remain));
-    for(let i=0;i<nN&&sel.size<budget;i+=stride)sel.add(i);
-    for(let i=0;i<nN&&sel.size<budget;i++)sel.add(i);// top up any stride shortfall
-  }
-  const selected=[...sel];
-  v._trajTopK=topK;v._trajBudget=selected.length;
-  // Coarse LOD sequence: every 4th layer (+ the final layer) — a lower-res polyline
-  // shown while the camera moves (never hidden; degrading resolution is honest).
-  const coarseSeq=[];for(let si=0;si<_trajSeq.length;si+=4)coarseSeq.push(_trajSeq[si]);
-  if(coarseSeq[coarseSeq.length-1]!==_trajSeq[_trajSeq.length-1])coarseSeq.push(_trajSeq[_trajSeq.length-1]);
-  const nSegsC=coarseSeq.length-1;
-  const totalVerts=selected.length*nSegs*2;
-  const tPos=new Float32Array(totalVerts*3),tCol=new Float32Array(totalVerts*3);
-  const cPos=new Float32Array(selected.length*nSegsC*2*3),cCol=new Float32Array(selected.length*nSegsC*2*3);
-  const _z=(l)=>_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1;
-  const _bx=(l)=>{const cb=v._trajClampBounds?v._trajClampBounds[l]:null;return cb?cb[0]:1.75;};
-  const _by=(l)=>{const cb=v._trajClampBounds?v._trajClampBounds[l]:null;return cb?cb[1]:1.75;};
-  // Track vertex ranges per sampled token for script filtering / direction coloring
-  v._trajTokenMap=[];// [{ti, start, count}]
-  let vi2=0,ci2=0;
-  // Real observed extent (post-clamp, so it matches what's actually drawn) —
-  // feeds _fitTrajCamera below, same role _maxR plays for Flowers.
-  let _trajR=0.5;
-  for(let s=0;s<selected.length;s++){const ii=selected[s];
-    const vStart=vi2;
-    const hex=CL[scripts[ii]]||0xAAAAAA;
-    const cr=((hex>>16)&0xFF)/255,cg=((hex>>8)&0xFF)/255,cb=(hex&0xFF)/255;
-    for(let si=0;si<nSegs;si++){
-      const l0=_trajSeq[si],l1=_trajSeq[si+1];
-      tPos[vi2*3]=_clampTraj(_getScore(l0,ii,pcX)/_tlMx[l0][0],_bx(l0));tPos[vi2*3+1]=_clampTraj(_getScore(l0,ii,pcY)/_tlMx[l0][1],_by(l0));tPos[vi2*3+2]=_z(l0);
-      tCol[vi2*3]=cr;tCol[vi2*3+1]=cg;tCol[vi2*3+2]=cb;
-      {const r=Math.hypot(tPos[vi2*3],tPos[vi2*3+1],tPos[vi2*3+2]);if(r>_trajR)_trajR=r;}
-      vi2++;
-      tPos[vi2*3]=_clampTraj(_getScore(l1,ii,pcX)/_tlMx[l1][0],_bx(l1));tPos[vi2*3+1]=_clampTraj(_getScore(l1,ii,pcY)/_tlMx[l1][1],_by(l1));tPos[vi2*3+2]=_z(l1);
-      tCol[vi2*3]=cr;tCol[vi2*3+1]=cg;tCol[vi2*3+2]=cb;
-      {const r=Math.hypot(tPos[vi2*3],tPos[vi2*3+1],tPos[vi2*3+2]);if(r>_trajR)_trajR=r;}
-      vi2++;
-    }
-    for(let si=0;si<nSegsC;si++){
-      const l0=coarseSeq[si],l1=coarseSeq[si+1];
-      cPos[ci2*3]=_clampTraj(_getScore(l0,ii,pcX)/_tlMx[l0][0],_bx(l0));cPos[ci2*3+1]=_clampTraj(_getScore(l0,ii,pcY)/_tlMx[l0][1],_by(l0));cPos[ci2*3+2]=_z(l0);
-      cCol[ci2*3]=cr;cCol[ci2*3+1]=cg;cCol[ci2*3+2]=cb;ci2++;
-      cPos[ci2*3]=_clampTraj(_getScore(l1,ii,pcX)/_tlMx[l1][0],_bx(l1));cPos[ci2*3+1]=_clampTraj(_getScore(l1,ii,pcY)/_tlMx[l1][1],_by(l1));cPos[ci2*3+2]=_z(l1);
-      cCol[ci2*3]=cr;cCol[ci2*3+1]=cg;cCol[ci2*3+2]=cb;ci2++;
-    }
-    v._trajTokenMap.push({ti:ii,start:vStart,count:vi2-vStart});
-  }
+  v._trajLayerMx=_tlMx;v._trajClampBounds=_tCb;v._trajScaleXY=[1,1];v._trajScale=1;
+  // Fresh per-layer buffers for THIS pair (cL±1 now, the rest via the idle queue) —
+  // also (re)starts the LOD grid build, generation-guarded. Callers that still call
+  // _precomputeTraj right after buildTraj only redo three cheap layers.
+  _precomputeTraj(vi);
+  const _trajSeq=_trajSeqNow();
+  // --- First fill: the fixed-budget sheet (Part B.2 importance sampling) ---
+  // The LOD grid is not ready yet (it builds in idle time), so the sheet appears
+  // instantly from the old selection: top-K by 2-PC displacement + a deterministic
+  // stride pass across token-id space, budget = min(nN, _trajBudgetCap, cap). Once
+  // the grid completes, _trajFill replaces it with the paths-through-view selection.
+  const budget=Math.min(nN,_trajBudgetCap,_trajCapEff());
+  const{selected,topK}=_trajSelect(pcX,pcY,_tlMx,_trajSeq,budget);
+  const S=_trajLodState(v);if(S.sel.length<selected.length)S.sel=new Int32Array(Math.min(nN,Math.max(selected.length,_trajCapEff())));
+  for(let i=0;i<selected.length;i++)S.sel[i]=selected[i];
+  v._trajSel=S.sel;v._trajShown=selected.length;v._trajInView=nN;v._trajTopK=topK;v._trajBudget=selected.length;v._trajMode='fixed';v._trajAlphaFloor=false;
+  S.lastKey='';S.lastFull=false;
+  // Emit into the pools (created/grown here if needed) with the per-path script color,
+  // or the direction gradient if A↔B coloring is live. Wall-bounce: clamped endpoints
+  // are drawn as they are (see the LOD header).
+  const _trajR=_trajEmitPositions(vi,true);_trajEmitColors(vi,_dirColorActive&&_dirProjLast);
+  // Real observed extent (post-clamp) feeds _fitTrajCamera, same role _maxR plays
+  // for Flowers; the grid build replaces it with ALL rows' extent (frozen) when done.
   v._maxR=_trajR;_fitTrajCamera(v);
-  const tGeo=new THREE.BufferGeometry();
-  tGeo.setAttribute('position',new THREE.BufferAttribute(tPos,3));
-  tGeo.setAttribute('color',new THREE.BufferAttribute(tCol,3));
-  tGeo.setDrawRange(0,vi2);
   // Additive blending (Part B.1): overlapping paths accumulate into brightness —
   // ink = mass, honest by construction. Opacity is deliberately VERY LOW (0.008):
-  // in raw mode the trajectories crystallize and pile up (100s of the 2000 paths
+  // in raw mode the trajectories crystallize and pile up (100s of the paths
   // converge), so a higher alpha saturates the convergence core to a flat white
-  // disk and destroys the density gradient. At 0.008 the dark background is
-  // preserved and the mass reads as a smooth radial brightness falloff — brightest
-  // where the most paths pass, fading to dark at the sparse edges — with outlier
-  // paths still legible as faint lines. Chosen over NormalBlending, which produces
-  // a flat uniform haze where concentration is invisible (kept as escape hatch).
-  // Keep total ink constant as the path budget changes: 0.008/0.15 were
-  // tuned at 5000 paths (the operator-approved look). More paths → thinner
-  // each. FLOOR at ~1/255 (0.004): below that an 8-bit framebuffer quantizes
-  // each additive line's contribution to zero and the whole sheet vanishes.
-  const _trajOpScale=Math.min(1,5000/Math.max(1,selected.length));
-  const _opFine=Math.max(0.004,(_trajAdditive?0.008:0.15)*_trajOpScale),_opCoarse=Math.max(0.006,(_trajAdditive?0.025:0.2)*_trajOpScale);
-  v.trajGroup=new THREE.LineSegments(tGeo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:_opFine,depthWrite:false,blending:_trajAdditive?THREE.AdditiveBlending:THREE.NormalBlending}));
-  v.trajGroup.frustumCulled=false;v.sc.add(v.trajGroup);
-  const cGeo=new THREE.BufferGeometry();
-  cGeo.setAttribute('position',new THREE.BufferAttribute(cPos,3));
-  cGeo.setAttribute('color',new THREE.BufferAttribute(cCol,3));
-  cGeo.setDrawRange(0,ci2);
-  // Coarse has ~4× fewer segments, so it carries ~3× the alpha to match brightness.
-  v.trajGroupCoarse=new THREE.LineSegments(cGeo,new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:_opCoarse,depthWrite:false,blending:_trajAdditive?THREE.AdditiveBlending:THREE.NormalBlending}));
-  v.trajGroupCoarse.frustumCulled=false;v.trajGroupCoarse.visible=false;v.sc.add(v.trajGroupCoarse);
+  // disk and destroys the density gradient. Chosen over NormalBlending, which
+  // produces a flat uniform haze where concentration is invisible (kept as escape
+  // hatch). Total ink stays constant as the path count changes: 0.008/0.15 were
+  // tuned at 5000 paths (the operator-approved look); more paths → thinner each,
+  // FLOORED at ~1/255 (0.004) — below that an 8-bit framebuffer quantizes each
+  // additive line to zero. Above the floor the LOD thins the count instead
+  // (_trajCapEff). Coarse has ~4× fewer segments, so ~3× the alpha.
+  _trajApplyOpacity(vi);
   _setTrajTag(vi,selected.length,topK);
   // Trajectory marker dots (all tokens, updated per layer)
   const pg=new THREE.BufferGeometry();
@@ -3733,14 +4228,20 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
   {const _p=(vi-NC)===0?'A':(vi-NC)===1?'Δ':'B';document.getElementById('ax'+vi).textContent=`${_p}→ PC${pcX}×PC${pcY}`;}
 }
 function updateTrajMarker(vi){const v=views[vi];
-  const buf=v._trajBufs&&v._trajBufs[cL];if(!buf)return;
+  const buf=_trajBufAt(vi,cL);if(!buf)return;
   // Guard against a stale buffer from a previous model (different nN): buildTraj
   // calls this before _precomputeTraj refreshes _trajBufs, so a shrinking model
   // switch would overflow the fresh marker buffer (Float32Array.set RangeError).
-  if(v.trajMarker){const tp=v.trajMarker.geometry.attributes.position.array;
+  if(v.trajMarker){const attr=v.trajMarker.geometry.attributes.position,tp=attr.array;
     if(buf.length===tp.length){tp.set(buf);
       if(_hiddenScripts.size){for(let i=0;i<nN;i++){if(_hiddenScripts.has(scripts[i])){tp[i*3]=9999;tp[i*3+1]=9999;tp[i*3+2]=9999;}}}
-      v.trajMarker.geometry.attributes.position.needsUpdate=true;}}
+      // Explicit full-range upload (three r15x addUpdateRange API; older builds fall back to needsUpdate)
+      if(typeof attr.addUpdateRange==='function'){attr.clearUpdateRanges();attr.addUpdateRange(0,tp.length);}
+      attr.needsUpdate=true;}}
+  // The base-cloud geometry (v.geo) is HIDDEN at vocab scope (v.pts.visible=false
+  // below and in updateVP) — a 3.6MB memcpy + GPU upload per layer step ×3 views
+  // into an invisible object. Only the sample scope still draws it.
+  if(_cloudSource==='vocab'){v.pts.visible=false;return;}
   const pos=_ensurePositionBuf(v);
   if(buf.length===pos.length){pos.set(buf);
     if(_hiddenScripts.size){for(let i=0;i<nN;i++){if(_hiddenScripts.has(scripts[i])){pos[i*3]=9999;pos[i*3+1]=9999;pos[i*3+2]=9999;}}}
@@ -3748,12 +4249,60 @@ function updateTrajMarker(vi){const v=views[vi];
 }
 function thirdPC(a,b){const mx=Math.max(nK,_pcsFullK||0,3);for(let i=0;i<mx;i++){if(i!==a&&i!==b)return i;}return 0;}
 let _lastPK='';
+// Mobile budget: on MOBILE only the focused lane (and its 2-up pair) is built;
+// the other main viewports are marked stale and built on first focus
+// (_setFocusPane → _ensureLane). Desktop builds all six as before.
+function _laneWanted(vi){
+  if(!MOBILE)return true;
+  const P=_resolveViewByName(_curPane().tag);if(P&&P.vi===vi)return true;
+  if(_twoUp){const Q=_resolveViewByName(_pairTag());if(Q&&Q.vi===vi)return true;}
+  return false;}
+function _laneSkip(vi){const v=views[vi];v._laneStale=true;
+  if(vi<NC){_lazyRecycle(v._cloudBufs);v._cloudBufs=null;v._layerMx=null;v._clampBounds=null;}
+  else{_lazyRecycle(v._trajBufs);v._trajBufs=null;}
+  _lazyQueue=_lazyQueue.filter(t=>t.vi!==vi);}
+function _ensureLane(vi){const v=views[vi];if(!v||!v._laneStale||!nN)return false;
+  if(vi<NC){const[a,b]=vpPairs[vi];v.pcX=a;v.pcY=b;v.pcZ=thirdPC(a,b);_precomputeCloud(vi);updateVP(vi,a,b,v.pcZ,cL);}
+  else{const[a,b]=vpPairs[vi-NC];buildTraj(vi,a,b);_precomputeTraj(vi);updateTrajMarker(vi);}
+  if(pinnedToken>=0||pinnedTokenB>=0)_syncAllPins(true);
+  if(vi<NC)_revOnLayer();
+  _markDirty();return true;}
+function _ensureAllLanes(){for(let vi=0;vi<NV;vi++)_ensureLane(vi);}
+let _rebuildGen=0;// a sync rebuild, a newer progressive rebuild, or a model load supersedes an in-flight progressive one
 function _rebuildClouds(){
+  _rebuildGen++;
   console.log('_rebuildClouds: pcFull size=',_pcFull.size,'keys=',[..._pcFull.keys()]);
-  for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];views[i].pcX=a;views[i].pcY=b;views[i].pcZ=thirdPC(a,b);_precomputeCloud(i);}
-  for(let i=0;i<NC;i++){buildTraj(NC+i,vpPairs[i][0],vpPairs[i][1]);_precomputeTraj(NC+i);}
-  if(_hiddenScripts.size){views.forEach((v,vi)=>{if(vi>=NC&&v.trajGroup)v.trajGroup.children.forEach(c=>{const ti=c.userData?.ti;if(ti!==undefined)c.visible=!_hiddenScripts.has(scripts[ti]);});});}
+  for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];views[i].pcX=a;views[i].pcY=b;views[i].pcZ=thirdPC(a,b);if(_laneWanted(i))_precomputeCloud(i);else _laneSkip(i);}
+  for(let i=0;i<NC;i++){if(_laneWanted(NC+i)){buildTraj(NC+i,vpPairs[i][0],vpPairs[i][1]);_precomputeTraj(NC+i);}else _laneSkip(NC+i);}
+  _rebuildCloudsTail();
+}
+function _rebuildCloudsTail(){
+  // (was: a walk over trajGroup.children — a LineSegments has none — so hidden scripts
+  // silently came back on every rebuild; _applyFilter is the one filter path.)
+  if(_hiddenScripts.size)_applyFilter();
+  // Re-apply the dim/opacity law now that nN is known (revealPts/trajGroup materials
+  // were created before any model loaded — their nN-scaled opacities need this pass).
+  _lastDimState=-1;_dimAll(hoveredToken>=0);
   _rebuildWeightLines();
+}
+// The cold-path rebuild (first load / a pair whose columns just arrived): one
+// viewport per task with a yield between them, each drawn as soon as it is built
+// ("instant load, then populate") — the six-viewport block was a single ~1s task.
+// Resolves false when superseded (a newer rebuild or a model switch took over).
+async function _rebuildCloudsProgressive(){
+  const gen=++_rebuildGen,key=model+'|'+mode+'|'+nN;
+  const live=()=>gen===_rebuildGen&&key===model+'|'+mode+'|'+nN;
+  console.log('_rebuildClouds(progressive): pcFull size=',_pcFull.size,'keys=',[..._pcFull.keys()]);
+  for(let i=0;i<NC;i++){if(!live())return false;
+    const[a,b]=vpPairs[i];views[i].pcX=a;views[i].pcY=b;views[i].pcZ=thirdPC(a,b);
+    if(_laneWanted(i)){_precomputeCloud(i);updateVP(i,a,b,views[i].pcZ,cL);}else _laneSkip(i);
+    _revOnLayer();// the reveal cloud IS the cloud at vocab scope — refill this viewport now, not after all six
+    _markDirty();await _yieldFrame();}
+  for(let i=0;i<NC;i++){if(!live())return false;
+    if(_laneWanted(NC+i)){buildTraj(NC+i,vpPairs[i][0],vpPairs[i][1]);_precomputeTraj(NC+i);updateTrajMarker(NC+i);}else _laneSkip(NC+i);
+    _markDirty();await _yieldFrame();}
+  if(!live())return false;
+  _rebuildCloudsTail();return true;
 }
 function updateAllViewports(){
   // Delta pair: X=second PC of pair A, Y=first PC of pair B (cross-axes, no overlap with A or B)
@@ -3775,12 +4324,17 @@ function updateAllViewports(){
       if(pinnedToken>=0||pinnedTokenB>=0)_syncAllPins(true);
       buildBrowser();_updateOverlayMarkers();_markDirty();
     }
-    // Async: fetch missing PC data, rebuild when ready
-    _ensurePCData().then(()=>{
-      _rebuildClouds();_markDirty();
-      for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];updateVP(i,a,b,thirdPC(a,b),cL);}
-      for(let i=NC;i<NV;i++)updateTrajMarker(i);
-      if(pinnedToken>=0||pinnedTokenB>=0)_syncAllPins(true);
+    // Async: fetch missing PC data, rebuild when ready. When the sync branch above
+    // already rendered (all PCs were resident) the second _rebuildClouds() was pure
+    // repetition — every warm pair change built the six viewports twice; only the
+    // browser (which may have been waiting on medium-tier PCs) still refreshes.
+    _ensurePCData().then(async()=>{
+      if(!_canRenderNow){
+        const ok=await _rebuildCloudsProgressive();if(!ok)return;// superseded
+        _markDirty();
+        if(pinnedToken>=0||pinnedTokenB>=0)_syncAllPins(true);
+        await _yieldFrame();
+      }
       buildBrowser();_updateOverlayMarkers();
       // Re-fire: on a cold pair-change (_canRenderNow was false below), _rebuildClouds()
       // only just now set the traj views' pcX/pcY — the earlier call below would have binned
@@ -3804,6 +4358,7 @@ function updateAllViewports(){
   // PCs unchanged — just update positions for current layer (layer scrub)
   for(let i=0;i<NC;i++){const[a,b]=vpPairs[i];updateVP(i,a,b,thirdPC(a,b),cL);}
   for(let i=NC;i<NV;i++)updateTrajMarker(i);
+  _lazyOnLayer();// re-centre the idle fill (and, on coarse pointers, the resident window) on the new layer
   if(pinnedToken>=0||pinnedTokenB>=0)_syncAllPins(true);
   _updateOverlayMarkers();
   _revOnLayer();// layer scrub: refetch columns for the new layer, refill (debounced)
@@ -3811,7 +4366,17 @@ function updateAllViewports(){
 
 // 3D prism — all PC pairs as mini point clouds. One merged geometry per layer.
 // Shows nearby layers with opacity falloff. Scales to full nK.
-const _SP=1.6,_ZSP=0.3,_BR_RAD=0.55,_BR_PTS=30;
+const _SP=1.6,_ZSP=0.3,_BR_RAD=0.55,_BR_PTS=30;// _BR_PTS: only _brPcMax's no-column fallback stride now
+// Browser cell sample budget (D9): 31 points per cell regardless of nN was a 2,000-token
+// relic (a 150k-vocab cell drawn from 31 rows). Ring-graded so memory stays bounded
+// (up to 242 cells × nL layers): the focused pair gets 1,500, ring 1 400, outer rings 100.
+// Uniform stride over token-id space; per-cell count is stated in the panel label's title.
+function _brCellPts(c){const want=c.ring===0?1500:c.ring===1?400:100;return Math.max(1,Math.min(nN,want));}
+// Per-cell brightness scale (D9): the 0.7/0.2/… layer alphas were tuned at 31 pts/cell; a
+// cell now holding 1,500 would saturate, so its vertex colors are scaled by sqrt(31/pts)
+// (floor 0.25) — one Points per layer means alpha can't vary per cell, color can.
+function _brCellColScale(c){return Math.max(0.25,Math.min(1,Math.sqrt(31/_brCellPts(c))));}
+let _brCellRanges=[];// per cell: [start,end) index into each layer's tokMap/pos (same for all layers)
 const _BR_VISIBLE_LAYERS=3;// layers shown around cL
 let _brOverlay=[];
 let _brBuilt=false;
@@ -3830,7 +4395,13 @@ const _brPcMaxCache=new Map();
 function _brPcMax(pc,l){
   const k=pc*4096+l;const hit=_brPcMaxCache.get(k);if(hit!==undefined)return hit;
   let m=0;const full=_pcFull.get(pc);
-  if(full){const c=full.subarray(l*_pcFullNT,(l+1)*_pcFullNT);for(let i=0;i<c.length;i++){const a=c[i]<0?-c[i]:c[i];if(a>m)m=a;}}
+  // Full tier: deterministic stride of ≤20,000 rows (was every row: ~130 PCs × 26 layers ×
+  // 150k = the largest long task on a qwen load, ~1s). A missed outlier only means that
+  // row clamps at the cell radius (the loop clamps to ±rad anyway); the stride is fixed,
+  // so the normalization stays stable across layers/rebuilds.
+  if(full){const c=full.subarray(l*_pcFullNT,(l+1)*_pcFullNT);const n=c.length,st=n>20000?n/20000:1;
+    if(st===1){for(let i=0;i<n;i++){const a=c[i]<0?-c[i]:c[i];if(a>m)m=a;}}
+    else{for(let k=0,K=Math.floor(n/st);k<K;k++){const x=c[(k*st)|0];const a=x<0?-x:x;if(a>m)m=a;}}}
   else{const med=_pcMedium.get(pc);
     if(med){const c=med.data.subarray(l*med.nS,(l+1)*med.nS);for(let i=0;i<c.length;i++){const a=c[i]<0?-c[i]:c[i];if(a>m)m=a;}}
     else{const step=Math.max(1,Math.floor(nN/_BR_PTS));for(let i=0;i<nN;i+=step){const a=Math.abs(_getScore(l,i,pc));if(a>m)m=a;}}}
@@ -3888,7 +4459,15 @@ function _brComputeCells(){
   _brPanels[1]._cx=(dyB-dxB)*_SP*0.8;_brPanels[1]._cy=-(dyB+dxB)*_SP*0.8;
 }
 
-function buildBrowser(){
+// Build-key dedupe (D9): a load ran this TWICE (Phase 4 sync branch + the pair-change
+// .then) and _applyPCSelection a third time — each a full 242-cell × nL rebuild. Skip when
+// nothing it reads has changed: model/mode/nN, the pairs, and the resident column tiers
+// (a later call after _ensurePCData landed more PCs still rebuilds).
+let _brBuildKey='';
+function buildBrowser(force){
+  const key=`${model}|${mode}|${nN}|${vpPairs.map(p=>p.join(',')).join('|')}|${_pcFull.size}|${_pcMedium.size}|${_pcFullNT}|${_blobScoreK}`;
+  if(!force&&_brBuilt&&key===_brBuildKey&&brSc.children.length>1)return;
+  _brBuildKey=key;
   _brBuilt=false;// prevent rendering stale state during rebuild
   // Clear scene but preserve persistent objects (hover box)
   const keep=new Set();if(_brHoverBox)keep.add(_brHoverBox);
@@ -3900,25 +4479,30 @@ function buildBrowser(){
   _brN=_brCells.length;
   _brWinStart=0;// not used in radial mode
   const nCells=_brCells.length;
-  const step=Math.max(1,Math.floor(nN/_BR_PTS));const ptsPerCell=Math.ceil(nN/step);
+  _brCellRanges=[];let totPts=0;for(const c of _brCells){const n=_brCellPts(c);_brCellRanges.push([totPts,totPts+n]);totPts+=n;}
+  const ptsPerLayer=totPts;
 
   for(let l=0;l<nL;l++){
-    const pos=new Float32Array(nCells*ptsPerCell*3);
-    const col=new Float32Array(nCells*ptsPerCell*3);
-    const origPos=new Float32Array(nCells*ptsPerCell*3);
-    const tokMap=new Uint32Array(nCells*ptsPerCell);// Uint32 — vocab rows exceed 65,536 (qwen: 149,866)
+    const pos=new Float32Array(ptsPerLayer*3);
+    const col=new Float32Array(ptsPerLayer*3);
+    const origPos=new Float32Array(ptsPerLayer*3);
+    const tokMap=new Uint32Array(ptsPerLayer);// Uint32 — vocab rows exceed 65,536 (qwen: 149,866)
     let idx=0;
     _brCells.forEach(c=>{
       const {pa,pb,cx,cy,rad}=c;
       const mx=_brCellMx(pa,pb,l);
-      for(let i=0;i<nN;i+=step){
-        const sx=Math.max(-rad,Math.min(rad,_getScore(l,i,pa)/mx*rad));
-        const sy=Math.max(-rad,Math.min(rad,_getScore(l,i,pb)/mx*rad));
+      const take=_brCellPts(c),fstep=nN/take,cs=_brCellColScale(c);
+      // typed column views (one Map lookup per cell-layer, not per point; NaN→0 like _getScore)
+      const cA=_getScoreColumn(l,pa),cB=_getScoreColumn(l,pb);const okA=cA&&cA.length>=nN,okB=cB&&cB.length>=nN;
+      for(let k=0;k<take;k++){const i=(k*fstep)|0;
+        let vA=okA?cA[i]:_getScore(l,i,pa),vB=okB?cB[i]:_getScore(l,i,pb);if(vA!==vA)vA=0;if(vB!==vB)vB=0;
+        const sx=Math.max(-rad,Math.min(rad,vA/mx*rad));
+        const sy=Math.max(-rad,Math.min(rad,vB/mx*rad));
         pos[idx*3]=cx+sx;pos[idx*3+1]=cy-sy;pos[idx*3+2]=l*_ZSP;
         origPos[idx*3]=pos[idx*3];origPos[idx*3+1]=pos[idx*3+1];origPos[idx*3+2]=pos[idx*3+2];
         tokMap[idx]=i;
         const hex=CL[scripts[i]]||0xAAAAAA;
-        col[idx*3]=((hex>>16)&0xFF)/255;col[idx*3+1]=((hex>>8)&0xFF)/255;col[idx*3+2]=(hex&0xFF)/255;
+        col[idx*3]=((hex>>16)&0xFF)/255*cs;col[idx*3+1]=((hex>>8)&0xFF)/255*cs;col[idx*3+2]=(hex&0xFF)/255*cs;
         idx++;
       }
     });
@@ -3944,7 +4528,9 @@ function _brFocusPanels(forcePanel){
     }
     const pair=pi===0?pairA:pairB;
     const lbl=document.getElementById(pi===0?'brLblA':'brLblB');
-    if(lbl)lbl.textContent=`PC${pair[0]}×PC${pair[1]}`;
+    if(lbl){lbl.textContent=`PC${pair[0]}×PC${pair[1]}`;
+      const c0=_brCells.find(c=>c.ring===0),c1=_brCells.find(c=>c.ring===1),c2=_brCells.find(c=>c.ring>=2);
+      lbl.title=`Cell samples (uniform stride over ${nN.toLocaleString()} tokens): focused pair ${c0?_brCellPts(c0).toLocaleString():'-'}, ring 1 ${c1?_brCellPts(c1):'-'}, outer rings ${c2?_brCellPts(c2):'-'} points per cell — not every token.`;}
   });
 }
 
@@ -3954,6 +4540,8 @@ function _updateBrowserLayer(){
     const d=Math.abs(layer-cL);
     if(d>_BR_VISIBLE_LAYERS){pts.visible=false;return;}
     pts.visible=true;
+    // Material alpha is per LAYER (one Points holds every cell); the per-cell density
+    // compensation (D9) is baked into vertex colors instead — see _brCellColScale.
     pts.material.opacity=d===0?0.7:d===1?0.2:d===2?0.1:d<=3?0.04:0.02;
     pts.material.size=d===0?0.04:0.025;
   });
@@ -4068,21 +4656,16 @@ function _brHighlightPC(pc){
   if(pc===_brHighlightedPC)return;
   _brHighlightedPC=pc;
   if(!_brBuilt)return;
-  const step=Math.max(1,Math.floor(nN/_BR_PTS));
-  _brLayers.forEach(({pts})=>{
-    if(!pts.visible)return;
+  _brLayers.forEach(({pts,tokMap})=>{
+    if(!pts.visible||!tokMap)return;
     const col=pts.geometry.attributes.color.array;
-    let idx=0;
-    _brCells.forEach(c=>{
-      const involves=c.pa===pc||c.pb===pc;
-      for(let i=0;i<nN;i+=step){
-        if(idx*3>=col.length)break;
-        const dim=involves?1.0:0.08;
-        const hex=CL[scripts[i]]||0xAAAAAA;
+    _brCells.forEach((c,ci)=>{
+      const involves=c.pa===pc||c.pb===pc;const dim=(involves?1.0:0.08)*_brCellColScale(c);const[st,en]=_brCellRanges[ci]||[0,0];
+      for(let idx=st;idx<en&&idx*3<col.length;idx++){
+        const hex=CL[scripts[tokMap[idx]]]||0xAAAAAA;
         col[idx*3]=((hex>>16)&0xFF)/255*dim;
         col[idx*3+1]=((hex>>8)&0xFF)/255*dim;
         col[idx*3+2]=(hex&0xFF)/255*dim;
-        idx++;
       }
     });
     pts.geometry.attributes.color.needsUpdate=true;
@@ -4092,18 +4675,15 @@ function _brClearHighlight(){
   if(_brHighlightedPC<0)return;
   _brHighlightedPC=-1;
   if(!_brBuilt)return;
-  const step=Math.max(1,Math.floor(nN/_BR_PTS));
-  _brLayers.forEach(({pts})=>{
+  _brLayers.forEach(({pts,tokMap})=>{
+    if(!tokMap)return;
     const col=pts.geometry.attributes.color.array;
-    let idx=0;
-    _brCells.forEach(c=>{
-      for(let i=0;i<nN;i+=step){
-        if(idx*3>=col.length)break;
-        const hex=CL[scripts[i]]||0xAAAAAA;
-        col[idx*3]=((hex>>16)&0xFF)/255;
-        col[idx*3+1]=((hex>>8)&0xFF)/255;
-        col[idx*3+2]=(hex&0xFF)/255;
-        idx++;
+    _brCells.forEach((c,ci)=>{const cs=_brCellColScale(c);const[st,en]=_brCellRanges[ci]||[0,0];
+      for(let idx=st;idx<en&&idx*3<col.length;idx++){
+        const hex=CL[scripts[tokMap[idx]]]||0xAAAAAA;
+        col[idx*3]=((hex>>16)&0xFF)/255*cs;
+        col[idx*3+1]=((hex>>8)&0xFF)/255*cs;
+        col[idx*3+2]=(hex&0xFF)/255*cs;
       }
     });
     pts.geometry.attributes.color.needsUpdate=true;
@@ -5525,12 +6105,16 @@ function renderNeuronChart(tok,canvasId,rgb){
   if(axis)axis.innerHTML=`<span>L0</span><span>L${_nRealLayers>>1}</span><span>L${_nRealLayers-1}</span>`;
 }
 // --- Attention heatmap (template mode) ---
-let _attnData=null,_attnToken=-1;
+let _attnData=null,_attnToken=-1,_attnNA=false;// _attnNA: pin is a vocab-only row (sample-scoped endpoint can't serve it)
 async function loadAttnData(tokIdx){
+  _attnNA=false;
   if(mode!=='template'||tokIdx<0){_attnData=null;_attnToken=-1;return;}
   if(_attnToken===tokIdx&&_attnData)return;
+  // /api/token-attn is SAMPLE-indexed — bridge a vocab-row pin by tokenizer id.
+  const si=_sampleIdxOf(tokIdx);
+  if(si<0){_attnData=null;_attnToken=-1;_attnNA=true;renderAttnChart();return;}
   try{
-    const d=await api(`token-attn/${model}/${mode}?token=${tokIdx}`);
+    const d=await api(`token-attn/${model}/${mode}?token=${si}`);
     if(d&&!d.error&&d.layers){_attnData=d.layers;_attnToken=tokIdx;}
     else{_attnData=null;_attnToken=-1;}
   }catch(e){_attnData=null;_attnToken=-1;}
@@ -5539,6 +6123,15 @@ function renderAttnChart(){
   const panel=document.getElementById('attnPanel');
   const cv=document.getElementById('attnChart');
   if(!panel||!cv)return;
+  const note=panel.querySelector('.pane-note');
+  if(_attnNA&&pinnedToken>=0&&mode==='template'){
+    // Explicit n/a state instead of a silently hidden panel.
+    panel.style.display='block';
+    if(note)note.textContent='Token A · n/a for vocab-only tokens (sample-scoped endpoint)';
+    const ctx=cv.getContext('2d');ctx.clearRect(0,0,cv.width,cv.height);
+    return;
+  }
+  if(note)note.textContent='Token A · current layer';
   if(!_attnData||pinnedToken<0||mode!=='template'){panel.style.display='none';return;}
   const layerData=_attnData[cL];
   if(!layerData||!layerData.heads||!layerData.heads.length){panel.style.display='none';return;}
@@ -5951,7 +6544,9 @@ async function _nfLoadToken(tokIdx, slot){
     _nfBuildDots();_nfDeferTrails();return;
   }
   // Hover cache hit → instant dots from single-layer data, fetch full for trails
-  const hoverEntry=_hoverCache.get(`${tokIdx},${cL}`);
+  // (_hoverCache is keyed by the token idiom the cloud uses — vocab rows at vocab
+  // scope — while tokIdx here is a SAMPLE index; only trust the shortcut at sample scope.)
+  const hoverEntry=_cloudSource==='vocab'?null:_hoverCache.get(`${tokIdx},${cL}`);
   if(hoverEntry&&hoverEntry.neurons&&_nfInter){
     // Build temporary full array with just current layer populated
     const tmp=new Float32Array(_nRealLayers*_nfInter);
@@ -5983,9 +6578,22 @@ function _nfDeferTrails(){
   _nfTrailTimer=requestAnimationFrame(()=>_nfBuildTrails());
 }
 
+// /api/neuron-field is SAMPLE-indexed (the full intermediate-size activations were
+// only captured for the 2,000-token sample; the vocab artifact keeps top-50 neurons
+// per row). Bridge vocab-row pins by tokenizer id; a pin outside the sample gets an
+// explicit n/a state in the pane label instead of a silent empty field.
+function _nfSetVocabNote(){
+  const rv=rightViews[1];const rlbl=rv&&rv.el?rv.el.querySelector('.rlbl'):null;if(!rlbl)return;
+  const na=[];
+  if(pinnedToken>=0&&_sampleIdxOf(pinnedToken)<0)na.push('A');
+  if(pinnedTokenB>=0&&_sampleIdxOf(pinnedTokenB)<0)na.push('B');
+  rlbl.textContent=na.length?`Neurons · ${na.join('+')} n/a for vocab-only tokens (sample-scoped endpoint)`:'Neurons';
+  rlbl.title=na.length?'neuron-field activations exist only for the 2,000-token sample; this pin is a vocabulary row with no sample counterpart (matched by tokenizer id)':'';
+}
 function _nfUpdateActivations(){
-  _nfLoadToken(pinnedToken,'A');
-  _nfLoadToken(pinnedTokenB,'B');
+  _nfLoadToken(_sampleIdxOf(pinnedToken),'A');
+  _nfLoadToken(_sampleIdxOf(pinnedTokenB),'B');
+  _nfSetVocabNote();
 }
 // Show hover token's neurons as white dots at current layer
 function _nfShowHover(neurons){
@@ -6648,17 +7256,25 @@ function _updateBriefBadges(lv){
     s.textContent=text;s.title=title||'';return s;
   };
   const frag=document.createDocumentFragment();
+  // H6: the functional check (do the top A/B tokens predict A/B through lmhead?)
+  // needs lmhead weights, which are not in the published artifact — every browser
+  // compute returns functional_hit_rate=null. A permanent grey "fn: n/a" keeps
+  // "never checked" distinguishable from "checked & clean".
   if(_dirBrief.functional_warning){
     frag.appendChild(mkBadge('\u26A0NF','#f44','#1a0a0a',
       'GEOMETRIC ONLY — top A/B tokens do not predict A/B through lmhead.'));
+  }else if(_dirBrief.functional_hit_rate==null){
+    frag.appendChild(mkBadge('fn: n/a','#777','#151515',
+      'Functional check needs lmhead weights — not in the published artifact.'));
   }
   const p=_dirBrief.random_baseline_percentile;
   if(typeof p==='number'){
     const pc=p<10?'#4f4':p<30?'#cc4':'#f44';
     const pbg=p<10?'#0a1a0a':p<30?'#1a1a0a':'#1a0a0a';
     const _kNote=(_randBaselineK&&_randBaselineK<nK)?` Baseline directions span the top-${_randBaselineK} PCs only (no precomputed baseline for this model; loading all ${nK} would be gigabytes).`:'';
-    frag.appendChild(mkBadge(`${p.toFixed(0)}%rand`,pc,pbg,
-      'Percentile among 50 random token-pair directions. Lower = rarer.'+_kNote));
+    const _nNote=_randBaselineN?` Baseline projected over a fixed stride subsample of ${_randBaselineN.toLocaleString()} tokens (of ${nN.toLocaleString()}), not the full population.`:'';
+    frag.appendChild(mkBadge(`${p.toFixed(0)}%rand${_randBaselineSuffix()}`,pc,pbg,
+      'Percentile among 50 random token-pair directions. Lower = rarer.'+_kNote+_nNote));
   }
   if(insertAfter){
     // Find the A↔B subtitle and insert after it
@@ -6813,7 +7429,12 @@ function updateHUD(){
   // stated three times (heading, sub-line, selector). The heading keeps only the LAYER.
   document.getElementById('ht').textContent=ln;
   const se=document.getElementById('hs');se.textContent=s;se.style.color=co;
-  document.getElementById('hst').textContent=`PC1:${p1}% · dim:${lm.intrinsic_dim||'?'} · ${nL}L`;
+  // H15: "PC1" was 1-based while everything else is PC0-based; the population is the
+  // PCA-fit sample (decomp meta n_sample — the 2,000-token MRI capture, precomputed),
+  // NOT the full vocabulary the cloud now draws. Say both.
+  const _hst=document.getElementById('hst');
+  _hst.textContent=`PC0: ${p1}% of variance (${(dm?.n_sample||0)?dm.n_sample.toLocaleString()+'-token PCA sample':'PCA sample'}, precomputed) · dim ${lm.intrinsic_dim||'?'} · ${nL}L`;
+  _hst.title='pc1_pct / intrinsic_dim come from the decomposition metadata: the PCA was fit on the sampled MRI capture, and the verdict (DOMINANT/PARTIAL/DISTRIBUTED) is that sample\'s first-PC variance share.';
   document.getElementById('llbl').textContent=ln;
   _updateTokMiniSummary();
 }
@@ -6860,10 +7481,13 @@ function _saveState(){
   if(_vocabTarget){s.t=_vocabTarget.row;s.tx=_vocabTarget.text;}
   if(_vocabTarget2){s.t2=_vocabTarget2.row;s.t2x=_vocabTarget2.text;}
   const h=Object.entries(s).map(([k,v])=>k+'='+encodeURIComponent(v)).join('&');
-  history.replaceState(null,'','#'+h);
+  // A sandboxed cross-origin iframe without allow-same-origin throws SecurityError
+  // here — every pin/layer change would die on it. Keep the state in memory instead.
+  try{history.replaceState(null,'','#'+h);_memHash=null;}catch(e){_memHash=h;}
 }
+let _memHash=null;// state that could not be written to location.hash (sandboxed embed)
 function _loadState(){
-  const h=location.hash.slice(1);if(!h)return null;
+  const h=(_memHash!==null?_memHash:location.hash.slice(1));if(!h)return null;
   const s={};h.split('&').forEach(p=>{const[k,v]=p.split('=');if(k&&v)s[k]=decodeURIComponent(v);});
   return s;
 }
@@ -6878,9 +7502,15 @@ let _prevModel='',_prevMode='';
 // tabbing away mid-load stalls background population indefinitely.
 // requestIdleCallback's `timeout` guarantees the callback fires within that
 // window even hidden; setTimeout is the fallback for browsers without it.
+// Fallback without requestIdleCallback (iOS<17): setTimeout(0) is throttled to
+// 1/s in a scrolled-out cross-origin iframe; a MessageChannel post is a real
+// macrotask that is not clamped.
+const _yieldMC=(typeof MessageChannel==='function')?new MessageChannel():null,_yieldQ=[];
+if(_yieldMC)_yieldMC.port1.onmessage=()=>{const f=_yieldQ.shift();if(f)f();};
 function _yieldFrame(){
   return new Promise(r=>{
     if(typeof requestIdleCallback==='function')requestIdleCallback(()=>r(),{timeout:200});
+    else if(_yieldMC){_yieldQ.push(r);_yieldMC.port2.postMessage(0);}
     else setTimeout(r,0);
   });
 }
@@ -6891,16 +7521,22 @@ function _yieldFrame(){
 // while still missing the load-bearing /api/vocab-pc-bundle route CloudStore depends
 // on for every point/trajectory/pin feature. Probe it directly rather than assuming
 // route parity from two unrelated endpoints succeeding.
+// Probe with `full=` EMPTY: the server answers with the 32-byte VPCB header and a
+// 0-PC slab (companion.py _vocab_pc_bundle) — the old `?full=0` pulled a whole
+// 7.8-9.6MB column onto the critical path just to read four magic bytes. If the
+// empty form errors (an older backend that rejects it), fall back to that probe.
 async function _probeVocabPcBundle(){
-  try{
-    const resp=await _apiFetch(`/api/vocab-pc-bundle/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?full=0`);
-    if(!resp.ok)return false;
+  const _try=async(q)=>{
+    const resp=await _apiFetch(`/api/vocab-pc-bundle/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?${q}`);
+    if(!resp.ok)return null;// null = "this form isn't answered", not "no vocab"
     const buf=await resp.arrayBuffer();
-    if(buf.byteLength<32)return false;
+    if(buf.byteLength<32)return null;
     const dv=new DataView(buf);
     const magic=String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3));
     return magic==='VPCB';
-  }catch(e){return false;}
+  };
+  try{const r=await _try('full=');if(r!==null)return r;}catch(e){}
+  try{return (await _try('full=0'))===true;}catch(e){return false;}
 }
 async function loadAll(){
   const newModel=document.getElementById('sm').value,newMode=document.getElementById('smd').value;
@@ -6947,7 +7583,7 @@ async function loadAll(){
   // Drop direction colors across model/mode switch — they were fit to the old model.
   // Bump the request id so in-flight projection responses from the old model are
   // treated as superseded when they arrive.
-  if(!isSameModel){_dirColorActive=false;_dirColorReqId++;_dirProjLast=null;}
+  if(!isSameModel){_dirColorActive=false;_dirColorReqId++;_dirProjLast=null;_hideDirColorStatus();}
   // Drop concept-direction weight alignment: cache was per (old-model × A × B)
   // and the references would otherwise keep the old data alive until next pin.
   if(!isSameModel){_wlDirData=null;_wlDirKey='';_wlBuiltKey='';}
@@ -6973,6 +7609,7 @@ async function loadAll(){
   // there long before /api/vocab-pc-bundle did) — vBundleOk is the real gate.
   const hasVocab=!!(vTexts&&vMeta&&vMeta.n_rows&&vBundleOk);
   _showVocabFallbackBanner(!hasVocab);
+  _sampleTokIds=d0.token_ids||[];_sampleIdxByTokId=null;// see _sampleIdxOf
   if(hasVocab){
     texts=vTexts;
     scripts=(vScripts&&vScripts.length===vTexts.length)?vScripts:vTexts.map(()=>'other');
@@ -6996,7 +7633,11 @@ async function loadAll(){
   // Legend
   _hiddenScripts.clear();
   const lg=document.getElementById('legend2');lg.textContent='';const ss={};scripts.forEach(s=>ss[s]=(ss[s]||0)+1);
-  Object.entries(ss).sort((a,b)=>b[1]-a[1]).filter(([,c])=>c>5).forEach(([s,c])=>{
+  // Legend swatch threshold (D11): a fixed 5 was the 2,000-sample rule; at vocab scale a
+  // script with 40 of 150k tokens is noise in the legend. Scale with nN (0.2%), floor 5;
+  // the "+N scripts" chip below uses the SAME threshold so its claim stays true.
+  const _lgMin=Math.max(5,Math.floor(nN*0.002));
+  Object.entries(ss).sort((a,b)=>b[1]-a[1]).filter(([,c])=>c>_lgMin).forEach(([s,c])=>{
     const d=document.createElement('div');d.className='lg';d.dataset.script=s;
     const dt=document.createElement('span');dt.className='ld';dt.style.background=CLh[s]||'#aaa';
     d.appendChild(dt);d.appendChild(document.createTextNode(s+'('+c+')'));
@@ -7007,7 +7648,7 @@ async function loadAll(){
         const wasIsolated=_hiddenScripts.size===allScripts.length-1&&!_hiddenScripts.has(s);
         _hiddenScripts.clear();
         if(!wasIsolated){allScripts.forEach(sc=>{if(sc!==s)_hiddenScripts.add(sc);});}
-        lg.querySelectorAll('.lg').forEach(el=>{
+        lg.querySelectorAll('.lg[data-script]').forEach(el=>{
           el.classList.toggle('off',_hiddenScripts.has(el.dataset.script));
         });
       }else{
@@ -7018,13 +7659,21 @@ async function loadAll(){
     });
     lg.appendChild(d);
   });
+  // H13: scripts with ≤5 tokens are DRAWN but get no swatch and can't be filtered
+  // — say so instead of silently omitting them from the legend.
+  {const small=Object.entries(ss).filter(([,c])=>c<=_lgMin);
+    if(small.length){const nTok=small.reduce((a,[,c])=>a+c,0);
+      const d=document.createElement('div');d.className='lg lg-rest';d.style.cursor='default';d.style.color='#667';
+      d.textContent=`+${small.length} script${small.length===1?'':'s'} ≤${_lgMin} tokens (${nTok} tok — shown, not filterable)`;
+      d.title=small.map(([s,c])=>`${s} (${c})`).join(', ');
+      lg.appendChild(d);}}
 
   // --- State preservation across model switches ---
   const prevPairs=isSameModel?[vpPairs[0].slice(),vpPairs[2].slice()]:null;
   const prevLayer=isSameModel?cL:0;
 
   // Reset interaction state
-  pinnedToken=-1;pinnedTokenB=-1;hoveredToken=-1;_lastDimState=-1;_trajCache={};_wlData=null;_wlBuiltKey='';
+  pinnedToken=-1;pinnedTokenB=-1;hoveredToken=-1;_lastDimState=-1;_trajCache.clear();_wlData=null;_wlBuiltKey='';
   _setSepPanelIdle('', '');
   _liveTokenResolveCache.clear();_liveChatHistory=[];
   _clearNode(document.getElementById('liveChatLog'));
@@ -7061,8 +7710,9 @@ async function loadAll(){
     const _a=_rpc(),_b=_rpc(),_c=_rpc(),_d=_rpc();
     vpPairs[0]=[_a,_b===_a?(_a+1)%nK:_b];
     vpPairs[2]=[_c,_d===_c?(_c+1)%nK:_d];
-    pinnedToken=Math.floor(Math.random()*nN);
-    pinnedTokenB=Math.floor(Math.random()*nN);
+    // No auto-pins on a fresh load: two random pins used to drag the whole pin
+    // pipeline (direction depth ×nL layer requests, brief, baseline, coloring,
+    // browser overlay) onto the load path. Pins come from the URL hash or a click.
   }// delta (vpPairs[1]) auto-derived
   // Sanitize PC pairs: non-finite or out-of-range indices (e.g. from saved
   // state written before nK was known) feed NaN positions into Three.js and
@@ -7079,7 +7729,7 @@ async function loadAll(){
   // Phase 3: show clouds immediately, then build heavy stuff async
   _setLoad('rendering clouds...');
   _initPCSScene();
-  _clearBrowserSelBoxes();_lastPK='';
+  _clearBrowserSelBoxes();_lastPK='';_rebuildGen++;
   setLayer(_rstL);showPinDetail(pinnedToken);updatePinMarkers();
   _updateOverlayTag();// render the honesty tag (sample-of-vocab counts) even with no overlay
   // #st is the STATUS line — 'Loading...', 'Preparing...', errors. On success it has nothing to
@@ -7107,6 +7757,7 @@ async function loadAll(){
   _liveSuggestModelId();
   _refreshLiveStatus();
   _markDirty();
+  _markPhase4Done();// MCP long-poll channels start only now (see _startChannels)
 }
 async function init(){const models=await api('models');const sel=document.getElementById('sm');const tM=models.filter(m=>m.architecture==='transformer');const bm={};tM.forEach(m=>{if(!bm[m.model])bm[m.model]=[];bm[m.model].push(m.mode);});Object.keys(bm).sort().forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);});
   // Restore from URL or default to smollm2-135m
@@ -7146,11 +7797,16 @@ async function init(){const models=await api('models');const sel=document.getEle
       const frag=document.createDocumentFragment();let count=0;const _ovPairs=[];
       // Direction context: if dir colors active, annotate A-side / B-side and magnitude.
       const dp=_dirColorActive&&_dirProjLast;
-      for(let i=0;i<texts.length&&count<20;i++){
-        if((texts[i]||'').toLowerCase().includes(q)){
+      // H12: count EVERY match (cheap: one pass over texts[]) so the header can say
+      // "20 of N" instead of implying 20 was the total; only the first 20 get rows.
+      let total=0,lowerBound=false;
+      const _tl=_lowerIndex(texts).lower;// per-model lowercase index (D4) — was .toLowerCase() ×150k per keystroke
+      for(let i=0;i<texts.length;i++){
+        if(_tl[i].includes(q)){
+          total++;if(count>=20)continue;
           const d=document.createElement('div');d.style.cssText='cursor:pointer;padding:1px 0;border-bottom:1px solid #111;display:flex;gap:4px;align-items:center';
           const txt=document.createElement('span');
-          txt.textContent=`#${i} ${texts[i]} [${scripts[i]}]`;
+          txt.textContent=`${_cloudSource==='vocab'?'row':'#'}${_cloudSource==='vocab'?' ':''}${i} ${texts[i]} [${scripts[i]}]`;
           txt.style.flex='1';
           d.appendChild(txt);
           if(dp){
@@ -7175,6 +7831,7 @@ async function init(){const models=await api('models');const sel=document.getEle
         // Search doubles as a cloud spotlight: matched rows populate the overlay
         // (unless the explicit overlay input is driving it) — same behavior the
         // sample-fallback path below gets from its own (separate) vocab loop.
+        _ovPairs.total=total;// spotlight carries only the listed rows — the tag says "first 20 of N"
         if(!_ovInputActive())_setOverlay(_ovPairs);
       }
       // Full-vocab matches: tokens NOT in the sampled cloud but addressable via
@@ -7183,10 +7840,10 @@ async function init(){const models=await api('models');const sel=document.getEle
       // above) — the first loop already covers every match then, since sampleSet
       // would exclude nothing. Only runs in the rare sample-fallback case.
       else if(count<20&&_vocabTexts){
-        const sampleSet=new Set(texts);let vcount=0;
+        const sampleSet=new Set(texts);let vcount=0;const _vl=_lowerIndex(_vocabTexts).lower;
         for(let r=0;r<_vocabTexts.length&&count+vcount<20;r++){
           const vt=_vocabTexts[r];
-          if(vt&&vt.toLowerCase().includes(q)&&!sampleSet.has(vt)){
+          if(vt&&_vl[r].includes(q)&&!sampleSet.has(vt)){
             const d=document.createElement('div');d.style.cssText='cursor:pointer;padding:1px 0;border-bottom:1px solid #111;display:flex;gap:4px;align-items:center';
             const txt=document.createElement('span');txt.textContent=`${vt}`;txt.style.flex='1';txt.style.color='#cba54a';d.appendChild(txt);
             const tag=document.createElement('span');tag.style.cssText='color:#FFD700;font-size:8px;min-width:38px;text-align:right';
@@ -7195,7 +7852,7 @@ async function init(){const models=await api('models');const sel=document.getEle
             frag.appendChild(d);vcount++;_ovPairs.push({row:r,text:vt});
           }
         }
-        count+=vcount;
+        count+=vcount;total+=vcount;if(count>=20)lowerBound=true;// vocab loop is capped — total is a floor
         // Search doubles as a cloud spotlight: the gold vocab rows populate the
         // overlay (unless the explicit overlay input is driving it).
         if(!_ovInputActive())_setOverlay(_ovPairs);
@@ -7204,6 +7861,13 @@ async function init(){const models=await api('models');const sel=document.getEle
         _ensureVocabTexts().then(v=>{if(v)document.getElementById('tsearch').dispatchEvent(new Event('input'));});
       }
       if(!count){const d=document.createElement('div');d.textContent='no matches';frag.appendChild(d);}
+      else{
+        const hdr=document.createElement('div');hdr.className='ts-hdr';hdr.style.cssText='color:#666;font-size:8px;padding:1px 0 2px;border-bottom:1px solid #222';
+        const tot=Math.max(total,count);
+        hdr.textContent=lowerBound?`first ${count} of ≥${tot} matches — refine the query to see the rest`:count>=tot?`all ${tot} match${tot===1?'':'es'}`:`first ${count} of ${tot} matches — refine the query to see the rest`;
+        if(lowerBound)hdr.title='vocab-only hits are only counted up to the 20-row cap, so the total is a floor';
+        frag.insertBefore(hdr,frag.firstChild);
+      }
       _tsResults.appendChild(frag);
     },150);
   });
@@ -7236,7 +7900,8 @@ async function init(){const models=await api('models');const sel=document.getEle
       if(r.outliers_excluded>0||r.n_population){
         const hdr=document.createElement('div');
         hdr.style.cssText='color:#666;font-size:8px;padding:2px 4px;margin-bottom:2px;border-bottom:1px solid #222';
-        hdr.textContent=`pop ${r.n_population||'?'} (${r.outliers_excluded||0} outliers excluded)`;
+        // H5: the precompute path does not report an outlier count — say so, don't print 0.
+        hdr.textContent=`pop ${r.n_population||'?'} · outliers excluded: ${r.outliers_excluded??'unknown (precomputed ranking)'}${r.source==='precompute'?' · ranking: precomputed':' · ranking: in-browser, all PCs'}`;
         _discRes.appendChild(hdr);
       }
       // #16 — if discovered percentiles are all above 80, PCA is not finding
@@ -7269,12 +7934,18 @@ async function init(){const models=await api('models');const sel=document.getEle
         const pct=d.random_baseline_percentile;
         if(pct!==undefined&&pct!==null){
           const col=pct<10?'#4f4':pct<30?'#cc4':'#f44';
-          row.appendChild(_mkBadge(`${pct.toFixed(0)}%rand`,col,'percentile vs random token-pair directions'));
+          // Discover's baseline is NOT the top-64-PC one (_randBaseline): the precompute
+          // path reads falsification.json's full-PC baseline, the fallback scans all PCs
+          // in-browser — so no top-K caveat here; state the actual source instead.
+          row.appendChild(_mkBadge(`${pct.toFixed(0)}%rand`,col,r.source==='precompute'?'percentile vs the precomputed random token-pair baseline (all PCs)':'percentile vs 50 random token-pair directions computed in-browser over all PCs at this layer'));
         }
         if(d.functional_warning){
           row.appendChild(_mkBadge('\u26A0NF','#f44','geometric proximity does not predict lmhead output'));
         }else if(d.functional_hit_rate!==null&&d.functional_hit_rate!==undefined){
           row.appendChild(_mkBadge(`fn=${(d.functional_hit_rate*100).toFixed(0)}%`,'#4a4','fraction of top-A/B tokens that predict A/B through lmhead'));
+        }else{
+          // H6: lmhead is not in the artifact — the functional check never ran.
+          row.appendChild(_mkBadge('fn: n/a','#777','Functional check needs lmhead weights — not in the published artifact.'));
         }
         const tail=document.createElement('span');
         tail.textContent=` "${posText}" vs "${negText}"`;
@@ -7648,8 +8319,8 @@ function _updateVocabBtn(){const b=document.getElementById('vocabToggle');if(!b)
   // cloud is the ONLY renderer — there's nothing meaningful to fall back to, so
   // it can't be switched off (a bare, unlabeled scene is worse than a chip that
   // can't be clicked). The sample-fallback case keeps the old on/off toggle.
-  if(_cloudSource==='vocab'){b.textContent='vocab reveal: always on';b.style.color='#556677';b.style.cursor='default';return;}
-  b.textContent='vocab reveal: '+(_vocabRevealEnabled?'on':'off');b.style.color=_vocabRevealEnabled?'#8899AA':'#555';b.style.cursor='pointer';}
+  if(_cloudSource==='vocab'){b.textContent='vocab reveal: always on';b.style.color='#556677';b.style.cursor='default';b.title='The cloud IS the full vocabulary at this scope — nothing to toggle.';return;}
+  b.textContent='vocab reveal: '+(_vocabRevealEnabled?'on':'off');b.style.color=_vocabRevealEnabled?'#8899AA':'#555';b.style.cursor='pointer';b.title='zoom a cloud viewport to reveal points from the full vocabulary';}
 (function(){const b=document.getElementById('vocabToggle');if(!b)return;
   b.addEventListener('click',()=>{
     if(_cloudSource==='vocab')return;// no-op — see _updateVocabBtn
@@ -7672,6 +8343,7 @@ function _updateVocabBtn(){const b=document.getElementById('vocabToggle');if(!b)
 let _lastAnimFrameT=performance.now();
 const _RESUME_GAP_MS=1000;// far above any normal single-frame cost, well below a real suspension gap
 function _onResumeFromSuspension(){
+  if(typeof _applyMobile==='function'){try{_applyMobile();}catch(e){}}// a parent resize while suspended can flip the mobile/desktop layout
   _resizeCanvas();
   leftViews.forEach(lv=>{if(lv._maxR!=null)_fitFlowerCamera(lv);});
   for(let vi=NC;vi<views.length;vi++){const v=views[vi];if(v._maxR!=null)_fitTrajCamera(v);}
@@ -7691,7 +8363,7 @@ function _onResumeFromSuspension(){
 const _focusTmp=new THREE.Vector3();
 function _focusToken(vi,idx){
   const v=views[vi];if(!v||idx<0)return;
-  const src=vi<NC?(v._cloudBufs&&v._cloudBufs[cL]):(v._trajBufs&&v._trajBufs[cL]);
+  const src=vi<NC?_cloudBufAt(vi,cL):_trajBufAt(vi,cL);
   if(!src||idx*3+2>=src.length)return;
   _focusTmp.set(src[idx*3],src[idx*3+1],src[idx*3+2]);
   if(Math.abs(_focusTmp.x)>5000)return;// hidden-script sentinel
@@ -7727,6 +8399,7 @@ function _applyViewSizes(vi){
   const moving=damping||sinceMove<250;
   if(moving!==_trajMoving){
     for(let i=NC;i<views.length;i++){const v=views[i];
+      if(!moving&&v._trajFineStale){try{_trajFill(i,true);}catch(e){console.error('_trajFill',e);}}// motion fills were coarse-only: bring the fine pool up to date before showing it
       if(v.trajGroup)v.trajGroup.visible=!moving;
       if(v.trajGroupCoarse)v.trajGroupCoarse.visible=moving;}
     _trajMoving=moving;
@@ -7831,7 +8504,7 @@ async function _handleNavigate(msg){
       allScripts.forEach(s=>{if(!show.has(s))_hiddenScripts.add(s);});
     }
     _applyFilter();
-    document.querySelectorAll('.lg').forEach(el=>{
+    document.querySelectorAll('.lg[data-script]').forEach(el=>{
       el.classList.toggle('off',_hiddenScripts.has(el.dataset.script));
     });
   }
@@ -8043,7 +8716,7 @@ function _cardSummaryText(key){
     case 'attn':return pinnedToken>=0?`#${pinnedToken} · L${cL}`:'no pin';
     case 'homing':{const h=trim(document.getElementById('homingText')?.textContent);return h||'no live run';}
     case 'search':return 'search · pin · compare';
-    case 'discover':return 'layer-local PCA candidates';
+    case 'discover':return 'global PCs ranked by bimodality at this layer';
     case 'cross':return trim(document.getElementById('crossStatus')?.textContent)||'same pair, 2nd model';
     case 'liveSession':return trim(document.getElementById('liveSessionStatus')?.textContent)||'session idle';
     case 'liveForward':{const p=_lastLiveMeta&&_lastLiveMeta.prediction;if(_walkActive&&_walkText)return `walk: "${trim(_walkText).slice(0,40)}"`;return p!=null?`→ ${trim(p)}`:(_lastLivePrompt?`"${trim(_lastLivePrompt).slice(0,32)}"`:'no run yet');}
@@ -8309,8 +8982,12 @@ function _hideUnlock(){const p=document.getElementById('unlockPanel');if(p)p.sty
 // pre-paid for this: _apiFetch reroutes every /api call to the companion, and
 // _applyCapabilities recomposes the UI to live+weights+mcp. Falls back to the
 // deep-link handoff if LNA is unavailable (non-Chromium, denied, or not running).
-let _channelsStarted=false;
-function _startChannels(){if(_channelsStarted||!CAP.mcp)return;_channelsStarted=true;_pollActive=true;setTimeout(_pollLoop,500);setTimeout(_chatPollLoop,800);}
+let _channelsStarted=false,_channelsWanted=false,_phase4Done=false;
+// The two 25s long-polls hold 2 of the 6 HTTP/1.1 connections; opened during
+// load they compete with the bundle fetches. Deferred until loadAll's Phase 4
+// has finished (or a 20s safety timer, if a load errors out before then).
+function _startChannels(){if(_channelsStarted||!CAP.mcp)return;_channelsWanted=true;if(!_phase4Done)return;_channelsStarted=true;_pollActive=true;setTimeout(_pollLoop,500);setTimeout(_chatPollLoop,800);}
+function _markPhase4Done(){_phase4Done=true;if(_channelsWanted)_startChannels();}
 async function _refreshModelsAfterConnect(){
   try{const models=await api('models');const sel=document.getElementById('sm');if(!sel||!Array.isArray(models))return;
     const have=new Set([...sel.options].map(o=>o.value));
@@ -8331,7 +9008,8 @@ async function connectCompanion(port,code){
     if(!r.ok)throw new Error('status '+r.status);
     c=await r.json();
   }catch(e){
-    _connStatus('couldn’t reach the companion — is `heinrich companion` running? (or use the link below)',false);return;
+    const _inFrame=(()=>{try{return window!==window.top;}catch(_){return true;}})();
+    _connStatus(_inFrame?'couldn’t reach the companion — this page is embedded in an iframe: the parent <iframe> needs allow="local-network-access" for the browser to let it reach 127.0.0.1 (and `heinrich companion` must be running; or use the link below)':'couldn’t reach the companion — is `heinrich companion` running? (or use the link below)',false);return;
   }
   _localBase=base;_pairToken=code;
   if(c&&c.backend)CAP=Object.assign({},CAP,c);
@@ -8441,7 +9119,7 @@ async function _chatPollLoop(){
 (async()=>{
   await _loadCapabilities();
   _applyCapabilities();
-  if(CAP.mcp){setTimeout(_pollLoop,1000);setTimeout(_chatPollLoop,1500);}
+  if(CAP.mcp){_startChannels();setTimeout(_markPhase4Done,20000);}// starts once Phase 4 completes (or the safety timer fires)
 })();
 
 // --- Live Forward ---
@@ -8762,7 +9440,14 @@ function _updateSteerPanel(){
   const ok=live&&pinnedToken>=0&&pinnedTokenB>=0;
   p.style.display=ok?'':'none';
   if(ok){const li=document.getElementById('steerLayer');
-    if(li){if((nL||0)>0)li.max=String((nL||1)-1);if(!li.value)li.value=String(cL);}}
+    if(li){if((nL||0)>0)li.max=String((nL||1)-1);if(!li.value)li.value=String(cL);}
+    // Sample-indexed backend (_pins_direction) — disable up front when a pin is a
+    // vocab-only row, with the reason inline, instead of failing on click.
+    const sa=_sampleIdxOf(pinnedToken),sb=_sampleIdxOf(pinnedTokenB);const inSample=sa>=0&&sb>=0;
+    const btn=document.getElementById('steerBtn'),st=document.getElementById('steerStatus');
+    if(btn){btn.disabled=!inSample;btn.style.opacity=inSample?'':'0.5';btn.style.cursor=inSample?'pointer':'default';btn.title=inSample?'':_VOCAB_ONLY_NOTE;}
+    if(st&&!inSample){st.style.color='#f77';st.textContent=`n/a — ${sa<0?'A':''}${sa<0&&sb<0?'+':''}${sb<0?'B':''} ${_VOCAB_ONLY_NOTE}`;}
+    else if(st&&st.textContent.startsWith('n/a — ')){st.textContent='';}}
 }
 function _renderSteerResult(el,d,differs){
   if(!el)return;while(el.firstChild)el.removeChild(el.firstChild);
@@ -8775,9 +9460,13 @@ function _renderSteerResult(el,d,differs){
   el.appendChild(p);
 }
 async function _doSteer(optLayer,optAlpha,optA,optB){
-  const a=(optA!=null?parseInt(optA):pinnedToken), b=(optB!=null?parseInt(optB):pinnedTokenB);
+  // /api/live-steer builds the direction from the SAMPLE's L{NN}_scores rows
+  // (_pins_direction) — bridge vocab-row pins to sample indices by tokenizer id;
+  // explicit optA/optB (debug bridge) are taken as sample indices verbatim.
+  const a=(optA!=null?parseInt(optA):_sampleIdxOf(pinnedToken)), b=(optB!=null?parseInt(optB):_sampleIdxOf(pinnedTokenB));
   const st=document.getElementById('steerStatus'),res=document.getElementById('steerResult');
-  if(!(a>=0&&b>=0)){if(st){st.style.color='#f77';st.textContent='pin A and B first';}return {error:'pins a and b required'};}
+  if(!(pinnedToken>=0&&pinnedTokenB>=0)&&optA==null&&optB==null){if(st){st.style.color='#f77';st.textContent='pin A and B first';}return {error:'pins a and b required'};}
+  if(!(a>=0&&b>=0)){const who=`${a<0?'A':''}${a<0&&b<0?'+':''}${b<0?'B':''}`;if(st){st.style.color='#f77';st.textContent=`n/a — ${who} ${_VOCAB_ONLY_NOTE}`;}return {error:'pin(s) not in the 2,000-token sample: '+who};}
   const prompt=_lastLivePrompt||(document.getElementById('liveInput')?.value.trim()||'');
   if(!prompt){if(st){st.style.color='#f77';st.textContent='run a live forward first (no prompt)';}return {error:'no prompt'};}
   const li=document.getElementById('steerLayer');
@@ -8916,12 +9605,20 @@ function _pinVocabRow(isA,row,text){
 // tokens' full PC vectors (two small reads). Magnitude is the meaningful
 // cross-model signal — bimodality depends on each model's own population, which
 // isn't comparable across different vocabularies.
+// a/b are token ADDRESSES: a plain number is a SAMPLE index (/api/token-pca), an
+// object {vocab:row} is a full-vocab row (/api/vocab-token — same wire format).
+// At vocab scope the pins are vocab rows, so the caller must wrap them; a bare
+// vocab row sent to token-pca would silently fetch the wrong sample token.
+// Returns {layers,n_layers} or {error:'…'} naming which token could not be read.
+function _crossAddr(t){return _cloudSource==='vocab'&&typeof t==='number'?{vocab:t}:t;}
+function _crossAddrLabel(t){return t&&typeof t==='object'?`vocab row ${t.vocab}`:`sample #${t}`;}
+async function _fetchAnyTokenVec(mdl,mde,t){return t&&typeof t==='object'?_fetchVocabTokenVec(mdl,mde,t.vocab):_fetchTokenVec(mdl,mde,t);}
 async function _crossDepth(mdl,mde,a,b){
   const meta=await api(`serve-meta/${encodeURIComponent(mdl)}/${encodeURIComponent(mde)}`);
-  if(!meta||!meta.full_k)return null;
+  if(!meta||!meta.full_k)return {error:`no serve-meta for ${mdl}/${mde}`};
   const NRL=meta.n_real_layers??meta.n_layers;
-  const [vA,vB]=await Promise.all([_fetchTokenVec(mdl,mde,a),_fetchTokenVec(mdl,mde,b)]);
-  if(!vA||!vB)return null;
+  const [vA,vB]=await Promise.all([_fetchAnyTokenVec(mdl,mde,a),_fetchAnyTokenVec(mdl,mde,b)]);
+  if(!vA||!vB){const miss=[];if(!vA)miss.push('A '+_crossAddrLabel(a));if(!vB)miss.push('B '+_crossAddrLabel(b));return {error:`no vector for ${miss.join(', ')} in ${mdl}/${mde}`};}
   const fK=Math.min(vA.fK,vB.fK);
   const layers=[];
   for(let l=0;l<NRL;l++){
@@ -8999,40 +9696,50 @@ document.getElementById('crossRun')?.addEventListener('click',async()=>{
   // match, fall back to raw indices and warn.
   const txtA=texts[pinnedToken]||'';
   const txtB=texts[pinnedTokenB]||'';
-  let bA=pinnedToken, bB=pinnedTokenB;
-  let resolvedA=false, resolvedB=false;
+  // Side A = this model's pins, addressed the way the cloud addresses them (vocab rows
+  // at vocab scope → {vocab:row}; sample indices otherwise). Side B = the other model:
+  // token-resolve answers `idx` (its SAMPLE index) or, failing that, `vocab_row` (its
+  // full-vocab row) — either is a real address for the same text. No match at all →
+  // that side is NOT computed (a raw index in another tokenizer is a different token).
+  const aA=_crossAddr(pinnedToken), aB=_crossAddr(pinnedTokenB);
+  let bA=null, bB=null;
+  const _pick=r=>r&&r.idx>=0?r.idx:(r&&r.vocab_row!=null&&r.vocab_row>=0?{vocab:r.vocab_row}:null);
   try{
     const [rA,rB]=await Promise.all([
       _apiFetch(`/api/token-resolve/${encodeURIComponent(ms.value)}/${encodeURIComponent(md.value)}?text=${encodeURIComponent(txtA)}`).then(r=>r.json()),
       _apiFetch(`/api/token-resolve/${encodeURIComponent(ms.value)}/${encodeURIComponent(md.value)}?text=${encodeURIComponent(txtB)}`).then(r=>r.json()),
     ]);
-    if(rA.idx>=0){bA=rA.idx;resolvedA=true;}
-    if(rB.idx>=0){bB=rB.idx;resolvedB=true;}
+    bA=_pick(rA);bB=_pick(rB);
   }catch(e){}
   const unmatched=[];
-  if(!resolvedA)unmatched.push(`A="${txtA}"`);
-  if(!resolvedB)unmatched.push(`B="${txtB}"`);
+  if(bA==null)unmatched.push(`A="${txtA}"`);
+  if(bB==null)unmatched.push(`B="${txtB}"`);
   if(unmatched.length){
     const w=document.createElement('div');
     w.style.cssText='color:#f84;font-size:8px;padding:3px 4px;margin-bottom:3px;border:1px solid #642;border-radius:2px;background:rgba(80,40,0,0.2)';
-    w.textContent=`\u26A0 no text match in ${ms.value}/${md.value} for: ${unmatched.join(', ')}. Falling back to raw indices — direction may not be the same concept.`;
+    w.textContent=`\u26A0 ${ms.value}/${md.value} has no token with the text of ${unmatched.join(', ')} — side B not computed (a raw index there would be a different token).`;
     resEl.appendChild(w);
   }
-  st.textContent=`computing depth — A (${model} ${pinnedToken}/${pinnedTokenB}) vs B (${ms.value} ${bA}/${bB})...`;
+  st.textContent=`computing depth — A (${model} ${_crossAddrLabel(aA)}/${_crossAddrLabel(aB)})${bA!=null&&bB!=null?` vs B (${ms.value} ${_crossAddrLabel(bA)}/${_crossAddrLabel(bB)})`:''}...`;
   st.style.color='#a84';
   const startedAt=performance.now();
   // Browser-compute the per-layer magnitude profile for both models from their
   // token vectors (was the server's /api/direction-depth, 501 in the deploy).
   try{
     const [dA,dB]=await Promise.all([
-      _crossDepth(model,mode,pinnedToken,pinnedTokenB),
-      _crossDepth(ms.value,md.value,bA,bB),
+      _crossDepth(model,mode,aA,aB),
+      bA!=null&&bB!=null?_crossDepth(ms.value,md.value,bA,bB):Promise.resolve({error:`text not found in ${ms.value}/${md.value}: ${unmatched.join(', ')}`}),
     ]);
-    if(dA)_renderCrossSide('A',model,_summarizeDepth(dA));
-    if(dB)_renderCrossSide('B',ms.value,_summarizeDepth(dB));
+    const okA=!!(dA&&!dA.error),okB=!!(dB&&!dB.error);
+    if(okA)_renderCrossSide('A',model,_summarizeDepth(dA));
+    if(okB)_renderCrossSide('B',ms.value,_summarizeDepth(dB));
     const elapsed=((performance.now()-startedAt)/1000).toFixed(1);
-    if(!dA||!dB){st.style.color='#f77';st.textContent=`${!dA?'A':'B'} failed: no data for that model/token`;}
-    else{st.style.color='#6c8';st.textContent=`both done in ${elapsed}s${resolvedA&&resolvedB?' (text-matched)':' (partial text match)'}`;}
+    if(okA&&okB){st.style.color='#6c8';st.textContent=`both done in ${elapsed}s (B text-matched: ${_crossAddrLabel(bA)}/${_crossAddrLabel(bB)})`;}
+    else{
+      // Never "both done" when a side failed — name the side and the reason.
+      st.style.color='#f77';
+      st.textContent=[okA?'A done':`A failed: ${(dA&&dA.error)||'no data'}`,okB?'B done':`B failed: ${(dB&&dB.error)||'no data'}`].join(' \u00B7 ');
+    }
   }catch(e){st.style.color='#f77';st.textContent='failed: '+e.message;}
 });
 
@@ -9091,6 +9798,8 @@ function _setFocusPane(i){
   const P=_resolveViewByName(_curPane().tag);
   if(P&&P.el)_moveToStage(P.el);
   if(_twoUp){const Q=_resolveViewByName(_pairTag());if(Q&&Q.el&&Q.el!==(P&&P.el))_moveToStage(Q.el);}
+  // A main viewport skipped by _rebuildClouds (mobile budget) is built on first focus.
+  try{if(P&&typeof P.vi==='number')_ensureLane(P.vi);if(_twoUp){const Q=_resolveViewByName(_pairTag());if(Q&&typeof Q.vi==='number')_ensureLane(Q.vi);}}catch(e){console.error('lane:',e);}
   if(/^l/.test(_curPane().tag)&&typeof updateLeftViewports==='function'){try{updateLeftViewports();}catch(e){}}
   _renderMobileChips();_needsRender=true;
 }
@@ -9145,6 +9854,7 @@ function _applyMobile(){
     _restoreMoved();
     if(p)p.classList.remove('expanded');
     _dockPanel();
+    try{_ensureAllLanes();}catch(e){console.error('lanes:',e);}// lanes skipped under the mobile budget are all visible again
   }
   _needsRender=true;if(typeof _resizeCanvas==='function')_resizeCanvas();
 }
@@ -9313,12 +10023,20 @@ window.__heinrich = {
   revealPointAt:(vi=0,i=0)=>{const pts=revealPts[vi];if(!pts)return null;const pos=pts.geometry.attributes.position.array;const rev=views[vi]._rev;return {x:pos[i*3],y:pos[i*3+1],z:pos[i*3+2],row:rev&&rev.shownRows&&i<rev.shown?rev.shownRows[i]:-1,shown:rev?rev.shown:0,zoom:rev?rev.zoom:0};},
   revBuild:(vi=0)=>_revBuildGrid(vi).then(r=>{if(r){_revFill(vi);_updateOverlayTag();}return r?{shown:r.shown,nRows:r.nRows}:null;}),
   // --- Part B: trajectory LOD ---
-  get trajLOD(){const v=views[NC];return {decimated:!!_trajMoving,additive:_trajAdditive,budget:v?(v._trajBudget||0):0,topK:v?(v._trajTopK||0):0,total:_vocabNRows||48660};},
+  get trajLOD(){const v=views[NC];const g=v&&v._trajGrid;return {cap:_trajCapEff(),deviceCap:_trajDeviceCap,shown:v?(v._trajShown|0):0,inView:v?(v._trajInView|0):0,total:nN||_vocabNRows||0,gridReady:!!(g&&g.ready),gridDone:g?g.done:0,gridNeed:g?g.need:0,mode:v?(v._trajMode||'none'):'none',alphaFloor:!!(v&&v._trajAlphaFloor),fineStale:!!(v&&v._trajFineStale),fills:v&&v._trajLod?v._trajLod.fills:0,decimated:!!_trajMoving,additive:_trajAdditive,budget:v?(v._trajBudget||0):0,topK:v?(v._trajTopK||0):0,
+    per:views.slice(NC).map((w,i)=>({vi:NC+i,shown:w._trajShown|0,inView:w._trajInView|0,mode:w._trajMode||'none',gridReady:!!(w._trajGrid&&w._trajGrid.ready),poolCap:w._trajPoolCap|0,fills:w._trajLod?w._trajLod.fills:0}))};},
+  trajFill:(vi=NC)=>{const r=_trajFill(vi,true);_markDirty();return r;},
+  get trajAlphaFloor(){return _trajAlphaFloorOn;},
+  set trajAlphaFloor(b){_trajAlphaFloorOn=!!b;for(let vi=NC;vi<views.length;vi++){const v=views[vi];if(!v.trajGroup)continue;const S=v._trajLod;if(S){S.lastKey='';S.lastFull=false;}if(!_trajFill(vi,true))buildTraj(vi,v.pcX,v.pcY);}_markDirty();},
   // Live path-budget knob for measuring what THIS device can afford: set it,
   // all traj viewports rebuild, returns {budget, paths, buildMs, fps} — read
   // fps again after orbiting for a few seconds (the #fpsDisplay readout).
-  get trajBudget(){return _trajBudgetCap;},
-  set trajBudget(n){n=Math.max(100,n|0);_trajBudgetCap=n;const t0=performance.now();for(let vi=NC;vi<views.length;vi++){const v=views[vi];buildTraj(vi,v.pcX,v.pcY);}_markDirty();const v=views[NC];console.log(`trajBudget=${n} → ${v._trajBudget} paths/viewport, rebuilt in ${Math.round(performance.now()-t0)}ms; opacity ${v.trajGroup?.material.opacity.toFixed(4)}; watch #fpsDisplay while orbiting`);},
+  get trajBudget(){return _trajDeviceCap;},
+  set trajBudget(n){n=Math.max(100,n|0);_trajDeviceCap=n;const t0=performance.now();
+    for(let vi=NC;vi<views.length;vi++){const v=views[vi];if(!v.trajGroup)continue;_trajFreePool(vi);const S=v._trajLod;if(S){S.lastKey='';S.lastFull=false;}
+      // grid ready → refill under the new cap; else re-emit the fixed sheet (buildTraj's budget is min(nN,_trajBudgetCap,cap))
+      if(!_trajFill(vi,true)){buildTraj(vi,v.pcX,v.pcY);}}
+    _markDirty();const v=views[NC];console.log(`trajBudget=${n} → cap ${_trajCapEff()} (alpha-floor ${_trajAdditive?_TRAJ_ALPHA_FLOOR_ADD:'off'}), ${v._trajShown} paths shown in vp${NC}, refilled in ${Math.round(performance.now()-t0)}ms; opacity ${v.trajGroup?.material.opacity.toFixed(4)}; watch #fpsDisplay while orbiting`);},
   get fps(){return document.getElementById('fpsDisplay')?.textContent||null;},
   // Picking + focus, for agents/tests: pickAt(vi, clientX, clientY[, radiusPx]) → {kind,idx}|null
   pickAt:(vi,x,y,r)=>_pickAt(vi,{clientX:x,clientY:y},r||6),
@@ -9342,7 +10060,9 @@ window.__heinrich = {
   setCard:(key,collapsed)=>{const c=_CARDS[key];if(!c)return null;_setCardCollapsed(c,!!collapsed,true);return c.card.classList.contains('clps');},
   tabDot:()=>null,
   touchCard:(key)=>{_cardTouched(key);return _CARDS[key]?_CARDS[key].summaryEl.textContent:null;},
-  get state(){return {model,mode,cL,nL,nN,nK,_nRealLayers,pinnedToken,pinnedTokenB,_dirColorActive,play};},
+  get state(){return {model,mode,cL,nL,nN,nK,_nRealLayers,pinnedToken,pinnedTokenB,_dirColorActive,play,cloudSource:_cloudSource};},
+  sampleIdxOf:(t)=>_sampleIdxOf(t),// vocab-row → sample-index bridge (−1 = vocab-only)
+  hover:(i)=>{highlightToken(i);return hoveredToken;},// same path a mousemove hit takes
   get wlData(){return _wlData;}, get wlDirData(){return _wlDirData;}, get wlDirKey(){return _wlDirKey;},
   get dirProjLast(){return _dirProjLast;},
   get hiddenScripts(){return [..._hiddenScripts];},
@@ -9350,6 +10070,7 @@ window.__heinrich = {
   // --- direct handles to existing functions ---
   buildTraj, setLayer, _onPinChange, _applyDirectionColors, _updateSeparation,
   _togglePlay, _clampTraj, _robustColMax, _updateRVLayer, _rebuildWeightLines,
+  _trajBufAt, _trajFill, THREE,// path-LOD verification hooks (agents/tests)
   // direction compute (sliding-window) — for verification / scripting
   dirQuality:(a,b,l)=>_dirQuality(a,b,l), dirBrief:(a,b,l)=>_dirBriefJS(a,b,l),
   dirDiscover:(l,n)=>_dirDiscoverJS(l,n), dirSupport:(a,b,l,cov,cap)=>_dirSupport(a,b,l,cov,cap),
