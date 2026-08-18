@@ -37,7 +37,7 @@ _DECOMP_EXACT = {
 try:  # boto3 is an optional dependency (only the R2 path needs it)
     from boto3.s3.transfer import TransferConfig as _TC
     _TRANSFER_CONFIG = _TC(multipart_threshold=64 * 1024 * 1024, multipart_chunksize=64 * 1024 * 1024,
-                           max_concurrency=8, use_threads=True)
+                           max_concurrency=4, use_threads=True)
 except Exception:  # pragma: no cover
     _TRANSFER_CONFIG = None
 
@@ -159,11 +159,17 @@ def _r2_client(account_id: str | None, endpoint_url: str | None,
         f"https://{account_id}.r2.cloudflarestorage.com" if account_id else None)
     if not endpoint_url:
         raise ValueError("R2 endpoint unknown: set R2_ACCOUNT_ID or pass endpoint_url")
+    from botocore.config import Config
+    # Multi-GB multipart uploads over a home uplink hit transient
+    # EndpointConnectionErrors mid-part; without adaptive retries one blip
+    # aborts the whole file (seen: qwen vocab_pc16.bin died at part 7).
     return boto3.client(
         "s3", endpoint_url=endpoint_url,
         aws_access_key_id=access_key or os.environ.get("R2_ACCESS_KEY_ID"),
         aws_secret_access_key=secret_key or os.environ.get("R2_SECRET_ACCESS_KEY"),
         region_name="auto",
+        config=Config(retries={"max_attempts": 12, "mode": "adaptive"},
+                      connect_timeout=60, read_timeout=300, max_pool_connections=16),
     )
 
 
