@@ -651,11 +651,18 @@ export default {
     const cacheKey = cacheable ? new Request(url.toString(), request) : null;
     if (cache) {
       const hit = await cache.match(cacheKey);
-      if (hit) return hit;
+      // X-Edge-Cache is a debug signal (not a cache-affecting header) so this
+      // Worker's own edge-cache behavior is verifiable from curl/devtools
+      // without depending on Cloudflare's zone-level cf-cache-status, which
+      // the Workers Cache API does not populate.
+      if (hit) { const r = new Response(hit.body, hit); r.headers.set("x-edge-cache", "HIT"); return r; }
     }
     try {
       const res = cacheHeaderFor(ep, await routeApi(env, url, path));
-      if (cache && res.status === 200) ctx.waitUntil(cache.put(cacheKey, res.clone()));
+      if (cache && res.status === 200) {
+        ctx.waitUntil(cache.put(cacheKey, res.clone()));
+        res.headers.set("x-edge-cache", "MISS");
+      }
       return res;
     } catch (err) {
       return cacheHeaderFor(ep, jsonResponse({ error: String(err?.stack || err) }, 500));
