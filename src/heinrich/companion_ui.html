@@ -7447,7 +7447,6 @@ async function _onPinChange(){
       // Critical path: fire each endpoint in parallel. Each Python http
       // thread does its own work; mmap + Gram + random-bm caches make
       // warm repeats fast.
-      const pDepth   = _fetchDirDepth();
       const pWeights = (tokA>=0&&tokB>=0)
         ? _loadDirectionWeightData(tokA,tokB)
         : Promise.resolve().then(()=>{_wlDirData=null;_wlDirKey='';});
@@ -7467,7 +7466,18 @@ async function _onPinChange(){
       _fetchPredicts(tokA,'predsA');
       _fetchPredicts(tokB,'predsB');
       _applyDirectionColors();
-      await Promise.all([pDepth, pWeights, pTokens, pBrief]);
+      // Depth profile is NOT on the critical path any more. It's an all-layer
+      // scan (every layer's own top-K PC support) that only feeds ONE thing —
+      // the Superposition overlay on the PC Spectrum — yet it was gating
+      // Neurons, the Spectrum's own base view, and everything else in this
+      // function behind the single most expensive fetch pinning a token can
+      // trigger (confirmed live: ~20 separate multi-MB per-layer requests for
+      // a diffuse pair). Runs in the background; the Spectrum is rebuilt a
+      // second time when it lands, so the overlay still appears, just not at
+      // the cost of blocking the instant response everything else can give.
+      const pDepth = _fetchDirDepth();
+      pDepth.then(()=>{if(_pinChangeGen===gen)_buildPCSSpectrum();});
+      await Promise.all([pWeights, pTokens, pBrief]);
       if(_pinChangeGen!==gen){resolve();return;}
       _rebuildWeightLines();
       _buildRV0Variance();
