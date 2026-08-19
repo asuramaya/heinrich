@@ -7399,7 +7399,11 @@ async function _fetchDirDepth(){
     // written to the same status line direction-coloring already uses, so a
     // long profile is never silent.
     let done=0;
-    const CONCUR=4;
+    // 2, not 4: the stagger above buys the critical-path fetches a head
+    // start, but if a slow user connection means they're STILL in flight when
+    // depth-profile starts, a narrower burst here leaves them more of the
+    // pipe rather than immediately re-saturating it.
+    const CONCUR=2;
     if(_dp&&NL>CONCUR){_dp.style.display='block';_dp.textContent=`computing depth profile… 0/${NL} layers`;}
     const layers=await _mapPoolOrdered(supports,CONCUR,async(S,l)=>{
       const mag=S.mag,inv=1/(mag+1e-8),tot=S.m2+1e-8;
@@ -7475,7 +7479,15 @@ async function _onPinChange(){
       // a diffuse pair). Runs in the background; the Spectrum is rebuilt a
       // second time when it lands, so the overlay still appears, just not at
       // the cost of blocking the instant response everything else can give.
-      const pDepth = _fetchDirDepth();
+      // Staggered start: firing depth-profile's ~20-request burst in the SAME
+      // instant as coloring/tokens/weights/brief means all of them share one
+      // HTTP/2 connection's bandwidth via fair-queuing — measured live, five
+      // ~6MB streams all got response HEADERS in ~0.1s (server was never the
+      // bottleneck) but all five BODIES finished together ~20s later, because
+      // each was only getting ~1/5 the pipe. A short head start lets the small,
+      // time-critical requests actually finish before the burst begins, instead
+      // of everything crawling together at the burst's shared rate.
+      const pDepth = new Promise(res=>setTimeout(res,900)).then(()=>_fetchDirDepth());
       pDepth.then(()=>{if(_pinChangeGen===gen)_buildPCSSpectrum();});
       await Promise.all([pWeights, pTokens, pBrief]);
       if(_pinChangeGen!==gen){resolve();return;}
