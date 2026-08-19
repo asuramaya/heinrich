@@ -635,8 +635,28 @@ export default {
     }
 
     const ep = path.split("/")[2]; // ['', 'api', '<ep>', '<model>', '<mode>']
+    // Edge cache: every artifact endpoint is a pure function of immutable R2
+    // objects (see the module comment above) — Cache-Control: immutable was
+    // already being sent, but nothing was ever populating Cloudflare's edge
+    // cache from it, so every request (even the SAME url, seconds apart, from
+    // a different user) still round-tripped through this Worker to R2. The
+    // combinatorial pin-pair problem makes any ONE pair's exact PC selection
+    // unlikely to repeat, but individual (layer, pc) columns and whole-model
+    // artifacts DO repeat heavily across different pairs and different users
+    // (a handful of high-variance PCs dominate most directions) — this is
+    // where that overlap actually pays off, for every visitor, not just a
+    // returning one's own browser storage.
+    const cacheable = !LIVE_EPS.has(ep) && request.method === "GET";
+    const cache = cacheable ? caches.default : null;
+    const cacheKey = cacheable ? new Request(url.toString(), request) : null;
+    if (cache) {
+      const hit = await cache.match(cacheKey);
+      if (hit) return hit;
+    }
     try {
-      return cacheHeaderFor(ep, await routeApi(env, url, path));
+      const res = cacheHeaderFor(ep, await routeApi(env, url, path));
+      if (cache && res.status === 200) ctx.waitUntil(cache.put(cacheKey, res.clone()));
+      return res;
     } catch (err) {
       return cacheHeaderFor(ep, jsonResponse({ error: String(err?.stack || err) }, 500));
     }
