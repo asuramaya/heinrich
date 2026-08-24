@@ -31,6 +31,12 @@ _DECOMP_EXACT = {
     # colors) and the full-vocab gate heatmap. Without these the edge serves the
     # model in sample-fallback mode — which is exactly what happened to qwen.
     "vocab_pc16.bin", "vocab_scripts.json", "vocab_gate_heatmap.npy",
+    # top-50-per-layer neuron field, full vocabulary (heinrich mri-vocab
+    # --gate-summary, pass 2) — the Neurons panel's fallback for a pin
+    # outside the 2,000-token sample. Full-fidelity (every neuron) was
+    # costed at 8.8-68GB/model and rejected; this reduction is tens to a
+    # few hundred MB and was already sitting captured, unpublished.
+    "vocab_token_neurons.bin", "vocab_neuron_importance.json",
 }
 
 

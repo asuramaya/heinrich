@@ -26,7 +26,8 @@
 //     /api/vocab-pc-bundle?full=..&medium=..&step=N   (all layers, ≤128 full PCs)
 //     /api/vocab-pc-columns?layer=L&pcs=A,B,C          (one layer, ≤256 PCs)
 //     /api/vocab-pc-column?layer=L&pc=P  /api/vocab-token?row=R
-//     /api/vocab-token-bundle?rows=A,B  /api/vocab-meta  /api/vocab-tokens
+//     /api/vocab-token-bundle?rows=A,B  /api/vocab-token-neurons?rows=A,B
+//     /api/vocab-neuron-importance  /api/vocab-meta  /api/vocab-tokens
 //     /api/vocab-scripts  /api/vocab-ids  /api/vocab-gate-heatmap
 // Anything else under /api → 501.
 //
@@ -474,6 +475,37 @@ async function vocabPcBundle(env, prefix, fullPcs, medPcs, step) {
   return octet([head, idBytes, fullResult.bytes.buffer, medResult.bytes.buffer]);
 }
 
+// /api/vocab-token-neurons?rows=A,B → VTNB bundle (companion.py
+// _vocab_token_neurons_bundle): top-50-per-layer neuron field for each row,
+// vocab-scale (fills the gap /api/neuron-field left for a pin outside the
+// 2,000-token sample). Stays float16 on the wire — unlike vocabTokenBundle
+// below, no upcast to float32, half the bytes for the same row count.
+async function vocabTokenNeurons(env, prefix, rows) {
+  const rowIds = [...new Set(rows)];
+  if (!rowIds.length) return jsonResponse({ error: "No rows requested" }, 400);
+  const key = `${prefix}/decomp/vocab_token_neurons.bin`;
+  const headBuf = await r2range(env, key, 0, 16);
+  if (!headBuf) return jsonResponse({ error: "no vocab-scale neuron field" }, 404);
+  const hdv = new DataView(headBuf);
+  const magic = new TextDecoder().decode(new Uint8Array(headBuf, 0, 4));
+  if (magic !== "VTKN") return jsonResponse({ error: "bad vocab_token_neurons magic" }, 500);
+  const nRowsFile = hdv.getUint32(4, true), nLayers = hdv.getUint32(8, true), topN = hdv.getUint32(12, true);
+  const stride = nLayers * topN * 2;
+  const slabs = [];
+  for (const row of rowIds) {
+    if (row < 0 || row >= nRowsFile) return jsonResponse({ error: `vocab row ${row} out of range` }, 400);
+    slabs.push(await r2range(env, key, 16 + row * stride, stride));
+  }
+  const head = new ArrayBuffer(4 + 4 * 4);
+  new Uint8Array(head).set([0x56, 0x54, 0x4e, 0x42]); // 'VTNB'
+  const hv = new DataView(head);
+  hv.setUint32(4, 1, true); hv.setUint32(8, rowIds.length, true); hv.setUint32(12, nLayers, true); hv.setUint32(16, topN, true);
+  const idBytes = new ArrayBuffer(rowIds.length * 4);
+  const idv = new DataView(idBytes);
+  rowIds.forEach((id, i) => idv.setUint32(i * 4, id, true));
+  return octet([head, idBytes, ...slabs]);
+}
+
 // /api/vocab-token-bundle?rows=A,B → VTKB bundle (companion.py _vocab_token_bundle):
 // multiple full-vocab rows (all layers, full K) in one response — the
 // pinned-pair fetch's one-round-trip path.
@@ -728,6 +760,14 @@ async function routeApi(env, url, path) {
     if (ep === "vocab-token-bundle") {
       const csv = (s) => (s ? s.split(",").filter(Boolean).map(Number) : []);
       return await vocabTokenBundle(env, prefix, csv(q("rows")));
+    }
+    if (ep === "vocab-token-neurons") {
+      const csv = (s) => (s ? s.split(",").filter(Boolean).map(Number) : []);
+      return await vocabTokenNeurons(env, prefix, csv(q("rows")));
+    }
+    if (ep === "vocab-neuron-importance") {
+      const vni = await r2json(env, `${prefix}/decomp/vocab_neuron_importance.json`);
+      return vni ? jsonResponse(vni) : jsonResponse({ error: "no vocab-scale neuron importance" }, 404);
     }
     if (ep === "token-layer") return await tokenLayer(env, prefix, parseInt(q("token", "0")), parseInt(q("layer", "0")));
     if (ep === "token-hover") return await tokenHover(env, prefix, parseInt(q("token", "0")), parseInt(q("layer", "0")));

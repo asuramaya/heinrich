@@ -6585,8 +6585,73 @@ function _nfBuildTrails(){
 // Cache: token_idx → Float32Array
 const _nfCache=new Map();
 
-async function _nfLoadToken(tokIdx, slot){
+// Vocab-scale fallback (top-50 neurons/layer, every vocab row) for a pin
+// outside the 2,000-token sample — /api/neuron-field only covers the sample,
+// so this used to just show "n/a". Full fidelity (every neuron) was costed
+// at 8.8-68GB/model and rejected; this reduction was already captured
+// (heinrich mri-vocab --gate-summary) and simply never served. Builds the
+// SAME shape _nfLoadToken's sample path does (Float32Array[nLayers*nfInter])
+// but sparse — only the per-layer top-50 real indices are non-zero; that's
+// an honest partial view, not a fabricated dense one, and _nfBuildDots'
+// existing |v|>_NF_THRESH cutoff already only draws non-zero neurons.
+let _vocabNeuronImportance=null,_vocabNeuronImportanceKey='';
+const _vnCache=new Map();// model/mode/row -> Float32Array[nLayers*nfInter] | null (404)
+async function _ensureVocabNeuronImportance(){
+  const key=model+'|'+mode;
+  if(_vocabNeuronImportanceKey===key)return _vocabNeuronImportance;
+  try{
+    const r=await _apiFetch(`/api/vocab-neuron-importance/${encodeURIComponent(model)}/${encodeURIComponent(mode)}`);
+    _vocabNeuronImportance=r.ok?await r.json():null;
+    if(_vocabNeuronImportance&&_vocabNeuronImportance.error)_vocabNeuronImportance=null;
+  }catch(e){_vocabNeuronImportance=null;}
+  _vocabNeuronImportanceKey=key;
+  return _vocabNeuronImportance;
+}
+async function _nfLoadVocabRow(vocabRow,slot){
+  const cacheKey=`${model}/${mode}/${vocabRow}`;
+  const finish=(v)=>{
+    if(slot==='A')_nfActA=v;else _nfActB=v;
+    _nfVocabState[slot]=v!=null?'top50':'na';
+    _nfBuildDots();_nfDeferTrails();_nfSetVocabNote();
+    return v!=null;
+  };
+  if(_vnCache.has(cacheKey))return finish(_vnCache.get(cacheKey));
+  // _nfInter (intermediate_size) isn't set until _buildRV1Neurons runs in
+  // Phase 4 — a fresh page load with pins restored from the URL fires this
+  // fallback earlier, during Phase 3, while _nfInter is still 0. That's not
+  // a real failure (the endpoint/importance data are fine), so don't cache
+  // it as one — _buildRV1Neurons calls _nfUpdateActivations again once it
+  // sets _nfInter, and this needs to actually retry then, not return the
+  // same cached null forever.
+  if(!_nfInter)return finish(null);
+  const imp=await _ensureVocabNeuronImportance();
+  if(!imp){_vnCache.set(cacheKey,null);return finish(null);}
+  try{
+    const resp=await _apiFetch(`/api/vocab-token-neurons/${encodeURIComponent(model)}/${encodeURIComponent(mode)}?rows=${vocabRow}`);
+    if(!resp.ok){_vnCache.set(cacheKey,null);return finish(null);}
+    const buf=await resp.arrayBuffer();
+    const dv=new DataView(buf);
+    if(dv.byteLength<20||String.fromCharCode(dv.getUint8(0),dv.getUint8(1),dv.getUint8(2),dv.getUint8(3))!=='VTNB'){_vnCache.set(cacheKey,null);return finish(null);}
+    const nRows=dv.getUint32(8,true),nLayers=dv.getUint32(12,true),topN=dv.getUint32(16,true);
+    if(!nRows){_vnCache.set(cacheKey,null);return finish(null);}
+    const off=20+4;// header + one row id
+    const u16=new Uint16Array(buf,off,nLayers*topN);
+    const tmp=new Float32Array(_nRealLayers*_nfInter);
+    for(let l=0;l<Math.min(nLayers,_nRealLayers);l++){
+      const layerImp=imp[l];if(!layerImp||!layerImp.top_neurons)continue;
+      const top=layerImp.top_neurons;
+      for(let s=0;s<Math.min(topN,top.length);s++){
+        const realIdx=top[s];if(realIdx<0||realIdx>=_nfInter)continue;
+        tmp[l*_nfInter+realIdx]=f16(u16[l*topN+s]);
+      }
+    }
+    _vnCache.set(cacheKey,tmp);
+    return finish(tmp);
+  }catch(e){_vnCache.set(cacheKey,null);return finish(null);}
+}
+async function _nfLoadToken(tokIdx, slot, vocabRow){
   if(tokIdx<0){
+    if(_cloudSource==='vocab'&&vocabRow>=0&&await _nfLoadVocabRow(vocabRow,slot))return;
     if(slot==='A'){_nfActA=null;_nfLoadingA=-1;}else{_nfActB=null;_nfLoadingB=-1;}
     _nfBuildDots();_nfDeferTrails();return;
   }
@@ -6639,17 +6704,28 @@ function _nfDeferTrails(){
 // only captured for the 2,000-token sample; the vocab artifact keeps top-50 neurons
 // per row). Bridge vocab-row pins by tokenizer id; a pin outside the sample gets an
 // explicit n/a state in the pane label instead of a silent empty field.
+// Per-slot state, set as each load actually RESOLVES (not guessed up front —
+// whether the vocab-scale fallback succeeds is only known after its fetch
+// lands): null = full sample-scoped data, 'top50' = vocab-scale fallback
+// (honest partial view, labelled as such), 'na' = neither exists.
+let _nfVocabState={A:null,B:null};
 function _nfSetVocabNote(){
   const rv=rightViews[1];const rlbl=rv&&rv.el?rv.el.querySelector('.rlbl'):null;if(!rlbl)return;
-  const na=[];
-  if(pinnedToken>=0&&_sampleIdxOf(pinnedToken)<0)na.push('A');
-  if(pinnedTokenB>=0&&_sampleIdxOf(pinnedTokenB)<0)na.push('B');
-  rlbl.textContent=na.length?`Neurons · ${na.join('+')} n/a for vocab-only tokens (sample-scoped endpoint)`:'Neurons';
-  rlbl.title=na.length?'neuron-field activations exist only for the 2,000-token sample; this pin is a vocabulary row with no sample counterpart (matched by tokenizer id)':'';
+  const top50=[],na=[];
+  if(_nfVocabState.A==='top50')top50.push('A');else if(_nfVocabState.A==='na')na.push('A');
+  if(_nfVocabState.B==='top50')top50.push('B');else if(_nfVocabState.B==='na')na.push('B');
+  const parts=[];
+  if(top50.length)parts.push(`${top50.join('+')} top-50/layer (vocab-scale)`);
+  if(na.length)parts.push(`${na.join('+')} n/a`);
+  rlbl.textContent=parts.length?`Neurons · ${parts.join(' · ')}`:'Neurons';
+  rlbl.title=parts.length?'Full-fidelity neuron activations exist only for the 2,000-token sample. "top-50/layer" pins are vocabulary rows outside it, shown via the full-vocab top-50-most-important-neurons-per-layer capture (dots for the rest of the field are genuinely not captured, not zero). "n/a" means neither exists for this model.':'';
 }
 function _nfUpdateActivations(){
-  _nfLoadToken(_sampleIdxOf(pinnedToken),'A');
-  _nfLoadToken(_sampleIdxOf(pinnedTokenB),'B');
+  const rowA=pinnedToken,rowB=pinnedTokenB;
+  const siA=_sampleIdxOf(rowA),siB=_sampleIdxOf(rowB);
+  _nfVocabState={A:siA>=0||rowA<0?null:undefined,B:siB>=0||rowB<0?null:undefined};
+  _nfLoadToken(siA,'A',rowA);
+  _nfLoadToken(siB,'B',rowB);
   _nfSetVocabNote();
 }
 // Show hover token's neurons as white dots at current layer

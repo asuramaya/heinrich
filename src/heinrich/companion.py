@@ -3996,6 +3996,47 @@ def _vocab_token_bundle(mri_path: str, rows: list[int]) -> bytes | dict:
     return header + ids_bytes + data.tobytes()
 
 
+_VOCAB_TOKEN_NEURONS_BUNDLE_MAGIC = b"VTNB"
+
+
+def _vocab_token_neurons_bundle(mri_path: str, rows: list[int]) -> bytes | dict:
+    """Multiple top-N neuron-field rows (all layers) in one response — the
+    vocab-scale analog of the sample's /api/neuron-field, addressed by vocab
+    row instead of sample index. Every vocab row has this (unlike the full
+    intermediate-size field, which only exists for the 2,000-token sample —
+    full-fidelity at vocab scale was costed at 8.8-68GB/model and rejected);
+    this is the top-50-per-layer reduction the producer already captured
+    (heinrich mri-vocab --gate-summary, pass 2) and that nothing ever served.
+
+    Stays float16 on the wire (already f16 on disk) rather than upcasting —
+    half the bytes of vocab_token_bundle for the same row count.
+
+    Layout: [4s magic][4I version, n_rows, n_layers, top_n][uint32 * n_rows row ids]
+            [float16 * n_rows * n_layers * top_n], in request order.
+    """
+    row_ids = _dedupe_ints(rows)
+    if not row_ids:
+        return {"error": "No rows requested"}
+    vp = Path(mri_path) / "decomp" / "vocab_token_neurons.bin"
+    if not vp.exists():
+        return {"error": "No vocab-scale neuron field — run: heinrich mri-vocab --gate-summary"}
+    with open(vp, "rb") as f:
+        magic, n_rows_file, n_layers, top_n = struct.unpack("<4sIII", f.read(16))
+        if magic != b"VTKN":
+            return {"error": f"Bad vocab_token_neurons.bin magic: {magic!r}"}
+        stride = n_layers * top_n * 2
+        data = np.zeros((len(row_ids), n_layers, top_n), dtype=np.float16)
+        for ri, row in enumerate(row_ids):
+            if row < 0 or row >= n_rows_file:
+                return {"error": f"vocab row {row} out of range (max {n_rows_file - 1})"}
+            f.seek(16 + row * stride)
+            data[ri] = np.frombuffer(f.read(stride), dtype=np.float16).reshape(n_layers, top_n)
+    header = struct.pack("<4sIIII", _VOCAB_TOKEN_NEURONS_BUNDLE_MAGIC, _BUNDLE_VERSION,
+                         len(row_ids), n_layers, top_n)
+    ids_bytes = struct.pack(f"<{len(row_ids)}I", *row_ids)
+    return header + ids_bytes + data.tobytes()
+
+
 def _read_token_index_rows(mri_path: str, tokens: list[int]) -> tuple[int, int, np.ndarray] | dict:
     """Read multiple token-major full PCA rows in one pass.
 
@@ -5115,6 +5156,33 @@ class CompanionHandler(SimpleHTTPRequestHandler):
                     self._send_bytes(result, immutable=True)
             else:
                 self._send_json({"error": "Usage: /api/vocab-token-bundle/<model>/<mode>?rows=A,B"})
+        elif path.startswith('/api/vocab-token-neurons/'):
+            # /api/vocab-token-neurons/<model>/<mode>?rows=A,B — top-50 neuron
+            # field per row, all layers, vocab-scale (fills the gap
+            # /api/neuron-field left for out-of-sample pins).
+            parts = path.split('/')
+            if len(parts) >= 5:
+                rows = [int(r) for r in qs.get('rows', [''])[0].split(',') if r]
+                result = _vocab_token_neurons_bundle(self._mri_path(parts[3], parts[4]), rows)
+                if isinstance(result, dict):
+                    self._send_json(result)
+                else:
+                    self._send_bytes(result, immutable=True)
+            else:
+                self._send_json({"error": "Usage: /api/vocab-token-neurons/<model>/<mode>?rows=A,B"})
+        elif path.startswith('/api/vocab-neuron-importance/'):
+            # /api/vocab-neuron-importance/<model>/<mode> — per-layer top-50
+            # neuron indices/contributions (maps a vocab-token-neurons slot
+            # back to its real neuron index for plotting).
+            parts = path.split('/')
+            if len(parts) >= 5:
+                vni = Path(self._mri_path(parts[3], parts[4])) / 'decomp' / 'vocab_neuron_importance.json'
+                if vni.exists():
+                    self._send_bytes(vni.read_bytes(), content_type='application/json', immutable=True)
+                else:
+                    self._send_json({"error": "No vocab-scale neuron importance — run: heinrich mri-vocab --gate-summary"})
+            else:
+                self._send_json({"error": "Usage: /api/vocab-neuron-importance/<model>/<mode>"})
         elif path.startswith('/api/vocab-tokens/'):
             # /api/vocab-tokens/<model>/<mode> — full-vocab text list (row-ordered)
             parts = path.split('/')
