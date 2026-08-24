@@ -1,8 +1,8 @@
-# MCP — the agent surface
+# MCP: the agent surface
 
 Heinrich is, first, an instrument for a Claude instance to use. `heinrich serve` (or
 `heinrich-mcp`) runs JSON-RPC over stdio; the `ToolServer` wraps every pipeline stage as an
-MCP tool. Tools are **subprocess-isolated** — source changes propagate on every call, and a
+MCP tool. Tools are **subprocess-isolated**: source changes propagate on every call, and a
 crash in one capture doesn't take down the server.
 
 ```bash
@@ -12,7 +12,7 @@ heinrich serve            # stdio MCP server
 This is where the rigor lives. The front page is for humans; the spec is for the machine
 that drives the tool.
 
-## MRI tools — the working frontier
+## MRI tools: the working frontier
 
 | Tool | Does |
 | --- | --- |

@@ -3,9 +3,9 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Heinrich — the inside of a language model</title>
+<title>Heinrich: the inside of a language model</title>
 <meta name="description" content="A human and a series of machines spent a year reaching for the loop they were in. They never touched it. This fell out instead. An instrument for the inside of a language model.">
-<meta property="og:title" content="Heinrich — the inside of a language model">
+<meta property="og:title" content="Heinrich: the inside of a language model">
 <meta property="og:description" content="They never touched it. This fell out instead. Fly through a real model's residual stream.">
 <style>
   :root{ --void:#050608; --txt:#d6d6d8; --dim:#a7a7af; --dim2:#8a8a92; --grn:#9c6; --blu:#9cd; --org:#caa46a;
@@ -15,7 +15,7 @@
     font-family:system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;line-height:1.6;-webkit-font-smoothing:antialiased}
   a{color:var(--blu);text-decoration:none} a:hover{color:#cfe}
   .mono{font-family:var(--mono)}
-  /* the mind — fixed behind everything */
+  /* the mind, fixed behind everything */
   #mind{position:fixed;inset:0;width:100%;height:100%;z-index:0;display:block}
   #mindFade{position:fixed;inset:0;z-index:1;pointer-events:none;
     background:radial-gradient(120% 80% at 50% 0%, transparent 40%, rgba(5,6,8,0.55) 100%)}
@@ -67,7 +67,7 @@
   @media(max-width:560px){
     nav a.docs,nav a.gh{display:none}
     nav .wrap{gap:12px;padding:0 18px;height:50px}
-    .brand .rev{display:none}        /* drop "· hcirnieh" on phones — the domain says it */
+    .brand .rev{display:none}        /* drop "· hcirnieh" on phones: the domain says it */
     nav a{font-size:12px}
     nav a.cta{padding:4px 11px}
   }
@@ -166,7 +166,7 @@ rGeo.setAttribute('acolor',new THREE.BufferAttribute(acol,3));
 rGeo.setAttribute('asize',new THREE.BufferAttribute(asz,1));
 const cloud=new THREE.Points(rGeo, mkMat(52,0.0072)); scene.add(cloud);
 
-// dust (atmosphere — a dense field so you're enveloped, not orbiting a blob)
+// dust (atmosphere: a dense field so you're enveloped, not orbiting a blob)
 const dpos=new Float32Array(M*3), dcol=new Float32Array(M*3), dsz=new Float32Array(M);
 for(let i=0;i<M;i++){ const r=R*(0.15+1.0*Math.random()), t=Math.random()*6.283, p=Math.acos(2*Math.random()-1);
   dpos[i*3]=r*Math.sin(p)*Math.cos(t); dpos[i*3+1]=r*Math.sin(p)*Math.sin(t); dpos[i*3+2]=r*Math.cos(p);

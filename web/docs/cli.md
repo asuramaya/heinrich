@@ -53,7 +53,7 @@ heinrich profile-first-token  --model X --direction X.npy           # first-toke
 heinrich profile-basin        --model X --direction X.npy --layer N # attractor map
 ```
 
-::: warning Discover natively — never cross-map
+::: warning Discover natively, never cross-map
 Direction `.npy` files are per-model. Cross-mapped directions from the DB can be inverted
 (Phi-3 Cyrillic was wrong). Always `discover-direction` for the specific model.
 :::
@@ -76,6 +76,7 @@ heinrich eval    --model X --prompts simple_safety --scorers word_match
 heinrich audit   <model_id>                  # full behavioral security audit
 
 heinrich publish --mri X.mri --bucket heinrich-mri    # lean subset → R2 (S3 API)
+heinrich publish --mri X.mri --bucket heinrich-mri --check  # audit the bucket, no upload
 heinrich companion --mri-root DIR             # the local 3D viewer (the maximal node)
 heinrich serve                                # MCP stdio server
 heinrich db summary                           # database stats
