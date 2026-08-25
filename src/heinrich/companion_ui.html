@@ -743,19 +743,67 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
   #liveResult .lt{color:#aaa;display:inline-block;margin-right:4px;font-family:monospace;background:#1a1a1a;padding:0 3px;border-radius:2px}
   #liveResult .lp{color:#666;font-size:6px}
   /* Loading overlay: a static word with no motion reads as a hang, not a wait —
-     see the "loading looks like a crash" fix. */
-  #loading{position:fixed;top:0;left:0;right:0;bottom:0;background:#0a0a0a;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;z-index:100;color:#777;font-size:13px;font-family:inherit}
-  #loadSpin{width:28px;height:28px;border-radius:50%;border:2px solid #2a2a2a;border-top-color:#667;animation:ldspin 0.9s linear infinite}
+     see the "loading looks like a crash" fix. Also load-bearing (kept up until
+     the reveal cloud actually has pixels, not just until the DOM is set up —
+     see loadAll's Phase 3 wait) so it never hands off to an empty viewport. */
+  #loading{position:fixed;top:0;left:0;right:0;bottom:0;background:#0a0a0a;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;z-index:100;color:#777;font-size:13px;font-family:inherit}
+  #loadCloud{position:relative;width:120px;height:96px}
+  #loadCloud i{position:absolute;border-radius:50%;background:#6c8cb0;animation:ldtwinkle 2.6s ease-in-out infinite}
+  @keyframes ldtwinkle{0%,100%{opacity:0.15;transform:scale(0.7)}50%{opacity:0.9;transform:scale(1)}}
+  #loadSpin{width:24px;height:24px;border-radius:50%;border:2px solid #2a2a2a;border-top-color:#667;animation:ldspin 0.9s linear infinite;position:absolute;left:50%;top:50%;margin:-12px 0 0 -12px}
   @keyframes ldspin{to{transform:rotate(360deg)}}
   #loadOverlayMsg{min-height:1.2em}
   #loadOverlayTime{font-size:11px;color:#444;min-height:1em}
+  #loadFact{font-size:11.5px;color:#556;max-width:340px;text-align:center;min-height:2.6em;line-height:1.4;transition:opacity 0.4s ease;padding:0 12px}
+  #loadFact.fade{opacity:0}
 </style>
 <div id="detail"><div class="tok" id="tt"></div><div class="meta" id="tm"></div></div>
-<div id="loading"><div id="loadSpin"></div><div id="loadOverlayMsg">Loading...</div><div id="loadOverlayTime"></div></div>
+<div id="loading">
+  <div id="loadCloud"></div>
+  <div id="loadOverlayMsg">Loading...</div>
+  <div id="loadOverlayTime"></div>
+  <div id="loadFact"></div>
+</div>
 <script type="importmap">{"imports":{"three":"https://cdn.jsdelivr.net/npm/three@0.170.0/build/three.module.js","three/addons/":"https://cdn.jsdelivr.net/npm/three@0.170.0/examples/jsm/"}}</script>
 <script type="module">
 import*as THREE from'three';
 import{OrbitControls}from'three/addons/controls/OrbitControls.js';
+// Loading overlay: a small twinkling scatter (built once, pure CSS animation —
+// no per-frame JS cost while the real load is competing for the main thread)
+// plus a rotating one-liner of the project's own actual measurements, so a
+// slow connection reads as "the instrument is real and thinking" instead of
+// a blank stall. Facts are Tier-I findings the instrument has verified, not
+// marketing copy — see docs/findings.md for the fuller versions.
+(()=>{const host=document.getElementById('loadCloud');if(!host)return;
+  const N=22;for(let i=0;i<N;i++){const d=document.createElement('i');
+    const ang=Math.random()*Math.PI*2,rad=8+Math.random()*46;
+    const x=60+Math.cos(ang)*rad,y=48+Math.sin(ang)*rad*0.72;// squash into an ellipse, cloud-shaped not circular
+    const sz=1.5+Math.random()*3;
+    d.style.cssText=`left:${x.toFixed(1)}px;top:${y.toFixed(1)}px;width:${sz.toFixed(1)}px;height:${sz.toFixed(1)}px;animation-delay:${(Math.random()*2.6).toFixed(2)}s`;
+    host.appendChild(d);}
+  const sp=document.createElement('div');sp.id='loadSpin';host.appendChild(sp);
+})();
+const LOAD_FACTS=[
+  "Safety is measured at 0.5% of residual-stream displacement variance — language identity alone is over 10%.",
+  "Feed a model one token with nothing before or after it, and the residual stream collapses onto a single axis by layer 2.",
+  "One direction already separates 82% of harmful-vs-benign cases. The safety boundary is close to a straight line, not a hidden curve.",
+  "The safety direction acts on the first token. Once a model has said 'Sorry' or 'Sure,' the rest is close to determined.",
+  "Code tokens fall through the layers on every model tested. Latin stays flat. Embedding norm predicts almost nothing.",
+  "Silence is not a neutral baseline — every model tilts toward something before it says a word.",
+];
+let _loadFactTimer=null;
+function _startLoadFacts(){
+  const el=document.getElementById('loadFact');if(!el)return;
+  let i=Math.floor(Math.random()*LOAD_FACTS.length);
+  const show=()=>{el.textContent=LOAD_FACTS[i];el.classList.remove('fade');};
+  show();
+  clearInterval(_loadFactTimer);
+  _loadFactTimer=setInterval(()=>{
+    el.classList.add('fade');
+    setTimeout(()=>{i=(i+1)%LOAD_FACTS.length;show();},420);
+  },3800);
+}
+function _stopLoadFacts(){clearInterval(_loadFactTimer);_loadFactTimer=null;}
 const CL={latin:0x4477AA,CJK:0xEE6677,Cyrillic:0x228833,code:0xCCBB44,Arabic:0x66CCEE,Japanese:0xAA3377,Korean:0x999999,Thai:0x44BB99,Hebrew:0xEE8866,Devanagari:0xFF8800,Greek:0x6644CC,other:0xAAAAAA,special:0x666666};
 const CLh=Object.fromEntries(Object.entries(CL).map(([k,v])=>[k,'#'+v.toString(16).padStart(6,'0')]));
 let allL=[],dm=null,cL=0,play=false;
@@ -867,7 +915,7 @@ function _renderRegion(el,sc,cam){
 }
 const views=[];
 let _lastVP=0;
-for(let v=0;v<NV;v++){const el=document.getElementById('vp'+v);const sc=new THREE.Scene();sc.background=new THREE.Color(v>=NC?0x080808:0x0a0a0a);const cam=new THREE.PerspectiveCamera(50,1,0.001,200);cam.position.set(0,0,2.5);const ctl=new OrbitControls(cam,el);ctl.enableDamping=true;ctl.dampingFactor=0.08;ctl.minDistance=0.005;ctl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};ctl.zoomToCursor=true;/* dolly toward the point under the cursor, not ctl.target — the only way to zoom INTO an off-center cluster without blind panning */el.addEventListener('pointerenter',()=>{_lastVP=v;});const geo=new THREE.BufferGeometry();const mtl=new THREE.PointsMaterial({size:0.02,vertexColors:true,transparent:true,opacity:0.85,sizeAttenuation:true,depthWrite:false});const pts=new THREE.Points(geo,mtl);sc.add(pts);views.push({el,cv:el,sc,cam,ctl,geo,mtl,pts,pcX:0,pcY:1,pcZ:2,layer:0,trajGroup:null});}
+for(let v=0;v<NV;v++){const el=document.getElementById('vp'+v);const sc=new THREE.Scene();sc.background=new THREE.Color(v>=NC?0x080808:0x0a0a0a);const cam=new THREE.PerspectiveCamera(50,1,0.001,200);cam.position.set(0,0,2.5);const ctl=new OrbitControls(cam,el);ctl.enableDamping=true;ctl.dampingFactor=0.08;ctl.minDistance=0.005;ctl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};ctl.zoomToCursor=true;/* dolly toward the point under the cursor, not ctl.target — the only way to zoom INTO an off-center cluster without blind panning */el.addEventListener('pointerenter',()=>{_lastVP=v;});const geo=new THREE.BufferGeometry();const mtl=new THREE.PointsMaterial({size:0.02,vertexColors:true,transparent:true,opacity:0.65/* was 0.85 — normal-blended overlapping points in a dense/over-zoomed cloud washed to solid white ("light bomb", reported live); see the matching cut in _dimAll and _revealOpScale */,sizeAttenuation:true,depthWrite:false});const pts=new THREE.Points(geo,mtl);sc.add(pts);views.push({el,cv:el,sc,cam,ctl,geo,mtl,pts,pcX:0,pcY:1,pcZ:2,layer:0,trajGroup:null});}
 function _resizeCanvas(){rdr.setSize(window.innerWidth,window.innerHeight);}
 
 // Dual browser panels — same scene, two cameras focused on different PC neighborhoods
@@ -896,6 +944,16 @@ const _roTraj=new ResizeObserver(entries=>{
   });
 });
 for(let vi=NC;vi<views.length;vi++)_roTraj.observe(views[vi].el);
+// Cloud viewports get the same aspect-aware re-fit on resize, once they've had
+// their first fit (v._fitted — before that there's no data yet, updateVP's own
+// fit-once will handle it; re-fitting here too would just race it).
+const _roCloud=new ResizeObserver(entries=>{
+  entries.forEach(entry=>{
+    const v=views.find(vv=>vv.el===entry.target);if(!v||!v._fitted)return;
+    _fitCloudCamera(v);_markDirty();
+  });
+});
+for(let vi=0;vi<NC;vi++)_roCloud.observe(views[vi].el);
 
 // Markers + paths
 const ray=new THREE.Raycaster();const ms=new THREE.Vector2();
@@ -1223,7 +1281,7 @@ const overlayCloudPts=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttr
 const _overlayTagEls=[];// per-cloud-viewport honesty tag (bottom-left)
 for(let _ovi=0;_ovi<NC;_ovi++){const host=document.getElementById('vp'+_ovi);if(host){const el=document.createElement('div');el.className='ovtag';el.style.cssText='position:absolute;bottom:3px;left:4px;font-size:8px;color:#9a8636;pointer-events:none;z-index:2;text-shadow:0 0 3px #000';host.appendChild(el);_overlayTagEls[_ovi]=el;}else _overlayTagEls[_ovi]=null;}
 // Trajectory honesty tag (Part B.4): real path counts, per traj viewport (NC..NV).
-let _trajAdditive=true;// additive blending on the merged trajectory LineSegments
+let _trajAdditive=false;// additive blending on the merged trajectory LineSegments — was the default (true), but additive has no self-limiting: thousands of paths converging near a shared region of PC space sum straight past white ("light bomb", reported live). Normal blending self-caps and the code already carries tuned opacities for it (see _trajApplyOpacity).
 let _trajBudgetCap=5000;// budget of the PRE-GRID fixed sheet (buildTraj first fill); the live device ceiling is _trajDeviceCap (__heinrich.trajBudget) — see the path-LOD block
 const _trajTagEls=[];
 for(let _tvi=NC;_tvi<NV;_tvi++){const host=document.getElementById('vp'+_tvi);if(host){const el=document.createElement('div');el.className='ovtag';el.style.cssText='position:absolute;bottom:3px;left:4px;font-size:8px;color:#7a8a99;pointer-events:none;z-index:2;text-shadow:0 0 3px #000';host.appendChild(el);_trajTagEls[_tvi]=el;}else _trajTagEls[_tvi]=null;}
@@ -1411,7 +1469,7 @@ let _vocabNRows=0;                 // full-vocab row count (from vocab-meta)
 // Per-token script coloring (matches the sample cloud's own CL palette) — this
 // is the sole cloud renderer once vocab is the source, so it needs the same
 // per-token color identity the retired base cloud used to carry.
-const revealPts=views.map((v,vi)=>{if(vi>=NC)return null;/* reveal cloud is a cloud-viewport object; traj views never used theirs (−11.5MB at the 160k cap) */const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(REVEAL_CAP*3),3).setUsage(THREE.DynamicDrawUsage));g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(REVEAL_CAP*3),3).setUsage(THREE.DynamicDrawUsage));g.setDrawRange(0,0);g.boundingSphere=new THREE.Sphere(new THREE.Vector3(0,0,0),4);const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.02,vertexColors:true,transparent:true,opacity:0.5/* re-scaled per fill by _revealOpApply (D6) */,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=-1;p.visible=false;p.frustumCulled=false;v.sc.add(p);return p;});
+const revealPts=views.map((v,vi)=>{if(vi>=NC)return null;/* reveal cloud is a cloud-viewport object; traj views never used theirs (−11.5MB at the 160k cap) */const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(REVEAL_CAP*3),3).setUsage(THREE.DynamicDrawUsage));g.setAttribute('color',new THREE.BufferAttribute(new Float32Array(REVEAL_CAP*3),3).setUsage(THREE.DynamicDrawUsage));g.setDrawRange(0,0);g.boundingSphere=new THREE.Sphere(new THREE.Vector3(0,0,0),4);const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.02,vertexColors:true,transparent:true,opacity:0.38/* was 0.5 — re-scaled per fill by _revealOpApply (D6); cut alongside the base cloud's opacity to stop the dense vocab-scale reveal from washing to white */,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=-1;p.visible=false;p.frustumCulled=false;v.sc.add(p);return p;});
 function _vpcGet(layer,pc){const k=model+'|'+mode+'|'+layer+'|'+pc;const v=_vpcCache.get(k);if(v){_vpcCache.delete(k);_vpcCache.set(k,v);}return v;}
 function _vpcPut(layer,pc,arr){const k=model+'|'+mode+'|'+layer+'|'+pc;const old=_vpcCache.get(k);if(old){_vpcCache.delete(k);_vpcBytes-=old.byteLength;}_vpcCache.set(k,arr);_vpcBytes+=arr.byteLength;while(_vpcBytes>VPC_CACHE_BYTES&&_vpcCache.size>1){const fk=_vpcCache.keys().next().value;_vpcBytes-=_vpcCache.get(fk).byteLength;_vpcCache.delete(fk);}}
 // One ~97KB float16 read per (layer,pc); decoded to Float32 once, then cached.
@@ -2419,8 +2477,8 @@ let _lastDimState=-1;
 // 0.25 — keyed on the count actually DRAWN in that viewport (zoomed in → fewer → brighter).
 // _revFill re-applies it after every fill; _dimAll after every dim-state change (D6).
 // Floor 0.7: the operator approved the cloud's look at the full 0.5 alpha with 48k rows drawn — this scale only softens the very densest cases (150k), it must not override an approved look.
-function _revealOpScale(shown){const n=shown||nN||2000;return Math.max(0.7,Math.min(1,Math.sqrt(2000/n)));}
-function _revealOpApply(vi){const pts=revealPts[vi],rev=views[vi]._rev;if(!pts)return;pts.material.opacity=((_lastDimState>0&&(_lastDimState&1))?0.2:0.5)*_revealOpScale(rev?rev.shown:0);}
+function _revealOpScale(shown){const n=shown||nN||2000;return Math.max(0.5,Math.min(1,Math.sqrt(2000/n)));}
+function _revealOpApply(vi){const pts=revealPts[vi],rev=views[vi]._rev;if(!pts)return;pts.material.opacity=((_lastDimState>0&&(_lastDimState&1))?0.16:0.38)*_revealOpScale(rev?rev.shown:0);}
 // Trajectory sheet dim: multiply the build-time base opacities (v._trajOpFine/_trajOpCoarse,
 // budget-scaled in buildTraj) by the same 0.08/0.15 ratio the old code intended, and keep
 // the additive 8-bit floors (0.004/0.006) so a dimmed sheet never quantizes to nothing.
@@ -2428,7 +2486,7 @@ function _revealOpApply(vi){const pts=revealPts[vi],rev=views[vi]._rev;if(!pts)r
 function _trajDimApply(v,dim){const f=dim?0.08/0.15:1;
   if(v.trajGroup&&v._trajOpFine!==undefined)v.trajGroup.material.opacity=Math.max(0.004,v._trajOpFine*f);
   if(v.trajGroupCoarse&&v._trajOpCoarse!==undefined)v.trajGroupCoarse.material.opacity=Math.max(0.006,v._trajOpCoarse*f);}
-function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC){v.mtl.opacity=dim?0.35:0.85;if(revealPts[vi])revealPts[vi].material.opacity=(dim?0.2:0.5)*_revealOpScale(v._rev?v._rev.shown:0);}if(vi>=NC&&v.trajGroup){_trajDimApply(v,dim);if(v.trajMarker)v.trajMarker.material.opacity=(dim?0.35:0.9)*_trajMarkerOpScale();}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible)m.material.opacity=0.95;});}// size is owned by _applyViewSizes (per frame); a size set here was dead
+function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC){v.mtl.opacity=dim?0.27:0.65;if(revealPts[vi])revealPts[vi].material.opacity=(dim?0.16:0.38)*_revealOpScale(v._rev?v._rev.shown:0);}if(vi>=NC&&v.trajGroup){_trajDimApply(v,dim);if(v.trajMarker)v.trajMarker.material.opacity=(dim?0.35:0.9)*_trajMarkerOpScale();}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible)m.material.opacity=0.95;});}// size is owned by _applyViewSizes (per frame); a size set here was dead
 let _hoverTimer=0,_hoverTok=-1,_hoverLoading='';
 // Unified hover cache: token,layer → {pcScores: Float32Array[K], neurons: Float32Array[inter]}
 const _hoverCache=new Map();
@@ -3589,17 +3647,35 @@ function _fitDistanceForRadius(cam,r,margin=1.4){
   const halfH=Math.atan(Math.tan(halfV)*cam.aspect);
   return r*margin/Math.tan(Math.min(halfV,halfH));
 }
-// A trajectory bundle read top-down looks like a grid (parallel per-layer
-// segments, no depth cue) — losing exactly the "flowing paths" character the
-// angled view (_snapOne's existing (1.5,0.5,3) default) already had. Keep
-// that direction, just scale its LENGTH to the real content + aspect instead
-// of a fixed magic distance, so the same angle stays legible at any size.
-const _TRAJ_DIR=new THREE.Vector3(1.5,0.5,3).normalize();
+// A trajectory bundle is per-layer segments radiating from a shared origin —
+// a straight-down view reads it as one flat grid with no sense of the layers
+// stacking, so the default is steep (mostly Y) rather than pure top-down: high
+// enough to read as "looking down the stack" (what the operator asked for),
+// tilted just enough off vertical to keep a depth cue on the fan of paths.
+const _TRAJ_DIR=new THREE.Vector3(0.85,2.4,1.05).normalize();
 function _fitTrajCamera(v){
   if(!v||v._maxR==null)return;
   v.cam.aspect=v.el.clientWidth/(v.el.clientHeight||1);v.cam.updateProjectionMatrix();
   const fitD=Math.max(1.5,_fitDistanceForRadius(v.cam,v._maxR));
   v.cam.position.copy(_TRAJ_DIR).multiplyScalar(fitD);
+  v.ctl.target.set(0,0,0);v.ctl.update();
+}
+// Cloud viewport positions (both the 2,000-sample cloud and the vocab-scale
+// reveal cloud) are clamped to roughly ±1.75 per axis (see _ensurePositionBuf)
+// regardless of model — unlike trajectories there's no per-load extent to read,
+// so the fit radius is a constant. The old default (a fixed cam.position(0,0,2.5)
+// set once per load, never touching aspect) badly over-zoomed the vocab-scale
+// cloud: it was tuned for a much smaller extent and never revisited when the
+// reveal cloud became the default renderer, and it ignored container shape
+// entirely — both reported live as "spawns too zoomed in, doesn't adapt to
+// screen size." Same fit math as trajectories fixes both at once.
+const _CLOUD_FIT_R=1.9;
+const _CLOUD_DIR=new THREE.Vector3(1.5,1.0,2.0).normalize();// same 3/4 angle as _snapOne's cloud default
+function _fitCloudCamera(v){
+  if(!v)return;
+  v.cam.aspect=v.el.clientWidth/(v.el.clientHeight||1);v.cam.updateProjectionMatrix();
+  const fitD=Math.max(1.5,_fitDistanceForRadius(v.cam,_CLOUD_FIT_R));
+  v.cam.position.copy(_CLOUD_DIR).multiplyScalar(fitD);
   v.ctl.target.set(0,0,0);v.ctl.update();
 }
 // Camera snap
@@ -3912,7 +3988,7 @@ function updateVP(vi,pcX,pcY,pcZ,layer){const v=views[vi];v.pcX=pcX;v.pcY=pcY;v.
   // above (position/needsUpdate) in case anything non-visual reads v.geo.
   v.pts.visible=(_cloudSource!=='vocab');
   {const _p=vi===0?'A':vi===1?'Δ':'B';document.getElementById('ax'+vi).textContent=`${_p}: PC${pcX}×PC${pcY}`;}
-  if(!v._fitted){v.cam.position.set(0,0,2.5);v.ctl.target.set(0,0,0);v.ctl.update();v._fitted=true;}}
+  if(!v._fitted){_fitCloudCamera(v);v._fitted=true;}}
 // trajMarker draws one square per token at the current layer. Its 0.9 opacity was
 // tuned for the 2,000-token sample; at 48k-150k it is an opaque slab that hides the
 // trajectories under it. Scale by sqrt so squares stay individually visible where
@@ -4049,8 +4125,8 @@ function _trajBuildGridLayer(vi,l){
 // --- pool ---
 function _trajEnsurePool(v,nPaths,nSegs,nSegsC){
   const blend=_trajAdditive?THREE.AdditiveBlending:THREE.NormalBlending;
-  if(!v.trajGroup){v.trajGroup=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.008,depthWrite:false,blending:blend}));v.trajGroup.frustumCulled=false;v.sc.add(v.trajGroup);}
-  if(!v.trajGroupCoarse){v.trajGroupCoarse=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.025,depthWrite:false,blending:blend}));v.trajGroupCoarse.frustumCulled=false;v.trajGroupCoarse.visible=false;v.sc.add(v.trajGroupCoarse);}
+  if(!v.trajGroup){v.trajGroup=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.0045/* was 0.008 — additive blending has no self-limiting, so thousands of paths converging near a shared origin saturated to solid white ("light bomb", reported live) */,depthWrite:false,blending:blend}));v.trajGroup.frustumCulled=false;v.sc.add(v.trajGroup);}
+  if(!v.trajGroupCoarse){v.trajGroupCoarse=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({vertexColors:true,transparent:true,opacity:0.014/* was 0.025, same reasoning as trajGroup above */,depthWrite:false,blending:blend}));v.trajGroupCoarse.frustumCulled=false;v.trajGroupCoarse.visible=false;v.sc.add(v.trajGroupCoarse);}
   for(const o of [v.trajGroup,v.trajGroupCoarse]){if(o.material.blending!==blend){o.material.blending=blend;o.material.needsUpdate=true;}}
   if((v._trajPoolCap|0)>=nPaths&&v._trajPoolSegs===nSegs&&v._trajPoolSegsC===nSegsC&&v.trajGroup.geometry.attributes.position)return;
   const cap=Math.max(1,Math.min(nN||1,Math.max(nPaths,Math.ceil(nPaths/2048)*2048)));
@@ -7725,7 +7801,7 @@ async function loadAll(){
   const prevTexts=texts;
   const prevPinTextA=pinnedToken>=0&&prevTexts[pinnedToken]!==undefined?prevTexts[pinnedToken]:null;
   const prevPinTextB=pinnedTokenB>=0&&prevTexts[pinnedTokenB]!==undefined?prevTexts[pinnedTokenB]:null;
-  const _ld=document.getElementById('loading');if(_ld)_ld.style.display='flex';
+  const _ld=document.getElementById('loading');if(_ld)_ld.style.display='flex';_startLoadFacts();
   document.getElementById('st').textContent='Loading...';
   const _ls=document.getElementById('loadStatus');
   const _lom=document.getElementById('loadOverlayMsg');
@@ -7749,8 +7825,8 @@ async function loadAll(){
     api(`serve-meta/${newModel}/${newMode}`),
     api(`decomp/${newModel}/${newMode}?layer=0`)
   ]);
-  if(dmResult.error){document.getElementById('st').textContent=dmResult.error;if(_ld)_ld.style.display='none';return;}
-  if(serveResult.error){document.getElementById('st').textContent=serveResult.error;if(_ld)_ld.style.display='none';return;}
+  if(dmResult.error){document.getElementById('st').textContent=dmResult.error;_stopLoadFacts();if(_ld)_ld.style.display='none';return;}
+  if(serveResult.error){document.getElementById('st').textContent=serveResult.error;_stopLoadFacts();if(_ld)_ld.style.display='none';return;}
   dm=dmResult;model=newModel;mode=newMode;
   nL=dm.n_layers;_nRealLayers=dm.n_real_layers||nL;_buildLayerSeq();
   // Clear all PCA caches on model switch
@@ -7918,8 +7994,19 @@ async function loadAll(){
   // If both pins restored from URL, trigger the dependent fetches so
   // direction-depth, direction-weights, and direction-colors populate.
   if(pinnedToken>=0&&pinnedTokenB>=0)_onPinChange();
+  // Strict readiness gate: setLayer() above kicked off the reveal-cloud fill
+  // (_revOnLayer, inside updateAllViewports) but didn't wait for it — on a slow
+  // connection the overlay used to drop right onto an empty viewport while that
+  // fetch was still in flight, which reads as broken rather than loading. Wait
+  // for it to actually finish, not just to have been scheduled. Bounded: a truly
+  // stuck connection still gets in eventually instead of hanging on this screen.
+  if(_cloudSource==='vocab'&&_vocabRevealEnabled){
+    _setLoad('streaming point cloud...');
+    const _revT0=performance.now();
+    while(_revLayerBusy&&performance.now()-_revT0<20000){await new Promise(r=>setTimeout(r,80));}
+  }
   }catch(e){document.getElementById('st').textContent='Error: '+e.message;console.error(e);}
-  finally{clearInterval(_loadTimer);if(_ld)_ld.style.display='none';}
+  finally{clearInterval(_loadTimer);_stopLoadFacts();if(_ld)_ld.style.display='none';}
 
   // Phase 4: heavy builds in background (don't block interaction)
   await _yieldFrame();
@@ -8143,7 +8230,7 @@ async function init(){const models=await api('models');const sel=document.getEle
     finally{_discBtn.disabled=false;_discBtn.textContent='Discover features';}
   });
   loadAll();}
-init().catch(e=>{console.error('init failed:',e);document.getElementById('loading').style.display='none';document.getElementById('st').textContent='Error: '+e.message;});
+init().catch(e=>{console.error('init failed:',e);_stopLoadFacts();document.getElementById('loading').style.display='none';document.getElementById('st').textContent='Error: '+e.message;});
 // --- RAF-based playback (replaces setInterval) ---
 let _playRAF=null,_playLastT=0;
 const _playMS=100; // ms per layer — 10 layers/sec, full sweep in 3s at 30 layers
