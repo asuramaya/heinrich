@@ -961,9 +961,14 @@ let hoveredToken=-1,pinnedToken=-1;
 const highlightMarkers=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.06,color:0xFFFFFF,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=10;p.visible=false;v.sc.add(p);return p;});
 const pinMarkers=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.14,color:0xFF6644,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=10;p.visible=false;v.sc.add(p);return p;});
 const pinMarkersB=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(3),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.14,color:0x4477AA,transparent:true,opacity:1.0,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=10;p.visible=false;v.sc.add(p);return p;});
-const hoverPaths=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFFFFFF,transparent:true,opacity:0.45,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
-const pinPaths=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFF6644,transparent:true,opacity:0.95,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
-const pinPathsB=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0x4477AA,transparent:true,opacity:0.95,depthWrite:false}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
+// Additive + depthTest:false so these read against ANY cloud color underneath —
+// normal-blended same-hue-as-background lines (esp. pinPathsB's blue against a
+// direction-colored cloud's own blue half) could blend into near-invisibility;
+// additive always brightens rather than matches, so it pops regardless of what's
+// under it (reported live: "the orange/blue paths of the selected tokens disappear").
+const hoverPaths=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFFFFFF,transparent:true,opacity:0.45,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
+const pinPaths=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFF6644,transparent:true,opacity:0.95,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
+const pinPathsB=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0x4477AA,transparent:true,opacity:0.95,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
 // Live-forward inhabitant: a prompt run through the live model, projected into the
 // FROZEN frame (same L{n}_components) and rendered as a bright point (per cloud view,
 // at the current layer) + a per-layer trajectory line (traj views). The living token
@@ -4195,7 +4200,16 @@ function _trajEmitColors(vi,dir){
   const v=views[vi];const sel=v._trajSel,n=v._trajShown|0;if(!sel||!v.trajGroup)return;
   const nSegs=v._trajPoolSegs|0,nSegsC=v._trajPoolSegsC|0;if(!nSegs)return;
   const fc=v.trajGroup.geometry.attributes.color.array,cc=v.trajGroupCoarse.geometry.attributes.color.array;
-  const useDir=!!(dir&&_dirProjLast&&_dirProjLast.length===nN);const _d=0.3*Math.min(1,5000/Math.max(1,n));
+  const useDir=!!(dir&&_dirProjLast&&_dirProjLast.length===nN);
+  // Base color intensity: 0.3 was tuned for additive blending, where thousands
+  // of overlapping lines accumulate a faint per-line color into a bright visible
+  // gradient. Normal blending (the current default — see the light-bomb fix)
+  // does NOT accumulate like that; each line just shows its own color directly,
+  // and since most tokens sit near the orthogonal midpoint (near-gray by design,
+  // "Red = A-like, Blue = B-like, grey = orthogonal"), a 0.3-scaled bundle read
+  // as uniformly gray instead of a red/blue gradient (reported live). Normal
+  // blending needs the color near full strength since it self-caps instead.
+  const _d=(_trajAdditive?0.3:0.95)*Math.min(1,5000/Math.max(1,n));
   const perF=nSegs*2*3,perC=nSegsC*2*3;
   for(let p=0;p<n;p++){const ti=sel[p];let r,g,b;
     if(useDir){const t=Math.max(-1,Math.min(1,(_dirProjLast[ti]-_dirProjMid)/_dirProjSpan)),at=Math.abs(t);
