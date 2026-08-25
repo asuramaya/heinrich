@@ -966,9 +966,9 @@ const pinMarkersB=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribut
 // direction-colored cloud's own blue half) could blend into near-invisibility;
 // additive always brightens rather than matches, so it pops regardless of what's
 // under it (reported live: "the orange/blue paths of the selected tokens disappear").
-const hoverPaths=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFFFFFF,transparent:true,opacity:0.45,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
-const pinPaths=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFF6644,transparent:true,opacity:0.95,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
-const pinPathsB=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0x4477AA,transparent:true,opacity:0.95,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
+const hoverPaths=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFFFFFF,vertexColors:true,transparent:true,opacity:0.45,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
+const pinPaths=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFF6644,vertexColors:true,transparent:true,opacity:0.95,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
+const pinPathsB=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0x4477AA,vertexColors:true,transparent:true,opacity:0.95,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
 // Live-forward inhabitant: a prompt run through the live model, projected into the
 // FROZEN frame (same L{n}_components) and rendered as a bright point (per cloud view,
 // at the current layer) + a per-layer trajectory line (traj views). The living token
@@ -2139,6 +2139,19 @@ function _robustColMax(col,percentile=99.5){
 // 99.95th percentile so outlier crystals stay visible at 2-3× while normal
 // tokens still fill [-1, 1].
 function _clampTraj(v,b){const B=b||1.75;return v>B?B:(v<-B?-B:v);}
+// Soft knee, for the single-token PATH lines only (the bulk clouds/sheets keep
+// the hard clamp — there, a flattened outlier is one dot among 48k).
+// A path that DROPS its out-of-bound vertices shatters: the pinned token is
+// usually an outlier (that is WHY it was pinned), it leaves the render bound at
+// a few layers, and the line comes back as disjoint stubs — or, when every
+// consecutive pair has one bad end, as nothing at all. Compressing the tail
+// keeps ONE continuous line instead: identity below 0.75·B, then a tanh knee
+// asymptotic at 1.3·B. Monotone, and C1 at the knee (tanh'(0)=1), so ordering
+// and local shape survive; only the far tail bends, and those vertices are
+// drawn dim (see _buildPathForVP) so the reader can see where the line stopped
+// being to scale.
+function _kneeTraj(v,b){const B=b||1.75,k=B*0.75,h=B*1.3-k;const a=v<0?-v:v;
+  if(a<=k)return v;const c=k+h*Math.tanh((a-k)/h);return v<0?-c:c;}
 
 // Per-column clamp bound: computed from the column's post-normalized
 // distribution. Caller passes the pre-normalized column; we compute the
@@ -2453,29 +2466,51 @@ function _precomputeTraj(vi){
 // Delta is now handled by viewports 1 (cloud) and 4 (trajectory) in the main pipeline
 function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
   // Use model-order sequence so emb→L0→...→LN→lmh draws without loopback.
-  // Pair-emitting LineSegments: vertices whose coordinates were CLAMPED to the
-  // render bounds are omitted (their segments would be wall-bounce artifact,
-  // not data). setDrawRange keeps the preallocated buffer.
-  const seqAll=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
-  // Cloud views live in ONE layer's space; a full 32-layer path there is a
-  // scribble of per-layer normalization changes, not motion. Show a local
-  // window (±5 layers around cL) in clouds; traj views keep the full path —
-  // depth is their axis, the full path is their subject.
-  const seq=(vi<NC)?seqAll.filter(l=>Math.abs(l-cL)<=5):seqAll;
-  const n=seq.length;const cap=Math.max(1,(n-1))*6;let buf=line.geometry.attributes.position?.array;
-  if(!buf||buf.length!==cap){line.geometry.dispose();const a=new Float32Array(cap);line.geometry=new THREE.BufferGeometry();line.geometry.setAttribute('position',new THREE.BufferAttribute(a,3));buf=a;}
-  let w=0,px=0,py=0,pz=0,pOk=false;
-  for(let si=0;si<n;si++){const l=seq[si];let x,y,z,ok;
+  // Pair-emitting LineSegments; setDrawRange keeps the preallocated buffer.
+  // Out-of-bound vertices are knee-compressed (_kneeTraj) and marked dim, NOT
+  // dropped: dropping them shattered the line (see _kneeTraj's note).
+  const seq=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
+  // EVERY layer is drawn, clouds included. A cloud renders one layer, so the far
+  // ends of the path are not "here" — but cutting them at a hard ±5 window read
+  // as a line snapping off in mid-air. They fade out with |l-cL| instead: the
+  // trace still follows the token across the whole stack, and where it is
+  // brightest tells you which layer you are standing in.
+  const n=seq.length;const cap=Math.max(1,(n-1))*6;
+  let buf=line.geometry.attributes.position?.array,cbuf=line.geometry.attributes.color?.array;
+  if(!buf||buf.length!==cap||!cbuf||cbuf.length!==cap){line.geometry.dispose();
+    const a=new Float32Array(cap),c=new Float32Array(cap);line.geometry=new THREE.BufferGeometry();
+    line.geometry.setAttribute('position',new THREE.BufferAttribute(a,3));
+    line.geometry.setAttribute('color',new THREE.BufferAttribute(c,3));buf=a;cbuf=c;}
+  // Per-vertex intensity MULTIPLIES the material's hue (vertexColors): depth
+  // fade in clouds × a dim factor wherever the knee bent the coordinate.
+  // Fade to a TRUE zero, no floor. Measured on ' king', smollm2-360m raw L11: in
+  // per-layer-normalized cloud coordinates the token barely moves across the whole
+  // middle of the stack (steps of ~0.001 world units for layers 4..30 — per-layer
+  // normalization divides out exactly the global growth PC0 carries), while
+  // emb→L2 and L29→lmh jump 0.2–0.9. So every LONG line in a cloud path is a
+  // normalization change at the ends of the stack, not motion; a floored fade
+  // kept drawing those six struts straight across the view. Trajectory viewports
+  // are unfaded — there depth IS the axis and the whole stack is the subject.
+  const _fade=(l)=>vi>=NC?1:Math.exp(-Math.abs(l-cL)/3.2);
+  let w=0,px=0,py=0,pz=0,pI=0,have=false;
+  for(let si=0;si<n;si++){const l=seq[si];let x,y,z,tru,rx,ry,rz=0;
     if(vi<NC){_cloudNormLayer(v,l);const lm=v._layerMx?v._layerMx[l]:null;const mxX=lm?lm[0]:1,mxY=lm?lm[1]:1,mxZ=lm?lm[2]:1;const cb=v._clampBounds?v._clampBounds[l]:null;const bX=cb?cb[0]:1.75,bY=cb?cb[1]:1.75,bZ=cb?cb[2]:1.75;
-      const rx=_getScore(l,idx,v.pcX)/mxX,ry=_getScore(l,idx,v.pcY)/mxY,rz=_getScore(l,idx,v.pcZ)/mxZ;
-      x=_clampTraj(rx,bX);y=_clampTraj(ry,bY);z=_clampTraj(rz,bZ);ok=(x===rx)&&(y===ry)&&(z===rz);}
+      rx=_getScore(l,idx,v.pcX)/mxX;ry=_getScore(l,idx,v.pcY)/mxY;rz=_getScore(l,idx,v.pcZ)/mxZ;
+      x=_kneeTraj(rx,bX);y=_kneeTraj(ry,bY);z=_kneeTraj(rz,bZ);tru=(x===rx)&&(y===ry)&&(z===rz);}
     else{const lm=(v._trajLayerMx?v._trajLayerMx[l]:null)||[1,1];const cb=v._trajClampBounds?v._trajClampBounds[l]:null;const bX=cb?cb[0]:1.75,bY=cb?cb[1]:1.75;
-      const rx=_getScore(l,idx,v.pcX)/lm[0],ry=_getScore(l,idx,v.pcY)/lm[1];
-      x=_clampTraj(rx,bX);y=_clampTraj(ry,bY);z=_layerZ[l]!==undefined?_layerZ[l]:(si/(n-1))*2-1;ok=(x===rx)&&(y===ry);}
-    if(ok&&pOk){buf[w++]=px;buf[w++]=py;buf[w++]=pz;buf[w++]=x;buf[w++]=y;buf[w++]=z;}
-    px=x;py=y;pz=z;pOk=ok;}
+      rx=_getScore(l,idx,v.pcX)/lm[0];ry=_getScore(l,idx,v.pcY)/lm[1];
+      x=_kneeTraj(rx,bX);y=_kneeTraj(ry,bY);z=_layerZ[l]!==undefined?_layerZ[l]:(si/(n-1))*2-1;tru=(x===rx)&&(y===ry);}
+    // _getScore answers 0 for "no tier holds this layer yet". An exact 0.0 on
+    // every axis is a missing value, not a token sitting on the origin — break
+    // the polyline there rather than spiking it through the middle of the cloud.
+    if(rx===0&&ry===0&&(vi>=NC||rz===0)){have=false;continue;}
+    const I=(tru?1:0.34)*_fade(l);
+    if(have){buf[w]=px;buf[w+1]=py;buf[w+2]=pz;cbuf[w]=pI;cbuf[w+1]=pI;cbuf[w+2]=pI;
+             buf[w+3]=x;buf[w+4]=y;buf[w+5]=z;cbuf[w+3]=I;cbuf[w+4]=I;cbuf[w+5]=I;w+=6;}
+    px=x;py=y;pz=z;pI=I;have=true;}
   line.geometry.setDrawRange(0,w/3);
-  line.geometry.attributes.position.needsUpdate=true;line.visible=w>0;}
+  line.geometry.attributes.position.needsUpdate=true;
+  line.geometry.attributes.color.needsUpdate=true;line.visible=w>0;}
 let _lastDimState=-1;
 // Reveal-cloud alpha: 0.5 was tuned for the 2,000-token sample; at 48k-150k rows the
 // reveal draws every in-view row, so scale like the traj marker — sqrt(2000/shown), floor
@@ -3629,18 +3664,36 @@ function _popupText(i,vi){
 // Reference grids + axis lines
 views.forEach((v,vi)=>{
   // XY grid (cloud) or XY+Z grid (trajectory)
+  // A reference grid is an OVERVIEW cue. Once the camera is inside the cloud it
+  // stops reading as scale and starts reading as structure — a boxy lattice laid
+  // over the data ("a weird boxy grid thing I can't quite explain", reported
+  // live), and being depth-writing it punched holes in the points behind it. So:
+  // never occlude data, and fade out with the dolly (_applyViewSizes).
+  const _ref=[];
   const g=new THREE.GridHelper(2,8,0x222222,0x181818);
   g.rotation.x=Math.PI/2;// grid on XY plane
-  v.sc.add(g);
+  v.sc.add(g);_ref.push(g);
   if(vi>=NC){// trajectory: add depth plane grid too
     const g2=new THREE.GridHelper(2,8,0x1a1a1a,0x141414);
-    v.sc.add(g2);// XZ plane (default orientation)
+    v.sc.add(g2);_ref.push(g2);// XZ plane (default orientation)
   }
   // Axis lines: red=X, green=Y, blue=Z
   const _al=(a,b,c)=>new THREE.Line(new THREE.BufferGeometry().setFromPoints([new THREE.Vector3(...a),new THREE.Vector3(...b)]),new THREE.LineBasicMaterial({color:c,transparent:true,opacity:0.25}));
-  v.sc.add(_al([-1.2,0,0],[1.2,0,0],0x663333));// X red
-  v.sc.add(_al([0,-1.2,0],[0,1.2,0],0x336633));// Y green
-  v.sc.add(_al([0,0,-1.2],[0,0,1.2],0x333366));// Z blue
+  const ax=[_al([-1.2,0,0],[1.2,0,0],0x663333),// X red
+            _al([0,-1.2,0],[0,1.2,0],0x336633),// Y green
+            _al([0,0,-1.2],[0,0,1.2],0x333366)];// Z blue
+  ax.forEach(a=>{v.sc.add(a);_ref.push(a);});
+  // Reference furniture, all of it: never depth-write (a scale cue must not
+  // occlude the data it is a cue for), and carry its own base opacity so the
+  // per-frame dolly fade in _applyViewSizes can scale it.
+  // renderOrder −3 is load-bearing: making the grid `transparent` moves it out of
+  // the opaque pass (which runs first, so the points used to cover it) and into
+  // the transparent pass, where it would otherwise draw LAST and paint flat
+  // 0x222222 lines straight over the cloud — brighter than the cloud around them.
+  // −3 puts it ahead of the reveal cloud (−1) inside that pass.
+  _ref.forEach(o=>{o.material.transparent=true;o.material.depthWrite=false;o.renderOrder=-3;
+    o._baseOp=o.material.opacity!==undefined?o.material.opacity:1;});
+  v._refGrid=_ref;
 });
 // dist such that a radius `r` (world units) stays inside the frustum on
 // whichever axis (horizontal or vertical) is tighter for the camera's current
@@ -3669,6 +3722,7 @@ function _fitTrajCamera(v){
   if(!v||v._maxR==null)return;
   v.cam.aspect=v.el.clientWidth/(v.el.clientHeight||1);v.cam.updateProjectionMatrix();
   const fitD=Math.max(1.5,_fitDistanceForRadius(v.cam,v._maxR));
+  v._fitDist=fitD;// see _fitCloudCamera — the reference-grid fade needs the overview distance
   v.cam.position.copy(_TRAJ_DIR).multiplyScalar(fitD);
   v.ctl.target.set(0,0,0);v.ctl.update();
 }
@@ -3687,6 +3741,7 @@ function _fitCloudCamera(v){
   if(!v)return;
   v.cam.aspect=v.el.clientWidth/(v.el.clientHeight||1);v.cam.updateProjectionMatrix();
   const fitD=Math.max(1.5,_fitDistanceForRadius(v.cam,_CLOUD_FIT_R));
+  v._fitDist=fitD;// the overview distance the reference-grid fade is measured against
   v.cam.position.copy(_CLOUD_DIR).multiplyScalar(fitD);
   v.ctl.target.set(0,0,0);v.ctl.update();
 }
@@ -8705,6 +8760,12 @@ function _applyViewSizes(vi){
   const ps=Math.min(0.15,Math.max(0.0004,d*0.012));v.mtl.size=ps;
   if(vi<NC&&revealPts[vi])revealPts[vi].material.size=Math.min(0.1,Math.max(0.0003,d*0.008));
   if(vi>=NC&&v.trajMarker)v.trajMarker.material.size=Math.min(0.1,Math.max(0.0003,d*0.008));// same px size as the cloud points (~5px); the old 0.015 was 10px squares × 48k tokens = a solid blocky mass
+  // Reference-grid dolly fade: a scale cue at the overview, gone once the camera
+  // is inside the cloud (default fit sits near d≈4; the reports of "a boxy grid
+  // over the data" were all from d≲1.5, where the lattice covers the view).
+  if(v._refGrid){const fd=v._fitDist||4;const lo=fd*0.30,hi=fd*0.62;
+    const gf=Math.max(0,Math.min(1,(d-lo)/(hi-lo)));
+    for(const o of v._refGrid){o.material.opacity=o._baseOp*gf;o.visible=gf>0.02;}}
   const ms=Math.min(0.2,Math.max(0.002,d*0.04));
   if(pinMarkers[vi].visible)pinMarkers[vi].material.size=ms;
   if(pinMarkersB[vi].visible)pinMarkersB[vi].material.size=ms;
