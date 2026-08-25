@@ -3982,7 +3982,7 @@ function _ensurePositionBuf(v){
   if(!pos||pos.length!==nN*3){pos=new Float32Array(nN*3);v.geo.setAttribute('position',new THREE.BufferAttribute(pos,3));_ensureColors(v);}
   return pos;
 }
-function updateVP(vi,pcX,pcY,pcZ,layer){const v=views[vi];v.pcX=pcX;v.pcY=pcY;v.pcZ=pcZ;v.layer=layer;
+function updateVP(vi,pcX,pcY,pcZ,layer){const v=views[vi];const _pairChanged=(v.pcX!==pcX||v.pcY!==pcY);v.pcX=pcX;v.pcY=pcY;v.pcZ=pcZ;v.layer=layer;
   const _cb=_cloudBufAt(vi,layer);if(!_cb)return;
   const pos=_ensurePositionBuf(v);
   pos.set(_cb);
@@ -4000,7 +4000,18 @@ function updateVP(vi,pcX,pcY,pcZ,layer){const v=views[vi];v.pcX=pcX;v.pcY=pcY;v.
   // above (position/needsUpdate) in case anything non-visual reads v.geo.
   v.pts.visible=(_cloudSource!=='vocab');
   {const _p=vi===0?'A':vi===1?'Δ':'B';document.getElementById('ax'+vi).textContent=`${_p}: PC${pcX}×PC${pcY}`;}
-  if(!v._fitted){_fitCloudCamera(v);v._fitted=true;}}
+  if(!v._fitted){_fitCloudCamera(v);v._fitted=true;}
+  // Same reasoning as buildTraj's own resync below: a pin path built before this
+  // viewport's PC pair actually changed used the WRONG pair's scores. Cloud's
+  // _buildPathForVP already recomputes its own per-layer normalization on every
+  // call (_cloudNormLayer), so the only staleness risk here is v.pcX/v.pcY
+  // themselves — resync whenever they actually changed.
+  if(_pairChanged){
+    if(pinnedToken>=0)_buildPathForVP(pinPaths[vi],v,vi,pinnedToken);
+    if(pinnedTokenB>=0)_buildPathForVP(pinPathsB[vi],v,vi,pinnedTokenB);
+    if(hoveredToken>=0)_buildPathForVP(hoverPaths[vi],v,vi,hoveredToken);
+  }
+}
 // trajMarker draws one square per token at the current layer. Its 0.9 opacity was
 // tuned for the 2,000-token sample; at 48k-150k it is an opaque slab that hides the
 // trajectories under it. Scale by sqrt so squares stay individually visible where
@@ -4159,23 +4170,34 @@ function _trajEmitPositions(vi,fine=true){
   const seq=_trajSeqNow(),nLay=seq.length,nSegs=nLay-1;if(nSegs<1)return 0.5;
   const cIdx=_trajCoarseIdx(seq),nSegsC=cIdx.length-1;
   _trajEnsurePool(v,n,nSegs,nSegsC);
-  if(!S.lx||S.lx.length<nLay*n){S.lx=new Float32Array(nLay*Math.max(n,1024));S.ly=new Float32Array(S.lx.length);}
-  const lx=S.lx,ly=S.ly,zs=new Float32Array(nLay);
-  const tlMx=v._trajLayerMx,tCb=v._trajClampBounds;
+  if(!S.lx||S.lx.length<nLay*n){S.lx=new Float32Array(nLay*Math.max(n,1024));S.ly=new Float32Array(S.lx.length);S.ok=new Uint8Array(S.lx.length);}
+  const lx=S.lx,ly=S.ly,ok=S.ok,zs=new Float32Array(nLay);
+  const tlMx=v._trajLayerMx,tCb=v._trajClampBounds,_EPS=1e-4;
   for(let si=0;si<nLay;si++){const l=seq[si],off=si*n;zs[si]=_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1;
+    const cb=(tCb&&tCb[l])||[1.75,1.75],bX=cb[0],bY=cb[1];
     const buf=v._trajBufs&&v._trajBufs[l];
-    if(buf&&buf.length===nN*3){for(let p=0;p<n;p++){const r=sel[p]*3;lx[off+p]=buf[r];ly[off+p]=buf[r+1];}continue;}
-    const lm=(tlMx&&tlMx[l])||[1,1],cb=(tCb&&tCb[l])||[1.75,1.75],imx=1/lm[0],imy=1/lm[1],bX=cb[0],bY=cb[1];
+    if(buf&&buf.length===nN*3){for(let p=0;p<n;p++){const r=sel[p]*3,x=buf[r],y=buf[r+1];lx[off+p]=x;ly[off+p]=y;ok[off+p]=(Math.abs(x)<bX-_EPS&&Math.abs(y)<bY-_EPS)?1:0;}continue;}
+    const lm=(tlMx&&tlMx[l])||[1,1],imx=1/lm[0],imy=1/lm[1];
     const cx=_getScoreColumn(l,v.pcX),cy=_getScoreColumn(l,v.pcY);
-    if(cx&&cy&&cx.length>=nN&&cy.length>=nN){for(let p=0;p<n;p++){const r=sel[p];let x=cx[r]*imx,y=cy[r]*imy;if(x!==x)x=0;if(y!==y)y=0;lx[off+p]=x>bX?bX:(x<-bX?-bX:x);ly[off+p]=y>bY?bY:(y<-bY?-bY:y);}}
-    else{for(let p=0;p<n;p++){const r=sel[p];lx[off+p]=_clampTraj(_getScore(l,r,v.pcX)*imx,bX);ly[off+p]=_clampTraj(_getScore(l,r,v.pcY)*imy,bY);}}
+    if(cx&&cy&&cx.length>=nN&&cy.length>=nN){for(let p=0;p<n;p++){const r=sel[p];let x=cx[r]*imx,y=cy[r]*imy;if(x!==x)x=0;if(y!==y)y=0;const cxv=x>bX?bX:(x<-bX?-bX:x),cyv=y>bY?bY:(y<-bY?-bY:y);lx[off+p]=cxv;ly[off+p]=cyv;ok[off+p]=(cxv===x&&cyv===y)?1:0;}}
+    else{for(let p=0;p<n;p++){const r=sel[p];const rx=_getScore(l,r,v.pcX)*imx,ry=_getScore(l,r,v.pcY)*imy,cxv=_clampTraj(rx,bX),cyv=_clampTraj(ry,bY);lx[off+p]=cxv;ly[off+p]=cyv;ok[off+p]=(cxv===rx&&cyv===ry)?1:0;}}
   }
   const hide=_hiddenScripts.size>0;let maxR=0.5;
+  // Segments where EITHER endpoint hit its layer's clamp bound are dropped (moved
+  // off-screen), same convention _buildPathForVP already uses for pin paths: a
+  // clamped coordinate is the render bound, not the token's real position, so
+  // connecting it into the line draws a "wall-bounce" spike out to the boundary
+  // and back — looks exactly like a stray escaping line (reported live, and
+  // root-caused live: a token legitimately above the 99.95th-percentile clamp
+  // at one layer, connected on both sides to its normal, small-magnitude
+  // neighbors). A gap in that one token's path is honest; a spike to the
+  // boundary is not.
   if(fine){const pos=v.trajGroup.geometry.attributes.position.array;const per=nSegs*2*3;
     for(let p=0;p<n;p++){let o=p*per;
       if(hide&&_hiddenScripts.has(scripts[sel[p]])){pos.fill(9999,o,o+per);continue;}
-      for(let si=0;si<nSegs;si++){const x0=lx[si*n+p],y0=ly[si*n+p],x1=lx[(si+1)*n+p],y1=ly[(si+1)*n+p];
-        pos[o]=x0;pos[o+1]=y0;pos[o+2]=zs[si];pos[o+3]=x1;pos[o+4]=y1;pos[o+5]=zs[si+1];o+=6;}}
+      for(let si=0;si<nSegs;si++){const i0=si*n+p,i1=(si+1)*n+p;
+        if(!ok[i0]||!ok[i1]){pos.fill(9999,o,o+6);o+=6;continue;}
+        pos[o]=lx[i0];pos[o+1]=ly[i0];pos[o+2]=zs[si];pos[o+3]=lx[i1];pos[o+4]=ly[i1];pos[o+5]=zs[si+1];o+=6;}}
     v.trajGroup.geometry.setDrawRange(0,n*nSegs*2);_trajFlagAttr(v.trajGroup.geometry.attributes.position,n*nSegs*2);
     v._trajFineStale=false;
     // token map: same slot layout every fill → reuse the entries
@@ -4185,7 +4207,9 @@ function _trajEmitPositions(vi,fine=true){
   {const pos=v.trajGroupCoarse.geometry.attributes.position.array;const per=nSegsC*2*3;
     for(let p=0;p<n;p++){let o=p*per;
       if(hide&&_hiddenScripts.has(scripts[sel[p]])){pos.fill(9999,o,o+per);continue;}
-      for(let k=0;k<nSegsC;k++){const a=cIdx[k],b=cIdx[k+1];pos[o]=lx[a*n+p];pos[o+1]=ly[a*n+p];pos[o+2]=zs[a];pos[o+3]=lx[b*n+p];pos[o+4]=ly[b*n+p];pos[o+5]=zs[b];o+=6;}}
+      for(let k=0;k<nSegsC;k++){const a=cIdx[k],b=cIdx[k+1],ia=a*n+p,ib=b*n+p;
+        if(!ok[ia]||!ok[ib]){pos.fill(9999,o,o+6);o+=6;continue;}
+        pos[o]=lx[ia];pos[o+1]=ly[ia];pos[o+2]=zs[a];pos[o+3]=lx[ib];pos[o+4]=ly[ib];pos[o+5]=zs[b];o+=6;}}
     v.trajGroupCoarse.geometry.setDrawRange(0,n*nSegsC*2);_trajFlagAttr(v.trajGroupCoarse.geometry.attributes.position,n*nSegsC*2);
     v._trajCoarseVertsPerPath=nSegsC*2;}
   // extent of what was drawn (only needed before the grid freezes v._maxR)
@@ -4375,6 +4399,23 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
   pg.boundingSphere=new THREE.Sphere(new THREE.Vector3(0,0,0),4);// picked by _pickAt; positions move per layer, so never let a lazily-computed sphere go stale
   v.sc.add(v.trajMarker);updateTrajMarker(vi);
   {const _p=(vi-NC)===0?'A':(vi-NC)===1?'Δ':'B';document.getElementById('ax'+vi).textContent=`${_p}→ PC${pcX}×PC${pcY}`;}
+  // Pin/hover paths cache their own vertex data (_buildPathForVP) built from
+  // whatever v.pcX/v.pcY were AT BUILD TIME — they don't re-read live state.
+  // If a pin was already drawn before this pair finished loading (URL-restored
+  // pins race the async PC-data fetch this function depends on — cold PCs like
+  // 190/173 aren't warm on a fresh load), that stale path used the WRONG PC's
+  // scores under the OLD per-layer normalization, which can land far outside
+  // this pair's actual range — a line rendered correctly by its own (wrong)
+  // math but nonsensical next to a cloud framed for the real pair (reported
+  // live: a bright line shooting off past the cloud edge). Every caller that
+  // changes a viewport's pair is supposed to resync pins afterward, but that's
+  // scattered across several call sites and easy to miss under a race (some of
+  // them return early on a superseded rebuild before reaching the resync).
+  // Do it here instead, once, at the one place a traj viewport's pair actually
+  // changes — correct by construction instead of by every caller remembering.
+  if(pinnedToken>=0)_buildPathForVP(pinPaths[vi],v,vi,pinnedToken);
+  if(pinnedTokenB>=0)_buildPathForVP(pinPathsB[vi],v,vi,pinnedTokenB);
+  if(hoveredToken>=0)_buildPathForVP(hoverPaths[vi],v,vi,hoveredToken);
 }
 function updateTrajMarker(vi){const v=views[vi];
   const buf=_trajBufAt(vi,cL);if(!buf)return;
