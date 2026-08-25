@@ -3649,10 +3649,17 @@ function _fitDistanceForRadius(cam,r,margin=1.4){
 }
 // A trajectory bundle is per-layer segments radiating from a shared origin —
 // a straight-down view reads it as one flat grid with no sense of the layers
-// stacking, so the default is steep (mostly Y) rather than pure top-down: high
-// enough to read as "looking down the stack" (what the operator asked for),
-// tilted just enough off vertical to keep a depth cue on the fan of paths.
-const _TRAJ_DIR=new THREE.Vector3(0.85,2.4,1.05).normalize();
+// stacking, so the default is elevated (more Y than the original (1.5,0.5,3))
+// rather than pure top-down, tilted enough off vertical to keep a depth cue.
+// First attempt went much steeper (0.85,2.4,1.05) — that satisfied the "spawn
+// more top-down" ask for the BULK shape, but broke the single-token pin/hover
+// path line (_buildPathForVP's full-path-across-all-layers draw for traj
+// views): a real winding 3D curve viewed from near-vertical self-intersects
+// constantly in screen space, turning one path into an unreadable tangle
+// (reported live, screenshot). A/B'd three angles against a live pinned pair
+// before picking this one — steep enough to read as "looking down the stack",
+// shallow enough that the pin path stays a legible scribble, not a crosshatch.
+const _TRAJ_DIR=new THREE.Vector3(1.1,1.7,2.1).normalize();
 function _fitTrajCamera(v){
   if(!v||v._maxR==null)return;
   v.cam.aspect=v.el.clientWidth/(v.el.clientHeight||1);v.cam.updateProjectionMatrix();
