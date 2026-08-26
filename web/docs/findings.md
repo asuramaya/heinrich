@@ -10,9 +10,9 @@ preferred stories; the full kill list and the rest of the story are in the
 - **Safety is 0.5% of displacement variance.** Language identity is **10.2%**; comply-vs-refuse
   is **0.9%**. The displacement profile is a language-processing measurement with safety as a
   trace signal.
-- **Safety and comply are orthogonal.** `cos(safety, comply) = −0.31`. Topic detection and
-  action obligation are separate computations. The comply direction is universal across all 5
-  instruct models tested.
+- **Safety and comply are separate axes.** `cos(safety, comply) = −0.31`: near-perpendicular,
+  slightly opposed. Topic detection and action obligation are different computations, not one
+  wearing two names. The comply direction is universal across all 5 instruct models tested.
 - **The unnamed variance is language sub-families.** Across 7 models, the dominant PCA axes are
   script-level separation, sub-language axes (Romance, Germanic, Vietnamese, Japanese), code vs
   natural language, and register/formality. Safety appears only as trace loading on axes
@@ -26,8 +26,16 @@ preferred stories; the full kill list and the rest of the story are in the
 - **Safety works through first-token selection.** The safety direction pushes `"Sorry"` up and
   `"Sure"` down: Phi-3 at 53M× ratio, Qwen at 284×, Mistral at 281×. The first word is the
   decision; everything after is confabulation.
-- **RLHF builds new directions, it doesn't sharpen pretraining's.** Base vs instruct safety:
-  `cos = 0.29`. RLHF rebuilds both the safety and comply axes near-orthogonally from scratch.
+- **RLHF sharpens pretraining's direction, it doesn't replace it.** Base vs instruct safety:
+  `cos = 0.87–0.92` across L5–L20 — a rotation of about 25°, not an orthogonal swap. Each
+  model's direction separates the *other* model's data nearly as well as its own: base's
+  direction scores 93% on instruct data (instruct's own: 97%), instruct's scores 73% on base
+  data (base's own: 77%). Near-orthogonal directions do not transfer like that. Base
+  Qwen2.5-0.5B, never instruction-tuned, already separates harmful from benign at 77%. RLHF
+  multiplies that separation ~1.4× where it is strongest and makes it operational for refusal;
+  it does not invent the category.
+  *Supersedes an earlier `cos = 0.29`, read as evidence that safety is a fragile bolt-on —
+  [refuted here](https://github.com/asuramaya/heinrich/blob/main/docs/session11-rlhf-orthogonality-refuted.md).*
 
 ## Silence is not neutral
 
