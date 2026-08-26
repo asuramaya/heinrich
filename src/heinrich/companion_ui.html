@@ -3692,7 +3692,11 @@ views.forEach((v,vi)=>{
   const ax=[_al([-1.2,0,0],[1.2,0,0],0x663333),// X red
             _al([0,-1.2,0],[0,1.2,0],0x336633),// Y green
             _al([0,0,-1.2],[0,0,1.2],0x333366)];// Z blue
-  ax.forEach(a=>{v.sc.add(a);_ref.push(a);});
+  // Axes are NOT part of the dolly fade. They are three thin lines that cost
+  // nothing, and orientation matters MOST once you are inside the cloud — exactly
+  // where the grid has to go. Fading them with the grid (as the first cut did) took
+  // away the only cue for which way is up at close range.
+  const _axes=[];ax.forEach(a=>{v.sc.add(a);_axes.push(a);});
   // Reference furniture, all of it: never depth-write (a scale cue must not
   // occlude the data it is a cue for), and carry its own base opacity so the
   // per-frame dolly fade in _applyViewSizes can scale it.
@@ -3701,7 +3705,8 @@ views.forEach((v,vi)=>{
   // the transparent pass, where it would otherwise draw LAST and paint flat
   // 0x222222 lines straight over the cloud — brighter than the cloud around them.
   // −3 puts it ahead of the reveal cloud (−1) inside that pass.
-  _ref.forEach(o=>{o.material.transparent=true;o.material.depthWrite=false;o.renderOrder=-3;
+  // Same treatment for every piece of reference furniture; only the grids get the fade.
+  _ref.concat(_axes).forEach(o=>{o.material.transparent=true;o.material.depthWrite=false;o.renderOrder=-3;
     o._baseOp=o.material.opacity!==undefined?o.material.opacity:1;});
   v._refGrid=_ref;
 });
