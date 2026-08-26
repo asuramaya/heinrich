@@ -1299,9 +1299,19 @@ async function _setTrajTag(vi,shown,info){const el=_trajTagEls[vi];if(!el)return
     let t;if(shown>=inView)t=inView>=tot?`all ${f(shown)} paths`:`all ${f(shown)} paths in view (of ${f(tot)})`;
     else t=`${f(shown)} of ${f(inView)} paths in view — uniform 1-in-${(inView/Math.max(1,shown)).toFixed(1)} sample`+(info.alphaFloor?' · alpha-floor stride':'');
     if(info.alphaClamped)t+=' · alpha floored';
-    el.textContent=t;return;}
+    el._base=t;_trajTagApplyLod(vi);return;}
   const topK=info|0;
-  el.textContent=(total&&shown>=total)?`all ${shown.toLocaleString()} paths`:`${shown.toLocaleString()} of ${(total||shown).toLocaleString()} paths — top-${topK} by ${ax} displacement + stride sample`;}
+  el._base=(total&&shown>=total)?`all ${shown.toLocaleString()} paths`:`${shown.toLocaleString()} of ${(total||shown).toLocaleString()} paths — top-${topK} by ${ax} displacement + stride sample`;
+  _trajTagApplyLod(vi);}
+// The tag states the SELECTED set; the framerate governor may be drawing only a
+// prefix of it. Saying "all 48,660 paths" while 4,628 are on screen is exactly the
+// kind of implied completeness this tag exists to prevent, so the drawn count is
+// appended whenever it differs. Kept separate from the base text (and guarded on
+// change) so the per-frame LOD can refresh it without redoing the async lookup.
+function _trajTagApplyLod(vi){const el=_trajTagEls[vi];if(!el||el._base===undefined)return;
+  const v=views[vi];const drawn=v?(v._trajDrawn|0):0,shown=v?(v._trajShown|0):0;
+  const t=el._base+((drawn&&shown&&drawn<shown)?` · drawing ${drawn.toLocaleString()} to hold 60fps`:'');
+  if(el.textContent!==t)el.textContent=t;}
 function _overlayCacheGet(row){return _overlayRowCache.get(model+'|'+mode+'|'+row);}
 function _overlayCachePut(row,vec){const k=model+'|'+mode+'|'+row;if(_overlayRowCache.has(k))_overlayRowCache.delete(k);_overlayRowCache.set(k,vec);
   while(_overlayRowCache.size>OVERLAY_ROW_CACHE_MAX){const fk=_overlayRowCache.keys().next().value;_overlayRowCache.delete(fk);}}
@@ -4145,6 +4155,159 @@ function _trajSelect(pcX,pcY,tlMx,seq,budget){
 //          clamp square piles onto the wall); density at the edges is not
 //          silently changed by this LOD.
 //   hover  hover-on-path is out of scope; _pickAt keeps picking the trajMarker.
+// --- Adaptive trajectory LOD: measured, not guessed ---------------------------
+// _trajDeviceCap below is a STATIC guess (60000 on desktop = "draw everything").
+// Measured on the Intel Iris Xe this cockpit actually runs on, at 1500x950 with
+// smollm2-360m (48,660 rows, 34 layers): all paths x 3 lanes = 440ms/frame, i.e.
+// 1.8fps while orbiting, against a ~17ms base for the other 17 panels. The curve
+// is linear at ~0.021ms per path per frame across the three lanes. So the
+// affordable path count is a property of THIS device and THIS window, and the
+// only honest way to know it is to measure the frames actually being drawn.
+//
+// The emit stays full-fidelity; only what is DRAWN adapts. _trajEmitPositions
+// writes path-major and the selection is now rank-ordered, so the whole LOD is a
+// setDrawRange — free, instant, and allocation-free, which is why it can react
+// per frame instead of per rebuild.
+// Budget is measured RELATIVE TO THE OBSERVED VSYNC FLOOR, never as an absolute
+// millisecond count. rAF is vsync-clamped, so a frame with plenty of headroom and
+// a frame with none both report ~16.7ms on a 60Hz panel: against a fixed 15ms
+// target the "raise" arm can never fire and the governor walks straight down to
+// its floor and stays there (measured: liveCap pinned at 250 while frameMs sat at
+// 16.6). Tracking the floor also makes this correct on 120Hz/144Hz panels, where
+// a hardcoded 16.7 would be far too slack.
+const _TRAJ_MIN_PATHS=250;     // never degenerate the sheet into a handful of threads
+let _trajLiveCap=Infinity;     // paths per lane the governor currently allows drawn
+let _trajFrameEma=0,_trajGovLast=0,_trajLastDt=16.7,_govCool=0,_trajCapCeil=0;
+const _TRAJ_RAISE_MS=17.5;// under this the frame has headroom (a 60Hz vsync frame is 16.7ms)
+const _TRAJ_CUT_MS=21;      // over this we are dropping frames
+let _trajSettleMs=250;      // ceiling for a SETTLED frame; the ramp stops here (see _trajGovern)
+// What the governor last found this device could orbit at. Re-applied the INSTANT
+// motion starts, so resuming a drag from the fully-resolved sheet costs a normal
+// frame instead of the one ~440ms lurch it takes to draw everything once.
+let _trajMoveCap=0;
+// Restore toward the full sheet once the camera stops. Ramping (rather than
+// snapping back) keeps the settled frame from being one 440ms lurch: density
+// resolves over a handful of free frames instead.
+const _TRAJ_RAMP=1.5;
+function _trajLodDraw(vi){
+  const v=views[vi];if(!v||!v.trajGroup)return;
+  const n=v._trajShown|0;if(!n)return;
+  const em=v._trajEmitted===undefined?n:(v._trajEmitted|0);
+  const k=Math.max(1,Math.min(n,em,_trajLiveCap===Infinity?n:(_trajLiveCap|0)));
+  // The governor may want more than the last emit produced; a wider emit is the
+  // only way to get it, so flag the lane for one.
+  v._trajWantMore=(_trajLiveCap===Infinity?n:(_trajLiveCap|0))>em&&em<n;
+  const sf=v._trajPoolSegs|0,sc=v._trajPoolSegsC|0;
+  if(sf&&v.trajGroup.geometry.attributes.position)v.trajGroup.geometry.setDrawRange(0,k*sf*2);
+  if(sc&&v.trajGroupCoarse&&v.trajGroupCoarse.geometry.attributes.position)v.trajGroupCoarse.geometry.setDrawRange(0,k*sc*2);
+  // The current-layer marker cloud is a second ~9.6ms/frame across the three
+  // lanes. Its positions/colors are addressed BY TOKEN ID everywhere (recolors,
+  // _pickAt), so they must not be reordered — an index buffer in rank order gives
+  // the same uniform-prefix property without touching them.
+  const mk=v.trajMarker;
+  if(mk&&mk.geometry.attributes.position){const g=mk.geometry;
+    if(!g.index||g.index.count!==nN){const ord=_trajRankOrder();
+      if(ord&&ord.length===nN)g.setIndex(new THREE.BufferAttribute(new Uint32Array(ord),1));}
+    if(g.index)g.setDrawRange(0,Math.max(1,Math.min(nN,k)));}
+  v._trajDrawn=k;
+  _trajTagApplyLod(vi);// the tag must never imply more is drawn than is
+}
+function _trajLodDrawAll(){for(let i=NC;i<views.length;i++)_trajLodDraw(i);}
+// Called once per RENDERED frame (idle frames are not drawn, so they must not
+// steer it). Two INDEPENDENT caps, never one adaptive number:
+//   _trajMoveCap  — measured, used while the camera moves or playback runs. This is
+//                   the only thing the feedback loop tunes, and it only ever learns
+//                   from frames drawn in that state.
+//   still         — the whole selection. A settled cockpit is a still image; its
+//                   density is the operator's approved look, not a perf question.
+// An earlier single-cap version let the settled ramp raise density and the moving
+// governor cut it, on alternating frames, through OrbitControls' damping tail:
+// the two arms fought and the sheet ended up pinned at the 250-path floor after
+// every drag (measured). Separating them removes the loop entirely — the only
+// feedback is "how fast were the frames we drew WHILE MOVING".
+function _trajGovern(active,now){
+  const dt=_trajGovLast?now-_trajGovLast:16.7;_trajGovLast=now;
+  if(dt>0&&dt<3000){_trajLastDt=dt;_trajFrameEma=_trajFrameEma?_trajFrameEma*0.75+dt*0.25:dt;}
+  const v0=views[NC];const shown=v0?(v0._trajShown|0):0;if(!shown)return;
+  if(active){
+    let cap=Math.min(shown,_trajMoveCap||shown);
+    // FIXED thresholds around the 60Hz frame, deliberately NOT an estimated
+    // display interval. Two estimators were tried and both failed on real traces:
+    // a running minimum latches onto rAF's catch-up frames after a stall (measured
+    // 4.5ms) and then reads every healthy vsync-locked frame as an overload, and a
+    // percentile of recent frames rises with the very load it exists to detect.
+    // A vsync-locked 60Hz frame is 16.7ms, so "under 17.5" means headroom and
+    // "over 21" means we are dropping frames — no estimation needed. On a faster
+    // panel this is merely conservative, which is the safe direction to be wrong.
+    // AIMD with a cooldown, not proportional control. A proportional loop here
+    // oscillates violently and visibly: raising 30%/frame outruns the EMA's ~4
+    // frame response, so it overshoots, eats a 500ms frame, and crash-cuts to the
+    // floor - measured swinging 250 <-> 7735 <-> 250 within one drag, which reads
+    // as the sheet strobing. Additive increase probes gently, multiplicative
+    // decrease backs off hard, the ceiling remembers what just failed, and the
+    // cooldown gives the EMA time to actually reflect the last change.
+    if(_govCool>0){_govCool--;return;}
+    if(_trajFrameEma>_TRAJ_CUT_MS){
+      _trajCapCeil=cap;// this density did not fit; do not walk back up into it
+      cap=Math.max(_TRAJ_MIN_PATHS,Math.floor(cap*0.6));_govCool=6;
+    }else if(_trajFrameEma<_TRAJ_RAISE_MS&&cap<shown){
+      const lim=_trajCapCeil?Math.floor(_trajCapCeil*0.9):shown;
+      if(cap>=lim)return;
+      cap=Math.min(shown,lim,cap+Math.max(96,Math.floor(cap*0.10)));_govCool=10;
+    }else return;
+    _trajMoveCap=cap;
+    if(cap!==_trajLiveCap){_trajLiveCap=cap>=shown?Infinity:cap;_trajLodDrawAll();_needsRender=true;}
+    return;
+  }
+  // Settled: the ramp is NOT driven from here. The governor only runs on frames
+  // that are actually drawn, and once the cockpit settles nothing marks the canvas
+  // dirty, so a ramp that schedules itself via _needsRender gets exactly one shot
+  // — on the settle-transition frame, which is the most expensive frame there is
+  // (first draw of the fine pool). Its own gate then declined to step, rendering
+  // stopped, and the sheet stayed at the moving density forever: measured frozen
+  // at 314 of 48,660 paths with the frame clock stuck at 131.7ms for 4+ seconds.
+  // A timer drives it instead — see _trajRampKick.
+}
+// Walk the settled sheet back up toward full density on a timer, one step every
+// ~140ms so the browser actually renders each step before the next is judged.
+// Stops when the last drawn frame says the next step would breach the settle
+// ceiling. Open loop, bounded, and cancelled the moment the camera moves again.
+let _trajRampTimer=0,_rampMark=0,_rampWait=0;
+function _trajRampCancel(){if(_trajRampTimer){clearTimeout(_trajRampTimer);_trajRampTimer=0;}_rampMark=0;_rampWait=0;}
+// `first` delays the opening step past OrbitControls' damping tail. That tail
+// flaps moving<->settled for ~2-3s after a drag, and each flap slams the cap back
+// to the moving value, so a ramp that starts immediately visibly pulses the sheet's
+// density for those seconds before finally climbing (measured: 384 -> 1090 -> 641
+// -> 1184 -> 384 -> 1904 ...). Waiting out the flap costs nothing and removes it.
+function _trajRampKick(first){
+  if(_trajRampTimer||_trajLiveCap===Infinity)return;
+  _trajRampTimer=setTimeout(()=>{
+    _trajRampTimer=0;
+    if(_trajMoving||play||_trajLiveCap===Infinity)return;
+    const v0=views[NC];const shown=v0?(v0._trajShown|0):0;if(!shown)return;
+    // Judge each step by the render THAT STEP CAUSED, never by whatever the frame
+    // clock happens to hold. _trajLastDt/_trajFrameEma only advance on drawn
+    // frames, so once the cockpit is idle they freeze at whatever the last busy
+    // frame cost — here, values from before the LOD existed (measured: a stale
+    // 411-533ms blocking the ramp forever while the lanes were in fact drawing
+    // 524 paths at vsync). _rampMark records the governor's clock at the moment we
+    // stepped; until it advances, our step has not been drawn yet and there is
+    // nothing to judge, so wait another tick instead of reading a stale number.
+    if(_rampMark){
+      if(_trajGovLast<=_rampMark){if(_rampWait++<12)_trajRampKick();return;}
+      _rampWait=0;
+      if(_trajLastDt*_TRAJ_RAMP>_trajSettleMs)return;// that step cost enough; stop here
+    }
+    const nxt=Math.ceil((_trajLiveCap||_TRAJ_MIN_PATHS)*_TRAJ_RAMP)+128;
+    _trajLiveCap=nxt>=shown?Infinity:nxt;
+    _trajLodDrawAll();_needsRender=true;_rampMark=_trajGovLast;
+    // Growing past the emitted prefix needs a real (but still partial) re-emit.
+    for(let i=NC;i<views.length;i++){const v=views[i];
+      if(v&&v._trajWantMore){const St=v._trajLod;if(St){St.lastKey='';St.lastFull=false;}v._trajFineStale=true;
+        try{_trajFill(i,true);}catch(e){}}}
+    _trajRampKick();
+  },first?450:140);
+}
 const _TRAJ_GRID_G=32;
 const _TRAJ_ALPHA_FLOOR_ADD=10000;// additive: 0.008·5000/shown < 0.004 ⇔ shown > 10000
 let _trajDeviceCap=_COARSE_PTR?4000:60000;// device ceiling on paths drawn per traj viewport (live via __heinrich.trajBudget)
@@ -4157,14 +4320,18 @@ let _trajAlphaFloorOn=false;
 function _trajCapEff(){return Math.max(1,Math.min(nN||1,_trajDeviceCap,(_trajAdditive&&_trajAlphaFloorOn)?_TRAJ_ALPHA_FLOOR_ADD:Infinity));}
 // Fixed pseudo-random permutation of row ids (xorshift Fisher-Yates) + its 1024-bucket
 // index — the thinning key. Shared by all traj viewports; rebuilt when nN changes.
-let _trajRankN=0,_trajRankB=null;
+let _trajRankN=0,_trajRankB=null,_trajRankP=null;
+// perm[k] = the row whose pseudo-random rank is k. The buckets are a coarse index
+// INTO this order; the order itself is what makes a prefix of the drawn set a
+// uniform subsample (see _trajLodDraw), so keep both.
+function _trajRankOrder(){_trajRankBuckets();return (_trajRankP&&_trajRankN===nN)?_trajRankP:null;}
 function _trajRankBuckets(){
   if(_trajRankB&&_trajRankN===nN)return _trajRankB;
   const n=nN,perm=new Int32Array(n);for(let i=0;i<n;i++)perm[i]=i;
   let s=0x9E3779B9|0;const rnd=()=>{s^=s<<13;s^=s>>>17;s^=s<<5;return (s>>>0)/4294967296;};
   for(let i=n-1;i>0;i--){const j=(rnd()*(i+1))|0;const t=perm[i];perm[i]=perm[j];perm[j]=t;}
   const B=new Uint16Array(n);for(let k=0;k<n;k++)B[perm[k]]=(k*1024/n)|0;// rank of row perm[k] is k
-  _trajRankB=B;_trajRankN=n;return B;}
+  _trajRankB=B;_trajRankP=perm;_trajRankN=n;return B;}
 function _trajLodState(v){
   let S=v._trajLod;
   if(!S||S.n!==nN){S=v._trajLod={n:nN,mask:new Uint8Array(nN),list:new Int32Array(nN),sel:new Int32Array(0),hist:new Uint32Array(1024),cells:null,lx:null,ly:null,lastKey:'',lastFull:false,fills:0};}
@@ -4221,7 +4388,16 @@ function _trajFlagAttr(a,nVerts){if(!a)return;if(typeof a.clearUpdateRanges==='f
 // scripts go to the off-screen sentinel (9999) — same slots, same token map.
 // Returns the drawn extent (max |vertex|) for the pre-grid camera fit.
 function _trajEmitPositions(vi,fine=true){
-  const v=views[vi];const S=_trajLodState(v);const sel=v._trajSel,n=v._trajShown|0;if(!sel)return 0.5;
+  const v=views[vi];const S=_trajLodState(v);const sel=v._trajSel,nAll=v._trajShown|0;if(!sel)return 0.5;
+  // Emit only the prefix that can actually be drawn. The pool is path-major and
+  // `sel` is rank-ordered, so the first n are a uniform subsample and the tail
+  // needs neither writing nor UPLOADING. At full density one lane's fine pool is
+  // 3.2M vertices — 77MB of position+color — and flagging all of it dirty cost a
+  // ~1s frame every time the camera settled (measured: 40-83ms CPU per lane for
+  // the emit, the rest GPU upload). 3x headroom over the live cap lets the settle
+  // ramp grow twice before it has to ask for a wider emit.
+  const _emitCap=_trajLiveCap===Infinity?nAll:Math.min(nAll,Math.max(2000,(_trajLiveCap|0)*3));
+  const n=Math.min(nAll,_emitCap);v._trajEmitted=n;
   const seq=_trajSeqNow(),nLay=seq.length,nSegs=nLay-1;if(nSegs<1)return 0.5;
   const cIdx=_trajCoarseIdx(seq),nSegsC=cIdx.length-1;
   _trajEnsurePool(v,n,nSegs,nSegsC);
@@ -4299,7 +4475,10 @@ function _trajEmitColors(vi,dir){
   _trajFlagAttr(v.trajGroup.geometry.attributes.color,n*nSegs*2);_trajFlagAttr(v.trajGroupCoarse.geometry.attributes.color,n*nSegsC*2);
 }
 // Opacity law (see header): 5000-path calibration, 8-bit floors, dim state applied.
-function _trajApplyOpacity(vi){const v=views[vi];const shown=Math.max(1,v._trajShown|0);const s=Math.min(1,5000/shown);
+// Alpha is per-path ink scaled so total ink tracks mass. It must key on what is
+// DRAWN, not what was selected — otherwise decimating for framerate also dims the
+// sheet, and the reader sees the LOD as a brightness change instead of a density one.
+function _trajApplyOpacity(vi){const v=views[vi];const shown=Math.max(1,(v._trajDrawn|0)||(v._trajShown|0));const s=Math.min(1,5000/shown);
   v._trajOpFine=Math.max(0.004,(_trajAdditive?0.008:0.15)*s);v._trajOpCoarse=Math.max(0.006,(_trajAdditive?0.025:0.2)*s);
   _trajDimApply(v,(hoveredToken>=0)||pinnedToken>=0||pinnedTokenB>=0);}
 // --- fill: paths through the view ---
@@ -4361,9 +4540,22 @@ function _trajFill(vi,fineWanted){
   else{const RB=_trajRankBuckets(),hist=S.hist;hist.fill(0);for(let i=0;i<n;i++)hist[RB[list[i]]]++;
     let acc=0,bStar=0;for(let b=0;b<1024;b++){if(acc+hist[b]>cap)break;acc+=hist[b];bStar=b+1;}
     let rem=cap-acc;for(let i=0;i<n&&w<cap;i++){const r=list[i],b=RB[r];if(b<bStar)sel[w++]=r;else if(b===bStar&&rem>0){sel[w++]=r;rem--;}}}
+  // Emit in pseudo-random RANK order, so drawing only the FIRST k paths is a
+  // uniform subsample of the selection rather than "the k lowest token ids"
+  // (which skews to short, common merges). That property is what lets the motion
+  // LOD be a setDrawRange and nothing else — no refill, no re-emit, no alloc.
+  // Counting sort over the 1024 rank buckets: O(w), negligible next to the
+  // ~1.6M-vertex emit that follows.
+  if(w>1){const RB=_trajRankBuckets();const hh=S.hist2||(S.hist2=new Uint32Array(1025));hh.fill(0);
+    for(let i=0;i<w;i++)hh[RB[sel[i]]+1]++;
+    for(let bq=0;bq<1024;bq++)hh[bq+1]+=hh[bq];
+    if(!S.ord||S.ord.length<w)S.ord=new Int32Array(Math.max(w,1024));
+    const ord=S.ord;for(let i=0;i<w;i++)ord[hh[RB[sel[i]]]++]=sel[i];
+    for(let i=0;i<w;i++)sel[i]=ord[i];}
   v._trajSel=sel;v._trajShown=w;v._trajInView=inView;v._trajBudget=w;v._trajTopK=0;
   v._trajMode=(w>=inView)?'all-in-view':'uniform-sample';v._trajAlphaFloor=(w<inView&&cap<Math.min(nN,_trajDeviceCap));
   _trajEmitPositions(vi,fine);_trajEmitColors(vi,dir);_trajApplyOpacity(vi);
+  _trajLodDraw(vi);// a fill sets drawRange to the whole selection — re-apply the live cap
   _setTrajTag(vi,w,{inView,total:nN,alphaFloor:v._trajAlphaFloor,alphaClamped:_trajAdditive&&w>0&&(0.008*Math.min(1,5000/w))<0.004});
   S.lastKey=key;S.lastFull=full;S.lastFullKey=key.slice(camKey.length);S.fills++;
   _needsRender=true;return true;
@@ -4427,7 +4619,7 @@ function buildTraj(vi,pcX,pcY){const v=views[vi];v.pcX=pcX;v.pcY=pcY;
   // Emit into the pools (created/grown here if needed) with the per-path script color,
   // or the direction gradient if A↔B coloring is live. Wall-bounce: clamped endpoints
   // are drawn as they are (see the LOD header).
-  const _trajR=_trajEmitPositions(vi,true);_trajEmitColors(vi,_dirColorActive&&_dirProjLast);
+  const _trajR=_trajEmitPositions(vi,true);_trajEmitColors(vi,_dirColorActive&&_dirProjLast);_trajLodDraw(vi);
   // Real observed extent (post-clamp) feeds _fitTrajCamera, same role _maxR plays
   // for Flowers; the grid build replaces it with ALL rows' extent (frozen) when done.
   v._maxR=_trajR;_fitTrajCamera(v);
@@ -8791,6 +8983,8 @@ function _applyViewSizes(vi){
       if(!moving&&v._trajFineStale){try{_trajFill(i,true);}catch(e){console.error('_trajFill',e);}}// motion fills were coarse-only: bring the fine pool up to date before showing it
       if(v.trajGroup)v.trajGroup.visible=!moving;
       if(v.trajGroupCoarse)v.trajGroupCoarse.visible=moving;}
+    if(moving){_trajRampCancel();if(_trajMoveCap){_trajLiveCap=_trajMoveCap;_trajLodDrawAll();}}
+    else _trajRampKick(true);
     _trajMoving=moving;
     _needsRender=true;// render the resolution transition
   }
@@ -8805,6 +8999,7 @@ function _applyViewSizes(vi){
   if(_pcsSc&&_pcsEl){_pcsChaseStep();_pcsCtl.update();_renderRegion(_pcsEl,_pcsSc,_pcsCam);}
   // FPS counter
   _frameCount++;const now=performance.now();if(now-_fpsTime>1000){const fps=Math.round(_frameCount*1000/(now-_fpsTime));const el=document.getElementById('fpsDisplay');if(el)el.textContent=fps+'fps';_frameCount=0;_fpsTime=now;}
+  _trajGovern(moving||play,now);// only rendered frames steer it — idle frames are not drawn
 })();
 // --- Long-poll command channel (replaces WebSocket) ---
 let _pollActive=true;
@@ -10412,9 +10607,11 @@ window.__heinrich = {
   revealPointAt:(vi=0,i=0)=>{const pts=revealPts[vi];if(!pts)return null;const pos=pts.geometry.attributes.position.array;const rev=views[vi]._rev;return {x:pos[i*3],y:pos[i*3+1],z:pos[i*3+2],row:rev&&rev.shownRows&&i<rev.shown?rev.shownRows[i]:-1,shown:rev?rev.shown:0,zoom:rev?rev.zoom:0};},
   revBuild:(vi=0)=>_revBuildGrid(vi).then(r=>{if(r){_revFill(vi);_updateOverlayTag();}return r?{shown:r.shown,nRows:r.nRows}:null;}),
   // --- Part B: trajectory LOD ---
-  get trajLOD(){const v=views[NC];const g=v&&v._trajGrid;return {cap:_trajCapEff(),deviceCap:_trajDeviceCap,shown:v?(v._trajShown|0):0,inView:v?(v._trajInView|0):0,total:nN||_vocabNRows||0,gridReady:!!(g&&g.ready),gridDone:g?g.done:0,gridNeed:g?g.need:0,mode:v?(v._trajMode||'none'):'none',alphaFloor:!!(v&&v._trajAlphaFloor),fineStale:!!(v&&v._trajFineStale),fills:v&&v._trajLod?v._trajLod.fills:0,decimated:!!_trajMoving,additive:_trajAdditive,budget:v?(v._trajBudget||0):0,topK:v?(v._trajTopK||0):0,
+  get trajLOD(){const v=views[NC];const g=v&&v._trajGrid;return {cap:_trajCapEff(),deviceCap:_trajDeviceCap,shown:v?(v._trajShown|0):0,inView:v?(v._trajInView|0):0,total:nN||_vocabNRows||0,gridReady:!!(g&&g.ready),gridDone:g?g.done:0,gridNeed:g?g.need:0,mode:v?(v._trajMode||'none'):'none',alphaFloor:!!(v&&v._trajAlphaFloor),fineStale:!!(v&&v._trajFineStale),fills:v&&v._trajLod?v._trajLod.fills:0,liveCap:_trajLiveCap===Infinity?null:_trajLiveCap,moveCap:_trajMoveCap,capCeil:_trajCapCeil,settleMs:_trajSettleMs,drawn:v?(v._trajDrawn|0):0,frameMs:+_trajFrameEma.toFixed(1),decimated:!!_trajMoving,additive:_trajAdditive,budget:v?(v._trajBudget||0):0,topK:v?(v._trajTopK||0):0,
     per:views.slice(NC).map((w,i)=>({vi:NC+i,shown:w._trajShown|0,inView:w._trajInView|0,mode:w._trajMode||'none',gridReady:!!(w._trajGrid&&w._trajGrid.ready),poolCap:w._trajPoolCap|0,fills:w._trajLod?w._trajLod.fills:0}))};},
   trajFill:(vi=NC)=>{const r=_trajFill(vi,true);_markDirty();return r;},
+  get trajSettleMs(){return _trajSettleMs;},
+  set trajSettleMs(v){_trajSettleMs=(v===null?Infinity:+v)||250;_trajRampKick();_needsRender=true;},
   get trajAlphaFloor(){return _trajAlphaFloorOn;},
   set trajAlphaFloor(b){_trajAlphaFloorOn=!!b;for(let vi=NC;vi<views.length;vi++){const v=views[vi];if(!v.trajGroup)continue;const S=v._trajLod;if(S){S.lastKey='';S.lastFull=false;}if(!_trajFill(vi,true))buildTraj(vi,v.pcX,v.pcY);}_markDirty();},
   // Live path-budget knob for measuring what THIS device can afford: set it,
@@ -10427,6 +10624,10 @@ window.__heinrich = {
       if(!_trajFill(vi,true)){buildTraj(vi,v.pcX,v.pcY);}}
     _markDirty();const v=views[NC];console.log(`trajBudget=${n} → cap ${_trajCapEff()} (alpha-floor ${_trajAdditive?_TRAJ_ALPHA_FLOOR_ADD:'off'}), ${v._trajShown} paths shown in vp${NC}, refilled in ${Math.round(performance.now()-t0)}ms; opacity ${v.trajGroup?.material.opacity.toFixed(4)}; watch #fpsDisplay while orbiting`);},
   get fps(){return document.getElementById('fpsDisplay')?.textContent||null;},
+  // Per-frame GPU work, straight from three.js's own counters — draw calls,
+  // triangles, lines, points, and live geometry/texture counts. Read-only; the
+  // only honest way to tell a draw-call problem from a vertex-count problem.
+  get renderInfo(){const r=rdr.info;return {calls:r.render.calls,triangles:r.render.triangles,lines:r.render.lines,points:r.render.points,frame:r.render.frame,geometries:r.memory.geometries,textures:r.memory.textures};},
   // Picking + focus, for agents/tests: pickAt(vi, clientX, clientY[, radiusPx]) → {kind,idx}|null
   pickAt:(vi,x,y,r)=>_pickAt(vi,{clientX:x,clientY:y},r||6),
   focusToken:(vi,idx)=>{_focusToken(vi,idx);return __heinrich.getCam(vi);},
@@ -10458,7 +10659,7 @@ window.__heinrich = {
 
   // --- direct handles to existing functions ---
   buildTraj, setLayer, _onPinChange, _applyDirectionColors, _updateSeparation,
-  _togglePlay, _clampTraj, _robustColMax, _updateRVLayer, _rebuildWeightLines,
+  _togglePlay, _clampTraj, _robustColMax, _updateRVLayer, _rebuildWeightLines, _markDirty,
   _trajBufAt, _trajFill, THREE,// path-LOD verification hooks (agents/tests)
   // direction compute (sliding-window) — for verification / scripting
   dirQuality:(a,b,l)=>_dirQuality(a,b,l), dirBrief:(a,b,l)=>_dirBriefJS(a,b,l),
