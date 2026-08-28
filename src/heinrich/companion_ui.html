@@ -329,7 +329,16 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
    JS drives left/top/width/height (FLIP), CSS transitions them. */
 .vp-max{position:fixed!important;z-index:15;background:transparent;border:1px solid #333!important;border-radius:4px;grid-column:auto!important;grid-row:auto!important;transition:left .2s ease,top .2s ease,width .2s ease,height .2s ease;box-shadow:0 8px 40px rgba(0,0,0,0.7)}
 .vp-max .axes,.vp-max .llbl,.vp-max .rlbl,.vp-max .blbl{font-size:12px;color:#8a8a8a}
-.vp-max .ovtag{font-size:11px;white-space:normal;max-width:82vw}
+/* The tag had no stylesheet rule at all — every property was set inline on the
+   element, so it wrapped freely across the full tile width and ran underneath the
+   button cluster in the bottom-right corner ("… 295 bundled flo" / "hovered" on a
+   second line, over the buttons). It also meant the .vp-max font-size below was
+   dead the whole time: an inline font-size beats a class selector. Both fixed by
+   owning the styling here and leaving only the per-lane color inline. */
+.ovtag{position:absolute;bottom:3px;left:4px;font-size:8px;pointer-events:none;
+  z-index:2;text-shadow:0 0 3px #000;white-space:nowrap;overflow:hidden;
+  text-overflow:ellipsis;max-width:calc(100% - 96px)}
+.vp-max .ovtag{font-size:11px;max-width:calc(100% - 130px)}
 /* While one lane is maximized the others aren't rendered on the shared canvas — but their
    DOM labels/controls would still bleed through the transparent maximized container. Hide them. */
 #main.maxmode .vp:not(.vp-max),#main.maxmode .lvp:not(.vp-max),#main.maxmode .rvp:not(.vp-max),#main.maxmode .browse,#main.maxmode #br0bot:not(.vp-max){visibility:hidden}
@@ -1305,12 +1314,12 @@ const _overlayRowCache=new Map();// key model|mode|row -> vec, insertion-ordered
 let _overlaySeq=0;// bump to supersede in-flight resolves on switch/retype
 const overlayCloudPts=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribute('position',new THREE.BufferAttribute(new Float32Array(0),3));const p=new THREE.Points(g,new THREE.PointsMaterial({size:0.10,color:0xAA8800,transparent:true,opacity:0.9,sizeAttenuation:true,depthWrite:false,depthTest:false}));p.renderOrder=11;p.visible=false;p.frustumCulled=false;v.sc.add(p);return p;});
 const _overlayTagEls=[];// per-cloud-viewport honesty tag (bottom-left)
-for(let _ovi=0;_ovi<NC;_ovi++){const host=document.getElementById('vp'+_ovi);if(host){const el=document.createElement('div');el.className='ovtag';el.style.cssText='position:absolute;bottom:3px;left:4px;font-size:8px;color:#9a8636;pointer-events:none;z-index:2;text-shadow:0 0 3px #000';host.appendChild(el);_overlayTagEls[_ovi]=el;}else _overlayTagEls[_ovi]=null;}
+for(let _ovi=0;_ovi<NC;_ovi++){const host=document.getElementById('vp'+_ovi);if(host){const el=document.createElement('div');el.className='ovtag';el.style.color='#9a8636';host.appendChild(el);_overlayTagEls[_ovi]=el;}else _overlayTagEls[_ovi]=null;}
 // Trajectory honesty tag (Part B.4): real path counts, per traj viewport (NC..NV).
 let _trajAdditive=false;// additive blending on the merged trajectory LineSegments — was the default (true), but additive has no self-limiting: thousands of paths converging near a shared region of PC space sum straight past white ("light bomb", reported live). Normal blending self-caps and the code already carries tuned opacities for it (see _trajApplyOpacity).
 let _trajBudgetCap=5000;// budget of the PRE-GRID fixed sheet (buildTraj first fill); the live device ceiling is _trajDeviceCap (__heinrich.trajBudget) — see the path-LOD block
 const _trajTagEls=[];
-for(let _tvi=NC;_tvi<NV;_tvi++){const host=document.getElementById('vp'+_tvi);if(host){const el=document.createElement('div');el.className='ovtag';el.style.cssText='position:absolute;bottom:3px;left:4px;font-size:8px;color:#7a8a99;pointer-events:none;z-index:2;text-shadow:0 0 3px #000';host.appendChild(el);_trajTagEls[_tvi]=el;}else _trajTagEls[_tvi]=null;}
+for(let _tvi=NC;_tvi<NV;_tvi++){const host=document.getElementById('vp'+_tvi);if(host){const el=document.createElement('div');el.className='ovtag';el.style.color='#7a8a99';host.appendChild(el);_trajTagEls[_tvi]=el;}else _trajTagEls[_tvi]=null;}
 // info: a number = legacy top-K (the pre-grid fixed-budget sheet), or
 // {inView,total,alphaFloor} from the path LOD (_trajFill).
 async function _setTrajTag(vi,shown,info){const el=_trajTagEls[vi];if(!el)return;
@@ -3766,6 +3775,19 @@ function _fitTrajCamera(v){
   v._fitDist=fitD;// see _fitCloudCamera — the reference-grid fade needs the overview distance
   v.cam.position.copy(_TRAJ_DIR).multiplyScalar(fitD);
   v.ctl.target.set(0,0,0);v.ctl.update();
+  v._fitStamp=fitD;// see _trajCamUntouched
+}
+// True while the camera still sits exactly where the last fit put it. The
+// initial trajectory fit runs off the FIRST emitted subset, whose extent is the
+// clamp wall (paths that hit +/-bX are drawn at the wall, by design), so it
+// frames far too wide; the honest radius only exists once the grid has seen
+// every row. Refitting then is right -- but only if nobody has framed the lane
+// themselves in the meantime, or the camera yanks out from under a drag.
+function _trajCamUntouched(v){
+  if(!v||v._fitStamp==null)return false;
+  const p=v.cam.position,d=_TRAJ_DIR,s=v._fitStamp,e=1e-4;
+  return Math.abs(p.x-d.x*s)<e&&Math.abs(p.y-d.y*s)<e&&Math.abs(p.z-d.z*s)<e
+      &&v.ctl.target.lengthSq()<e;
 }
 // Cloud viewport positions (both the 2,000-sample cloud and the vocab-scale
 // reveal cloud) are clamped to roughly ±1.75 per axis (see _ensurePositionBuf)
@@ -4236,13 +4258,28 @@ const _TRAJ_RAMP=1.5;
 const _FLOW_MAX_SEG=80000;
 const _FLOW_W=[0.8,1.6,2.8,4.5];// ribbon widths in screen px, narrow=tight bundle
 function _trajFlowKey(v){const vi=views.indexOf(v);return `${model}|${mode}|${v.pcX}|${v.pcY}|${cL}|${v._trajGen}|${(_dirColorActive&&_dirProjLast&&_trajLaneFocused(vi))?'d':'s'}|${_hiddenScripts.size?[..._hiddenScripts].sort().join(','):''}`;}
-// Membership is decided ONCE, at the layer you are standing on, and then held
-// fixed for the whole climb. That is the difference between a bundle and a mess:
-// re-binning at every layer joins the mean of one group to the mean of a DIFFERENT
-// group, so consecutive segments share no tokens and the field explodes into
-// radial spikes (seen exactly that way on the first attempt). With membership
-// fixed, each polyline is the genuine mean path of one fixed set of tokens —
-// "an average of the full traces", which is what it claims to be.
+// Membership is decided ONCE and then held fixed for the whole climb. That is the
+// difference between a bundle and a mess: re-binning at every layer joins the mean
+// of one group to the mean of a DIFFERENT group, so consecutive segments share no
+// tokens and the field explodes into radial spikes (seen exactly that way on the
+// first attempt). With membership fixed, each polyline is the genuine mean path of
+// one fixed set of tokens — "an average of the full traces".
+//
+// But WHERE the membership is decided turned out to matter as much as when. The
+// first fixed version grouped by the current layer's grid cells, and that is not a
+// bundle: tokens that sit in one cell at L11 have no reason to have arrived
+// together or to leave together, so the group's mean wandered back to the global
+// mean at every other depth. Rendered, 368 such "ribbons" read as a stack of
+// wireframe boxes — each layer's slab of segments seen near edge-on, splayed from
+// a knot at the reference layer. It looked like a geometry bug and was not; it was
+// an honest picture of groups that only cohere at one depth.
+// So membership is now a SIGNATURE ALONG THE PATH: a token's coarse cell at three
+// anchor depths (first, middle, last real layer), 6x6 per anchor. Tokens share a
+// bundle only if they start together, pass through together, and end together —
+// which is what "these travel as one" has to mean for a mean path to be worth
+// drawing. Same fixed-membership guarantee, taken over the whole climb.
+const _FLOW_Q=6;// coarse bins per axis, per anchor
+const _FLOW_KEEP=0.6;// a layer's mean must speak for this much of its bundle
 function _trajBuildFlow(vi){
   const v=views[vi];if(!v||!_trajBulkLinesFlowWanted())return;
   const g=v._trajGrid;if(!g||!g.ready||g.n!==nN)return;
@@ -4251,10 +4288,28 @@ function _trajBuildFlow(vi){
   // scale is one to two orders off the rest, and every spike in every version of
   // this field has traced back to the jump into them.
   const seq=_trajSeqNow().filter(l=>l<_nRealLayers);const nLay=seq.length;if(nLay<2)return;
-  // groups = the non-empty cells of the CURRENT layer's grid
-  const lref=Math.max(0,Math.min(nL-1,cL));const L=g.layers[lref]||g.layers[seq[(nLay/2)|0]];
-  if(!L)return;
-  const G=_TRAJ_GRID_G,NCELL=G*G,rows=L.rows,start=L.start;
+  // groups = tokens sharing a coarse cell at every anchor depth (see the header)
+  const G=_TRAJ_GRID_G;
+  const anch=[];
+  {const want=[seq[0],seq[(nLay/2)|0],seq[nLay-1]];
+   for(const l of want){const LL=g.layers[l];if(LL&&!anch.includes(LL))anch.push(LL);}
+   if(!anch.length){const LL=g.layers[Math.max(0,Math.min(nL-1,cL))];if(LL)anch.push(LL);}}
+  if(!anch.length)return;
+  const Q=_FLOW_Q,NKEY=Math.pow(Q*Q,anch.length)|0;
+  const sig=new Int32Array(nN);
+  {const qs=Q/G;
+   for(let a=0;a<anch.length;a++){const cell=anch[a].cell,W=Q*Q;
+     for(let i=0;i<nN;i++){const c=cell[i],qx=((c%G)*qs)|0,qy=(((c/G)|0)*qs)|0;
+       sig[i]=sig[i]*W+(qy*Q+qx);}}}
+  // counting sort the tokens by signature -> contiguous groups, same shape the
+  // rest of this function already expects (rows[] sliced by gStart/gEnd)
+  const cnt=new Int32Array(NKEY+1);
+  for(let i=0;i<nN;i++)cnt[sig[i]+1]++;
+  for(let k=0;k<NKEY;k++)cnt[k+1]+=cnt[k];
+  const start=cnt,rows=new Int32Array(nN);
+  {const fp=Int32Array.from(cnt.subarray(0,NKEY));
+   for(let i=0;i<nN;i++)rows[fp[sig[i]]++]=i;}
+  const NCELL=NKEY;
   // "B when unfocused without coloring": the tint is aggregated meaning, and at
   // overview size it just muddies the shape. Keep it for the focused lane so a
   // drag changes detail, not hue.
@@ -4300,13 +4355,13 @@ function _trajBuildFlow(vi){
   // one colour + weight per GROUP, constant up the whole path, so a ribbon reads as
   // one object rather than changing hue every layer
   const gR=new Float32Array(nG),gG=new Float32Array(nG),gB=new Float32Array(nG);
-  let maxI=1;const gI=new Float32Array(nG);
+  let maxI=1;const gI=new Float32Array(nG),gN=new Int32Array(nG);
   for(let q=0;q<nG;q++){
     let n=0,sp=0;
     for(let k=gStart[q];k<gEnd[q];k++){const r=rows[k];
       if(hide&&_hiddenScripts.has(scripts[r]))continue;
       if(dirOn)sp+=_dirProjLast[r];n++;}
-    gI[q]=Math.log1p(n);if(gI[q]>maxI)maxI=gI[q];
+    gN[q]=n;gI[q]=Math.log1p(n);if(gI[q]>maxI)maxI=gI[q];
     if(dirOn&&n){const t=Math.max(-1,Math.min(1,((sp/n)-_dirProjMid)/_dirProjSpan)),at=Math.abs(t);
       if(t>0){gR[q]=0.30+0.70*at;gG[q]=0.22*(1-at);gB[q]=0.14*(1-at);}
       else{gR[q]=0.14*(1-at);gG[q]=0.22*(1-at);gB[q]=0.30+0.60*at;}}
@@ -4329,7 +4384,17 @@ function _trajBuildFlow(vi){
         const x=buf[r*3],y=buf[r*3+1];
         if(x>=bx||x<=-bx||y>=by||y<=-by)continue;// clamped = at the wall, not a position
         sx+=x;sy+=y;n++;}
-      if(n>=2){MX[base+q]=sx/n;MY[base+q]=sy/n;MOK[base+q]=1;}
+      // Members at the clamp wall are skipped above -- they have no position, only
+      // a bound. But if most of a group is at the wall at this depth, the mean of
+      // the handful left is the mean of a different set, and joining it to the
+      // honest mean of the layer below draws a stroke that crosses the whole
+      // cloud. Measured before this guard: median segment 0.061 (exactly the layer
+      // spacing -- pure depth, correct) but p99 0.661 and max 1.348, in a cloud of
+      // radius 1.32. Those few strokes were the longest, straightest marks on
+      // screen and read as a stack of wireframe boxes. Omit, never fake: a depth
+      // where the group is mostly clamped simply has no point, and the ribbon
+      // breaks there instead of lying about where it went.
+      if(n>=2&&n>=gN[q]*_FLOW_KEEP){MX[base+q]=sx/n;MY[base+q]=sy/n;MOK[base+q]=1;}
     }
   }
   // 3-tap smoothing along depth, per group, endpoints preserved
@@ -4363,9 +4428,22 @@ function _trajBuildFlow(vi){
     const z=_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1;
     const zp=_layerZ[lp]!==undefined?_layerZ[lp]:(lp/(nL-1))*2-1;
     const b1=si*nG,b0=(si-1)*nG;
+    const dzl=Math.abs(z-zp)||1e-6;
     for(let q=0;q<nG;q++){
       if(!MOK[b1+q]||!MOK[b0+q])continue;
-      const bi=bOf(q),I=Math.pow(gI[q]/maxI,0.6),pp=P[bi],cc=C[bi];
+      // INK = CONFIDENCE THAT THIS IS A FLOW. Most segments are pure depth: the
+      // median is 0.061, exactly the layer spacing. But the tail is not — p99 is
+      // 0.661 and the longest is 1.348, in a cloud of radius 1.32, so a handful of
+      // bundles really do cross the whole thing in one step. (Measured, and it is
+      // not a clamp artifact: guarding the mean against clamped members changed
+      // these numbers by nothing.) Drawn at equal weight those few are the longest,
+      // straightest marks on screen and the eye reads them as the structure —
+      // the field looked like a stack of wireframe boxes. They are real, so they
+      // are not deleted; they are dimmed by how far they fly sideways per unit of
+      // depth, which is exactly how much they are NOT a flow.
+      const lat=Math.hypot(SX[b1+q]-SX[b0+q],SY[b1+q]-SY[b0+q])/dzl;
+      const conf=1/(1+lat*lat*0.05);
+      const bi=bOf(q),I=Math.pow(gI[q]/maxI,0.6)*conf,pp=P[bi],cc=C[bi];
       pp.push(SX[b0+q],SY[b0+q],zp,SX[b1+q],SY[b1+q],z);
       cc.push(gR[q]*I,gG[q]*I,gB[q]*I,gR[q]*I,gG[q]*I,gB[q]*I);}
   }
@@ -4569,6 +4647,28 @@ function _trajRampKick(first){
   },first?450:140);
 }
 const _TRAJ_GRID_G=32;
+// Camera-fit radius. The old fit used g.maxR — the single outermost (row,layer)
+// pair — which is not a property of the data but of the CLAMP BOX: rows are
+// clamped to +/-bX,+/-bY (~1.75) and z spans [-1,1], so maxR converges on the
+// box corner (measured 2.62) no matter what the cloud actually looks like.
+// Measured against the drawn cloud on smollm2-360m the real extent is
+// p99 1.167 / p99.9 1.339 / max 1.498 — so the lane framed a sphere 2.4x too
+// big and the subject sat in a field of black, worst when maximized (the wide
+// aspect makes the vertical the binding axis and the waste doubles). Fixed by
+// binning the true 3D radius of every (row,layer) into a histogram as the grid
+// builds — free, the loop already computes x*x+y*y — and fitting the 99th
+// percentile instead. The 1% left outside is outliers, and _fitDistanceForRadius's
+// own 1.4 margin still brings the absolute max back inside the frame.
+const _TRAJ_RH_BINS=512,_TRAJ_RH_R2MAX=16,_TRAJ_RH_SCALE=_TRAJ_RH_BINS/_TRAJ_RH_R2MAX;
+const _TRAJ_RH_Q=0.99;
+function _trajRobustR(g){
+  if(!g||!g.rh||!g.rhN)return g&&g.maxR||1;
+  const want=g.rhN*_TRAJ_RH_Q;let acc=0,b=0;
+  for(;b<_TRAJ_RH_BINS;b++){acc+=g.rh[b];if(acc>=want)break;}
+  // upper edge of the winning bin, back out of r-squared space
+  const r=Math.sqrt(Math.min(_TRAJ_RH_R2MAX,(b+1)/_TRAJ_RH_SCALE));
+  return Math.min(g.maxR||r,r);
+}
 const _TRAJ_ALPHA_FLOOR_ADD=10000;// additive: 0.008·5000/shown < 0.004 ⇔ shown > 10000
 let _trajDeviceCap=_COARSE_PTR?4000:60000;// device ceiling on paths drawn per traj viewport (live via __heinrich.trajBudget)
 // __heinrich.trajAlphaFloor: true = thin the drawn set so per-path alpha never has to
@@ -4603,7 +4703,7 @@ function _trajGridReset(vi){
   const v=views[vi];if(!v||!v._trajLayerMx||!v._trajBufs)return;
   const seq=_trajSeqNow();const old=v._trajGrid;
   const pool=old?old.layers.filter(L=>L&&L.rows.length===nN).concat(old.pool||[]):[];
-  v._trajGrid={gen:v._trajGen,n:nN,ready:false,done:0,need:seq.length,layers:new Array(nL),pool,maxR:0,tmp:old&&old.tmp?old.tmp:new Uint32Array(_TRAJ_GRID_G*_TRAJ_GRID_G)};
+  v._trajGrid={gen:v._trajGen,n:nN,ready:false,done:0,need:seq.length,layers:new Array(nL),pool,maxR:0,rh:new Uint32Array(_TRAJ_RH_BINS),rhN:0,tmp:old&&old.tmp?old.tmp:new Uint32Array(_TRAJ_GRID_G*_TRAJ_GRID_G)};
   _lazyQueue=_lazyQueue.filter(t=>!(t.vi===vi&&t.kind==='trajgrid'));
   const c=Math.max(0,Math.min(nL-1,cL));const order=seq.slice().sort((a,b)=>Math.abs(a-c)-Math.abs(b-c));
   for(const l of order)_lazyQueue.push({vi,l,kind:'trajgrid',gen:v._trajGen});
@@ -4614,17 +4714,21 @@ function _trajBuildGridLayer(vi,l){
   const G=_TRAJ_GRID_G,cb=(v._trajClampBounds&&v._trajClampBounds[l])||[1.75,1.75],bX=cb[0],bY=cb[1],sx=G/(2*bX),sy=G/(2*bY);
   let L=g.pool.pop();if(!L||L.rows.length!==nN)L={rows:new Int32Array(nN),start:new Uint32Array(G*G+1),cell:new Uint16Array(nN),bX:0,bY:0};
   const rows=L.rows,start=L.start,cell=L.cell;start.fill(0);let r2max=0;
+  const zl=_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1,z2=zl*zl,rh=g.rh;
   for(let i=0;i<nN;i++){const x=buf[i*3],y=buf[i*3+1];let cx=((x+bX)*sx)|0,cy=((y+bY)*sy)|0;if(cx<0)cx=0;else if(cx>=G)cx=G-1;if(cy<0)cy=0;else if(cy>=G)cy=G-1;
-    const c=cy*G+cx;cell[i]=c;start[c+1]++;const r2=x*x+y*y;if(r2>r2max)r2max=r2;}
+    const c=cy*G+cx;cell[i]=c;start[c+1]++;const r2=x*x+y*y;if(r2>r2max)r2max=r2;
+    let b=((r2+z2)*_TRAJ_RH_SCALE)|0;if(b>=_TRAJ_RH_BINS)b=_TRAJ_RH_BINS-1;rh[b]++;}
+  g.rhN+=nN;
   for(let c=0;c<G*G;c++)start[c+1]+=start[c];
   const fp=g.tmp;fp.set(start.subarray(0,G*G));
   for(let i=0;i<nN;i++)rows[fp[cell[i]]++]=i;
   let ne=0;for(let c=0;c<G*G;c++)if(start[c+1]!==start[c])ne++;
   L.bX=bX;L.bY=bY;L.nonEmpty=ne;g.layers[l]=L;g.done++;
-  const z=_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1;g.maxR=Math.max(g.maxR,Math.sqrt(r2max+z*z));
+  g.maxR=Math.max(g.maxR,Math.sqrt(r2max+z2));
   // Coarse pointers keep only a ±window of layer buffers resident — give this one back.
   if(_LAZY_WINDOW<Infinity&&Math.abs(l-Math.max(0,Math.min(nL-1,cL)))>_LAZY_WINDOW&&v._trajBufs&&v._trajBufs[l]===buf){if(_bufPool.length<64)_bufPool.push(buf);v._trajBufs[l]=null;}
-  if(g.done>=g.need){g.ready=true;v._maxR=Math.max(0.5,g.maxR);// frozen: all rows' extent, never the drawn set
+  if(g.done>=g.need){g.ready=true;v._trajHardR=g.maxR;v._maxR=Math.max(0.5,_trajRobustR(g));// frozen over ALL rows, never the drawn set — but a PERCENTILE, see _trajRobustR
+    if(_trajCamUntouched(v))_fitTrajCamera(v);
     const S=_trajLodState(v);S.lastKey='';S.lastFull=false;_trajScheduleFill(vi);}
 }
 // --- pool ---
