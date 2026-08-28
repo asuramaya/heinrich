@@ -768,6 +768,13 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
 <script type="module">
 import*as THREE from'three';
 import{OrbitControls}from'three/addons/controls/OrbitControls.js';
+// LineBasicMaterial.linewidth is inert in WebGL (the ES spec permits only 1.0 and
+// ANGLE enforces it), so a "thick" line has to be real camera-facing geometry.
+// This is affordable only because the bundling took the lane from 4.8M segments
+// to ~9k: cost is per-primitive tile binning, and a fat line touches more tiles.
+import{LineSegments2}from'three/addons/lines/LineSegments2.js';
+import{LineSegmentsGeometry}from'three/addons/lines/LineSegmentsGeometry.js';
+import{LineMaterial}from'three/addons/lines/LineMaterial.js';
 // Loading overlay: a small twinkling scatter (built once, pure CSS animation —
 // no per-frame JS cost while the real load is competing for the main thread)
 // plus a rotating one-liner of the project's own actual measurements, so a
@@ -966,9 +973,23 @@ const pinMarkersB=views.map(v=>{const g=new THREE.BufferGeometry();g.setAttribut
 // direction-colored cloud's own blue half) could blend into near-invisibility;
 // additive always brightens rather than matches, so it pops regardless of what's
 // under it (reported live: "the orange/blue paths of the selected tokens disappear").
-const hoverPaths=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFFFFFF,vertexColors:true,transparent:true,opacity:0.45,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
-const pinPaths=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0xFF6644,vertexColors:true,transparent:true,opacity:0.95,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
-const pinPathsB=views.map(v=>{const l=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({color:0x4477AA,vertexColors:true,transparent:true,opacity:0.95,depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending}));l.visible=false;l.frustumCulled=false;v.sc.add(l);return l;});
+// Widths in SCREEN PIXELS (worldUnits:false), so a trace reads the same whether the
+// lane is a thumbnail or maximised. Thickness — not brightness — is what separates
+// these from the aggregate behind them: brightness competes with the direction tint,
+// width does not.
+const _PATH_RES=new THREE.Vector2(1,1);
+function _mkPathLine(v,color,px,op){
+  const m=new LineMaterial({color,vertexColors:true,transparent:true,opacity:op,
+    depthWrite:false,depthTest:false,blending:THREE.AdditiveBlending,
+    linewidth:px,worldUnits:false,dashed:false});
+  m.resolution=_PATH_RES;
+  const l=new LineSegments2(new LineSegmentsGeometry(),m);
+  l.visible=false;l.frustumCulled=false;l.renderOrder=6;v.sc.add(l);return l;}
+const hoverPaths=views.map(v=>_mkPathLine(v,0xFFFFFF,2.0,0.55));
+const pinPaths  =views.map(v=>_mkPathLine(v,0xFF6644,3.0,0.95));
+const pinPathsB =views.map(v=>_mkPathLine(v,0x4477AA,3.0,0.95));
+
+
 // Live-forward inhabitant: a prompt run through the live model, projected into the
 // FROZEN frame (same L{n}_components) and rendered as a bright point (per cloud view,
 // at the current layer) + a per-layer trajectory line (traj views). The living token
@@ -1310,7 +1331,13 @@ async function _setTrajTag(vi,shown,info){const el=_trajTagEls[vi];if(!el)return
 // change) so the per-frame LOD can refresh it without redoing the async lookup.
 function _trajTagApplyLod(vi){const el=_trajTagEls[vi];if(!el||el._base===undefined)return;
   const v=views[vi];const drawn=v?(v._trajDrawn|0):0,shown=v?(v._trajShown|0):0;
-  const t=el._base+((drawn&&shown&&drawn<shown)?` · drawing ${drawn.toLocaleString()} to hold 60fps`:'');
+  // Report the instrument that is actually visible. Quoting the sheet's LOD cap
+  // while the ribbons are what is on screen is both wrong and the exact readout
+  // the operator asked to be rid of.
+  const sheetUp=!!(v&&v.trajGroup&&v.trajGroup.visible);
+  const t=sheetUp
+    ? el._base+((drawn&&shown&&drawn<shown)?` · drawing ${drawn.toLocaleString()} of them`:'')
+    : el._base.replace(/paths/,'tokens')+` · ${(v&&v._flowGroups)|0} bundled flows · traces: pinned + hovered`;
   if(el.textContent!==t)el.textContent=t;}
 function _overlayCacheGet(row){return _overlayRowCache.get(model+'|'+mode+'|'+row);}
 function _overlayCachePut(row,vec){const k=model+'|'+mode+'|'+row;if(_overlayRowCache.has(k))_overlayRowCache.delete(k);_overlayRowCache.set(k,vec);
@@ -2479,29 +2506,24 @@ function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
   // Pair-emitting LineSegments; setDrawRange keeps the preallocated buffer.
   // Out-of-bound vertices are knee-compressed (_kneeTraj) and marked dim, NOT
   // dropped: dropping them shattered the line (see _kneeTraj's note).
-  const seq=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
-  // EVERY layer is drawn, clouds included. A cloud renders one layer, so the far
-  // ends of the path are not "here" — but cutting them at a hard ±5 window read
-  // as a line snapping off in mid-air. They fade out with |l-cL| instead: the
-  // trace still follows the token across the whole stack, and where it is
-  // brightest tells you which layer you are standing in.
+  // CLOUD lanes draw real transformer layers only: emb and lmh sit one to two
+  // orders off in scale, so a path through them lays a pair of struts clean
+  // across the view. That is what the depth fade was concealing; dropping the
+  // pseudo-layers removes the cause instead of dimming the whole trace.
+  const seqAll=_layerSeq.length?_layerSeq:[...Array(nL).keys()];
+  const seq=(vi<NC)?seqAll.filter(l=>l<_nRealLayers):seqAll;
   const n=seq.length;const cap=Math.max(1,(n-1))*6;
-  let buf=line.geometry.attributes.position?.array,cbuf=line.geometry.attributes.color?.array;
-  if(!buf||buf.length!==cap||!cbuf||cbuf.length!==cap){line.geometry.dispose();
-    const a=new Float32Array(cap),c=new Float32Array(cap);line.geometry=new THREE.BufferGeometry();
-    line.geometry.setAttribute('position',new THREE.BufferAttribute(a,3));
-    line.geometry.setAttribute('color',new THREE.BufferAttribute(c,3));buf=a;cbuf=c;}
+  let buf=line._pbuf,cbuf=line._cbuf;
+  if(!buf||buf.length!==cap){buf=line._pbuf=new Float32Array(cap);cbuf=line._cbuf=new Float32Array(cap);}
   // Per-vertex intensity MULTIPLIES the material's hue (vertexColors): depth
   // fade in clouds × a dim factor wherever the knee bent the coordinate.
-  // Fade to a TRUE zero, no floor. Measured on ' king', smollm2-360m raw L11: in
-  // per-layer-normalized cloud coordinates the token barely moves across the whole
-  // middle of the stack (steps of ~0.001 world units for layers 4..30 — per-layer
-  // normalization divides out exactly the global growth PC0 carries), while
-  // emb→L2 and L29→lmh jump 0.2–0.9. So every LONG line in a cloud path is a
-  // normalization change at the ends of the stack, not motion; a floored fade
-  // kept drawing those six struts straight across the view. Trajectory viewports
-  // are unfaded — there depth IS the axis and the whole stack is the subject.
-  const _fade=(l)=>vi>=NC?1:Math.exp(-Math.abs(l-cL)/3.2);
+  // No depth fade. The path is drawn at full strength at every layer, in clouds as
+  // well as trajectory lanes — a trace you have deliberately pinned should not dim
+  // itself away from the layer you happen to be standing on. (The fade existed to
+  // suppress the long emb->L2 / L29->lmh struts that per-layer normalization
+  // creates; if those come back, the fix is to drop the two pseudo-layers, the same
+  // way the ribbons do, rather than to dim the whole trace.)
+  const _fade=(l)=>1;
   let w=0,px=0,py=0,pz=0,pI=0,have=false;
   for(let si=0;si<n;si++){const l=seq[si];let x,y,z,tru,rx,ry,rz=0;
     if(vi<NC){_cloudNormLayer(v,l);const lm=v._layerMx?v._layerMx[l]:null;const mxX=lm?lm[0]:1,mxY=lm?lm[1]:1,mxZ=lm?lm[2]:1;const cb=v._clampBounds?v._clampBounds[l]:null;const bX=cb?cb[0]:1.75,bY=cb?cb[1]:1.75,bZ=cb?cb[2]:1.75;
@@ -2518,9 +2540,13 @@ function _buildPathForVP(line,v,vi,idx){if(idx<0){line.visible=false;return;}
     if(have){buf[w]=px;buf[w+1]=py;buf[w+2]=pz;cbuf[w]=pI;cbuf[w+1]=pI;cbuf[w+2]=pI;
              buf[w+3]=x;buf[w+4]=y;buf[w+5]=z;cbuf[w+3]=I;cbuf[w+4]=I;cbuf[w+5]=I;w+=6;}
     px=x;py=y;pz=z;pI=I;have=true;}
-  line.geometry.setDrawRange(0,w/3);
-  line.geometry.attributes.position.needsUpdate=true;
-  line.geometry.attributes.color.needsUpdate=true;line.visible=w>0;}
+  // LineSegmentsGeometry takes a flat per-segment array, which is exactly the
+  // pair layout we already build. Rebuilt on pin/hover/layer change only, never
+  // per frame, so allocating here is not on any hot path.
+  if(w>0){line.geometry.setPositions(buf.subarray(0,w));line.geometry.setColors(cbuf.subarray(0,w));
+    if(line.computeLineDistances)line.computeLineDistances();
+    line.geometry.computeBoundingSphere&&line.geometry.computeBoundingSphere();}
+  line.visible=w>0;}
 let _lastDimState=-1;
 // Reveal-cloud alpha: 0.5 was tuned for the 2,000-token sample; at 48k-150k rows the
 // reveal draws every in-view row, so scale like the traj marker — sqrt(2000/shown), floor
@@ -2536,7 +2562,7 @@ function _revealOpApply(vi){const pts=revealPts[vi],rev=views[vi]._rev;if(!pts)r
 function _trajDimApply(v,dim){const f=dim?0.08/0.15:1;
   if(v.trajGroup&&v._trajOpFine!==undefined)v.trajGroup.material.opacity=Math.max(0.004,v._trajOpFine*f);
   if(v.trajGroupCoarse&&v._trajOpCoarse!==undefined)v.trajGroupCoarse.material.opacity=Math.max(0.006,v._trajOpCoarse*f);}
-function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC){v.mtl.opacity=dim?0.27:0.65;if(revealPts[vi])revealPts[vi].material.opacity=(dim?0.16:0.38)*_revealOpScale(v._rev?v._rev.shown:0);}if(vi>=NC&&v.trajGroup){_trajDimApply(v,dim);if(v.trajMarker)v.trajMarker.material.opacity=(dim?0.35:0.9)*_trajMarkerOpScale();}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible)m.material.opacity=0.95;});}// size is owned by _applyViewSizes (per frame); a size set here was dead
+function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC){v.mtl.opacity=dim?0.27:0.65;if(revealPts[vi])revealPts[vi].material.opacity=(dim?0.16:0.38)*_revealOpScale(v._rev?v._rev.shown:0);}if(vi>=NC&&v.trajGroup){_trajDimApply(v,dim);if(v.trajMarker)v.trajMarker.material.opacity=(dim?0.7:0.9)*_trajMarkerOpScale();}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible)m.material.opacity=0.95;});}// size is owned by _applyViewSizes (per frame); a size set here was dead
 let _hoverTimer=0,_hoverTok=-1,_hoverLoading='';
 // Unified hover cache: token,layer → {pcScores: Float32Array[K], neurons: Float32Array[inter]}
 const _hoverCache=new Map();
@@ -4194,14 +4220,242 @@ let _trajMoveCap=0;
 // snapping back) keeps the settled frame from being one 440ms lurch: density
 // resolves over a handful of free frames instead.
 const _TRAJ_RAMP=1.5;
+// --- Bundled flow field ---------------------------------------------------
+// The bulk sheet drew one line per token: 1.6M segments per lane, 440ms, and at
+// 0.0045 opacity apiece it never showed which token went where — it showed where
+// the MASS went. So show that directly. _trajGrid already bins every row into a
+// 32x32 cell per layer, which is exactly a clustering by position: for each cell
+// at layer L, average its members' positions at L and at L+1 and emit ONE segment
+// for the bundle, brightness scaled by log(count). Same shape, same flow, ~10k
+// segments instead of 1.6M, and no alpha-quantised haze.
+//
+// Honest about what it is: a segment is a bundle mean, not a token's path. Where a
+// cell's members genuinely diverge, the mean is a mean — which is why individual
+// traces are still drawn in full for the pinned pair and the hovered token, and
+// why the lane tag says so.
+const _FLOW_MAX_SEG=80000;
+const _FLOW_W=[0.8,1.6,2.8,4.5];// ribbon widths in screen px, narrow=tight bundle
+function _trajFlowKey(v){const vi=views.indexOf(v);return `${model}|${mode}|${v.pcX}|${v.pcY}|${cL}|${v._trajGen}|${(_dirColorActive&&_dirProjLast&&_trajLaneFocused(vi))?'d':'s'}|${_hiddenScripts.size?[..._hiddenScripts].sort().join(','):''}`;}
+// Membership is decided ONCE, at the layer you are standing on, and then held
+// fixed for the whole climb. That is the difference between a bundle and a mess:
+// re-binning at every layer joins the mean of one group to the mean of a DIFFERENT
+// group, so consecutive segments share no tokens and the field explodes into
+// radial spikes (seen exactly that way on the first attempt). With membership
+// fixed, each polyline is the genuine mean path of one fixed set of tokens —
+// "an average of the full traces", which is what it claims to be.
+function _trajBuildFlow(vi){
+  const v=views[vi];if(!v||!_trajBulkLinesFlowWanted())return;
+  const g=v._trajGrid;if(!g||!g.ready||g.n!==nN)return;
+  const key=_trajFlowKey(v);if(v._flowKey===key&&v.trajFlow&&v.trajFlow.geometry.attributes.position)return;
+  // Real transformer layers only. emb and lmh are pseudo-layers whose natural
+  // scale is one to two orders off the rest, and every spike in every version of
+  // this field has traced back to the jump into them.
+  const seq=_trajSeqNow().filter(l=>l<_nRealLayers);const nLay=seq.length;if(nLay<2)return;
+  // groups = the non-empty cells of the CURRENT layer's grid
+  const lref=Math.max(0,Math.min(nL-1,cL));const L=g.layers[lref]||g.layers[seq[(nLay/2)|0]];
+  if(!L)return;
+  const G=_TRAJ_GRID_G,NCELL=G*G,rows=L.rows,start=L.start;
+  // "B when unfocused without coloring": the tint is aggregated meaning, and at
+  // overview size it just muddies the shape. Keep it for the focused lane so a
+  // drag changes detail, not hue.
+  const hide=_hiddenScripts.size>0,dirOn=!!(_dirColorActive&&_dirProjLast&&_trajLaneFocused(vi));
+  const gStart=[],gEnd=[];
+  const MINMEM=6;// a "bundle" of three tokens is noise wearing a ribbon
+  for(let c=0;c<NCELL;c++){const a=start[c],e=start[c+1];if(e-a>=MINMEM){gStart.push(a);gEnd.push(e);}}
+  const nG=gStart.length;if(!nG)return;
+  const nSeg=Math.min(_FLOW_MAX_SEG,nG*(nLay-1));
+  // WIDTH CARRIES SPREAD. Colour already means direction and brightness already
+  // means figure-vs-ground; overloading brightness with mass as well is what made
+  // the earlier versions muddy. Width is a free third channel, and the honest thing
+  // to put in it is the bundle's own cross-section: narrow where those tokens
+  // travel together, wide where they fan apart. LineMaterial carries one width per
+  // material, so the ribbons are split across a few width buckets -- a handful of
+  // extra draw calls, against 9k segments.
+  // LineSegments2 is instanced quad geometry with a vertex shader that expands it;
+  // measured ~4x a raw GL line even at 1px, which turned the overview from 28.5ms
+  // into 60.9ms. So the thick implementation is only paid for where its width
+  // channel is actually used -- the focused lane. Unfocused lanes draw the same
+  // ribbons through a plain, cheap LineSegments.
+  if(!v.trajFlowThin){
+    v.trajFlowThin=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({
+      vertexColors:true,transparent:true,opacity:0.42,depthWrite:false,blending:THREE.NormalBlending}));
+    v.trajFlowThin.frustumCulled=false;v.trajFlowThin.renderOrder=-1;v.sc.add(v.trajFlowThin);}
+  if(!v.trajFlowBuckets){
+    v.trajFlowBuckets=_FLOW_W.map(px=>{
+      const m=new LineMaterial({color:0xffffff,vertexColors:true,transparent:true,opacity:0.42,
+        depthWrite:false,depthTest:true,blending:THREE.NormalBlending,
+        linewidth:px,worldUnits:false,dashed:false});
+      m.resolution=_PATH_RES;
+      const o=new LineSegments2(new LineSegmentsGeometry(),m);
+      o.frustumCulled=false;o.renderOrder=-1;o.visible=false;v.sc.add(o);return o;});
+    // legacy single-width object retired in favour of the buckets
+    if(v.trajFlow){v.sc.remove(v.trajFlow);v.trajFlow.geometry.dispose();}
+    v.trajFlow={get visible(){return v.trajFlowThin.visible||v.trajFlowBuckets.some(o=>o.visible);},
+                set visible(b){const f=_trajLaneFocused(views.indexOf(v));
+                  v.trajFlowThin.visible=b&&!f;
+                  v.trajFlowBuckets.forEach(o=>{o.visible=b&&f&&(o._has|0)>0;});},
+                geometry:{attributes:{}}};
+  }
+
+  // one colour + weight per GROUP, constant up the whole path, so a ribbon reads as
+  // one object rather than changing hue every layer
+  const gR=new Float32Array(nG),gG=new Float32Array(nG),gB=new Float32Array(nG);
+  let maxI=1;const gI=new Float32Array(nG);
+  for(let q=0;q<nG;q++){
+    let n=0,sp=0;
+    for(let k=gStart[q];k<gEnd[q];k++){const r=rows[k];
+      if(hide&&_hiddenScripts.has(scripts[r]))continue;
+      if(dirOn)sp+=_dirProjLast[r];n++;}
+    gI[q]=Math.log1p(n);if(gI[q]>maxI)maxI=gI[q];
+    if(dirOn&&n){const t=Math.max(-1,Math.min(1,((sp/n)-_dirProjMid)/_dirProjSpan)),at=Math.abs(t);
+      if(t>0){gR[q]=0.30+0.70*at;gG[q]=0.22*(1-at);gB[q]=0.14*(1-at);}
+      else{gR[q]=0.14*(1-at);gG[q]=0.22*(1-at);gB[q]=0.30+0.60*at;}}
+    else{gR[q]=0.40;gG[q]=0.55;gB[q]=0.75;}
+  }
+  // Collect every group's mean at every layer FIRST, then smooth, then emit.
+  // Straight segments between raw per-layer means read as an angular lattice; a
+  // 3-tap smoothing turns the same data into flowing ribbons, which is the whole
+  // point of calling them ribbons.
+  const MX=new Float32Array(nG*nLay),MY=new Float32Array(nG*nLay),MOK=new Uint8Array(nG*nLay);
+  for(let si=0;si<nLay;si++){
+    const l=seq[si];const buf=_trajBufAt(vi,l);
+    const cb=(v._trajClampBounds&&v._trajClampBounds[l])||[1.75,1.75];
+    const bx=cb[0]-1e-4,by=cb[1]-1e-4;const base=si*nG;
+    if(!buf||buf.length!==nN*3)continue;
+    for(let q=0;q<nG;q++){
+      let sx=0,sy=0,n=0;
+      for(let k=gStart[q];k<gEnd[q];k++){const r=rows[k];
+        if(hide&&_hiddenScripts.has(scripts[r]))continue;
+        const x=buf[r*3],y=buf[r*3+1];
+        if(x>=bx||x<=-bx||y>=by||y<=-by)continue;// clamped = at the wall, not a position
+        sx+=x;sy+=y;n++;}
+      if(n>=2){MX[base+q]=sx/n;MY[base+q]=sy/n;MOK[base+q]=1;}
+    }
+  }
+  // 3-tap smoothing along depth, per group, endpoints preserved
+  const SX=new Float32Array(MX),SY=new Float32Array(MY);
+  for(let si=1;si<nLay-1;si++){const b0=(si-1)*nG,b1=si*nG,b2=(si+1)*nG;
+    for(let q=0;q<nG;q++){
+      if(!MOK[b1+q])continue;
+      let n=1,ax=MX[b1+q],ay=MY[b1+q];
+      if(MOK[b0+q]){ax+=MX[b0+q];ay+=MY[b0+q];n++;}
+      if(MOK[b2+q]){ax+=MX[b2+q];ay+=MY[b2+q];n++;}
+      SX[b1+q]=ax/n;SY[b1+q]=ay/n;}}
+  // how tightly each bundle holds together, averaged over depth
+  const spread=new Float32Array(nG);
+  {const cnt=new Float32Array(nG);
+   for(let si=0;si<nLay;si++){const l=seq[si],buf=_trajBufAt(vi,l);if(!buf||buf.length!==nN*3)continue;
+     const base=si*nG;
+     for(let q=0;q<nG;q++){if(!MOK[base+q])continue;
+       const mx=MX[base+q],my=MY[base+q];let sd=0,n=0;
+       for(let k=gStart[q];k<gEnd[q];k++){const r=rows[k];
+         if(hide&&_hiddenScripts.has(scripts[r]))continue;
+         const dx=buf[r*3]-mx,dy=buf[r*3+1]-my;sd+=dx*dx+dy*dy;n++;}
+       if(n>1){spread[q]+=Math.sqrt(sd/n);cnt[q]++;}}}
+   for(let q=0;q<nG;q++)if(cnt[q])spread[q]/=cnt[q];}
+  // bucket by quantile so the widths always span the range, whatever the model
+  const srt=Array.from(spread).sort((a,b)=>a-b);
+  const NB=_FLOW_W.length,cut=[];for(let i=1;i<NB;i++)cut.push(srt[Math.floor(srt.length*i/NB)]||0);
+  const bOf=(q)=>{let b=0;while(b<NB-1&&spread[q]>cut[b])b++;return b;};
+  const P=[],C=[];for(let b=0;b<NB;b++){P.push([]);C.push([]);}
+  for(let si=1;si<nLay;si++){
+    const l=seq[si],lp=seq[si-1];
+    const z=_layerZ[l]!==undefined?_layerZ[l]:(l/(nL-1))*2-1;
+    const zp=_layerZ[lp]!==undefined?_layerZ[lp]:(lp/(nL-1))*2-1;
+    const b1=si*nG,b0=(si-1)*nG;
+    for(let q=0;q<nG;q++){
+      if(!MOK[b1+q]||!MOK[b0+q])continue;
+      const bi=bOf(q),I=Math.pow(gI[q]/maxI,0.6),pp=P[bi],cc=C[bi];
+      pp.push(SX[b0+q],SY[b0+q],zp,SX[b1+q],SY[b1+q],z);
+      cc.push(gR[q]*I,gG[q]*I,gB[q]*I,gR[q]*I,gG[q]*I,gB[q]*I);}
+  }
+  // Width is a FOCUSED-lane channel. Widths are in screen pixels, so a 4.5px
+  // ribbon that reads as structure in a maximised lane is a fat smear in a 272px
+  // thumbnail — it swamped the overview and tripled its cost (28.5ms -> 80.1ms),
+  // while the spread variation it encodes was illegible at that size anyway.
+  // Unfocused lanes get uniform hairlines: shape is all that survives there.
+  const focused=_trajLaneFocused(vi);
+  _trajFlowWidths(v,focused);
+  let w=0;
+  if(focused){
+    for(let b=0;b<NB;b++){const o=v.trajFlowBuckets[b];o._has=P[b].length/6;
+      if(!o._has)continue;
+      o.geometry.setPositions(P[b]);o.geometry.setColors(C[b]);
+      o.geometry.computeBoundingSphere&&o.geometry.computeBoundingSphere();
+      w+=P[b].length;}
+  }else{
+    const tot=P.reduce((n,a)=>n+a.length,0);const g2=v.trajFlowThin.geometry;
+    let pa=g2.attributes.position?.array,ca=g2.attributes.color?.array;
+    if(!pa||pa.length<tot){g2.dispose();
+      const A=new THREE.BufferAttribute(new Float32Array(tot),3),B=new THREE.BufferAttribute(new Float32Array(tot),3);
+      A.setUsage(THREE.DynamicDrawUsage);B.setUsage(THREE.DynamicDrawUsage);
+      v.trajFlowThin.geometry=new THREE.BufferGeometry();
+      v.trajFlowThin.geometry.setAttribute('position',A);v.trajFlowThin.geometry.setAttribute('color',B);
+      pa=A.array;ca=B.array;}
+    let o=0;for(let b=0;b<NB;b++){pa.set(P[b],o);ca.set(C[b],o);o+=P[b].length;
+      v.trajFlowBuckets[b]._has=P[b].length/6;}
+    w=o;
+    v.trajFlowThin.geometry.setDrawRange(0,w/3);
+    _trajFlagAttr(v.trajFlowThin.geometry.attributes.position,w/3);
+    _trajFlagAttr(v.trajFlowThin.geometry.attributes.color,w/3);
+  }
+  v.trajFlow.visible=true;v._flowKey=key;v._flowSegs=w/6;v._flowGroups=nG;
+}
+function _trajFlowWidths(v,focused){
+  if(!v||!v.trajFlowBuckets)return;
+  v.trajFlowBuckets.forEach((o,b)=>{const px=focused?_FLOW_W[b]:1.0;
+    if(o.material.linewidth!==px)o.material.linewidth=px;});}
+function _trajBulkLinesFlowWanted(){return true;}// the ribbons are always kept ready; visibility is the policy's call
+// Bulk trajectory lines OFF by default. Measured on this box: the sheet is 440ms
+// of a 16.7ms frame — 90% of the cost — while every token's DOT costs a fraction
+// of that, and at 0.0045 opacity per line the sheet never conveyed which token
+// went where anyway; it conveyed DENSITY, which the per-layer dots convey more
+// honestly and far more cheaply. So the lane now shows the dots, and draws real
+// traces only where a trace means something: the pinned pair and whatever is
+// hovered. Flip __heinrich.trajLines = true to get the old sheet back.
+// Two instruments, chosen by what the reader is doing:
+//   FOCUSED (this lane maximised) and settled -> the full tinted sheet. You are
+//     studying one lane; every trace, every colour, and ~19fps on a still image
+//     is fine because a still image is what you are looking at.
+//   UNFOCUSED (the 6-up overview), or mid-drag -> uncoloured bundled ribbons.
+//     You are orienting, not reading; shape is the whole message, the tint is
+//     noise at that size, and it costs ~17ms instead of ~450ms.
+// The tint survives a drag in a focused lane, so grabbing one does not flip its
+// colour -- only its level of detail.
+let _trajBulkLines=true;// master enable for the full sheet; the policy below still gates it
+function _trajLaneFocused(vi){
+  if(!_maxKey)return false;
+  const R=_resolveViewByName(_maxKey);return !!(R&&R.vi===vi);
+}
+function _trajSheetWanted(vi){return _trajBulkLines&&_trajLaneFocused(vi)&&!_trajMoving;}
+function _trajSheetVis(v,fine,coarse){
+  if(!v)return;
+  const vi=views.indexOf(v),want=_trajSheetWanted(vi);
+  if(v.trajGroup)v.trajGroup.visible=want&&fine;
+  if(v.trajGroupCoarse)v.trajGroupCoarse.visible=want&&coarse;
+  if(v.trajFlow)v.trajFlow.visible=!(want&&fine);
+}
+// Re-evaluate the policy for every lane. Called on the moving<->settled flip and
+// whenever a lane is maximised or restored, since focus is half the policy.
+function _trajRefreshVis(){
+  for(let i=NC;i<views.length;i++){const v=views[i];
+    _trajSheetVis(v,!_trajMoving,_trajMoving);
+    _trajFlowWidths(v,_trajLaneFocused(i));
+    try{_trajBuildFlow(i);}catch(e){}}
+  _needsRender=true;
+}
 function _trajLodDraw(vi){
   const v=views[vi];if(!v||!v.trajGroup)return;
   const n=v._trajShown|0;if(!n)return;
   const em=v._trajEmitted===undefined?n:(v._trajEmitted|0);
-  const k=Math.max(1,Math.min(n,em,_trajLiveCap===Infinity?n:(_trajLiveCap|0)));
+  // A focused, settled lane is a still image being studied: draw the whole
+  // selection. The governor exists for interaction, and there is none here — so
+  // the lane shows everything and the tag has nothing to apologise for.
+  const uncapped=_trajSheetWanted(vi);
+  const k=uncapped?Math.min(n,em):Math.max(1,Math.min(n,em,_trajLiveCap===Infinity?n:(_trajLiveCap|0)));
   // The governor may want more than the last emit produced; a wider emit is the
   // only way to get it, so flag the lane for one.
-  v._trajWantMore=(_trajLiveCap===Infinity?n:(_trajLiveCap|0))>em&&em<n;
+  v._trajWantMore=((uncapped?n:(_trajLiveCap===Infinity?n:(_trajLiveCap|0)))>em)&&em<n;
   const sf=v._trajPoolSegs|0,sc=v._trajPoolSegsC|0;
   if(sf&&v.trajGroup.geometry.attributes.position)v.trajGroup.geometry.setDrawRange(0,k*sf*2);
   if(sc&&v.trajGroupCoarse&&v.trajGroupCoarse.geometry.attributes.position)v.trajGroupCoarse.geometry.setDrawRange(0,k*sc*2);
@@ -4213,7 +4467,8 @@ function _trajLodDraw(vi){
   if(mk&&mk.geometry.attributes.position){const g=mk.geometry;
     if(!g.index||g.index.count!==nN){const ord=_trajRankOrder();
       if(ord&&ord.length===nN)g.setIndex(new THREE.BufferAttribute(new Uint32Array(ord),1));}
-    if(g.index)g.setDrawRange(0,Math.max(1,Math.min(nN,k)));}
+    // With the bulk sheet off, the dots are the lane. Draw all of them.
+    if(g.index)g.setDrawRange(0,g.index.count);}
   v._trajDrawn=k;
   _trajTagApplyLod(vi);// the tag must never imply more is drawn than is
 }
@@ -4401,7 +4656,10 @@ function _trajEmitPositions(vi,fine=true){
   // ~1s frame every time the camera settled (measured: 40-83ms CPU per lane for
   // the emit, the rest GPU upload). 3x headroom over the live cap lets the settle
   // ramp grow twice before it has to ask for a wider emit.
-  const _emitCap=_trajLiveCap===Infinity?nAll:Math.min(nAll,Math.max(2000,(_trajLiveCap|0)*3));
+  // A focused settled lane draws the whole selection, so it must EMIT the whole
+  // selection too -- otherwise the emit cap silently limits it (measured: asked for
+  // 48,660, got 13,884, which is exactly 3x the live cap).
+  const _emitCap=(_trajSheetWanted(vi)||_trajLiveCap===Infinity)?nAll:Math.min(nAll,Math.max(2000,(_trajLiveCap|0)*3));
   const n=Math.min(nAll,_emitCap);v._trajEmitted=n;
   const seq=_trajSeqNow(),nLay=seq.length,nSegs=nLay-1;if(nSegs<1)return 0.5;
   const cIdx=_trajCoarseIdx(seq),nSegsC=cIdx.length-1;
@@ -4561,6 +4819,7 @@ function _trajFill(vi,fineWanted){
   v._trajMode=(w>=inView)?'all-in-view':'uniform-sample';v._trajAlphaFloor=(w<inView&&cap<Math.min(nN,_trajDeviceCap));
   _trajEmitPositions(vi,fine);_trajEmitColors(vi,dir);_trajApplyOpacity(vi);
   _trajLodDraw(vi);// a fill sets drawRange to the whole selection — re-apply the live cap
+  try{_trajBuildFlow(vi);}catch(e){console.error('_trajBuildFlow',e);}
   _setTrajTag(vi,w,{inView,total:nN,alphaFloor:v._trajAlphaFloor,alphaClamped:_trajAdditive&&w>0&&(0.008*Math.min(1,5000/w))<0.004});
   S.lastKey=key;S.lastFull=full;S.lastFullKey=key.slice(camKey.length);S.fills++;
   _needsRender=true;return true;
@@ -8952,11 +9211,17 @@ function _focusToken(vi,idx){
   if(vi<NC)_revOnZoom(vi);
   _markDirty();
 }
+let _DOT_K=0.008;// dot size per unit camera distance — the fill-rate knob
+// LineMaterial needs the drawing-buffer size to turn a pixel width into clip space.
+// Every path layer shares one Vector2, so this is a single cheap write per frame.
+const _pathResTmp=new THREE.Vector2();
+function _syncPathRes(){rdr.getDrawingBufferSize(_pathResTmp);
+  if(_pathResTmp.x!==_PATH_RES.x||_pathResTmp.y!==_PATH_RES.y)_PATH_RES.copy(_pathResTmp);}
 function _applyViewSizes(vi){
   const v=views[vi];const d=_viewDist(v);
   const ps=Math.min(0.15,Math.max(0.0004,d*0.012));v.mtl.size=ps;
-  if(vi<NC&&revealPts[vi])revealPts[vi].material.size=Math.min(0.1,Math.max(0.0003,d*0.008));
-  if(vi>=NC&&v.trajMarker)v.trajMarker.material.size=Math.min(0.1,Math.max(0.0003,d*0.008));// same px size as the cloud points (~5px); the old 0.015 was 10px squares × 48k tokens = a solid blocky mass
+  if(vi<NC&&revealPts[vi])revealPts[vi].material.size=Math.min(0.1,Math.max(0.0003,d*_DOT_K));
+  if(vi>=NC&&v.trajMarker)v.trajMarker.material.size=Math.min(0.1,Math.max(0.0003,d*_DOT_K));// same px size as the cloud points (~5px); the old 0.015 was 10px squares × 48k tokens = a solid blocky mass
   // Reference-grid dolly fade: a scale cue at the overview, gone once the camera
   // is inside the cloud (default fit sits near d≈4; the reports of "a boxy grid
   // over the data" were all from d≲1.5, where the lattice covers the view).
@@ -8986,8 +9251,7 @@ function _applyViewSizes(vi){
   if(moving!==_trajMoving){
     for(let i=NC;i<views.length;i++){const v=views[i];
       if(!moving&&v._trajFineStale){try{_trajFill(i,true);}catch(e){console.error('_trajFill',e);}}// motion fills were coarse-only: bring the fine pool up to date before showing it
-      if(v.trajGroup)v.trajGroup.visible=!moving;
-      if(v.trajGroupCoarse)v.trajGroupCoarse.visible=moving;}
+      _trajSheetVis(v,!moving,moving);}
     if(moving){_trajRampCancel();if(_trajMoveCap){_trajLiveCap=_trajMoveCap;_trajLodDrawAll();}}
     else _trajRampKick(true);
     _trajMoving=moving;
@@ -8997,6 +9261,7 @@ function _applyViewSizes(vi){
   _needsRender=false;
   // Single renderer: clear once, render each region with scissor
   rdr.setScissorTest(false);rdr.setClearColor(0x151515);rdr.clear();rdr.setScissorTest(true);
+  _syncPathRes();
   views.forEach((v,vi)=>{v.ctl.update();_applyViewSizes(vi);_renderRegion(v.el,v.sc,v.cam);});
   _brPanels.forEach(p=>{p.ctl.update();_renderRegion(p.el,brSc,p.cam);});
   leftViews.forEach(v=>{if(v.built){v.ctl.update();_renderRegion(v.el,v.sc,v.cam);}});
@@ -10397,7 +10662,7 @@ function _animMobile(){
   if(!P||!P.el||!P.sc){_needsRender=false;return;}
   const damping=!!(P.ctl&&P.ctl.enableDamping&&P.ctl._needsUpdate);
   // trajectory LOD for the focused traj lane (same hysteresis as desktop, applied to one view)
-  if(typeof P.vi==='number'&&P.vi>=NC){const v=views[P.vi];if(v&&v.trajGroup){const sm=performance.now()-_lastCamMove;const mv=damping||sm<90;let want;if(mv)want=false;else if(sm>300)want=true;else want=v.trajGroup.visible;if(want!==v.trajGroup.visible){v.trajGroup.visible=want;_needsRender=true;}}}
+  if(typeof P.vi==='number'&&P.vi>=NC){const v=views[P.vi];if(v&&v.trajGroup){const sm=performance.now()-_lastCamMove;const mv=damping||sm<90;let want;if(mv)want=false;else if(sm>300)want=true;else want=v.trajGroup.visible;if(want!==v.trajGroup.visible){_trajSheetVis(v,want,false);_needsRender=true;}}}
   const Q=_twoUp?_resolveViewByName(_pairTag()):null;
   const dampQ=!!(Q&&Q.ctl&&Q.ctl.enableDamping&&Q.ctl._needsUpdate);
   if(!_needsRender&&!damping&&!dampQ&&!play&&!_pcsChaseActive())return;
@@ -10481,10 +10746,12 @@ if(!MOBILE)_dockPanel();
 // lane while active — the shared z-0 canvas is a single surface, so any other lane painted
 // into its grid rect would punch through the transparent maximized container. Drawing one
 // lane keeps the rest of the canvas cleared to dark. Transient: persisted nowhere.
-function _resetTrajLOD(){for(let i=NC;i<views.length;i++){const v=views[i];if(v.trajGroup)v.trajGroup.visible=true;if(v.trajGroupCoarse)v.trajGroupCoarse.visible=false;}_trajMoving=false;}
+function _resetTrajLOD(){for(let i=NC;i<views.length;i++)_trajSheetVis(views[i],true,false);_trajMoving=false;}
 function _updateMaxBtns(){document.querySelectorAll('#main .cbtn[data-v] .maxbtn').forEach(b=>{const bar=b.closest('.cbtn');const on=!!(bar&&_maxKey===String(bar.dataset.v));b.classList.toggle('on',on);b.textContent=on?'✕':'⛶';b.title=on?'Restore (Esc)':'Maximize';});}
 function _forceUnmax(){if(_maxRestoreTimer){clearTimeout(_maxRestoreTimer);_maxRestoreTimer=0;}if(_maxEl){_maxEl.classList.remove('vp-max');_maxEl.style.left=_maxEl.style.top=_maxEl.style.width=_maxEl.style.height=_maxEl.style.transition='';}const mn=document.getElementById('main');if(mn)mn.classList.remove('maxmode');{const tp=document.getElementById('tokpanel');if(tp&&tp.dataset.rvPrevDisp!=null){tp.style.display=tp.dataset.rvPrevDisp;delete tp.dataset.rvPrevDisp;}}_maxEl=null;_maxKey=null;_maxRestoring=false;_resetTrajLOD();_updateMaxBtns();_markDirty();}
 function _setMaximized(vk){
+  // focus is half the sheet-vs-ribbon policy, so re-evaluate after the change
+  setTimeout(()=>{try{_trajRefreshVis();}catch(e){}},0);
   if(vk==null){// animated restore
     if(!_maxEl){_maxKey=null;return;}
     const el=_maxEl;if(_maxRestoreTimer)clearTimeout(_maxRestoreTimer);
@@ -10516,15 +10783,21 @@ function _animMaximized(){
   if(!R||!R.el||!R.sc){_needsRender=false;return;}
   const damping=!!(R.ctl&&R.ctl.enableDamping&&R.ctl._needsUpdate)||_pcsChaseActive();
   const animating=performance.now()<_maxAnimUntil;
+  // anim() returns to _animMaximized BEFORE it computes `moving`, so while a lane
+  // is maximised _trajMoving would otherwise stay frozen at whatever it held when
+  // you maximised. Maximise straight after a drag and it stays stuck true — which
+  // is exactly why the focused lane never showed its sheet. Keep it live here.
+  {const mv=damping||(performance.now()-_lastCamMove)<250;
+   if(mv!==_trajMoving){_trajMoving=mv;_needsRender=true;
+     if(typeof R.vi==='number'&&views[R.vi])_trajSheetVis(views[R.vi],!mv,mv);}}
   if(!_needsRender&&!damping&&!play&&!animating)return;
   _needsRender=false;
   rdr.setScissorTest(false);rdr.setClearColor(0x151515);rdr.clear();rdr.setScissorTest(true);
-  _pcsChaseInView(R);
+  _pcsChaseInView(R);_syncPathRes();
   if(R.ctl)R.ctl.update();
   if(typeof R.vi==='number'&&views[R.vi]){
     const v=views[R.vi];_applyViewSizes(R.vi);
-    if(R.vi>=NC){if(v.trajGroup&&!v.trajGroup.visible)v.trajGroup.visible=true;// focus lane always full-res
-      if(v.trajGroupCoarse&&v.trajGroupCoarse.visible)v.trajGroupCoarse.visible=false;}
+    if(R.vi>=NC)_trajSheetVis(v,!_trajMoving,_trajMoving);// policy decides: sheet when settled, ribbons mid-drag
   }
   _renderRegion(R.el,R.sc,R.cam);
   if(animating)_needsRender=true;// keep rendering through the FLIP transition
@@ -10615,6 +10888,14 @@ window.__heinrich = {
   get trajLOD(){const v=views[NC];const g=v&&v._trajGrid;return {cap:_trajCapEff(),deviceCap:_trajDeviceCap,shown:v?(v._trajShown|0):0,inView:v?(v._trajInView|0):0,total:nN||_vocabNRows||0,gridReady:!!(g&&g.ready),gridDone:g?g.done:0,gridNeed:g?g.need:0,mode:v?(v._trajMode||'none'):'none',alphaFloor:!!(v&&v._trajAlphaFloor),fineStale:!!(v&&v._trajFineStale),fills:v&&v._trajLod?v._trajLod.fills:0,liveCap:_trajLiveCap===Infinity?null:_trajLiveCap,moveCap:_trajMoveCap,capCeil:_trajCapCeil,settleMs:_trajSettleMs,drawn:v?(v._trajDrawn|0):0,frameMs:+_trajFrameEma.toFixed(1),decimated:!!_trajMoving,additive:_trajAdditive,budget:v?(v._trajBudget||0):0,topK:v?(v._trajTopK||0):0,
     per:views.slice(NC).map((w,i)=>({vi:NC+i,shown:w._trajShown|0,inView:w._trajInView|0,mode:w._trajMode||'none',gridReady:!!(w._trajGrid&&w._trajGrid.ready),poolCap:w._trajPoolCap|0,fills:w._trajLod?w._trajLod.fills:0}))};},
   trajFill:(vi=NC)=>{const r=_trajFill(vi,true);_markDirty();return r;},
+  get dotK(){return _DOT_K;}, set dotK(v){_DOT_K=+v||0.008;_needsRender=true;},
+  // Backing-store scale. Renders the same scene into fewer pixels, which is the
+  // only clean way to ask 'is this fill-rate bound?' without disturbing layout
+  // (a real resize fires ResizeObserver -> camera refit -> cloud rebuild).
+  get pixelRatio(){return rdr.getPixelRatio();},
+  set pixelRatio(x){rdr.setPixelRatio(Math.max(0.1,Math.min(2,+x||1)));_needsRender=true;},
+  get trajLines(){return _trajBulkLines;},
+  set trajLines(b){_trajBulkLines=!!b;_resetTrajLOD();for(let i=NC;i<views.length;i++){_trajLodDraw(i);_setTrajTag(i,views[i]._trajShown|0,{inView:views[i]._trajInView|0,total:nN});}_needsRender=true;},
   get trajSettleMs(){return _trajSettleMs;},
   set trajSettleMs(v){_trajSettleMs=(v===null?Infinity:+v)||250;_trajRampKick();_needsRender=true;},
   get trajAlphaFloor(){return _trajAlphaFloorOn;},
