@@ -915,8 +915,29 @@ const MPANES=[
 const MPAIR={'0':'2','2':'0','1':'0','3':'5','5':'3','4':'3','l0':'l2','l2':'l0','l1':'l0','r1':'pcs','pcs':'br0','br0':'br1','br1':'br0'};
 let MOBILE=false,_focusPane=0,_twoUp=false;const _movedPanes=[];
 // --- Single shared WebGL renderer ---
+const _CAM_NEAR=0.005,_CAM_FAR=100;// see the renderer comment below (log-Z removal)
 const glCanvas=document.getElementById('glCanvas');
-const rdr=new THREE.WebGLRenderer({canvas:glCanvas,antialias:true,logarithmicDepthBuffer:true});
+// LOGARITHMIC DEPTH WAS THE WHOLE 60fps GAP. It was on for the extreme depth
+// range the lanes allow (near 0.001, far 200 — a ratio of 200,000), but a log-Z
+// pass writes gl_FragDepth from the fragment shader, and a shader that writes
+// depth cannot be early-Z rejected: every fragment runs in full even where it is
+// hidden. Against a point cloud whose entire character is overdraw that is the
+// worst case there is. Measured on the 6-up overview, forced render:
+//   baseline (aa + logz)  33.40ms  29.9fps  p95 50.0
+//   logz off              16.70ms  59.9fps  p95 16.7
+//   aa off                33.30ms  30.0fps   <- antialiasing costs nothing
+//   both off              16.70ms  59.9fps
+// Exactly 2x, and antialiasing is free, so the quality knob everyone reaches for
+// first was never the one that mattered. Dropped, and the depth range tightened
+// to earn back the precision log-Z was buying: near 0.005 (matching
+// ctl.minDistance) and far 100 is a ratio of 20,000, which a 24-bit buffer holds
+// comfortably — and nearly everything in these scenes is transparent with
+// depthWrite:false anyway, so very little depends on the buffer at all.
+// ?logz=1 puts it back for a side-by-side; ?aa=0 drops antialiasing.
+const _RQ=new URLSearchParams(location.search);
+const rdr=new THREE.WebGLRenderer({canvas:glCanvas,
+  antialias:_RQ.get('aa')!=='0',
+  logarithmicDepthBuffer:_RQ.get('logz')==='1'});
 rdr.setPixelRatio(_DPR);rdr.setSize(window.innerWidth,window.innerHeight);
 rdr.autoClear=false;rdr.setScissorTest(true);
 function _renderRegion(el,sc,cam){
@@ -931,7 +952,7 @@ function _renderRegion(el,sc,cam){
 }
 const views=[];
 let _lastVP=0;
-for(let v=0;v<NV;v++){const el=document.getElementById('vp'+v);const sc=new THREE.Scene();sc.background=new THREE.Color(v>=NC?0x080808:0x0a0a0a);const cam=new THREE.PerspectiveCamera(50,1,0.001,200);cam.position.set(0,0,2.5);const ctl=new OrbitControls(cam,el);ctl.enableDamping=true;ctl.dampingFactor=0.08;ctl.minDistance=0.005;ctl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};ctl.zoomToCursor=true;/* dolly toward the point under the cursor, not ctl.target — the only way to zoom INTO an off-center cluster without blind panning */el.addEventListener('pointerenter',()=>{_lastVP=v;});const geo=new THREE.BufferGeometry();const mtl=new THREE.PointsMaterial({size:0.02,vertexColors:true,transparent:true,opacity:0.65/* was 0.85 — normal-blended overlapping points in a dense/over-zoomed cloud washed to solid white ("light bomb", reported live); see the matching cut in _dimAll and _revealOpScale */,sizeAttenuation:true,depthWrite:false});const pts=new THREE.Points(geo,mtl);sc.add(pts);views.push({el,cv:el,sc,cam,ctl,geo,mtl,pts,pcX:0,pcY:1,pcZ:2,layer:0,trajGroup:null});}
+for(let v=0;v<NV;v++){const el=document.getElementById('vp'+v);const sc=new THREE.Scene();sc.background=new THREE.Color(v>=NC?0x080808:0x0a0a0a);const cam=new THREE.PerspectiveCamera(50,1,_CAM_NEAR,_CAM_FAR);cam.position.set(0,0,2.5);const ctl=new OrbitControls(cam,el);ctl.enableDamping=true;ctl.dampingFactor=0.08;ctl.minDistance=0.005;ctl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};ctl.zoomToCursor=true;/* dolly toward the point under the cursor, not ctl.target — the only way to zoom INTO an off-center cluster without blind panning */el.addEventListener('pointerenter',()=>{_lastVP=v;});const geo=new THREE.BufferGeometry();const mtl=new THREE.PointsMaterial({size:0.02,vertexColors:true,transparent:true,opacity:0.65/* was 0.85 — normal-blended overlapping points in a dense/over-zoomed cloud washed to solid white ("light bomb", reported live); see the matching cut in _dimAll and _revealOpScale */,sizeAttenuation:true,depthWrite:false});const pts=new THREE.Points(geo,mtl);sc.add(pts);views.push({el,cv:el,sc,cam,ctl,geo,mtl,pts,pcX:0,pcY:1,pcZ:2,layer:0,trajGroup:null});}
 function _resizeCanvas(){rdr.setSize(window.innerWidth,window.innerHeight);}
 
 // Dual browser panels — same scene, two cameras focused on different PC neighborhoods
@@ -5565,7 +5586,7 @@ const leftViews=[];
 for(let i=0;i<3;i++){
   const el=document.getElementById('lv'+i);
   const sc=new THREE.Scene();sc.background=new THREE.Color(0x060606);
-  const cam=new THREE.PerspectiveCamera(50,1,0.001,200);cam.position.set(0,1,3);
+  const cam=new THREE.PerspectiveCamera(50,1,_CAM_NEAR,_CAM_FAR);cam.position.set(0,1,3);
   const ctl=new OrbitControls(cam,el);ctl.enableDamping=true;ctl.dampingFactor=0.08;
   ctl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};
   leftViews.push({el,sc,cam,ctl,built:false});
@@ -5587,7 +5608,7 @@ const rightViews=[];
 for(let i=0;i<3;i++){
   const el=document.getElementById('rv'+i);if(!el)continue;
   const sc=new THREE.Scene();sc.background=new THREE.Color(0x060606);
-  const cam=new THREE.PerspectiveCamera(50,1,0.001,200);cam.position.set(0,1,3);
+  const cam=new THREE.PerspectiveCamera(50,1,_CAM_NEAR,_CAM_FAR);cam.position.set(0,1,3);
   const ctl=new OrbitControls(cam,el);ctl.enableDamping=true;ctl.dampingFactor=0.08;
   ctl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};
   const grid=new THREE.GridHelper(2,6,0x1a1a1a,0x141414);grid.rotation.x=Math.PI/2;sc.add(grid);
@@ -7552,7 +7573,7 @@ function _initPCSScene(){
   if(_pcsSc)return;
   _pcsEl=document.getElementById('br0bot');if(!_pcsEl)return;
   _pcsSc=new THREE.Scene();_pcsSc.background=new THREE.Color(0x060606);
-  _pcsCam=new THREE.PerspectiveCamera(50,1,0.001,200);_pcsCam.position.set(0,0.8,3.5);
+  _pcsCam=new THREE.PerspectiveCamera(50,1,_CAM_NEAR,_CAM_FAR);_pcsCam.position.set(0,0.8,3.5);
   _pcsCtl=new OrbitControls(_pcsCam,_pcsEl);_pcsCtl.enableDamping=true;_pcsCtl.dampingFactor=0.08;
   _pcsCtl.mouseButtons={LEFT:THREE.MOUSE.ROTATE,MIDDLE:THREE.MOUSE.PAN,RIGHT:null};
   _pcsCtl.addEventListener('change',_markDirty);
