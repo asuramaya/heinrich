@@ -431,7 +431,7 @@ body.mobile .ovtag{font-size:10px;bottom:52px;max-width:calc(100% - 16px)}
 .rlbl-mode{float:right;font-size:9px;color:#b8a45a;background:#2a2410;border:1px solid #5a4e20;border-radius:2px;padding:0 4px;margin-left:4px;font-family:monospace;font-weight:bold}
 /* ============ MOBILE: single-pane focus + carousel over all 14 lanes ============ */
 #mstage,#mswitch{display:none}
-body.mobile{--mtop:44px;--peek:162px}     /* peek reveals the HEAD and the FOOT — see below */
+body.mobile{--mtop:44px;--peek:196px}     /* peek reveals the HEAD, the PIN STRIP and the FOOT */
 /* NO DOUBLE-TAP ZOOM ON THE CHROME. A phone browser waits ~300ms after a tap to
    see whether a second one is coming, and if it is, it zooms the page. On a
    control surface that is never what the tap meant: double-tapping a chip to
@@ -514,11 +514,77 @@ body.mobile #tokpanel:not(.expanded) #loadStatus{display:none}
 /* LANDSCAPE. 390px of height total: the portrait peek (162px) would eat 42% of the screen and
    leave the instrument less room than its own control panel. The sheet gets out of the way. */
 @media (orientation:landscape) and (max-height:480px){
-  body.mobile{--peek:112px}
-  body.mobile #tokpanel.expanded{max-height:92vh}
+  body.mobile{--peek:146px}
+  body.mobile #tokpanel.expanded{max-height:74vh}
+  body.mobile.sheet-open #mstage{bottom:74vh}
   body.mobile #tokpanel:not(.expanded) .th-tel{display:none}
   body.mobile #tokHead{padding:4px 12px 6px}
 }
+/* THE PIN STRIP: desktop never shows it (the cards are right there), the phone
+   always does. Two slots that keep their width whether filled or not, so the
+   strip does not jump as you pin — and an empty slot states its own gesture. */
+#mpins{display:none}
+body.mobile #mpins{display:flex;gap:8px;margin-top:5px}
+body.mobile .mp{flex:1 1 0;min-width:0;display:flex;align-items:baseline;gap:6px;
+  padding:5px 8px;border-radius:7px;border:1px solid #222;background:#111316}
+body.mobile .mp i{font-style:normal;font-size:10px;line-height:1;padding:2px 4px;
+  border-radius:3px;border:1px solid currentColor;opacity:.85;flex:none}
+body.mobile .mp b{font-weight:600;font-size:14px;min-width:0;overflow:hidden;
+  text-overflow:ellipsis;white-space:nowrap}
+body.mobile .mp-a{color:#FF6644}
+body.mobile .mp-b{color:#5b93cc}
+body.mobile .mp.empty{color:#5c6470;border-color:#1c1f24}
+body.mobile .mp.empty b{font-weight:400;font-size:11px}
+/* (3) THE SHEET MUST NOT SWALLOW THE INSTRUMENT. Expanded, 84vh left 91px of a
+   638px stage — 14% — so you could not see the pin you had just placed while
+   reading its card. The body scrolls; the lane does not. 58vh keeps ~300px of
+   lane alive, and the pin strip above means the identity is legible either way. */
+body.mobile #tokpanel.expanded{max-height:66vh}
+body.mobile.sheet-open #mstage{bottom:66vh}
+body.mobile #tokpanel.expanded #mpins,
+body.mobile #tokpanel.expanded .th-sub,
+body.mobile #tokpanel.expanded #legendWrap{display:none}
+/* (4) A AND B, BOTH ON SCREEN. Each card ran ~335px into a 408px window, so B
+   always started below the fold — an A/B comparison you cannot see at once is
+   not one. The two tall blocks are the depth sparkline and six PC bars; on a
+   phone the top three carry the shape and the curve reads fine at 28px. */
+/* A beside B, not below it. Stacked, each card ran ~320px into a body that could
+   never show both, so the second one was always an act of faith and a scroll.
+   Two columns halves the height and puts the comparison where the eye can do it.
+   NOTE the #tokpanel in these selectors: `#tokpanel .pc-row{display:grid}` at the
+   top of this sheet carries an ID, and no chain of classes outranks one — the
+   first version of this rule was correct CSS that never applied. */
+body.mobile #tokAB{grid-template-columns:1fr 1fr;gap:6px}
+body.mobile #tokpanel .pc-bars .pc-row:nth-child(n+4){display:none}
+body.mobile #tokpanel .depth-lane,body.mobile #tokpanel .pc-lane{margin-top:4px}
+body.mobile #tokpanel .tm{margin-top:4px;line-height:1.4;gap:2px 8px}
+body.mobile #tokpanel .depth-stats{gap:8px;margin-bottom:2px}
+body.mobile #tokpanel .pc-row{grid-template-columns:2.5em minmax(24px,1fr) 3.2em;gap:4px;padding:0 1px}
+body.mobile #tokpanel .pc-bars{gap:1px}
+body.mobile .depth-lane canvas{height:26px!important}
+body.mobile #tokpanel .token-card{padding:6px 7px 2px}
+body.mobile #tokpanel .tn{font-size:19px;margin-bottom:3px}
+body.mobile #tokpanel .preds{display:none}/* what comes NEXT is a different question; it costs a column we do not have */
+/* (5) ONE SCROLLER, NOT TWO. The results list scrolled inside the sheet, which
+   scrolls: on touch the inner one swallows the flick and the outer one never
+   moves, and the last row clipped mid-line. Let the list run at its natural
+   height and give the sheet the whole gesture. */
+body.mobile #tokHead #tsresults{max-height:none;overflow:visible}
+/* (7) THE HONESTY TAG HAS TO BE READABLE. Ellipsis plus pointer-events:none is a
+   sentence you cannot finish on a device with no hover. Two lines, wrapped. */
+body.mobile .ovtag{white-space:normal;overflow:hidden;display:-webkit-box;
+  -webkit-line-clamp:2;-webkit-box-orient:vertical;line-height:1.35}
+/* (8) CHIPS THAT DO NOT REST HALF-CUT. 1009px of chips in a 256px rail: snapping
+   stops a chip settling under the edge, and the fade says "more this way"
+   instead of looking like a rendering fault. */
+#mswitch .mchips{scroll-snap-type:x proximity;scroll-padding-inline:4px}
+#mswitch .mchip{scroll-snap-align:start}
+body.mobile #mswitch .mchips{-webkit-mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 16px),transparent 100%);
+  mask-image:linear-gradient(90deg,#000 0,#000 calc(100% - 16px),transparent 100%)}
+/* (9) LAST OF THE DESK FURNITURE. "vocab reveal: always on" is a status, not a
+   control -- there is no thumb gesture that changes it. The script legend stays,
+   because tapping it does something. */
+body.mobile #vocabToggle{display:none}
 body.mobile #tokpanel .drag-handle{cursor:pointer;justify-content:center;position:relative;padding:15px 6px 5px;min-height:0}
 body.mobile #tokpanel .drag-handle::before{content:"";position:absolute;top:6px;left:50%;transform:translateX(-50%);width:40px;height:4px;border-radius:2px;background:#4a4a4a}
 body.mobile #tokpanel .drag-mid{display:none}   /* the ":: drag ::" hint — it toggles, not drags */
@@ -596,6 +662,11 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
       <span id="mcpBadge" class="th-tel" style="display:none;color:#d66"></span>
       <span id="unlockPill" title="Connect a local heinrich companion to go live in place (Chrome), or open the local view" style="display:none">&#128275; unlock</span>
     </div>
+    <!-- THE PIN STRIP. Phone-only, and the peek's whole reason to exist: you had
+         just tapped a token and the collapsed sheet told you the model, the mode,
+         the layer and the verdict — everything except WHICH TOKEN. Reading it back
+         meant expanding the sheet, which covers the lane you pinned it in. -->
+    <div id="mpins"><span class="mp mp-a"><i>A</i><b>&mdash;</b></span><span class="mp mp-b"><i>B</i><b>&mdash;</b></span></div>
     <div class="th-sub"><span id="hst"></span> <span id="st"></span></div>
     <div id="vocabBanner" style="display:none;color:#e6a23c;font-size:11px;padding:2px 0">&#9888; no full-vocab projection for this model &mdash; run <code>heinrich mri-vocab</code> &mdash; showing 2,000-token sample only</div>
     <div id="legendWrap">
@@ -617,7 +688,7 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
       <!-- ONE PANEL, TWO SIDES: A and B are sides of a single "Tokens" card, not two cards. It
            collapses as one; inside, the sides compare (both pinned) or focus (one pinned). -->
       <div id="tokensPanel" class="panel-card">
-        <div class="pane-head"><div class="pane-title">Tokens</div><div class="pane-note">click A &middot; shift / right&#8209;click B</div></div>
+        <div class="pane-head"><div class="pane-title">Tokens</div><div class="pane-note" id="tokPaneNote">click A &middot; shift / right&#8209;click B</div></div>
       <div id="tokAB">
         <!-- Order is by importance: name, peak/now, THEN the raw identity line (script/id/bytes/
              traj) right beneath it — those two are both compact text readouts about the token
@@ -626,13 +697,13 @@ body.mobile #mhint{display:block;position:fixed;left:12px;right:12px;top:calc(va
              the card, where it always lived. -->
         <div id="tokA" class="token-card unpinned"><div class="tn" id="taName" style="color:#FF6644"><span class="ab-badge">A</span><span class="tn-txt">&mdash;</span></div>
           <div class="depth-stats" id="taDepthNote" style="display:none"></div>
-          <div class="tm" id="taMeta">click a token to pin</div>
+          <div class="tm" id="taMeta">tap or click a token to pin</div>
           <div class="depth-lane" id="depthLaneA" style="display:none"><canvas id="neuronA" height="40" style="width:100%;height:40px;cursor:crosshair"></canvas><div class="lane-axis" id="taDepthAxis"></div></div>
           <div class="pc-lane" id="pcLaneA" style="display:none"><div class="pc-bars" id="taPcBars"></div></div>
           <div id="predsA" class="preds"></div></div>
         <div id="tokB" class="token-card unpinned"><div class="tn" id="tbName" style="color:#4477AA"><span class="ab-badge">B</span><span class="tn-txt">&mdash;</span></div>
           <div class="depth-stats" id="tbDepthNote" style="display:none"></div>
-          <div class="tm" id="tbMeta">right-click or long-press to compare</div>
+          <div class="tm" id="tbMeta">right-click or long-press to compare</div><!-- repainted by _refreshGestureText -->
           <div class="depth-lane" id="depthLaneB" style="display:none"><canvas id="neuronB" height="40" style="width:100%;height:40px;cursor:crosshair"></canvas><div class="lane-axis" id="tbDepthAxis"></div></div>
           <div class="pc-lane" id="pcLaneB" style="display:none"><div class="pc-bars" id="tbPcBars"></div></div>
           <div id="predsB" class="preds"></div></div>
@@ -941,6 +1012,33 @@ const MPANES=[
 // A↔B trajectories, A↔B flowers; deltas pair with their A; analysis lanes pair sensibly).
 const MPAIR={'0':'2','2':'0','1':'0','3':'5','5':'3','4':'3','l0':'l2','l2':'l0','l1':'l0','r1':'pcs','pcs':'br0','br0':'br1','br1':'br0'};
 let MOBILE=false,_focusPane=0,_twoUp=false;const _movedPanes=[];
+// GESTURE WORDING FOLLOWS THE POINTER. Every one of these strings named a mouse
+// — "click A · shift / right-click B", "click a token to pin", "shift+click for
+// comparison", and the search placeholder — and they were all still on screen on
+// a phone, where none of those inputs exist. The gestures that DO work there
+// (tap, long-press) were stated exactly once, in a first-run hint that removes
+// itself after 6.5 seconds. One table, read through _g(), and re-rendered by
+// _applyMobile so a rotation into or out of the phone layout does not leave
+// yesterday's pointer on the screen.
+const _GEST={
+  analyze:[ 'click Analyze', 'tap Analyze' ],
+  paneNote:[ 'click A \u00b7 shift / right\u2011click B', 'tap A \u00b7 long\u2011press B' ],
+  pinA:    [ 'click a token to pin',                       'tap a token to pin' ],
+  pinB:    [ 'shift+click for comparison',                 'long\u2011press to compare' ],
+  pinBidle:[ 'right-click or long-press to compare',       'long\u2011press a token to compare' ],
+  search:  [ 'search sample + full vocab \u2014 click a hit to pin A, right-click for B',
+             'search \u2014 tap A \u00b7 long\u2011press B' ],
+};
+function _g(k){const e=_GEST[k];return e?(MOBILE?e[1]:e[0]):'';}
+// The static ones live in the markup, so they need repainting on a pointer change.
+function _refreshGestureText(){
+  const n=document.getElementById('tokPaneNote');if(n)n.textContent=_g('paneNote');
+  const q=document.getElementById('tsearch');if(q)q.placeholder=_g('search');
+  const a=document.getElementById('taMeta'),b=document.getElementById('tbMeta');
+  // only while unpinned — a pinned side shows the token's own chips, not a hint
+  if(a&&document.getElementById('tokA').classList.contains('unpinned'))a.textContent=_g('pinA');
+  if(b&&document.getElementById('tokB').classList.contains('unpinned'))b.textContent=_g('pinBidle');
+}
 // --- Single shared WebGL renderer ---
 const _CAM_NEAR=0.005,_CAM_FAR=100;// see the renderer comment below (log-Z removal)
 const glCanvas=document.getElementById('glCanvas');
@@ -1552,7 +1650,15 @@ let _vocabRevealEnabled=true;      // master toggle ([vocab] button, default ON)
 // tokenizer runs ~149,866 rows — a silent, pointless cap on how much of ITS vocabulary
 // could ever be revealed. This is a preallocated Float32Array size, not a forced fill:
 // smaller-vocab models just carry unused headroom (a few MB, once, per viewport).
-const REVEAL_CAP=(typeof matchMedia==='function'&&matchMedia('(pointer:coarse)').matches)?40000:160000;// per-viewport preallocated point capacity (mobile budget: 40k — _revFill's frac/stride logic samples uniformly above the cap)
+// Per-viewport preallocated point capacity; above it _revFill takes a uniform
+// 1-in-k sample. The phone budget was 40k against a 48,660-token vocabulary, so
+// a phone silently dropped 18% of the population and said so in a tag nobody
+// could finish reading — and a token you searched for might simply not be in the
+// cloud you were tapping. 64k covers these vocabularies whole. The cost is
+// 24 bytes a point: 1.5MB per viewport instead of 0.96MB, ~3.5MB more across the
+// six lanes. Larger vocabularies (qwen's 151k) still sample, which is the point
+// of having a cap at all.
+const REVEAL_CAP=(typeof matchMedia==='function'&&matchMedia('(pointer:coarse)').matches)?65536:160000;
 const REVEAL_ZOOM_ON=1.5;          // zoomFactor (2.5/dist) past which reveal activates
 const REVEAL_GRID=32;              // grid cells per axis over the normalized cube
 const REVEAL_CUBE=1.75;            // half-extent of the binned cube (normalized coords)
@@ -3061,7 +3167,19 @@ function _triggerSeparationAnalysis(){
   _setSepPanelBusy(key);
   _updateSeparation(a,b);
 }
+// The phone's pin strip: two slots, A and B, in their own accent colours, with the
+// gesture that fills an empty one written in the slot itself.
+function _updateMobilePins(){
+  const w=document.getElementById('mpins');if(!w)return;
+  const set=(cls,label,txt)=>{const e=w.querySelector('.'+cls);if(!e)return;
+    const b=e.querySelector('b');
+    e.classList.toggle('empty',!txt);
+    b.textContent=txt||(label==='A'?'tap a token':'long\u2011press');};
+  set('mp-a','A',_tokenLabel(pinnedToken));
+  set('mp-b','B',_tokenLabel(pinnedTokenB));
+}
 function _updateTokMiniSummary(){
+  try{_updateMobilePins();}catch(e){}
   const el=document.getElementById('tokMiniSummary');if(!el)return;
   if(!model){el.textContent='no pair selected';return;}
   const parts=[`${model}/${mode}`,_layerName(cL)];
@@ -3084,11 +3202,11 @@ function showPinDetail(idx){
   // Token A's orange-everything-else card, since "latin" happens to map to a blue cluster hue.
   // One accent per side, used consistently: badge, name, depth curve, PC bars, predict bar.
   document.getElementById('taName').style.color=idx>=0?'#FF6644':'#555';
-  _renderMetaChips('taMeta',idx,'click a token to pin');
+  _renderMetaChips('taMeta',idx,_g('pinA'));
   renderPCBars(idx,'taPcBars','200,80,50');
   document.querySelector('#tbName .tn-txt').textContent=pinnedTokenB>=0?(texts[pinnedTokenB]||'?'):'—';
   document.getElementById('tbName').style.color=pinnedTokenB>=0?'#4477AA':'#555';
-  _renderMetaChips('tbMeta',pinnedTokenB,'shift+click for comparison');
+  _renderMetaChips('tbMeta',pinnedTokenB,_g('pinB'));
   renderPCBars(pinnedTokenB,'tbPcBars','60,100,180');
   // One panel, two sides: mark the side with no pin so the grid can hand the full width to the
   // populated side instead of stranding an empty column beside it (see the #tokAB :has rule).
@@ -3629,7 +3747,7 @@ async function _updateSeparationNow(a,b){
     // explicit analyze prompt for the current layer.
     if(e?.name==='AbortError'||/abort/i.test(e?.message||'')){
       if(_sepReqId===reqId){
-        _setSepPanelIdle('click Analyze',key);
+        _setSepPanelIdle(_g('analyze'),key);
       }
       return;
     }
@@ -7788,7 +7906,7 @@ function _buildPCSSpectrum(){
     if(_pcsDotsA)_pcsDotsA.geometry.setDrawRange(0,0);
     if(_pcsDotsB)_pcsDotsB.geometry.setDrawRange(0,0);
     const lbl=document.getElementById('pcsLabel');
-    if(lbl)lbl.textContent=`PC Spectrum \u00b7 ${nK} PCs \u00b7 click a token to pin`;
+    if(lbl)lbl.textContent=`PC Spectrum \u00b7 ${nK} PCs \u00b7 ${_g('pinA')}`;
     _markDirty();return;
   }
   // Use full PCA data if available, fall back to allL
@@ -8387,7 +8505,7 @@ async function _onPinChange(){
       _buildPCSSpectrum();
       resolve();
       const sepKey=_sepKey(tokA,tokB,cL);
-      if(sepKey)_setSepPanelIdle('click Analyze',sepKey);
+      if(sepKey)_setSepPanelIdle(_g('analyze'),sepKey);
       else _setSepPanelIdle('', '');
     },40);// 40ms window catches rapid A+B sequence, imperceptible to user
   });
@@ -8444,7 +8562,7 @@ function setLayer(l,light){cL=l;updateAllViewports();updateHUD();
   if(!light)_updateBrowserOverlay();
   updateLeftViewports();
   if(pinnedToken>=0||pinnedTokenB>=0){_syncAllPins(!play);if(!play)showPinDetail(pinnedToken);}
-  if(pinnedToken>=0&&pinnedTokenB>=0&&cL<_nRealLayers)_setSepPanelIdle('click Analyze',_sepKey(pinnedToken,pinnedTokenB,cL));
+  if(pinnedToken>=0&&pinnedTokenB>=0&&cL<_nRealLayers)_setSepPanelIdle(_g('analyze'),_sepKey(pinnedToken,pinnedTokenB,cL));
   else _setSepPanelIdle('', '');
   // #7 — refresh falsification brief for the new layer, debounced so
   // rapid arrow-key scrubbing doesn't fire one request per layer.
@@ -9729,7 +9847,7 @@ function _cardSummaryText(key){
       if(a&&b)return `A ${a} · B ${b}`;
       if(a)return `A ${a}`;
       if(b)return `B ${b}`;
-      return 'click a token to pin';
+      return _g('pinA');
     }
     case 'sep':{if(pinnedToken<0||pinnedTokenB<0)return 'pin A + B';const d=trim(document.getElementById('sepDist')?.textContent);return d?('sep '+d):'A vs B · analyze';}
     case 'attn':return pinnedToken>=0?`#${pinnedToken} · L${cL}`:'no pin';
@@ -10849,7 +10967,13 @@ function _buildMobileUI(){
   sw.querySelector('.m2up').addEventListener('click',function(){_twoUp=!_twoUp;this.classList.toggle('on',_twoUp);_setFocusPane(_focusPane);});
   // the sheet handle toggles expanded/peek
   const dh=document.getElementById('tokDrag');
-  if(dh)dh.addEventListener('click',e=>{if(!MOBILE||e.target.closest('button'))return;document.getElementById('tokpanel').classList.toggle('expanded');});
+  if(dh)dh.addEventListener('click',e=>{if(!MOBILE||e.target.closest('button'))return;
+    const open=document.getElementById('tokpanel').classList.toggle('expanded');
+    // The stage keeps its full height behind the sheet, so with the sheet open the
+    // lane's subject sat centred UNDERNEATH it and the strip you could actually see
+    // was empty sky. Shrink the stage to the visible band and let the camera refit.
+    document.body.classList.toggle('sheet-open',open);
+    if(typeof _resizeCanvas==='function')_resizeCanvas();_needsRender=true;});
   // one-time gesture hint — the long-press-to-compare gesture is otherwise invisible
   let seen=false;try{seen=!!localStorage.getItem('heinrich.mhint');}catch(_){}
   if(!seen){const hint=document.createElement('div');hint.id='mhint';
@@ -10875,6 +10999,7 @@ function _applyMobile(){
     _dockPanel();
     try{_ensureAllLanes();}catch(e){console.error('lanes:',e);}// lanes skipped under the mobile budget are all visible again
   }
+  _refreshGestureText();// the pointer just changed; so does every gesture noun
   _needsRender=true;if(typeof _resizeCanvas==='function')_resizeCanvas();
 }
 // THE PC PANE'S TABS. Spectrum, PC A and PC B are one lane taking turns: the same
@@ -10900,7 +11025,7 @@ function _setPcTab(k){
 })();
 addEventListener('resize',_applyMobile);
 addEventListener('orientationchange',()=>setTimeout(_applyMobile,220));
-_applyMobile();
+_applyMobile();_refreshGestureText();// paint the gesture nouns for whichever pointer we booted on
 // _applyMobile early-returns when the mode has not CHANGED, and desktop is the initial mode —
 // so the first dock has to be done here or the panel stays floating until you resize.
 if(!MOBILE)_dockPanel();
