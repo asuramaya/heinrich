@@ -432,6 +432,29 @@ body.mobile .ovtag{font-size:10px;bottom:52px;max-width:calc(100% - 16px)}
 /* ============ MOBILE: single-pane focus + carousel over all 14 lanes ============ */
 #mstage,#mswitch{display:none}
 body.mobile{--mtop:44px;--peek:162px}     /* peek reveals the HEAD and the FOOT — see below */
+/* NO DOUBLE-TAP ZOOM ON THE CHROME. A phone browser waits ~300ms after a tap to
+   see whether a second one is coming, and if it is, it zooms the page. On a
+   control surface that is never what the tap meant: double-tapping a chip to
+   switch lanes twice, or the layer arrows to step twice, left the reader zoomed
+   into a corner of a fixed-position bar with no obvious way back.
+   `touch-action: manipulation` is the fix and the narrow one — it keeps panning
+   and pinch-zoom, and drops ONLY the double-tap gesture. It is per-element and
+   NOT inherited, so it has to name the surfaces rather than sit on body.
+   (`user-scalable=no` in the viewport meta is the older answer and iOS Safari has
+   ignored it since iOS 10; it would also take real pinch-zoom away, which is an
+   accessibility feature, not ours to remove.)
+   The lanes themselves keep touch-action:none — OrbitControls owns those. */
+body.mobile #mswitch,body.mobile #mswitch *,
+body.mobile #tokpanel,body.mobile #tokpanel *,
+body.mobile #ctrlbar,body.mobile #ctrlbar *,
+body.mobile .ovbtns,body.mobile .ovbtns *{touch-action:manipulation}
+/* and no grey flash-box on every one of those taps */
+body.mobile #mswitch *,body.mobile #tokpanel *,body.mobile #ctrlbar *{
+  -webkit-tap-highlight-color:transparent}
+/* the sheet is a control surface, not a document: no OS text-selection callout
+   on a long press, which on a phone is how you pin B */
+body.mobile #mswitch,body.mobile #ctrlbar{-webkit-touch-callout:none;
+  -webkit-user-select:none;user-select:none}
 body.mobile #main{display:none}                       /* the whole desktop grid is parked */
 /* transparent: the shared #glCanvas (z-index:0) renders the lanes *behind* this;
    an opaque background here would paint over the cloud (the viewports are windows) */
