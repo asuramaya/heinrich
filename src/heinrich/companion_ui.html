@@ -339,6 +339,10 @@ body{background:#0a0a0a;color:#ccc;font-family:'SF Mono','Menlo',monospace;font-
   z-index:2;text-shadow:0 0 3px #000;white-space:nowrap;overflow:hidden;
   text-overflow:ellipsis;max-width:calc(100% - 96px)}
 .vp-max .ovtag{font-size:11px;max-width:calc(100% - 130px)}
+/* The corner button cluster is finger-sized on mobile (five ~48px targets, not
+   five ~16px ones), so the desktop reserve is far too small and the tag runs
+   underneath them. Reserve for the real cluster and sit above it instead. */
+body.mobile .ovtag{font-size:10px;bottom:52px;max-width:calc(100% - 16px)}
 /* While one lane is maximized the others aren't rendered on the shared canvas — but their
    DOM labels/controls would still bleed through the transparent maximized container. Hide them. */
 #main.maxmode .vp:not(.vp-max),#main.maxmode .lvp:not(.vp-max),#main.maxmode .rvp:not(.vp-max),#main.maxmode .browse,#main.maxmode #br0bot:not(.vp-max){visibility:hidden}
@@ -3771,9 +3775,17 @@ views.forEach((v,vi)=>{
 // aspect — a fit that only ever considered vertical FOV clips on narrow/tall
 // containers and wastes width on wide ones. Shared by Flowers, PC Spectrum,
 // and the trajectory viewports.
+// ...but only down to a point. Fitting a SPHERE into the tighter axis is correct
+// arithmetic and a bad picture on a phone: at 390x844 the aspect is 0.46, the
+// horizontal half-angle collapses to 12 degrees, and the camera retreats 2.2x
+// further than a square lane needs — the cloud lands as a small blob in a tall
+// field of black (measured on emulated mobile, ~25% of the lane's height). The
+// widest points of a roughly round cloud are also the least interesting ones, so
+// past this floor we stop retreating and let the extremes crop.
+const _FIT_MIN_ASPECT=0.72;
 function _fitDistanceForRadius(cam,r,margin=1.4){
   const halfV=cam.fov*Math.PI/360;
-  const halfH=Math.atan(Math.tan(halfV)*cam.aspect);
+  const halfH=Math.atan(Math.tan(halfV)*Math.max(cam.aspect,_FIT_MIN_ASPECT));
   return r*margin/Math.tan(Math.min(halfV,halfH));
 }
 // A trajectory bundle is per-layer segments radiating from a shared origin —
@@ -3819,7 +3831,12 @@ function _trajCamUntouched(v){
 // reveal cloud became the default renderer, and it ignored container shape
 // entirely — both reported live as "spawns too zoomed in, doesn't adapt to
 // screen size." Same fit math as trajectories fixes both at once.
-const _CLOUD_FIT_R=1.9;
+// Measured on the drawn vocab-scale cloud (smollm2-360m, 160k reveal points):
+// p90 0.683, p99 1.050, p99.9 1.339, max 2.229. The old 1.9 was picked to cover
+// the clamp box rather than the cloud — the same mistake _maxR made in the
+// trajectory lane — and framed every cloud lane about 1.4x too wide. 1.4 sits
+// just above p99.9, and _fitDistanceForRadius's own margin still leaves air.
+const _CLOUD_FIT_R=1.4;
 const _CLOUD_DIR=new THREE.Vector3(1.5,1.0,2.0).normalize();// same 3/4 angle as _snapOne's cloud default
 function _fitCloudCamera(v){
   if(!v)return;
