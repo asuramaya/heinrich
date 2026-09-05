@@ -923,6 +923,30 @@ const CLh=Object.fromEntries(Object.entries(CL).map(([k,v])=>[k,'#'+v.toString(1
 let allL=[],dm=null,cL=0,play=false;
 const vpPairs=[[0,1],[0,2],[2,3]];// [pairA, delta(pcA0×pcB0), pairB]
 let model='',mode='',scripts=[],texts=[],nN=0,nK=0,nL=0,_layerVar=[],_blobScoreK=0;
+// ARTIFACT VERSION TOKEN — makes `immutable` an honest promise.
+// The edge serves every artifact route `Cache-Control: public, max-age=31536000,
+// immutable`, and a republish CHANGES THE BYTES AT AN UNCHANGED URL: vocab_pc16.bin
+// went from 16 PCs per layer-plane to the full hidden range, which moves every byte
+// offset in the file. A returning browser holding cached RANGE responses of the old
+// file then serves old-layout bytes for some ranges and new-layout for others —
+// silent garbage rather than a clean failure. `immutable` is only true if the URL
+// changes when the content does, so every artifact request carries the producing
+// model's own version, which /api/models already publishes per (model, mode) and
+// which is itself served no-cache. Bump it when you regenerate in place and every
+// stale byte in every browser and at the edge is addressed out of existence.
+// A PAIRED local companion (_localBase, the edge SPA talking to your own machine)
+// is exempt: that path already rewrites the URL and carries its own pairing header,
+// and there is no immutable contract on a disk read. Serving the page FROM the
+// companion is not that path — those requests are same-origin /api/ and do carry
+// the token, harmlessly: the Python server ignores query params it does not read.
+let _artifactVer='',_modelList=[];
+function _rememberModels(list){if(Array.isArray(list))_modelList=list;return list;}
+// Called with the model/mode about to be loaded — BEFORE the globals are assigned,
+// so the very first artifact read of a load already carries the right token.
+function _setArtifactVer(m,mo){
+  const e=_modelList.find(x=>x&&x.model===m&&x.mode===mo);
+  _artifactVer=(e&&e.version!=null)?String(e.version):'';
+}
 const _hiddenScripts=new Set();// scripts toggled off by legend clicks
 // 20s timeout prevents UI state like "predicts..." from sticking forever on
 // slow/missing server resources. Callers already handle rejected promises.
@@ -936,6 +960,10 @@ function _apiFetch(url,opts){
   if(_localBase&&url.charAt(0)==='/'){
     url=_localBase+url;
     opts=Object.assign({targetAddressSpace:'local'},opts,{headers:Object.assign({'X-Heinrich-Pair':_pairToken},opts.headers||{})});
+  }else if(_artifactVer&&url.charAt(0)==='/'&&url.indexOf('/api/')===0){
+    // see _setArtifactVer — the whole URL is the edge cache key too, so this
+    // versions the browser cache and Cloudflare's in one stroke
+    url+=(url.indexOf('?')<0?'?':'&')+'v='+encodeURIComponent(_artifactVer);
   }
   return fetch(url,opts);
 }
@@ -8651,6 +8679,7 @@ async function _probeVocabPcBundle(){
 }
 async function loadAll(){
   const newModel=document.getElementById('sm').value,newMode=document.getElementById('smd').value;
+  _setArtifactVer(newModel,newMode);// see the token's own note — set before the first artifact read
   const isSameModel=newModel===_prevModel;
   if(!isSameModel&&typeof _clearLivePoint==='function')_clearLivePoint();// stale live point is in the old model's frame
   if(!isSameModel&&typeof _clearVocabTarget==='function'){_clearVocabTarget(false);_clearVocabTarget2(false);}// target coords are frame-specific too (don't wipe saved hash — restored below)
@@ -8881,7 +8910,7 @@ async function loadAll(){
   _markDirty();
   _markPhase4Done();// MCP long-poll channels start only now (see _startChannels)
 }
-async function init(){const models=await api('models');const sel=document.getElementById('sm');const tM=models.filter(m=>m.architecture==='transformer');const bm={};tM.forEach(m=>{if(!bm[m.model])bm[m.model]=[];bm[m.model].push(m.mode);});Object.keys(bm).sort().forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);});
+async function init(){const models=_rememberModels(await api('models'));const sel=document.getElementById('sm');const tM=models.filter(m=>m.architecture==='transformer');const bm={};tM.forEach(m=>{if(!bm[m.model])bm[m.model]=[];bm[m.model].push(m.mode);});Object.keys(bm).sort().forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;sel.appendChild(o);});
   // Restore from URL or default to smollm2-135m
   const _st=_loadState();
   if(_st&&_st.m&&bm[_st.m]){sel.value=_st.m;if(_st.d)document.getElementById('smd').value=_st.d;}
@@ -10126,7 +10155,7 @@ let _channelsStarted=false,_channelsWanted=false,_phase4Done=false;
 function _startChannels(){if(_channelsStarted||!CAP.mcp)return;_channelsWanted=true;if(!_phase4Done)return;_channelsStarted=true;_pollActive=true;setTimeout(_pollLoop,500);setTimeout(_chatPollLoop,800);}
 function _markPhase4Done(){_phase4Done=true;if(_channelsWanted)_startChannels();}
 async function _refreshModelsAfterConnect(){
-  try{const models=await api('models');const sel=document.getElementById('sm');if(!sel||!Array.isArray(models))return;
+  try{const models=_rememberModels(await api('models'));const sel=document.getElementById('sm');if(!sel||!Array.isArray(models))return;
     const have=new Set([...sel.options].map(o=>o.value));
     models.filter(m=>m.architecture==='transformer').forEach(m=>{if(!have.has(m.model)){have.add(m.model);const o=document.createElement('option');o.value=m.model;o.textContent=m.model+' (local)';sel.appendChild(o);}});
   }catch(e){}
@@ -10650,7 +10679,7 @@ async function _populateCrossModels(){
   const ms=document.getElementById('crossModel');if(!ms)return;
   if(ms.options.length)return;// already populated
   try{
-    const list=await api('models');
+    const list=_rememberModels(await api('models'));
     (list||[]).filter(m=>m.architecture==='transformer').forEach(m=>{
       const opt=document.createElement('option');opt.value=m.model;
       opt.textContent=`${m.model} / ${m.mode}`;opt.dataset.mode=m.mode;
