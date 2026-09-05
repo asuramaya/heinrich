@@ -1168,9 +1168,9 @@ function _mkPathLine(v,color,px,op){
   m.resolution=_PATH_RES;
   const l=new LineSegments2(new LineSegmentsGeometry(),m);
   l.visible=false;l.frustumCulled=false;l.renderOrder=6;v.sc.add(l);return l;}
-const hoverPaths=views.map(v=>_mkPathLine(v,0xFFFFFF,2.0,0.55));
-const pinPaths  =views.map(v=>_mkPathLine(v,0xFF6644,3.0,0.95));
-const pinPathsB =views.map(v=>_mkPathLine(v,0x4477AA,3.0,0.95));
+const hoverPaths=views.map(v=>_mkPathLine(v,0xFFFFFF,2.5,0.55));
+const pinPaths  =views.map(v=>_mkPathLine(v,0xFF6644,4.0,0.95));
+const pinPathsB =views.map(v=>_mkPathLine(v,0x4477AA,4.0,0.95));
 
 
 // Live-forward inhabitant: a prompt run through the live model, projected into the
@@ -2753,7 +2753,8 @@ function _revealOpApply(vi){const pts=revealPts[vi],rev=views[vi]._rev;if(!pts)r
 function _trajDimApply(v,dim){const f=dim?0.08/0.15:1;
   if(v.trajGroup&&v._trajOpFine!==undefined)v.trajGroup.material.opacity=Math.max(0.004,v._trajOpFine*f);
   if(v.trajGroupCoarse&&v._trajOpCoarse!==undefined)v.trajGroupCoarse.material.opacity=Math.max(0.006,v._trajOpCoarse*f);}
-function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC){v.mtl.opacity=dim?0.27:0.65;if(revealPts[vi])revealPts[vi].material.opacity=(dim?0.16:0.38)*_revealOpScale(v._rev?v._rev.shown:0);}if(vi>=NC&&v.trajGroup){_trajDimApply(v,dim);if(v.trajMarker)v.trajMarker.material.opacity=(dim?0.7:0.9)*_trajMarkerOpScale();}});hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible)m.material.opacity=0.95;});}// size is owned by _applyViewSizes (per frame); a size set here was dead
+function _dimAll(active){const hasPin=pinnedToken>=0||pinnedTokenB>=0;const dim=active||hasPin;const state=(dim?1:0)|(hasPin?2:0)|(active?4:0);if(state===_lastDimState)return;_lastDimState=state;views.forEach((v,vi)=>{if(vi<NC){v.mtl.opacity=dim?0.27:0.65;if(revealPts[vi])revealPts[vi].material.opacity=(dim?0.16:0.38)*_revealOpScale(v._rev?v._rev.shown:0);}if(vi>=NC&&v.trajGroup){_trajDimApply(v,dim);if(v.trajMarker)v.trajMarker.material.opacity=(dim?0.7:0.9)*_trajMarkerOpScale();}});_trajFlowOpApply();// a pinned pair outranks the flow field it sits in
+  hoverPaths.forEach(l=>{if(l.visible)l.material.opacity=hasPin?0.4:0.8;});pinPaths.forEach(l=>{if(l.visible)l.material.opacity=0.9;});pinPathsB.forEach(l=>{if(l.visible)l.material.opacity=0.9;});highlightMarkers.forEach(m=>{if(m.visible)m.material.opacity=0.95;});}// size is owned by _applyViewSizes (per frame); a size set here was dead
 let _hoverTimer=0,_hoverTok=-1,_hoverLoading='';
 // Unified hover cache: token,layer → {pcScores: Float32Array[K], neurons: Float32Array[inter]}
 const _hoverCache=new Map();
@@ -4463,7 +4464,25 @@ const _TRAJ_RAMP=1.5;
 // traces are still drawn in full for the pinned pair and the hovered token, and
 // why the lane tag says so.
 const _FLOW_MAX_SEG=80000;
-const _FLOW_W=[0.8,1.6,2.8,4.5];// ribbon widths in screen px, narrow=tight bundle
+// THE RIBBONS ARE GROUND, THE PINNED TRACES ARE FIGURE. Tuned against a pinned
+// pair with the direction tint on, which is the state that matters: at the old
+// 0.42/[0.8..4.5] the ribbons greyed out the red/blue population AND competed with
+// the two traces the reader had deliberately selected. Both paths are already
+// complete — 33 segments each, zero breaks, spanning z -1 to +1, every layer from
+// first to last — so nothing was missing; they simply did not stand out.
+// A pin makes it stricter: while one is set the ribbons drop to _FLOW_PIN_OP of
+// their weight, so the selected trajectories own the frame start to finish and the
+// flow field stays as context behind them.
+const _FLOW_W=[0.6,1.1,1.8,3.0];// ribbon widths in screen px, narrow=tight bundle
+const _FLOW_OP=0.22;            // base ribbon opacity (was 0.42 — see above)
+const _FLOW_PIN_OP=0.45;        // multiplier while any token is pinned
+function _flowOpNow(){return _FLOW_OP*((pinnedToken>=0||pinnedTokenB>=0)?_FLOW_PIN_OP:1);}
+function _trajFlowOpApply(){
+  const o=_flowOpNow();
+  for(let i=NC;i<views.length;i++){const v=views[i];if(!v)continue;
+    if(v.trajFlowThin&&v.trajFlowThin.material.opacity!==o)v.trajFlowThin.material.opacity=o;
+    (v.trajFlowBuckets||[]).forEach(b=>{if(b.material.opacity!==o)b.material.opacity=o;});}
+}
 function _trajFlowKey(v){const vi=views.indexOf(v);return `${model}|${mode}|${v.pcX}|${v.pcY}|${cL}|${v._trajGen}|${(_dirColorActive&&_dirProjLast&&_trajLaneFocused(vi))?'d':'s'}|${_hiddenScripts.size?[..._hiddenScripts].sort().join(','):''}`;}
 // Membership is decided ONCE and then held fixed for the whole climb. That is the
 // difference between a bundle and a mess: re-binning at every layer joins the mean
@@ -4540,11 +4559,11 @@ function _trajBuildFlow(vi){
   // ribbons through a plain, cheap LineSegments.
   if(!v.trajFlowThin){
     v.trajFlowThin=new THREE.LineSegments(new THREE.BufferGeometry(),new THREE.LineBasicMaterial({
-      vertexColors:true,transparent:true,opacity:0.42,depthWrite:false,blending:THREE.NormalBlending}));
+      vertexColors:true,transparent:true,opacity:_flowOpNow(),depthWrite:false,blending:THREE.NormalBlending}));
     v.trajFlowThin.frustumCulled=false;v.trajFlowThin.renderOrder=-1;v.sc.add(v.trajFlowThin);}
   if(!v.trajFlowBuckets){
     v.trajFlowBuckets=_FLOW_W.map(px=>{
-      const m=new LineMaterial({color:0xffffff,vertexColors:true,transparent:true,opacity:0.42,
+      const m=new LineMaterial({color:0xffffff,vertexColors:true,transparent:true,opacity:_flowOpNow(),
         depthWrite:false,depthTest:true,blending:THREE.NormalBlending,
         linewidth:px,worldUnits:false,dashed:false});
       m.resolution=_PATH_RES;
